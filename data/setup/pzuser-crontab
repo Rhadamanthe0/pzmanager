@@ -1,0 +1,5 @@
+# Daily maintenance
+30 4 * * *  /bin/bash  /home/pzuser/pzmanager/scripts/admin/performFullMaintenance.sh
+
+# Create backups with hard links of the server at every hour + 15 minutes
+14 * * * *  /bin/bash  /home/pzuser/pzmanager/scripts/backup/dataBackup.sh >> /home/pzuser/pzmanager/scripts/logs/data_backup.log 2>&1

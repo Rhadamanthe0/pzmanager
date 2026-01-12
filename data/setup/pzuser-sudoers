@@ -1,0 +1,20 @@
+# Sudoers configuration for pzuser (daily maintenance automation)
+# Installation: sudo visudo -cf /home/pzuser/sudoers-pzuser && sudo cp /home/pzuser/sudoers-pzuser /etc/sudoers.d/pzuser
+
+# APT package management (CLI-stable commands only)
+pzuser ALL=(ALL) NOPASSWD: /usr/bin/apt-get update -qq
+pzuser ALL=(ALL) NOPASSWD: /usr/bin/apt-get upgrade -y -qq
+pzuser ALL=(ALL) NOPASSWD: /usr/bin/apt-get install -y -qq openjdk-*-jre-headless
+pzuser ALL=(ALL) NOPASSWD: /usr/bin/apt-get autoremove -y -qq
+pzuser ALL=(ALL) NOPASSWD: /usr/bin/apt-get autoclean -qq
+
+# Java JRE symlink management (only /home/pzuser/pzmanager/data/pzserver/jre64)
+pzuser ALL=(ALL) NOPASSWD: /bin/rm -f /home/pzuser/pzmanager/data/pzserver/jre64
+pzuser ALL=(ALL) NOPASSWD: /bin/rm -rf /home/pzuser/pzmanager/data/pzserver/jre64
+pzuser ALL=(ALL) NOPASSWD: /bin/ln -s /usr/lib/jvm/java-[0-9]*-openjdk-amd64 /home/pzuser/pzmanager/data/pzserver/jre64
+
+# External sync backup script
+pzuser ALL=(ALL) NOPASSWD: /home/pzuser/pzmanager/scripts/fullBackup.sh
+
+# System reboot (no arguments)
+pzuser ALL=(ALL) NOPASSWD: /sbin/reboot

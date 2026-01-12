@@ -1,0 +1,242 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# pzmanager - Interface principale
+# Usage: pzm <commande> <sous-commande> [arguments]
+
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+show_help() {
+    cat << 'EOF'
+pzmanager - Project Zomboid Server Manager
+
+Usage: pzm <commande> <sous-commande> [arguments]
+
+Commandes disponibles:
+
+  server <action> [délai]
+    start              Démarrer le serveur
+    stop [délai]       Arrêter (30m|15m|5m|2m|30s|now, défaut: 2m)
+    restart [délai]    Redémarrer
+    status             Statut + logs récents
+
+  backup <action> [arguments]
+    create             Backup incrémental horaire
+    full               Backup complet avec sync
+    restore <chemin>   Restaurer données Zomboid
+    list               Lister backups disponibles
+
+  whitelist <action> [arguments]
+    list               Lister utilisateurs whitelistés
+    add <nom> <id32>   Ajouter (Steam ID 32: STEAM_0:X:Y)
+    remove <id32>      Retirer utilisateur
+
+  admin <action> [arguments]
+    reset              Reset serveur complet (nouveau monde)
+    reset --keep-whitelist  Reset avec conservation whitelist
+    maintenance [délai]     Maintenance complète (défaut: 30m)
+
+  config <paramètre> <valeur>
+    ram <valeur>       Configurer RAM serveur (2g|4g|8g|16g|32g)
+
+  install <action>
+    system             Configuration système initiale
+    zomboid            Installer serveur Project Zomboid
+
+  rcon <commande>      Envoyer commande RCON au serveur
+
+Exemples:
+  pzm server start
+  pzm server restart 5m
+  pzm backup restore data/dataBackups/backup_2026-01-11_14h30m00s
+  pzm whitelist add "PlayerName" "STEAM_0:1:12345678"
+  pzm admin reset --keep-whitelist
+  pzm config ram 8g
+  pzm rcon "save"
+
+Documentation: docs/QUICKSTART.md
+EOF
+}
+
+# Routage commande server
+cmd_server() {
+    local action="${1:-}"
+    shift || true
+
+    case "$action" in
+        start|stop|restart|status)
+            exec "${SCRIPT_DIR}/scripts/core/pz.sh" "$action" "$@"
+            ;;
+        *)
+            echo "Erreur: Action serveur invalide: $action"
+            echo "Actions: start, stop, restart, status"
+            exit 1
+            ;;
+    esac
+}
+
+# Routage commande backup
+cmd_backup() {
+    local action="${1:-}"
+    shift || true
+
+    case "$action" in
+        create)
+            exec "${SCRIPT_DIR}/scripts/backup/dataBackup.sh"
+            ;;
+        full)
+            exec "${SCRIPT_DIR}/scripts/backup/fullBackup.sh"
+            ;;
+        restore)
+            if [[ $# -eq 0 ]]; then
+                echo "Erreur: Chemin backup requis"
+                echo "Usage: pzm backup restore <chemin>"
+                exit 1
+            fi
+            exec "${SCRIPT_DIR}/scripts/backup/restoreZomboidData.sh" "$@"
+            ;;
+        list)
+            echo "=== Backups incrémentiaux (30j rétention) ==="
+            ls -lth "${SCRIPT_DIR}/data/dataBackups/" 2>/dev/null | head -20 || echo "Aucun backup trouvé"
+            echo ""
+            echo "=== Backups complets ==="
+            ls -lth "${SCRIPT_DIR}/data/fullBackups/" 2>/dev/null | head -10 || echo "Aucun backup trouvé"
+            ;;
+        *)
+            echo "Erreur: Action backup invalide: $action"
+            echo "Actions: create, full, restore, list"
+            exit 1
+            ;;
+    esac
+}
+
+# Routage commande whitelist
+cmd_whitelist() {
+    local action="${1:-}"
+    shift || true
+
+    case "$action" in
+        list|add|remove)
+            exec "${SCRIPT_DIR}/scripts/admin/manageWhitelist.sh" "$action" "$@"
+            ;;
+        *)
+            echo "Erreur: Action whitelist invalide: $action"
+            echo "Actions: list, add, remove"
+            exit 1
+            ;;
+    esac
+}
+
+# Routage commande admin
+cmd_admin() {
+    local action="${1:-}"
+    shift || true
+
+    case "$action" in
+        reset)
+            exec "${SCRIPT_DIR}/scripts/admin/resetServer.sh" "$@"
+            ;;
+        maintenance)
+            exec "${SCRIPT_DIR}/scripts/admin/performFullMaintenance.sh" "$@"
+            ;;
+        *)
+            echo "Erreur: Action admin invalide: $action"
+            echo "Actions: reset, maintenance"
+            exit 1
+            ;;
+    esac
+}
+
+# Routage commande config
+cmd_config() {
+    local param="${1:-}"
+    shift || true
+
+    case "$param" in
+        ram)
+            exec "${SCRIPT_DIR}/scripts/admin/setram.sh" "$@"
+            ;;
+        *)
+            echo "Erreur: Paramètre config invalide: $param"
+            echo "Paramètres: ram"
+            exit 1
+            ;;
+    esac
+}
+
+# Routage commande install
+cmd_install() {
+    local action="${1:-}"
+    shift || true
+
+    case "$action" in
+        system)
+            exec sudo "${SCRIPT_DIR}/scripts/install/setupSystem.sh"
+            ;;
+        zomboid)
+            exec sudo "${SCRIPT_DIR}/scripts/install/configurationInitiale.sh" zomboid
+            ;;
+        *)
+            echo "Erreur: Action install invalide: $action"
+            echo "Actions: system, zomboid"
+            exit 1
+            ;;
+    esac
+}
+
+# Routage commande rcon
+cmd_rcon() {
+    if [[ $# -eq 0 ]]; then
+        echo "Erreur: Commande RCON requise"
+        echo "Usage: pzm rcon <commande>"
+        exit 1
+    fi
+    exec "${SCRIPT_DIR}/scripts/internal/sendCommand.sh" "$@"
+}
+
+# Point d'entrée principal
+main() {
+    if [[ $# -eq 0 ]]; then
+        show_help
+        exit 0
+    fi
+
+    local command="$1"
+    shift
+
+    case "$command" in
+        server)
+            cmd_server "$@"
+            ;;
+        backup)
+            cmd_backup "$@"
+            ;;
+        whitelist)
+            cmd_whitelist "$@"
+            ;;
+        admin)
+            cmd_admin "$@"
+            ;;
+        config)
+            cmd_config "$@"
+            ;;
+        install)
+            cmd_install "$@"
+            ;;
+        rcon)
+            cmd_rcon "$@"
+            ;;
+        help|--help|-h)
+            show_help
+            exit 0
+            ;;
+        *)
+            echo "Erreur: Commande inconnue: $command"
+            echo ""
+            show_help
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

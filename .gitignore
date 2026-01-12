@@ -1,0 +1,23 @@
+# Sensitive configuration
+.env
+
+# Operational logs (757 files)
+scripts/logs/
+
+# Backup directories (very large)
+data/dataBackups/
+data/fullBackups/
+data/versionning/
+
+# Game server installation (36M+ files, binary)
+data/pzserver/
+Zomboid/
+
+# IDE configuration
+.vscode/
+.vs/
+.claude/
+
+# OS files
+.DS_Store
+Thumbs.db
