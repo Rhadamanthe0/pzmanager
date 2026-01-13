@@ -1,0 +1,18 @@
+[Unit]
+Description=Project Zomboid Server
+After=network.target zomboid.socket
+Requires=zomboid.socket
+Wants=zomboid_logger.service
+
+[Service]
+Type=simple
+PrivateTmp=true
+WorkingDirectory=/home/pzuser/pzmanager/data/pzserver/
+ExecStart=/bin/sh -c "exec /home/pzuser/pzmanager/data/pzserver/start-server.sh -cachedir=/home/pzuser/pzmanager/Zomboid <> /home/pzuser/pzmanager/data/pzserver/zomboid.control"
+ExecStartPost=-/bin/sh -c "/home/pzuser/pzmanager/scripts/internal/notifyServerReady.sh &"
+ExecStop=/bin/sh -c "echo 'quit' > /home/pzuser/pzmanager/data/pzserver/zomboid.control"
+KillSignal=SIGCONT
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

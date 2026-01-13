@@ -59,8 +59,8 @@ restore_sudoers() {
 restore_crontab() {
     local backup_path="$1"
 
-    if [[ -f "$backup_path$PZ_HOME/pzmanager/data/setup/pzuser-crontab" ]]; then
-        crontab -u "$PZ_USER" "$backup_path$PZ_HOME/pzmanager/data/setup/pzuser-crontab"
+    if [[ -f "$backup_path$PZ_HOME/pzmanager/data/setupTemplates/pzuser-crontab" ]]; then
+        crontab -u "$PZ_USER" "$backup_path$PZ_HOME/pzmanager/data/setupTemplates/pzuser-crontab"
         echo "Crontab de $PZ_USER restauré"
     fi
 }
@@ -138,6 +138,24 @@ configure_user_environment() {
         echo 'export XDG_RUNTIME_DIR=/run/user/$(id -u)' >> "$PZ_HOME/.bashrc"
 }
 
+install_systemd_services() {
+    local systemd_dir="$PZ_HOME/.config/systemd/user"
+    local templates_dir="$PZ_HOME/pzmanager/data/setupTemplates"
+
+    echo "Installation des services systemd..."
+    mkdir -p "$systemd_dir"
+
+    for service_file in zomboid.service zomboid.socket zomboid_logger.service; do
+        if [[ -f "$templates_dir/$service_file" ]]; then
+            cp "$templates_dir/$service_file" "$systemd_dir/$service_file"
+            chown "$PZ_USER:$PZ_USER" "$systemd_dir/$service_file"
+            echo "  - $service_file installé"
+        else
+            echo "  [WARN] Template introuvable: $service_file"
+        fi
+    done
+}
+
 enable_zomboid_service() {
     local uid=$(id -u "$PZ_USER")
     sudo -u "$PZ_USER" XDG_RUNTIME_DIR=/run/user/$uid systemctl --user daemon-reload
@@ -151,6 +169,7 @@ install_zomboid() {
     download_zomboid_server
     configure_zomboid_jvm
     configure_user_environment
+    install_systemd_services
     enable_zomboid_service
     echo "=== Installation terminée ==="
 }

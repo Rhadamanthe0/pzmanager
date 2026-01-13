@@ -5,7 +5,7 @@
 source_env() {
     local script_dir="$1"
     local env_file="${script_dir}/.env"
-    local env_example="${script_dir}/../data/setup/.env.example"
+    local env_example="${script_dir}/../data/setupTemplates/.env.example"
 
     if [[ ! -f "$env_file" ]] && [[ -f "$env_example" ]]; then
         cp "$env_example" "$env_file"

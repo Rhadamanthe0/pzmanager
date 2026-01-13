@@ -26,7 +26,7 @@ readonly FILES_TO_SYNC=(
 readonly DIRS_TO_SYNC=(
     "${PZ_HOME}/.ssh"
     "${PZ_HOME}/.config/systemd/user"
-    "${PZ_HOME}/pzmanager/data/setup"
+    "${PZ_HOME}/pzmanager/data/setupTemplates"
     "${SCRIPT_DIR}"
 )
 
@@ -36,7 +36,7 @@ trap 'echo -e "\033[0;31m[ERROR]\033[0m Line $LINENO: $BASH_COMMAND failed." >&2
 
 export_crontab() {
     log "Exporting ${PZ_USER} crontab..."
-    local crontab_file="${PZ_HOME}/pzmanager/data/setup/pzuser-crontab"
+    local crontab_file="${PZ_HOME}/pzmanager/data/setupTemplates/pzuser-crontab"
     mkdir -p "$(dirname "$crontab_file")"
     crontab -u "${PZ_USER}" -l > "$crontab_file" 2>/dev/null || echo "No crontab for ${PZ_USER}"
     chown "${PZ_USER}:${PZ_USER}" "$crontab_file"

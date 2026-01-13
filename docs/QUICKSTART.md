@@ -38,13 +38,13 @@ apt install -y git
 ./scripts/install/setupSystem.sh
 
 # Permissions sudo
-visudo -cf data/setup/pzuser-sudoers && \
-cp data/setup/pzuser-sudoers /etc/sudoers.d/pzuser
+visudo -cf data/setupTemplates/pzuser-sudoers && \
+cp data/setupTemplates/pzuser-sudoers /etc/sudoers.d/pzuser
 
 # Installation finale
 mv /opt/pzmanager /home/pzuser/
 chown -R pzuser:pzuser /home/pzuser/pzmanager
-sudo -u pzuser crontab /home/pzuser/pzmanager/data/setup/pzuser-crontab
+sudo -u pzuser crontab /home/pzuser/pzmanager/data/setupTemplates/pzuser-crontab
 /home/pzuser/pzmanager/scripts/install/configurationInitiale.sh zomboid
 ```
 

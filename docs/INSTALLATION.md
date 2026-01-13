@@ -83,8 +83,8 @@ ufw status      # Firewall actif
 ### 4. Permissions sudo
 
 ```bash
-visudo -cf data/setup/pzuser-sudoers && \
-cp data/setup/pzuser-sudoers /etc/sudoers.d/pzuser
+visudo -cf data/setupTemplates/pzuser-sudoers && \
+cp data/setupTemplates/pzuser-sudoers /etc/sudoers.d/pzuser
 
 # Vérifier
 sudo -u pzuser sudo -l
@@ -95,7 +95,7 @@ sudo -u pzuser sudo -l
 ```bash
 mv /opt/pzmanager /home/pzuser/
 chown -R pzuser:pzuser /home/pzuser/pzmanager
-sudo -u pzuser crontab /home/pzuser/pzmanager/data/setup/pzuser-crontab
+sudo -u pzuser crontab /home/pzuser/pzmanager/data/setupTemplates/pzuser-crontab
 /home/pzuser/pzmanager/scripts/install/configurationInitiale.sh zomboid
 ```
 

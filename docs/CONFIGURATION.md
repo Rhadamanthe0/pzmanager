@@ -251,7 +251,7 @@ bash -n /home/pzuser/pzmanager/scripts/.env
 ### Vérifier sudoers
 
 ```bash
-sudo visudo -cf /home/pzuser/pzmanager/data/setup/pzuser-sudoers
+sudo visudo -cf /home/pzuser/pzmanager/data/setupTemplates/pzuser-sudoers
 ```
 
 ### Vérifier crontab

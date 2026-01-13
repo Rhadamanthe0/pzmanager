@@ -78,7 +78,7 @@ restore_java_symlink() {
 
 sync_external_data() {
     log "Synchronisation externe..."
-    [[ -x "${SCRIPT_DIR}/../backup/fullBackup.sh" ]] && sudo "${SCRIPT_DIR}/../backup/fullBackup.sh"
+    [[ -x "${SCRIPT_DIR}/../backup/fullBackup.sh" ]] && sudo -n "${SCRIPT_DIR}/../backup/fullBackup.sh" < /dev/null
 }
 
 main() {

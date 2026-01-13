@@ -190,7 +190,7 @@ crontab -l
 
 **Réinstaller le crontab**
 ```bash
-crontab /home/pzuser/pzmanager/data/setup/pzuser-crontab
+crontab /home/pzuser/pzmanager/data/setupTemplates/pzuser-crontab
 ```
 
 ### Vérifier les logs cron
@@ -310,10 +310,10 @@ chmod 600 /home/pzuser/.ssh/* 2>/dev/null
 
 ```bash
 # Vérifier le fichier
-sudo visudo -cf /home/pzuser/pzmanager/data/setup/pzuser-sudoers
+sudo visudo -cf /home/pzuser/pzmanager/data/setupTemplates/pzuser-sudoers
 
 # Réinstaller si OK
-sudo cp /home/pzuser/pzmanager/data/setup/pzuser-sudoers /etc/sudoers.d/pzuser
+sudo cp /home/pzuser/pzmanager/data/setupTemplates/pzuser-sudoers /etc/sudoers.d/pzuser
 sudo chmod 440 /etc/sudoers.d/pzuser
 ```
 

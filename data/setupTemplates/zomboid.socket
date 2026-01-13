@@ -1,0 +1,12 @@
+[Unit]
+Description=Project Zomboid Server Control Socket
+PartOf=zomboid.service
+Before=zomboid.service
+
+[Socket]
+ListenFIFO=/home/pzuser/pzmanager/data/pzserver/zomboid.control
+FileDescriptorName=control
+SocketMode=0660
+SocketUser=pzuser
+ExecStartPre=/bin/rm -f /home/pzuser/pzmanager/data/pzserver/zomboid.control
+RemoveOnStop=true

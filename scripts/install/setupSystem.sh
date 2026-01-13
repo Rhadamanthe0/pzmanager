@@ -113,7 +113,7 @@ main() {
 
     echo "=== Configuration système terminée ==="
     echo "Note: vérifier et installer le sudoers si nécessaire :"
-    echo "  sudo visudo -cf data/setup/pzuser-sudoers && sudo cp data/setup/pzuser-sudoers /etc/sudoers.d/pzuser"
+    echo "  sudo visudo -cf data/setupTemplates/pzuser-sudoers && sudo cp data/setupTemplates/pzuser-sudoers /etc/sudoers.d/pzuser"
 }
 
 main

@@ -1,0 +1,10 @@
+[Unit]
+Description=Logger pour Project Zomboid
+PartOf=zomboid.service
+After=zomboid.service
+
+[Service]
+Type=simple
+ExecStart=/home/pzuser/pzmanager/scripts/internal/captureLogs.sh
+Restart=always
+RestartSec=5

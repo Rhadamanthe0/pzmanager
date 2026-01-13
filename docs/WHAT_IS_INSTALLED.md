@@ -205,31 +205,32 @@ Zomboid/
 
 ## Services Systemd
 
+**Installation** : Les services systemd sont automatiquement installés depuis les templates dans `data/setupTemplates/` lors de l'installation du serveur.
+
 ### Service zomboid.service
 
 **Type** : Service utilisateur (systemd user)
 
-**Fichier** : `~/.config/systemd/user/zomboid.service`
+**Fichier template** : `~/pzmanager/data/setupTemplates/zomboid.service`
+**Fichier installé** : `~/.config/systemd/user/zomboid.service`
 
 **Configuration** :
 ```ini
 [Unit]
 Description=Project Zomboid Server
-After=network.target
+After=network.target zomboid.socket
+Requires=zomboid.socket
+Wants=zomboid_logger.service
 
 [Service]
 Type=simple
-ExecStart=/home/pzuser/pzmanager/data/pzserver/start-server.sh -cachedir=/home/pzuser/pzmanager/Zomboid
-ExecStartPost=/home/pzuser/pzmanager/scripts/internal/notifyServerReady.sh
-ExecStop=/home/pzuser/pzmanager/scripts/core/pz.sh stop now --silent
-Restart=on-failure
-RestartSec=10s
-StandardOutput=journal
-StandardError=journal
-Nice=-5
-CPUSchedulingPolicy=other
-IOSchedulingClass=best-effort
-IOSchedulingPriority=2
+PrivateTmp=true
+WorkingDirectory=/home/pzuser/pzmanager/data/pzserver/
+ExecStart=/bin/sh -c "exec /home/pzuser/pzmanager/data/pzserver/start-server.sh -cachedir=/home/pzuser/pzmanager/Zomboid <> /home/pzuser/pzmanager/data/pzserver/zomboid.control"
+ExecStartPost=-/bin/sh -c "/home/pzuser/pzmanager/scripts/internal/notifyServerReady.sh &"
+ExecStop=/bin/sh -c "echo 'quit' > /home/pzuser/pzmanager/data/pzserver/zomboid.control"
+KillSignal=SIGCONT
+TimeoutStopSec=30
 
 [Install]
 WantedBy=default.target
@@ -237,10 +238,10 @@ WantedBy=default.target
 
 **Fonctionnalités** :
 - Démarrage automatique au boot
-- Redémarrage automatique en cas de crash
-- Notification Discord au démarrage
-- Capture logs dans journald
-- Priorités CPU/IO optimisées
+- Utilise un socket systemd pour le control pipe
+- Notification Discord au démarrage (via notifyServerReady.sh)
+- Logger dédié (zomboid_logger.service)
+- Arrêt propre via commande 'quit'
 
 **Commandes** :
 ```bash
@@ -249,6 +250,54 @@ systemctl --user start zomboid.service
 systemctl --user stop zomboid.service
 systemctl --user restart zomboid.service
 ```
+
+### Socket zomboid.socket
+
+**Type** : Socket systemd pour control pipe
+
+**Fichier template** : `~/pzmanager/data/setupTemplates/zomboid.socket`
+**Fichier installé** : `~/.config/systemd/user/zomboid.socket`
+
+**Configuration** :
+```ini
+[Unit]
+Description=Project Zomboid Server Control Socket
+PartOf=zomboid.service
+Before=zomboid.service
+
+[Socket]
+ListenFIFO=/home/pzuser/pzmanager/data/pzserver/zomboid.control
+FileDescriptorName=control
+SocketMode=0660
+SocketUser=pzuser
+ExecStartPre=/bin/rm -f /home/pzuser/pzmanager/data/pzserver/zomboid.control
+RemoveOnStop=true
+```
+
+**Fonction** : Gère le FIFO (named pipe) utilisé pour envoyer des commandes au serveur via RCON.
+
+### Service zomboid_logger.service
+
+**Type** : Service de capture de logs
+
+**Fichier template** : `~/pzmanager/data/setupTemplates/zomboid_logger.service`
+**Fichier installé** : `~/.config/systemd/user/zomboid_logger.service`
+
+**Configuration** :
+```ini
+[Unit]
+Description=Logger pour Project Zomboid
+PartOf=zomboid.service
+After=zomboid.service
+
+[Service]
+Type=simple
+ExecStart=/home/pzuser/pzmanager/scripts/internal/captureLogs.sh
+Restart=always
+RestartSec=5
+```
+
+**Fonction** : Capture les logs du serveur depuis journald et les sauvegarde dans des fichiers horodatés.
 
 ### Systemd Lingering
 
@@ -266,7 +315,7 @@ systemctl --user restart zomboid.service
 
 ### Crontab pzuser
 
-**Fichier source** : `/home/pzuser/pzmanager/data/setup/pzuser-crontab`
+**Fichier source** : `/home/pzuser/pzmanager/data/setupTemplates/pzuser-crontab`
 
 **Tâches configurées** :
 
@@ -353,9 +402,13 @@ systemctl --user restart zomboid.service
 │       └── data_backup.log           # Logs backups horaires
 │
 ├── data/
-│   ├── setup/
+│   ├── setupTemplates/
 │   │   ├── pzuser-crontab            # Crontab à installer
-│   │   └── pzuser-sudoers            # Permissions sudo
+│   │   ├── pzuser-sudoers            # Permissions sudo
+│   │   ├── zomboid.service           # Template service systemd
+│   │   ├── zomboid.socket            # Template socket systemd
+│   │   ├── zomboid_logger.service    # Template logger systemd
+│   │   └── .env.example              # Template variables d'environnement
 │   │
 │   ├── pzserver/                     # Installation serveur PZ (~1-2GB)
 │   │   ├── start-server.sh
