@@ -46,7 +46,7 @@ send_discord() {
 }
 
 send_msg() {
-    "${SCRIPT_DIR}/../internal/sendCommand.sh" "servermsg \"$1\""
+    "${SCRIPT_DIR}/../internal/sendCommand.sh" "servermsg \"$1\"" --no-output
     send_discord "$1"
 }
 
