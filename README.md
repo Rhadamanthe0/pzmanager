@@ -12,8 +12,9 @@
 ## Features
 
 - **Simplified management**: Start, stop, restart with player warnings
-- **Automatic backups**: Hourly incremental, 30-day retention
+- **Automatic backups**: Hourly incremental, 14-day retention
 - **Daily maintenance**: System/server updates, complete backups, reboot
+- **Mod update monitoring**: Checks every 5 minutes, triggers maintenance if updates detected
 - **Discord** (optional): Real-time notifications
 - **Remote maintenance**: Trigger via SSH
 - **Centralized configuration**: Single .env file
@@ -127,14 +128,15 @@ pzmanager/
 │   │   ├── fullBackup.sh     # Complete backup with sync
 │   │   └── restoreZomboidData.sh  # Data-only restoration
 │   ├── admin/
-│   │   ├── manageWhitelist.sh     # Whitelist management
-│   │   ├── resetServer.sh         # Complete server reset
+│   │   ├── checkModUpdates.sh      # Mod update detection (automated)
+│   │   ├── manageWhitelist.sh      # Whitelist management
+│   │   ├── resetServer.sh          # Complete server reset
 │   │   └── performFullMaintenance.sh  # Daily maintenance
 │   ├── install/
 │   │   ├── setupSystem.sh         # Initial system config
 │   │   └── configurationInitiale.sh  # Server install/restore
 │   ├── internal/
-│   │   ├── sendCommand.sh         # RCON
+│   │   ├── sendCommand.sh         # RCON (with output capture)
 │   │   ├── sendDiscord.sh         # Discord notifications
 │   │   ├── captureLogs.sh         # Journald log capture
 │   │   └── notifyServerReady.sh   # Startup notification
@@ -160,6 +162,11 @@ Configuration in `/etc/sudoers.d/pzuser`:
 - **Reboot**: `/sbin/reboot`
 
 ## Automations (crontab)
+
+**Mod update check (every 5 minutes)**:
+- RCON `checkModsNeedUpdate`
+- Triggers maintenance (5m delay) if updates found
+- Discord notifications
 
 **Daily maintenance (4:30 AM)**:
 - Server shutdown (warnings)

@@ -319,6 +319,17 @@ RestartSec=5
 
 **Configured tasks**:
 
+#### Mod update check (every 5 minutes)
+```cron
+*/5 * * * *  /bin/bash  /home/pzuser/pzmanager/scripts/admin/checkModUpdates.sh >> /home/pzuser/pzmanager/scripts/logs/maintenance/mod_check_cron.log 2>&1
+```
+
+**Function**:
+- Checks Workshop mod updates via RCON `checkModsNeedUpdate`
+- Triggers `performFullMaintenance.sh` (5m delay) if updates found
+- Sends Discord notifications
+- Logs: `/home/pzuser/pzmanager/scripts/logs/maintenance/mod_check_*.log`
+
 #### Hourly backup (every day at :14)
 ```cron
 14 * * * *  /bin/bash  /home/pzuser/pzmanager/scripts/backup/dataBackup.sh >> /home/pzuser/pzmanager/scripts/logs/data_backup.log 2>&1
@@ -381,6 +392,7 @@ RestartSec=5
 │   │   └── restoreZomboidData.sh     # Data-only restoration
 │   │
 │   ├── admin/
+│   │   ├── checkModUpdates.sh        # Mod update detection (automated)
 │   │   ├── manageWhitelist.sh        # SQLite whitelist management
 │   │   ├── resetServer.sh            # Complete server reset
 │   │   ├── setram.sh                 # Server RAM configuration
@@ -391,7 +403,7 @@ RestartSec=5
 │   │   └── configurationInitiale.sh  # PZ server install
 │   │
 │   ├── internal/
-│   │   ├── sendCommand.sh            # RCON command sending
+│   │   ├── sendCommand.sh            # RCON with output capture
 │   │   ├── sendDiscord.sh            # Discord notifications
 │   │   ├── captureLogs.sh            # Journald log capture
 │   │   └── notifyServerReady.sh      # Server startup notification

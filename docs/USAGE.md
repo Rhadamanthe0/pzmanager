@@ -441,10 +441,19 @@ pzm rcon "setweather rain"
 pzm rcon "setweather sunny"
 ```
 
+#### Check Mod Updates
+```bash
+pzm rcon "checkModsNeedUpdate"
+```
+
+Returns update status for Workshop mods. Result appears in server logs and chat.
+
 #### Complete Help
 ```bash
 pzm rcon "help"
 ```
+
+**Output capture**: RCON commands now capture and display server responses automatically (3-second delay for processing).
 
 **Official documentation**: [PZ Wiki - Server Commands](https://pzwiki.net/wiki/Server_commands)
 
