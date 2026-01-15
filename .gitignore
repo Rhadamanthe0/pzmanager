@@ -13,6 +13,9 @@ data/versionning/
 data/pzserver/
 Zomboid/
 
+# Temporary files
+temp/
+
 # IDE configuration
 .vscode/
 .vs/

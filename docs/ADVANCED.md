@@ -1,26 +1,26 @@
-# Configuration Avancée
+# Advanced Configuration
 
-Optimisations, RCON, et réglages experts pzmanager.
+Optimizations, RCON, and expert settings for pzmanager.
 
-## Table des matières
+## Table of Contents
 
-- [Optimisation performances](#optimisation-performances)
-- [Commandes RCON](#commandes-rcon)
-- [Personnalisation scripts](#personnalisation-scripts)
-- [Configuration multi-serveurs](#configuration-multi-serveurs)
-- [Maintenance à distance](#maintenance-à-distance)
+- [Performance Optimization](#performance-optimization)
+- [RCON Commands](#rcon-commands)
+- [Script Customization](#script-customization)
+- [Multi-Server Configuration](#multi-server-configuration)
+- [Remote Maintenance](#remote-maintenance)
 
-## Optimisation performances
+## Performance Optimization
 
-Documentation officielle : [PZ Wiki - Performance](https://pzwiki.net/wiki/Dedicated_Server#Performance)
+Official documentation: [PZ Wiki - Performance](https://pzwiki.net/wiki/Dedicated_Server#Performance)
 
-### Configuration RAM
+### RAM Configuration
 
-✅ **Appliqué automatiquement à l'installation** :
-- **ZGC** (`-XX:+UseZGC`) : Garbage collector optimisé
-- **RAM** : 8GB par défaut (`-Xmx8g`)
+✅ **Automatically applied at installation**:
+- **ZGC** (`-XX:+UseZGC`): Optimized garbage collector
+- **RAM**: 8GB by default (`-Xmx8g`)
 
-**Modifier allocation RAM** :
+**Modify RAM allocation**:
 ```bash
 pzm config ram 4g    # 4GB
 pzm config ram 8g    # 8GB
@@ -28,185 +28,185 @@ pzm config ram 16g   # 16GB
 pzm config ram 32g   # 32GB
 ```
 
-**Recommandations** :
-- 4GB : <10 joueurs simultanés
-- 8GB : <25 joueurs (défaut)
-- 16GB : <60 joueurs
+**Recommendations**:
+- 4GB: <10 simultaneous players
+- 8GB: <25 players (default)
+- 16GB: <60 players
 
-**Appliquer** : Redémarrer serveur après modification
+**Apply**: Restart server after modification
 
-## Commandes RCON
+## RCON Commands
 
-### Utilisation via pzmanager
+### Usage via pzmanager
 
 ```bash
-pzm rcon "COMMANDE"
+pzm rcon "COMMAND"
 ```
 
-### Commandes utiles
+### Useful Commands
 
 ```bash
-# Sauvegarder
+# Save
 pzm rcon "save"
 
-# Message broadcast
-pzm rcon "servermsg 'Message aux joueurs'"
+# Broadcast message
+pzm rcon "servermsg 'Message to players'"
 
-# Arrêter serveur
+# Stop server
 pzm rcon "quit"
 
-# Lister joueurs
+# List players
 pzm rcon "players"
 
-# Aide
+# Help
 pzm rcon "help"
 ```
 
-Documentation complète : [PZ Wiki - Admin Commands](https://pzwiki.net/wiki/Server_commands)
+Complete documentation: [PZ Wiki - Admin Commands](https://pzwiki.net/wiki/Server_commands)
 
-## Gestion whitelist
+## Whitelist Management
 
-Whitelist avancée via SQLite : [SERVER_CONFIG.md - Whitelist](SERVER_CONFIG.md#gestion-whitelist)
+Advanced whitelist via SQLite: [SERVER_CONFIG.md - Whitelist](SERVER_CONFIG.md#gestion-whitelist)
 
-Base de données : `/home/pzuser/pzmanager/Zomboid/db/servertest.db`
+Database: `/home/pzuser/pzmanager/Zomboid/db/servertest.db`
 
-## Reset complet serveur
+## Complete Server Reset
 
-### Script resetServer.sh
+### resetServer.sh Script
 
-**Script** : `resetServer.sh`
+**Script**: `resetServer.sh`
 
-Reset complet du serveur avec nouveau monde. Utile pour recommencer à zéro.
+Complete server reset with new world. Useful for starting from scratch.
 
-**Reset complet (serveur vierge)** :
+**Complete reset (clean server)**:
 ```bash
 ./scripts/admin/resetServer.sh
 ```
 
-**Reset avec conservation whitelist et configs** :
+**Reset with whitelist and config preservation**:
 ```bash
 ./scripts/admin/resetServer.sh --keep-whitelist
 ```
 
-### Processus
+### Process
 
-**Étape 1 - Confirmation** :
-- Demande confirmation (taper `RESET` en majuscules)
+**Step 1 - Confirmation**:
+- Request confirmation (type `RESET` in uppercase)
 
-**Étape 2 - Arrêt et backup** :
-- Arrêt du serveur
-- Backup complet dans `/home/pzuser/OLD/Zomboid_OLD_TIMESTAMP/`
+**Step 2 - Stop and backup**:
+- Server shutdown
+- Complete backup in `/home/pzuser/OLD/Zomboid_OLD_TIMESTAMP/`
 
-**Étape 3 - Configuration initiale** :
-- Démarrage setup initial interactif
-- Saisir mot de passe admin (2 fois)
-- Quand message "If the server hangs here, set UPnP=false" : **Ctrl+C**
+**Step 3 - Initial configuration**:
+- Start interactive initial setup
+- Enter admin password (twice)
+- When message "If the server hangs here, set UPnP=false": **Ctrl+C**
 
-**Étape 4 - Restauration (si --keep-whitelist)** :
-- Restaure whitelist depuis ancien serveur (sauf admin)
-- Copie `servertest.ini` et `servertest_SandboxVars.lua`
+**Step 4 - Restoration (if --keep-whitelist)**:
+- Restore whitelist from old server (except admin)
+- Copy `servertest.ini` and `servertest_SandboxVars.lua`
 
-**Étape 5 - Démarrage** :
-- Démarrage nouveau serveur
+**Step 5 - Startup**:
+- Start new server
 
-### Cas d'usage
+### Use Cases
 
-**Nouveau monde** : Serveur corrompu, changement complet de règles, nouveau départ.
+**New world**: Corrupted server, complete rules change, fresh start.
 
-**Avec whitelist** : Garder joueurs autorisés et paramètres serveur.
+**With whitelist**: Keep authorized players and server parameters.
 
-**⚠️ Attention** : Suppression complète des données ! Backup créé automatiquement.
+**⚠️ Warning**: Complete data deletion! Backup created automatically.
 
-## Personnalisation scripts
+## Script Customization
 
-### Messages d'avertissement personnalisés
+### Custom Warning Messages
 
-Éditer `scripts/core/pz.sh` ligne 76 pour modifier les messages envoyés aux joueurs.
+Edit `scripts/core/pz.sh` line 76 to modify messages sent to players.
 
-### Planification maintenance
+### Maintenance Scheduling
 
-Modifier le crontab :
+Modify crontab:
 ```bash
 crontab -e
 
-# Maintenance quotidienne (défaut: 4h30)
+# Daily maintenance (default: 4:30 AM)
 30 4 * * *  /bin/bash  /home/pzuser/pzmanager/scripts/admin/performFullMaintenance.sh
 
-# Backups horaires (défaut: :14)
+# Hourly backups (default: :14)
 14 * * * *  /bin/bash  /home/pzuser/pzmanager/scripts/backup/dataBackup.sh >> /home/pzuser/pzmanager/scripts/logs/data_backup.log 2>&1
 ```
 
-## Configuration multi-serveurs
+## Multi-Server Configuration
 
-Pour exécuter plusieurs serveurs sur la même machine :
+To run multiple servers on the same machine:
 
-1. Cloner pzmanager dans un autre répertoire
-2. Modifier les ports dans servertest.ini (16261 → 16271, etc.)
-3. Créer un nouvel utilisateur ou modifier PZ_USER dans .env
-4. Ajuster les horaires crontab pour éviter conflits
+1. Clone pzmanager to another directory
+2. Modify ports in servertest.ini (16261 → 16271, etc.)
+3. Create a new user or modify PZ_USER in .env
+4. Adjust crontab schedules to avoid conflicts
 
-## Maintenance à distance
+## Remote Maintenance
 
-### Configuration SSH forcée
+### Forced SSH Configuration
 
-Une clé SSH spéciale permet de déclencher la maintenance à distance.
+A special SSH key allows remote maintenance triggering.
 
-**Fichier** : `~/.ssh/authorized_keys`
+**File**: `~/.ssh/authorized_keys`
 
 ```
 command="/home/pzuser/pzmanager/scripts/admin/performFullMaintenance.sh $SSH_ORIGINAL_COMMAND",no-port-forwarding,no-X11-forwarding,no-agent-forwarding ssh-ed25519 AAAA...
 ```
 
-**Génération clé** (sur machine locale) :
+**Key generation** (on local machine):
 ```bash
 ssh-keygen -t ed25519 -f ~/.ssh/pz_maintenance
 ```
 
-**Utilisation** :
+**Usage**:
 ```bash
-# Depuis machine locale
-ssh -i ~/.ssh/pz_maintenance pzuser@SERVEUR_IP 30m
-ssh -i ~/.ssh/pz_maintenance pzuser@SERVEUR_IP 5m
-ssh -i ~/.ssh/pz_maintenance pzuser@SERVEUR_IP 2m
+# From local machine
+ssh -i ~/.ssh/pz_maintenance pzuser@SERVER_IP 30m
+ssh -i ~/.ssh/pz_maintenance pzuser@SERVER_IP 5m
+ssh -i ~/.ssh/pz_maintenance pzuser@SERVER_IP 2m
 ```
 
-**Restrictions de sécurité** :
-- Commande forcée (seulement performFullMaintenance.sh)
-- Pas de port forwarding
-- Pas de X11 forwarding
-- Pas d'agent forwarding
+**Security restrictions**:
+- Forced command (only performFullMaintenance.sh)
+- No port forwarding
+- No X11 forwarding
+- No agent forwarding
 
-## Monitoring avancé
+## Advanced Monitoring
 
-### Status détaillé
+### Detailed Status
 
 ```bash
 pzm server status
 ```
 
-Affiche :
-- État service (running/stopped)
+Displays:
+- Service status (running/stopped)
 - Uptime
-- Disponibilité control pipe
-- Dernière sauvegarde
-- 30 dernières lignes de logs
+- Control pipe availability
+- Last save
+- Last 30 log lines
 
-### Logs en temps réel
+### Real-time Logs
 
 ```bash
-# Logs serveur
+# Server logs
 sudo journalctl -u zomboid.service -f
 
-# Logs maintenance
+# Maintenance logs
 tail -f scripts/logs/maintenance/maintenance_*.log
 
-# Logs backups
+# Backup logs
 tail -f scripts/logs/data_backup.log
 ```
 
-## Ressources
+## Resources
 
-- [CONFIGURATION.md](CONFIGURATION.md) - Variables .env, backups
-- [SERVER_CONFIG.md](SERVER_CONFIG.md) - Configuration serveur jeu
-- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Résolution problèmes
+- [CONFIGURATION.md](CONFIGURATION.md) - .env variables, backups
+- [SERVER_CONFIG.md](SERVER_CONFIG.md) - Game server configuration
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Troubleshooting
 - [PZ Wiki - Server](https://pzwiki.net/wiki/Dedicated_Server)

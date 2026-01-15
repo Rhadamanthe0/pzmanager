@@ -1,49 +1,49 @@
-# Ce Qui Est Installé et Configuré
+# What Is Installed and Configured
 
-Documentation exhaustive de tous les changements effectués par pzmanager sur le système.
+Comprehensive documentation of all changes made by pzmanager to the system.
 
-## Philosophie du Projet
+## Project Philosophy
 
-**pzmanager** est conçu pour être **out-of-the-box** : installation en une commande avec configuration optimale et sécurisée par défaut.
+**pzmanager** is designed to be **out-of-the-box**: one-command installation with optimal and secure default configuration.
 
-**Objectifs** :
-- ✅ **Zéro configuration manuelle** : Tout fonctionne immédiatement après installation
-- ✅ **Sécurité par défaut** : Firewall, utilisateur dédié, permissions minimales
-- ✅ **Automatisations** : Backups, maintenance, mises à jour automatiques
-- ✅ **Simplicité** : Interface CLI unifiée, commandes intuitives
-- ✅ **Pour néophytes** : Aucune expertise système requise
+**Objectives**:
+- ✅ **Zero manual configuration**: Everything works immediately after installation
+- ✅ **Security by default**: Firewall, dedicated user, minimal permissions
+- ✅ **Automations**: Backups, maintenance, automatic updates
+- ✅ **Simplicity**: Unified CLI interface, intuitive commands
+- ✅ **For beginners**: No system expertise required
 
-Ce document détaille **tout** ce qui est modifié sur votre système pour garantir transparence et confiance.
+This document details **everything** modified on your system to ensure transparency and trust.
 
-## Table des matières
+## Table of Contents
 
-- [Packages Système](#packages-système)
-- [Utilisateur et Permissions](#utilisateur-et-permissions)
-- [Configuration Réseau](#configuration-réseau)
+- [System Packages](#system-packages)
+- [User and Permissions](#user-and-permissions)
+- [Network Configuration](#network-configuration)
 - [Project Zomboid](#project-zomboid)
-- [Services Systemd](#services-systemd)
-- [Automatisations](#automatisations)
-- [Structure Fichiers](#structure-fichiers)
+- [Systemd Services](#systemd-services)
+- [Automations](#automations)
+- [File Structure](#file-structure)
 
 ---
 
-## Packages Système
+## System Packages
 
-### Installés par setupSystem.sh
+### Installed by setupSystem.sh
 
-**Packages de base** :
-- `rsync` : Backups incrémentiaux avec hard links
-- `unzip` : Décompression archives
-- `ufw` : Firewall simplifié
+**Base packages**:
+- `rsync`: Incremental backups with hard links
+- `unzip`: Archive decompression
+- `ufw`: Simplified firewall
 
-**Installés par configurationInitiale.sh** :
+**Installed by configurationInitiale.sh**:
 
-**Architecture 32-bit** (requis par SteamCMD) :
+**32-bit architecture** (required by SteamCMD):
 - `dpkg --add-architecture i386`
 - `lib32gcc-s1`
 - `lib32stdc++6`
 
-**SteamCMD et dépendances** :
+**SteamCMD and dependencies**:
 - `steamcmd`
 - `ca-certificates`
 - `software-properties-common`
@@ -52,33 +52,33 @@ Ce document détaille **tout** ce qui est modifié sur votre système pour garan
 - `curl`
 - `wget`
 
-**Java** (version configurable via `.env`) :
-- `openjdk-25-jre-headless` (par défaut)
-- OU `openjdk-17-jre-headless`
-- OU `openjdk-21-jre-headless`
+**Java** (version configurable via `.env`):
+- `openjdk-25-jre-headless` (default)
+- OR `openjdk-17-jre-headless`
+- OR `openjdk-21-jre-headless`
 
-**Emplacement** : `/usr/lib/jvm/java-25-openjdk-amd64` (selon version)
+**Location**: `/usr/lib/jvm/java-25-openjdk-amd64` (depending on version)
 
 ---
 
-## Utilisateur et Permissions
+## User and Permissions
 
-### Utilisateur pzuser
+### pzuser User
 
-**Créé par** : `setupSystem.sh`
+**Created by**: `setupSystem.sh`
 
-**Propriétés** :
-- Home : `/home/pzuser/`
-- Shell : `/bin/bash`
-- Groupes : `pzuser` (groupe primaire)
+**Properties**:
+- Home: `/home/pzuser/`
+- Shell: `/bin/bash`
+- Groups: `pzuser` (primary group)
 
-### Permissions sudo
+### sudo Permissions
 
-**Fichier** : `/etc/sudoers.d/pzuser`
+**File**: `/etc/sudoers.d/pzuser`
 
-**Commandes autorisées** (NOPASSWD) :
+**Allowed commands** (NOPASSWD):
 
-**APT (gestion packages)** :
+**APT (package management)**:
 ```
 /usr/bin/apt-get update
 /usr/bin/apt-get upgrade
@@ -87,57 +87,57 @@ Ce document détaille **tout** ce qui est modifié sur votre système pour garan
 /usr/bin/apt-get autoclean
 ```
 
-**Java (symlink)** :
+**Java (symlink)**:
 ```
 /usr/bin/rm -rf /home/pzuser/pzmanager/data/pzserver/jre64
 /usr/bin/ln -s /usr/lib/jvm/java-*-openjdk-amd64 /home/pzuser/pzmanager/data/pzserver/jre64
 ```
 
-**Backups** :
+**Backups**:
 ```
 /home/pzuser/pzmanager/scripts/backup/fullBackup.sh
 ```
 
-**Système** :
+**System**:
 ```
 /sbin/reboot
 ```
 
 ---
 
-## Configuration Réseau
+## Network Configuration
 
 ### Firewall (UFW)
 
-**Configuré par** : `setupSystem.sh`
+**Configured by**: `setupSystem.sh`
 
-**Règles par défaut** :
-- Incoming : DENY
-- Outgoing : ALLOW
+**Default rules**:
+- Incoming: DENY
+- Outgoing: ALLOW
 
-**Ports ouverts** :
+**Open ports**:
 
-| Port | Protocole | Usage |
-|------|-----------|-------|
-| 22/TCP | SSH | Administration serveur |
-| 16261/UDP | Jeu | Port principal Project Zomboid |
-| 16262/UDP | Jeu | Port secondaire Project Zomboid |
-| 8766/UDP | RCON | Commandes administratives |
+| Port | Protocol | Usage |
+|------|----------|-------|
+| 22/TCP | SSH | Server administration |
+| 16261/UDP | Game | Main Project Zomboid port |
+| 16262/UDP | Game | Secondary Project Zomboid port |
+| 8766/UDP | RCON | Administrative commands |
 | 27015/TCP | Steam | Steam query port |
 
-**Vérifier** : `sudo ufw status`
+**Check**: `sudo ufw status`
 
 ---
 
 ## Project Zomboid
 
-### Serveur
+### Server
 
-**Installé par** : `configurationInitiale.sh zomboid`
+**Installed by**: `configurationInitiale.sh zomboid`
 
-**Version** : Build 41.78.7 (branche `legacy_41_78_7`)
+**Version**: Build 41.78.7 (branch `legacy_41_78_7`)
 
-**Méthode installation** :
+**Installation method**:
 ```bash
 /usr/games/steamcmd +login anonymous \
     +force_install_dir /home/pzuser/pzmanager/data/pzserver \
@@ -145,15 +145,15 @@ Ce document détaille **tout** ce qui est modifié sur votre système pour garan
     +quit
 ```
 
-**Emplacement** : `/home/pzuser/pzmanager/data/pzserver/`
+**Location**: `/home/pzuser/pzmanager/data/pzserver/`
 
-**Taille** : ~1-2GB
+**Size**: ~1-2GB
 
-### Configuration JVM
+### JVM Configuration
 
-**Fichier** : `/home/pzuser/pzmanager/data/pzserver/ProjectZomboid64.json`
+**File**: `/home/pzuser/pzmanager/data/pzserver/ProjectZomboid64.json`
 
-**Paramètres appliqués automatiquement** :
+**Automatically applied parameters**:
 
 ```json
 {
@@ -170,51 +170,51 @@ Ce document détaille **tout** ce qui est modifié sur votre système pour garan
 }
 ```
 
-**Optimisations** :
-- **RAM** : 8GB par défaut (`-Xmx8g`)
-- **ZGC** : Garbage Collector moderne (`-XX:+UseZGC`)
-- **Headless** : Pas d'interface graphique
-- **Steam** : Intégration Steam activée
+**Optimizations**:
+- **RAM**: 8GB by default (`-Xmx8g`)
+- **ZGC**: Modern Garbage Collector (`-XX:+UseZGC`)
+- **Headless**: No GUI
+- **Steam**: Steam integration enabled
 
-**Modifier RAM** : `pzm config ram <valeur>`
+**Modify RAM**: `pzm config ram <value>`
 
-### Données Serveur
+### Server Data
 
-**Emplacement** : `/home/pzuser/pzmanager/Zomboid/`
+**Location**: `/home/pzuser/pzmanager/Zomboid/`
 
-**Structure** :
+**Structure**:
 ```
 Zomboid/
 ├── Server/
-│   ├── servertest.ini          # Configuration serveur
+│   ├── servertest.ini          # Server configuration
 │   ├── servertest_access.txt   # Admins
-│   ├── servertest_SandboxVars.lua  # Paramètres gameplay
+│   ├── servertest_SandboxVars.lua  # Gameplay parameters
 │   └── servertest_spawnregions.lua
 ├── Saves/
 │   └── Multiplayer/
-│       └── servertest/         # Sauvegardes mondes
+│       └── servertest/         # World saves
 ├── db/
-│   └── servertest.db           # Base SQLite (whitelist, bans)
+│   └── servertest.db           # SQLite database (whitelist, bans)
 ├── Logs/
 └── mods/
 ```
 
-**Taille typique** : 500MB - 5GB (selon utilisation)
+**Typical size**: 500MB - 5GB (depending on usage)
 
 ---
 
-## Services Systemd
+## Systemd Services
 
-**Installation** : Les services systemd sont automatiquement installés depuis les templates dans `data/setupTemplates/` lors de l'installation du serveur.
+**Installation**: Systemd services are automatically installed from templates in `data/setupTemplates/` during server installation.
 
-### Service zomboid.service
+### zomboid.service Service
 
-**Type** : Service utilisateur (systemd user)
+**Type**: User service (systemd user)
 
-**Fichier template** : `~/pzmanager/data/setupTemplates/zomboid.service`
-**Fichier installé** : `~/.config/systemd/user/zomboid.service`
+**Template file**: `~/pzmanager/data/setupTemplates/zomboid.service`
+**Installed file**: `~/.config/systemd/user/zomboid.service`
 
-**Configuration** :
+**Configuration**:
 ```ini
 [Unit]
 Description=Project Zomboid Server
@@ -236,14 +236,14 @@ TimeoutStopSec=30
 WantedBy=default.target
 ```
 
-**Fonctionnalités** :
-- Démarrage automatique au boot
-- Utilise un socket systemd pour le control pipe
-- Notification Discord au démarrage (via notifyServerReady.sh)
-- Logger dédié (zomboid_logger.service)
-- Arrêt propre via commande 'quit'
+**Features**:
+- Automatic startup at boot
+- Uses systemd socket for control pipe
+- Discord notification at startup (via notifyServerReady.sh)
+- Dedicated logger (zomboid_logger.service)
+- Clean shutdown via 'quit' command
 
-**Commandes** :
+**Commands**:
 ```bash
 systemctl --user status zomboid.service
 systemctl --user start zomboid.service
@@ -251,14 +251,14 @@ systemctl --user stop zomboid.service
 systemctl --user restart zomboid.service
 ```
 
-### Socket zomboid.socket
+### zomboid.socket Socket
 
-**Type** : Socket systemd pour control pipe
+**Type**: Systemd socket for control pipe
 
-**Fichier template** : `~/pzmanager/data/setupTemplates/zomboid.socket`
-**Fichier installé** : `~/.config/systemd/user/zomboid.socket`
+**Template file**: `~/pzmanager/data/setupTemplates/zomboid.socket`
+**Installed file**: `~/.config/systemd/user/zomboid.socket`
 
-**Configuration** :
+**Configuration**:
 ```ini
 [Unit]
 Description=Project Zomboid Server Control Socket
@@ -274,19 +274,19 @@ ExecStartPre=/bin/rm -f /home/pzuser/pzmanager/data/pzserver/zomboid.control
 RemoveOnStop=true
 ```
 
-**Fonction** : Gère le FIFO (named pipe) utilisé pour envoyer des commandes au serveur via RCON.
+**Function**: Manages the FIFO (named pipe) used to send commands to the server via RCON.
 
-### Service zomboid_logger.service
+### zomboid_logger.service Service
 
-**Type** : Service de capture de logs
+**Type**: Log capture service
 
-**Fichier template** : `~/pzmanager/data/setupTemplates/zomboid_logger.service`
-**Fichier installé** : `~/.config/systemd/user/zomboid_logger.service`
+**Template file**: `~/pzmanager/data/setupTemplates/zomboid_logger.service`
+**Installed file**: `~/.config/systemd/user/zomboid_logger.service`
 
-**Configuration** :
+**Configuration**:
 ```ini
 [Unit]
-Description=Logger pour Project Zomboid
+Description=Logger for Project Zomboid
 PartOf=zomboid.service
 After=zomboid.service
 
@@ -297,120 +297,120 @@ Restart=always
 RestartSec=5
 ```
 
-**Fonction** : Capture les logs du serveur depuis journald et les sauvegarde dans des fichiers horodatés.
+**Function**: Captures server logs from journald and saves them to timestamped files.
 
 ### Systemd Lingering
 
-**Activé pour** : `pzuser`
+**Enabled for**: `pzuser`
 
-**Effet** : Services utilisateur démarrent au boot, même si pzuser non connecté
+**Effect**: User services start at boot, even if pzuser not logged in
 
-**Commande** : `loginctl enable-linger pzuser`
+**Command**: `loginctl enable-linger pzuser`
 
-**Vérifier** : `ls /var/lib/systemd/linger/` (doit contenir `pzuser`)
+**Check**: `ls /var/lib/systemd/linger/` (should contain `pzuser`)
 
 ---
 
-## Automatisations
+## Automations
 
-### Crontab pzuser
+### pzuser Crontab
 
-**Fichier source** : `/home/pzuser/pzmanager/data/setupTemplates/pzuser-crontab`
+**Source file**: `/home/pzuser/pzmanager/data/setupTemplates/pzuser-crontab`
 
-**Tâches configurées** :
+**Configured tasks**:
 
-#### Backup horaire (tous les jours à :14)
+#### Hourly backup (every day at :14)
 ```cron
 14 * * * *  /bin/bash  /home/pzuser/pzmanager/scripts/backup/dataBackup.sh >> /home/pzuser/pzmanager/scripts/logs/data_backup.log 2>&1
 ```
 
-**Fonction** :
-- Backup incrémental avec hard links
-- Rétention : 14 jours (configurable via `.env`)
-- Destination : `/home/pzuser/pzmanager/data/dataBackups/`
+**Function**:
+- Incremental backup with hard links
+- Retention: 14 days (configurable via `.env`)
+- Destination: `/home/pzuser/pzmanager/data/dataBackups/`
 
-#### Maintenance quotidienne (4h30 du matin)
+#### Daily maintenance (4:30 AM)
 ```cron
 30 4 * * *  /bin/bash  /home/pzuser/pzmanager/scripts/admin/performFullMaintenance.sh
 ```
 
-**Étapes** :
-1. Arrêt serveur avec avertissements (30min défaut)
-2. Rotation backups (suppression > 14 jours)
-3. Mise à jour système (`apt upgrade`)
-4. Mise à jour Java
-5. Mise à jour serveur PZ (SteamCMD)
-6. Restauration symlink Java
-7. Backup complet externe
-8. Reboot système
+**Steps**:
+1. Server shutdown with warnings (30min default)
+2. Backup rotation (deletion > 14 days)
+3. System update (`apt upgrade`)
+4. Java update
+5. PZ server update (SteamCMD)
+6. Java symlink restoration
+7. External complete backup
+8. System reboot
 
-**Logs** : `/home/pzuser/pzmanager/scripts/logs/maintenance/`
+**Logs**: `/home/pzuser/pzmanager/scripts/logs/maintenance/`
 
-**Vérifier crontab** : `crontab -l`
+**Check crontab**: `crontab -l`
 
 ---
 
-## Structure Fichiers
+## File Structure
 
-### Arborescence complète
+### Complete Directory Tree
 
 ```
 /home/pzuser/pzmanager/
-├── Zomboid/                          # Données serveur PZ
-│   ├── Server/                       # Config serveur
+├── Zomboid/                          # PZ server data
+│   ├── Server/                       # Server config
 │   │   ├── servertest.ini
 │   │   ├── servertest_access.txt
 │   │   ├── servertest_SandboxVars.lua
 │   │   └── servertest_spawnregions.lua
-│   ├── Saves/Multiplayer/servertest/ # Sauvegardes mondes
-│   ├── db/servertest.db              # Base SQLite
+│   ├── Saves/Multiplayer/servertest/ # World saves
+│   ├── db/servertest.db              # SQLite database
 │   ├── Logs/
 │   └── mods/
 │
 ├── scripts/
-│   ├── .env.example                  # Template variables
-│   ├── .env                          # Variables config (créé auto)
-│   ├── pzm                           # Interface CLI unifiée
+│   ├── .env.example                  # Variables template
+│   ├── .env                          # Config variables (auto-created)
+│   ├── pzm                           # Unified CLI interface
 │   │
 │   ├── core/
-│   │   └── pz.sh                     # Gestion serveur (start/stop/restart/status)
+│   │   └── pz.sh                     # Server management (start/stop/restart/status)
 │   │
 │   ├── backup/
-│   │   ├── dataBackup.sh             # Backup horaire incrémental
-│   │   ├── fullBackup.sh             # Backup complet avec sync externe
-│   │   └── restoreZomboidData.sh     # Restauration données uniquement
+│   │   ├── dataBackup.sh             # Hourly incremental backup
+│   │   ├── fullBackup.sh             # Complete backup with external sync
+│   │   └── restoreZomboidData.sh     # Data-only restoration
 │   │
 │   ├── admin/
-│   │   ├── manageWhitelist.sh        # Gestion whitelist SQLite
-│   │   ├── resetServer.sh            # Reset complet serveur
-│   │   ├── setram.sh                 # Configuration RAM serveur
-│   │   └── performFullMaintenance.sh # Maintenance automatique
+│   │   ├── manageWhitelist.sh        # SQLite whitelist management
+│   │   ├── resetServer.sh            # Complete server reset
+│   │   ├── setram.sh                 # Server RAM configuration
+│   │   └── performFullMaintenance.sh # Automatic maintenance
 │   │
 │   ├── install/
-│   │   ├── setupSystem.sh            # Config système (user, firewall, packages)
-│   │   └── configurationInitiale.sh  # Install serveur PZ
+│   │   ├── setupSystem.sh            # System config (user, firewall, packages)
+│   │   └── configurationInitiale.sh  # PZ server install
 │   │
 │   ├── internal/
-│   │   ├── sendCommand.sh            # Envoi commandes RCON
-│   │   ├── sendDiscord.sh            # Notifications Discord
-│   │   ├── captureLogs.sh            # Capture logs journald
-│   │   └── notifyServerReady.sh      # Notification démarrage serveur
+│   │   ├── sendCommand.sh            # RCON command sending
+│   │   ├── sendDiscord.sh            # Discord notifications
+│   │   ├── captureLogs.sh            # Journald log capture
+│   │   └── notifyServerReady.sh      # Server startup notification
 │   │
 │   └── logs/
-│       ├── zomboid/                  # Logs serveur capturés
-│       ├── maintenance/              # Logs maintenance
-│       └── data_backup.log           # Logs backups horaires
+│       ├── zomboid/                  # Captured server logs
+│       ├── maintenance/              # Maintenance logs
+│       └── data_backup.log           # Hourly backup logs
 │
 ├── data/
 │   ├── setupTemplates/
-│   │   ├── pzuser-crontab            # Crontab à installer
-│   │   ├── pzuser-sudoers            # Permissions sudo
-│   │   ├── zomboid.service           # Template service systemd
-│   │   ├── zomboid.socket            # Template socket systemd
-│   │   ├── zomboid_logger.service    # Template logger systemd
-│   │   └── .env.example              # Template variables d'environnement
+│   │   ├── pzuser-crontab            # Crontab to install
+│   │   ├── pzuser-sudoers            # Sudo permissions
+│   │   ├── zomboid.service           # Systemd service template
+│   │   ├── zomboid.socket            # Systemd socket template
+│   │   ├── zomboid_logger.service    # Systemd logger template
+│   │   └── .env.example              # Environment variables template
 │   │
-│   ├── pzserver/                     # Installation serveur PZ (~1-2GB)
+│   ├── pzserver/                     # PZ server installation (~1-2GB)
 │   │   ├── start-server.sh
 │   │   ├── ProjectZomboid64.json
 │   │   ├── java/
@@ -418,15 +418,15 @@ RestartSec=5
 │   │   ├── natives/
 │   │   └── jre64 -> /usr/lib/jvm/java-25-openjdk-amd64  (symlink)
 │   │
-│   ├── dataBackups/                  # Backups horaires (14j rétention)
+│   ├── dataBackups/                  # Hourly backups (14-day retention)
 │   │   ├── backup_2026-01-12_14h14m00s/
 │   │   ├── backup_2026-01-12_15h14m00s/
 │   │   └── latest -> backup_2026-01-12_15h14m00s  (symlink)
 │   │
-│   ├── fullBackups/                  # Backups complets horodatés
+│   ├── fullBackups/                  # Timestamped complete backups
 │   │   └── 2026-01-12_04-30/
 │   │
-│   └── versionning/                  # Historique versions installées
+│   └── versionning/                  # Installed versions history
 │       └── pz_version_*.txt
 │
 ├── docs/                             # Documentation
@@ -437,42 +437,42 @@ RestartSec=5
 │   ├── ADVANCED.md
 │   ├── TROUBLESHOOTING.md
 │   ├── MIGRATION.md
-│   └── WHAT_IS_INSTALLED.md          # Ce fichier
+│   └── WHAT_IS_INSTALLED.md          # This file
 │
 ├── README.md
 └── LICENSE
 ```
 
-### Espace disque utilisé
+### Disk Space Used
 
-**Installation minimale** :
-- Système : ~100MB (packages)
-- Serveur PZ : ~1-2GB
-- Java : ~300MB
+**Minimal installation**:
+- System: ~100MB (packages)
+- PZ Server: ~1-2GB
+- Java: ~300MB
 
-**Total initial** : ~2-2.5GB
+**Initial total**: ~2-2.5GB
 
-**Utilisation typique après 1 mois** :
-- Données serveur : 500MB - 5GB
-- Backups horaires : 5-15GB (14 jours)
-- Backups complets : 5-10GB par backup
-- Logs : 100-500MB
+**Typical usage after 1 month**:
+- Server data: 500MB - 5GB
+- Hourly backups: 5-15GB (14 days)
+- Complete backups: 5-10GB per backup
+- Logs: 100-500MB
 
-**Total recommandé** : 50-100GB disque libre
+**Recommended total**: 50-100GB free disk
 
 ---
 
-## Variables d'Environnement
+## Environment Variables
 
-### Fichier .env
+### .env File
 
-**Emplacement** : `/home/pzuser/pzmanager/scripts/.env`
+**Location**: `/home/pzuser/pzmanager/scripts/.env`
 
-**Créé automatiquement** depuis `.env.example` au premier lancement
+**Automatically created** from `.env.example` on first run
 
-**Variables principales** :
+**Main variables**:
 
-#### Utilisateur et Chemins
+#### User and Paths
 ```bash
 PZ_USER="pzuser"
 PZ_HOME="/home/pzuser/pzmanager"
@@ -515,124 +515,124 @@ LOG_RETENTION_DAYS="30"
 PZ_SERVICE_NAME="zomboid.service"
 ```
 
-#### Discord (optionnel)
+#### Discord (optional)
 ```bash
-DISCORD_WEBHOOK=""  # Vide = désactivé
+DISCORD_WEBHOOK=""  # Empty = disabled
 ```
 
-**Modifier** : `nano /home/pzuser/pzmanager/scripts/.env`
+**Modify**: `nano /home/pzuser/pzmanager/scripts/.env`
 
 ---
 
-## Configuration par Défaut
+## Default Configuration
 
-### Serveur Project Zomboid
+### Project Zomboid Server
 
-**Fichier** : `/home/pzuser/pzmanager/Zomboid/Server/servertest.ini`
+**File**: `/home/pzuser/pzmanager/Zomboid/Server/servertest.ini`
 
-**Paramètres par défaut (première installation)** :
+**Default parameters (first installation)**:
 
 ```ini
-# Général
+# General
 ServerName=servertest
 PublicName=My PZ Server
-Password=                    # Vide = serveur public
-AdminPassword=changeme       # ⚠️ À CHANGER !
+Password=                    # Empty = public server
+AdminPassword=changeme       # ⚠️ MUST CHANGE!
 MaxPlayers=32
 
 # Gameplay
-PauseEmpty=true              # Pause si aucun joueur
-Open=true                    # Serveur public
-Public=true                  # Visible dans liste serveurs
+PauseEmpty=true              # Pause if no players
+Open=true                    # Public server
+Public=true                  # Visible in server list
 PublicPort=16261
 PublicDescription=
 
-# Sauvegarde
+# Save
 SaveWorldEveryMinutes=20
 BackupsCount=5
 BackupsOnStart=true
 BackupsOnVersionChange=true
 
-# Sécurité
+# Security
 AllowCoop=true
 SteamAuthenticationRequired=true
 ResetID=0
 ```
 
-**Documentation complète** : [docs/SERVER_CONFIG.md](SERVER_CONFIG.md)
+**Complete documentation**: [docs/SERVER_CONFIG.md](SERVER_CONFIG.md)
 
 ---
 
-## Modifications Système
+## System Modifications
 
-### Fichiers créés/modifiés
+### Created/Modified Files
 
-**Système global** :
-- `/etc/sudoers.d/pzuser` (permissions sudo)
+**Global system**:
+- `/etc/sudoers.d/pzuser` (sudo permissions)
 - `/var/lib/systemd/linger/pzuser` (systemd lingering)
-- `/etc/apt/sources.list.d/steam.list` (dépôt SteamCMD)
+- `/etc/apt/sources.list.d/steam.list` (SteamCMD repository)
 
-**Utilisateur pzuser** :
+**pzuser user**:
 - `~/.config/systemd/user/zomboid.service` (service)
-- Crontab personnel (`crontab -l` pour voir)
+- Personal crontab (`crontab -l` to view)
 
-**Aucune modification de** :
-- Configuration SSH (`/etc/ssh/sshd_config`)
-- Configuration réseau (`/etc/network/`)
-- Services système globaux
+**No modification of**:
+- SSH configuration (`/etc/ssh/sshd_config`)
+- Network configuration (`/etc/network/`)
+- Global system services
 
-### Sécurité
+### Security
 
-**Principe** : Isolation maximale via utilisateur dédié
+**Principle**: Maximum isolation via dedicated user
 
-**Restrictions** :
-- pzuser ne peut pas `su` vers root
-- Commandes sudo limitées strictement (voir sudoers)
-- Service tourne en user mode (pas root)
-- Pas d'accès aux fichiers système sensibles
+**Restrictions**:
+- pzuser cannot `su` to root
+- Sudo commands strictly limited (see sudoers)
+- Service runs in user mode (not root)
+- No access to sensitive system files
 
-**Firewall** : Actif par défaut avec whitelist stricte
+**Firewall**: Active by default with strict whitelist
 
 ---
 
-## Désinstallation
+## Uninstallation
 
-Pour supprimer complètement pzmanager :
+To completely remove pzmanager:
 
 ```bash
-# En tant que root
+# As root
 
-# 1. Arrêter et désactiver service
+# 1. Stop and disable service
 sudo -u pzuser systemctl --user stop zomboid.service
 sudo -u pzuser systemctl --user disable zomboid.service
 loginctl disable-linger pzuser
 
-# 2. Supprimer crontab
+# 2. Remove crontab
 sudo -u pzuser crontab -r
 
-# 3. Supprimer fichiers
+# 3. Remove files
 rm -rf /home/pzuser/pzmanager
 
-# 4. Supprimer utilisateur
+# 4. Remove user
 userdel -r pzuser
 
-# 5. Supprimer configuration système
+# 5. Remove system configuration
 rm /etc/sudoers.d/pzuser
 rm /var/lib/systemd/linger/pzuser
 
-# 6. (Optionnel) Supprimer packages
+# 6. (Optional) Remove packages
 apt remove --purge steamcmd openjdk-25-jre-headless
 apt autoremove
 ```
 
-**Note** : Les règles firewall UFW restent actives (à supprimer manuellement si désiré)
+**Note**: UFW firewall rules remain active (manually remove if desired)
 
 ---
 
-## Références
+## References
 
-- **Installation** : [INSTALLATION.md](INSTALLATION.md)
-- **Configuration** : [CONFIGURATION.md](CONFIGURATION.md)
-- **Serveur PZ** : [SERVER_CONFIG.md](SERVER_CONFIG.md)
-- **Avancé** : [ADVANCED.md](ADVANCED.md)
-- **Dépannage** : [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+- **Installation**: [INSTALLATION.md](INSTALLATION.md)
+- **Configuration**: [CONFIGURATION.md](CONFIGURATION.md)
+- **PZ Server**: [SERVER_CONFIG.md](SERVER_CONFIG.md)
+- **Advanced**: [ADVANCED.md](ADVANCED.md)
+- **Troubleshooting**: [TROUBLESHOOTING.md](TROUBLESHOOTING.md)

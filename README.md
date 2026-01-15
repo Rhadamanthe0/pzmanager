@@ -3,25 +3,25 @@
 [![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-sa/4.0/)
 [![Platform](https://img.shields.io/badge/platform-Debian%2012%20%7C%20Ubuntu%2022.04%2B-blue.svg)](https://www.debian.org/)
 
-Gestionnaire de serveur Project Zomboid **out-of-the-box** : installation simplifiée, sécurisée et automatisée pour néophytes en administration système.
+**Out-of-the-box** Project Zomboid server manager: simplified, secure, and automated installation for system administration beginners.
 
-**🎯 Philosophie** : Zéro configuration manuelle - tout fonctionne dès l'installation avec des paramètres sécurisés par défaut.
+**🎯 Philosophy**: Zero manual configuration - everything works right after installation with secure default parameters.
 
-**👋 Débutant ?** Suivez le [Quick Start Guide](docs/QUICKSTART.md) - installation en 10 minutes.
+**👋 New here?** Follow the [Quick Start Guide](docs/QUICKSTART.md) - 10-minute installation.
 
-## Fonctionnalités
+## Features
 
-- **Gestion simplifiée** : Start, stop, restart avec avertissements joueurs
-- **Backups automatiques** : Horaires incrémentiaux, rétention 30j
-- **Maintenance quotidienne** : MAJ système/serveur, backups complets, reboot
-- **Discord** (optionnel) : Notifications temps réel
-- **Maintenance à distance** : Déclenchement via SSH
-- **Configuration centralisée** : Fichier .env unique
-- **Déploiement sûr** : Création automatique .env depuis template
+- **Simplified management**: Start, stop, restart with player warnings
+- **Automatic backups**: Hourly incremental, 30-day retention
+- **Daily maintenance**: System/server updates, complete backups, reboot
+- **Discord** (optional): Real-time notifications
+- **Remote maintenance**: Trigger via SSH
+- **Centralized configuration**: Single .env file
+- **Safe deployment**: Automatic .env creation from template
 
-## Installation rapide
+## Quick Installation
 
-⚠️ **Installation en root** - exploitation en pzuser
+⚠️ **Installation as root** - operation as pzuser
 
 ```bash
 git clone https://github.com/YOUR_USERNAME/pzmanager.git /opt/pzmanager
@@ -34,36 +34,36 @@ sudo -u pzuser crontab /home/pzuser/pzmanager/data/setup/pzuser-crontab
 /home/pzuser/pzmanager/scripts/install/configurationInitiale.sh zomboid
 ```
 
-**Version installée** : Project Zomboid Build 41 (branche `legacy_41_78_7`)
+**Installed version**: Project Zomboid Build 41 (branch `legacy_41_78_7`)
 
-**Détails installation** : [docs/WHAT_IS_INSTALLED.md](docs/WHAT_IS_INSTALLED.md) - Liste complète de tout ce qui est installé/configuré
+**Installation details**: [docs/WHAT_IS_INSTALLED.md](docs/WHAT_IS_INSTALLED.md) - Complete list of everything installed/configured
 
-**Exploitation** : Toutes les commandes d'exploitation se font en tant que pzuser (`su - pzuser`)
+**Operation**: All operational commands are run as pzuser (`su - pzuser`)
 
-Guide complet : [docs/INSTALLATION.md](docs/INSTALLATION.md)
+Complete guide: [docs/INSTALLATION.md](docs/INSTALLATION.md)
 
-## Utilisation
+## Usage
 
-### Interface unifiée (recommandé)
+### Unified interface (recommended)
 
 ```bash
-pzm server start              # Démarrer
-pzm server stop [délai]       # Arrêter (défaut: 2m)
-pzm server restart [délai]    # Redémarrer
-pzm server status             # État + logs récents
-pzm backup create             # Backup incrémental
-pzm whitelist list            # Voir whitelist
-pzm config ram 8g             # Configurer RAM serveur
-pzm admin maintenance [délai] # Maintenance
+pzm server start              # Start
+pzm server stop [delay]       # Stop (default: 2m)
+pzm server restart [delay]    # Restart
+pzm server status             # Status + recent logs
+pzm backup create             # Incremental backup
+pzm whitelist list            # View whitelist
+pzm config ram 8g             # Configure server RAM
+pzm admin maintenance [delay] # Maintenance
 ```
 
-**Délais disponibles** : `30m`, `15m`, `5m`, `2m`, `30s`, `now`
+**Available delays**: `30m`, `15m`, `5m`, `2m`, `30s`, `now`
 
-**Avertissements** :
-- Messages in-game à tous les joueurs
-- Notifications Discord (si configuré)
+**Warnings**:
+- In-game messages to all players
+- Discord notifications (if configured)
 
-### Scripts directs (alternative)
+### Direct scripts (alternative)
 
 ```bash
 ./scripts/core/pz.sh start
@@ -71,138 +71,138 @@ pzm admin maintenance [délai] # Maintenance
 ./scripts/admin/manageWhitelist.sh list
 ```
 
-## Prérequis
+## Prerequisites
 
-**Système** :
-- Debian 12 (recommandé) ou Ubuntu 22.04+
-- Installation fraîche préférée
+**System**:
+- Debian 12 (recommended) or Ubuntu 22.04+
+- Fresh installation preferred
 
-**Matériel** :
-- 4GB RAM minimum (8GB recommandé)
-- 20GB+ disque libre
-- 2+ cores CPU recommandé
+**Hardware**:
+- 4GB RAM minimum (8GB recommended)
+- 20GB+ free disk space
+- 2+ CPU cores recommended
 
-**Accès** :
+**Access**:
 - Root/sudo
-- SSH (si gestion à distance)
+- SSH (for remote management)
 
-**Réseau** :
+**Network**:
 - Ports 16261/UDP, 16262/UDP, 8766/UDP, 27015/TCP
-- Ouverts automatiquement par l'installeur
+- Automatically opened by the installer
 
 ## Configuration
 
-### Variables d'environnement
+### Environment Variables
 
-Fichier `scripts/.env` centralise toutes les variables :
-- Chemins (serveur, backups, logs, sync)
-- Paramètres SteamCMD et Java
-- Rétention backups/logs (14j)
-- Webhook Discord (optionnel)
+The `scripts/.env` file centralizes all variables:
+- Paths (server, backups, logs, sync)
+- SteamCMD and Java parameters
+- Backup/log retention (14 days)
+- Discord webhook (optional)
 
-Créé automatiquement depuis `data/setup/.env.example` au premier lancement.
+Automatically created from `data/setup/.env.example` on first run.
 
-**Édition** : `nano scripts/.env`
+**Editing**: `nano scripts/.env`
 
-### Discord (Optionnel)
+### Discord (Optional)
 
-1. Créer webhook Discord (Paramètres serveur → Intégrations → Webhooks)
-2. Éditer `scripts/.env` : `DISCORD_WEBHOOK="URL"`
-3. Laisser vide pour désactiver
+1. Create Discord webhook (Server Settings → Integrations → Webhooks)
+2. Edit `scripts/.env`: `DISCORD_WEBHOOK="URL"`
+3. Leave empty to disable
 
 ## Structure
 
 ```
 pzmanager/
-├── pzm                       # Interface principale (dans PATH)
-├── Zomboid/                  # Données serveur (saves, configs)
+├── pzm                       # Main interface (in PATH)
+├── Zomboid/                  # Server data (saves, configs)
 ├── scripts/
-│   ├── .env                  # Config perso (NON versionné)
+│   ├── .env                  # Personal config (NOT versioned)
 │   ├── lib/
-│   │   └── common.sh         # Library commune fonctions partagées
+│   │   └── common.sh         # Common library for shared functions
 │   ├── core/
-│   │   └── pz.sh             # Gestion serveur (start/stop/restart/status)
+│   │   └── pz.sh             # Server management (start/stop/restart/status)
 │   ├── backup/
-│   │   ├── dataBackup.sh     # Backup horaire incrémental
-│   │   ├── fullBackup.sh     # Backup complet avec sync
-│   │   └── restoreZomboidData.sh  # Restauration données uniquement
+│   │   ├── dataBackup.sh     # Hourly incremental backup
+│   │   ├── fullBackup.sh     # Complete backup with sync
+│   │   └── restoreZomboidData.sh  # Data-only restoration
 │   ├── admin/
-│   │   ├── manageWhitelist.sh     # Gestion whitelist
-│   │   ├── resetServer.sh         # Reset complet serveur
-│   │   └── performFullMaintenance.sh  # Maintenance quotidienne
+│   │   ├── manageWhitelist.sh     # Whitelist management
+│   │   ├── resetServer.sh         # Complete server reset
+│   │   └── performFullMaintenance.sh  # Daily maintenance
 │   ├── install/
-│   │   ├── setupSystem.sh         # Config système initiale
-│   │   └── configurationInitiale.sh  # Install/restore serveur
+│   │   ├── setupSystem.sh         # Initial system config
+│   │   └── configurationInitiale.sh  # Server install/restore
 │   ├── internal/
 │   │   ├── sendCommand.sh         # RCON
-│   │   ├── sendDiscord.sh         # Notifications Discord
-│   │   ├── captureLogs.sh         # Capture logs journald
-│   │   └── notifyServerReady.sh   # Notification démarrage
+│   │   ├── sendDiscord.sh         # Discord notifications
+│   │   ├── captureLogs.sh         # Journald log capture
+│   │   └── notifyServerReady.sh   # Startup notification
 │   └── logs/
 └── data/
-    ├── setup/                # Fichiers config système
-    │   ├── .env.example      # Template config (versionné)
+    ├── setup/                # System config files
+    │   ├── .env.example      # Config template (versioned)
     │   ├── pzuser-crontab
     │   └── pzuser-sudoers
-    ├── pzserver/             # Installation serveur
-    ├── dataBackups/          # Backups horaires (14j)
-    ├── fullBackups/          # Backups complets horodatés
-    └── versionning/          # Historique versions
+    ├── pzserver/             # Server installation
+    ├── dataBackups/          # Hourly backups (14 days)
+    ├── fullBackups/          # Timestamped complete backups
+    └── versionning/          # Version history
 ```
 
-## Permissions sudo (pzuser)
+## Sudo Permissions (pzuser)
 
-Configuration dans `/etc/sudoers.d/pzuser` :
+Configuration in `/etc/sudoers.d/pzuser`:
 
-- **APT** : update, upgrade, install openjdk, autoremove, autoclean
-- **Java** : Gestion symlink `/home/pzuser/pzmanager/data/pzserver/jre64`
-- **Backup** : Exécution fullBackup.sh en root
-- **Reboot** : `/sbin/reboot`
+- **APT**: update, upgrade, install openjdk, autoremove, autoclean
+- **Java**: Manage symlink `/home/pzuser/pzmanager/data/pzserver/jre64`
+- **Backup**: Execute fullBackup.sh as root
+- **Reboot**: `/sbin/reboot`
 
-## Automatisations (crontab)
+## Automations (crontab)
 
-**Maintenance quotidienne (4h30)** :
-- Arrêt serveur (avertissements)
-- Rotation backups
-- MAJ système (APT + Java + SteamCMD)
-- Backup complet
-- Reboot système
+**Daily maintenance (4:30 AM)**:
+- Server shutdown (warnings)
+- Backup rotation
+- System updates (APT + Java + SteamCMD)
+- Complete backup
+- System reboot
 
-**Backup horaire (*h14)** :
-- Backup incrémental avec hard links
-- Rétention 14j
+**Hourly backup (:14)**:
+- Incremental backup with hard links
+- 14-day retention
 
-**Consulter** : `crontab -l`
+**View**: `crontab -l`
 
-## Maintenance à distance
+## Remote Maintenance
 
-Clé SSH spéciale force l'exécution de `performFullMaintenance.sh` :
+Special SSH key forces execution of `performFullMaintenance.sh`:
 
 ```bash
-# Depuis machine locale
-ssh pzuser@SERVEUR 30m   # Maintenance avec 30min avertissement
-ssh pzuser@SERVEUR 2m    # Maintenance avec 2min avertissement
+# From local machine
+ssh pzuser@SERVER 30m   # Maintenance with 30-minute warning
+ssh pzuser@SERVER 2m    # Maintenance with 2-minute warning
 ```
 
-**Restrictions** : Commande forcée, pas de forwarding
+**Restrictions**: Forced command, no forwarding
 
 ## Documentation
 
-- [docs/QUICKSTART.md](docs/QUICKSTART.md) - Installation rapide (10 min)
-- [docs/INSTALLATION.md](docs/INSTALLATION.md) - Installation détaillée
-- [docs/WHAT_IS_INSTALLED.md](docs/WHAT_IS_INSTALLED.md) - Détails complets installation
-- [docs/USAGE.md](docs/USAGE.md) - Guide complet des commandes
-- [docs/CONFIGURATION.md](docs/CONFIGURATION.md) - Variables .env, backups, Discord
-- [docs/SERVER_CONFIG.md](docs/SERVER_CONFIG.md) - Configuration serveur PZ
-- [docs/ADVANCED.md](docs/ADVANCED.md) - Optimisations, RCON
-- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) - Résolution problèmes
+- [docs/QUICKSTART.md](docs/QUICKSTART.md) - Quick installation (10 min)
+- [docs/INSTALLATION.md](docs/INSTALLATION.md) - Detailed installation
+- [docs/WHAT_IS_INSTALLED.md](docs/WHAT_IS_INSTALLED.md) - Complete installation details
+- [docs/USAGE.md](docs/USAGE.md) - Complete command guide
+- [docs/CONFIGURATION.md](docs/CONFIGURATION.md) - .env variables, backups, Discord
+- [docs/SERVER_CONFIG.md](docs/SERVER_CONFIG.md) - PZ server configuration
+- [docs/ADVANCED.md](docs/ADVANCED.md) - Optimizations, RCON
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) - Troubleshooting
 
-## Licence
+## License
 
 CC BY-NC-SA 4.0 (Creative Commons Attribution-NonCommercial-ShareAlike 4.0)
 
-**Résumé** : Usage/partage/modification pour usage personnel/non-commercial. Modifications sous même licence. Usage commercial nécessite autorisation.
+**Summary**: Use/share/modify for personal/non-commercial use. Modifications under same license. Commercial use requires permission.
 
 ## Support
 
-Issues, questions, suggestions : Ouvrir une issue sur GitHub
+Issues, questions, suggestions: Open an issue on GitHub

@@ -1,123 +1,123 @@
-# Guide d'Utilisation
+# Usage Guide
 
-Documentation complète de toutes les commandes et opérations pzmanager.
+Complete documentation of all pzmanager commands and operations.
 
-## Prérequis
+## Prerequisites
 
-⚠️ **Toutes les commandes d'exploitation doivent être exécutées en tant que pzuser**
+⚠️ **All operational commands must be executed as pzuser**
 
 ```bash
 su - pzuser
 cd /home/pzuser/pzmanager
 ```
 
-## Table des matières
+## Table of Contents
 
-- [Interface pzm](#interface-pzm)
-- [Gestion Serveur](#gestion-serveur)
+- [pzm Interface](#pzm-interface)
+- [Server Management](#server-management)
 - [Backups](#backups)
 - [Whitelist](#whitelist)
 - [Administration](#administration)
 - [Configuration](#configuration)
 - [RCON](#rcon)
-- [Scripts Directs](#scripts-directs)
-- [Cas d'Usage](#cas-dusage)
+- [Direct Scripts](#direct-scripts)
+- [Use Cases](#use-cases)
 
 ---
 
-## Interface pzm
+## pzm Interface
 
-**Commande principale** : `pzm`
+**Main command**: `pzm`
 
-**Aide** : `pzm --help`
+**Help**: `pzm --help`
 
-**Syntaxe générale** :
+**General syntax**:
 ```bash
-pzm <commande> <sous-commande> [arguments]
+pzm <command> <subcommand> [arguments]
 ```
 
 ---
 
-## Gestion Serveur
+## Server Management
 
-### Démarrer
+### Start
 
 ```bash
 pzm server start
 ```
 
-**Effet** :
-- Démarre le service zomboid
-- Notification Discord (si configuré)
-- Logs disponibles via `status`
+**Effect**:
+- Starts the zomboid service
+- Discord notification (if configured)
+- Logs available via `status`
 
-**Durée** : 2-5 minutes (premier démarrage génère le monde)
+**Duration**: 2-5 minutes (first startup generates world)
 
-### Arrêter
-
-```bash
-pzm server stop [délai]
-```
-
-**Délais disponibles** :
-- `30m` : Avertissement 30 minutes avant
-- `15m` : Avertissement 15 minutes avant
-- `5m` : Avertissement 5 minutes avant
-- `2m` : Avertissement 2 minutes avant (défaut)
-- `30s` : Avertissement 30 secondes avant
-- `now` : Arrêt immédiat sans avertissement
-
-**Effet** :
-- Messages in-game à tous les joueurs
-- Notifications Discord (si configuré)
-- Arrêt propre du serveur
-
-**Exemples** :
-```bash
-pzm server stop           # Arrêt dans 2 minutes
-pzm server stop 30m       # Arrêt dans 30 minutes
-pzm server stop now       # Arrêt immédiat
-```
-
-### Redémarrer
+### Stop
 
 ```bash
-pzm server restart [délai]
+pzm server stop [delay]
 ```
 
-**Identique à `stop`** : Mêmes délais, puis redémarrage automatique
+**Available delays**:
+- `30m`: Warning 30 minutes before
+- `15m`: Warning 15 minutes before
+- `5m`: Warning 5 minutes before
+- `2m`: Warning 2 minutes before (default)
+- `30s`: Warning 30 seconds before
+- `now`: Immediate stop without warning
 
-**Exemples** :
+**Effect**:
+- In-game messages to all players
+- Discord notifications (if configured)
+- Clean server shutdown
+
+**Examples**:
 ```bash
-pzm server restart        # Redémarrage dans 2 minutes
-pzm server restart 5m     # Redémarrage dans 5 minutes
+pzm server stop           # Stop in 2 minutes
+pzm server stop 30m       # Stop in 30 minutes
+pzm server stop now       # Immediate stop
 ```
 
-**Cas d'usage** : Appliquer modifications configuration serveur
+### Restart
 
-### Statut
+```bash
+pzm server restart [delay]
+```
+
+**Identical to `stop`**: Same delays, then automatic restart
+
+**Examples**:
+```bash
+pzm server restart        # Restart in 2 minutes
+pzm server restart 5m     # Restart in 5 minutes
+```
+
+**Use case**: Apply server configuration changes
+
+### Status
 
 ```bash
 pzm server status
 ```
 
-**Affiche** :
-- État service (RUNNING / STOPPED)
-- Durée uptime
-- Dernière sauvegarde
-- 30 dernières lignes de logs
+**Displays**:
+- Service status (RUNNING / STOPPED)
+- Uptime duration
+- Last save
+- Last 30 log lines
 
-**Exemple sortie** :
+**Example output**:
 ```
-===== STATUT SERVEUR PROJECT ZOMBOID =====
+===== PROJECT ZOMBOID SERVER STATUS =====
 Status: RUNNING
 Active since: Sun 2026-01-12 10:30:00 UTC (5h ago)
 Control pipe: Available
 
-===== DERNIERE SAUVEGARDE =====
+===== LAST SAVE =====
 Last save: 2026-01-12 15:20:15
 
-===== LOGS RÉCENTS (30 dernières lignes) =====
+===== RECENT LOGS (last 30 lines) =====
 [...] RCON: listening on port 27015
 [...] SERVER STARTED
 ```
@@ -126,92 +126,92 @@ Last save: 2026-01-12 15:20:15
 
 ## Backups
 
-### Backup Incrémental
+### Incremental Backup
 
 ```bash
 pzm backup create
 ```
 
-**Effet** :
-- Backup des données Zomboid uniquement
-- Hard links (espace optimisé)
-- Rétention : 14 jours (configurable)
+**Effect**:
+- Backup of Zomboid data only
+- Hard links (optimized space)
+- Retention: 14 days (configurable)
 
-**Destination** : `data/dataBackups/backup_YYYY-MM-DD_HHhMMmSSs/`
+**Destination**: `data/dataBackups/backup_YYYY-MM-DD_HHhMMmSSs/`
 
-**Automatique** : Toutes les heures à :14 (crontab)
+**Automatic**: Every hour at :14 (crontab)
 
-**Durée** : 10-60 secondes
+**Duration**: 10-60 seconds
 
-### Backup Complet
+### Complete Backup
 
 ```bash
 pzm backup full
 ```
 
-**Effet** :
-- Backup système complet (Zomboid + pzserver)
-- Synchronisation externe (si configuré)
-- Utilisé par maintenance quotidienne
+**Effect**:
+- Complete system backup (Zomboid + pzserver)
+- External synchronization (if configured)
+- Used by daily maintenance
 
-**Destination** : `data/fullBackups/YYYY-MM-DD_HH-MM/`
+**Destination**: `data/fullBackups/YYYY-MM-DD_HH-MM/`
 
-**Durée** : 2-10 minutes (selon taille)
+**Duration**: 2-10 minutes (depending on size)
 
-### Restaurer
+### Restore
 
 ```bash
-pzm backup restore <chemin>
+pzm backup restore <path>
 ```
 
-**Paramètres** :
-- `<chemin>` : Chemin relatif ou absolu du backup
+**Parameters**:
+- `<path>`: Relative or absolute path to backup
 
-**Effet** :
-- Arrêt serveur
-- Backup sécurité de l'état actuel
-- Restauration données depuis backup
-- Permissions corrigées
+**Effect**:
+- Server shutdown
+- Safety backup of current state
+- Data restoration from backup
+- Permissions corrected
 
-**Exemples** :
+**Examples**:
 ```bash
-# Chemin relatif
+# Relative path
 pzm backup restore data/dataBackups/backup_2026-01-12_14h14m00s
 
-# Chemin absolu
+# Absolute path
 pzm backup restore /home/pzuser/pzmanager/data/dataBackups/backup_2026-01-12_14h14m00s
 ```
 
-**⚠️ Attention** : Backup sécurité créé dans `OLD/ZomboidBROKEN_TIMESTAMP/`
+**⚠️ Caution**: Safety backup created in `OLD/ZomboidBROKEN_TIMESTAMP/`
 
-### Lister Backups
+### List Backups
 
 ```bash
 pzm backup list
 ```
 
-**Affiche** :
-- 20 backups incrémentiaux les plus récents
-- 10 backups complets les plus récents
-- Taille et date
+**Displays**:
+- 20 most recent incremental backups
+- 10 most recent complete backups
+- Size and date
 
 ---
 
 ## Whitelist
 
-### Lister
+### List
 
 ```bash
 pzm whitelist list
 ```
 
-**Affiche** :
+**Displays**:
 - Username
 - Steam ID 32
-- Dernière connexion
-- Tri par dernière connexion
+- Last connection
+- Sorted by last connection
 
-**Exemple sortie** :
+**Example output**:
 ```
 Username       | Steam ID           | Last Connection
 ---------------|--------------------|-----------------
@@ -219,40 +219,40 @@ PlayerOne      | STEAM_0:1:12345678 | 2026-01-12 14:30
 PlayerTwo      | STEAM_0:0:87654321 | 2026-01-10 18:45
 ```
 
-### Ajouter
+### Add
 
 ```bash
-pzm whitelist add "<nom>" "<steam_id_32>"
+pzm whitelist add "<name>" "<steam_id_32>"
 ```
 
-**Paramètres** :
-- `<nom>` : Nom du joueur (guillemets si espaces)
-- `<steam_id_32>` : Steam ID format `STEAM_0:X:YYYYYYYY`
+**Parameters**:
+- `<name>`: Player name (quotes if spaces)
+- `<steam_id_32>`: Steam ID format `STEAM_0:X:YYYYYYYY`
 
-**Validation** : Format Steam ID 32 vérifié automatiquement
+**Validation**: Steam ID 32 format verified automatically
 
-**Conversion** : Steam64 ID → Steam ID 32 via https://steamid.xyz/
+**Conversion**: Steam64 ID → Steam ID 32 via https://steamid.xyz/
 
-**Exemples** :
+**Examples**:
 ```bash
 pzm whitelist add "John Doe" "STEAM_0:1:12345678"
 pzm whitelist add PlayerOne "STEAM_0:0:87654321"
 ```
 
-**Effet immédiat** : Pas besoin de redémarrer le serveur
+**Immediate effect**: No need to restart server
 
-### Retirer
+### Remove
 
 ```bash
 pzm whitelist remove "<steam_id_32>"
 ```
 
-**Paramètres** :
-- `<steam_id_32>` : Steam ID à retirer
+**Parameters**:
+- `<steam_id_32>`: Steam ID to remove
 
-**Confirmation** : Demandée avant suppression
+**Confirmation**: Requested before deletion
 
-**Exemples** :
+**Examples**:
 ```bash
 pzm whitelist remove "STEAM_0:1:12345678"
 ```
@@ -261,112 +261,112 @@ pzm whitelist remove "STEAM_0:1:12345678"
 
 ## Administration
 
-### Reset Serveur
+### Server Reset
 
 ```bash
 pzm admin reset [--keep-whitelist]
 ```
 
-**Options** :
-- Sans option : Reset complet (nouveau monde, whitelist effacée)
-- `--keep-whitelist` : Conservation whitelist et fichiers `.ini`
+**Options**:
+- Without option: Complete reset (new world, whitelist cleared)
+- `--keep-whitelist`: Preserve whitelist and `.ini` files
 
-**Effet** :
-- Arrêt serveur
-- Backup automatique dans `OLD/Zomboid_OLD_TIMESTAMP/`
-- Suppression données serveur
-- Configuration initiale interactive
-- Restauration whitelist (si `--keep-whitelist`)
+**Effect**:
+- Server shutdown
+- Automatic backup in `OLD/Zomboid_OLD_TIMESTAMP/`
+- Server data deletion
+- Interactive initial configuration
+- Whitelist restoration (if `--keep-whitelist`)
 
-**⚠️ ATTENTION** : Opération destructive ! Backup créé automatiquement.
+**⚠️ WARNING**: Destructive operation! Backup created automatically.
 
-**Confirmation** : Tapez "RESET" pour confirmer
+**Confirmation**: Type "RESET" to confirm
 
-**Exemples** :
+**Examples**:
 ```bash
-# Reset complet (nouveau monde vierge)
+# Complete reset (fresh new world)
 pzm admin reset
 
-# Reset avec conservation whitelist
+# Reset with whitelist preservation
 pzm admin reset --keep-whitelist
 ```
 
-**Cas d'usage** :
-- Nouveau monde (wipe)
-- Changement paramètres fondamentaux
-- Corruption données
+**Use cases**:
+- New world (wipe)
+- Fundamental parameter changes
+- Data corruption
 
 ### Maintenance
 
 ```bash
-pzm admin maintenance [délai]
+pzm admin maintenance [delay]
 ```
 
-**Délai défaut** : `30m`
+**Default delay**: `30m`
 
-**Étapes** :
-1. Arrêt serveur avec avertissements
-2. Rotation backups (suppression > 14 jours)
-3. Mise à jour système (`apt upgrade`)
-4. Mise à jour Java
-5. Mise à jour serveur PZ (SteamCMD)
-6. Restauration symlink Java
-7. Backup complet externe
-8. Reboot système
+**Steps**:
+1. Server shutdown with warnings
+2. Backup rotation (deletion > 14 days)
+3. System update (`apt upgrade`)
+4. Java update
+5. PZ server update (SteamCMD)
+6. Java symlink restoration
+7. External complete backup
+8. System reboot
 
-**Automatique** : Tous les jours à 4h30 (crontab)
+**Automatic**: Daily at 4:30 AM (crontab)
 
-**Logs** : `scripts/logs/maintenance/maintenance_YYYY-MM-DD_HHhMMmSSs.log`
+**Logs**: `scripts/logs/maintenance/maintenance_YYYY-MM-DD_HHhMMmSSs.log`
 
-**Durée** : 15-45 minutes
+**Duration**: 15-45 minutes
 
-**Exemples** :
+**Examples**:
 ```bash
-pzm admin maintenance        # Maintenance dans 30 minutes
-pzm admin maintenance 15m    # Maintenance dans 15 minutes
-pzm admin maintenance 2m     # Maintenance dans 2 minutes
+pzm admin maintenance        # Maintenance in 30 minutes
+pzm admin maintenance 15m    # Maintenance in 15 minutes
+pzm admin maintenance 2m     # Maintenance in 2 minutes
 ```
 
-**Déclenchement à distance** :
+**Remote trigger**:
 ```bash
-# Depuis machine locale
-ssh pzuser@SERVEUR 30m
+# From local machine
+ssh pzuser@SERVER 30m
 ```
 
 ---
 
 ## Configuration
 
-### RAM Serveur
+### Server RAM
 
 ```bash
-pzm config ram <valeur>
+pzm config ram <value>
 ```
 
-**Valeurs acceptées** : `2g`, `4g`, `6g`, `8g`, `12g`, `16g`, `20g`, `24g`, `32g`
+**Accepted values**: `2g`, `4g`, `6g`, `8g`, `12g`, `16g`, `20g`, `24g`, `32g`
 
-**Effet** :
-- Modification `ProjectZomboid64.json`
-- Backup automatique avant modification
-- Détection si valeur déjà configurée
+**Effect**:
+- Modification of `ProjectZomboid64.json`
+- Automatic backup before modification
+- Detection if value already configured
 
-**⚠️ Important** : Redémarrer serveur pour appliquer
+**⚠️ Important**: Restart server to apply
 
-**Exemples** :
+**Examples**:
 ```bash
 pzm config ram 4g    # 4GB RAM
-pzm config ram 8g    # 8GB RAM (défaut)
+pzm config ram 8g    # 8GB RAM (default)
 pzm config ram 16g   # 16GB RAM
 pzm config ram 32g   # 32GB RAM
 ```
 
-**Recommandations** :
-- **4GB** : 1-10 joueurs
-- **8GB** : 10-20 joueurs (défaut)
-- **16GB** : 20-50 joueurs
-- **32GB** : 50+ joueurs ou gros mods
+**Recommendations**:
+- **4GB**: 1-10 players
+- **8GB**: 10-20 players (default)
+- **16GB**: 20-50 players
+- **32GB**: 50+ players or large mods
 
-**Appliquer** :
+**Apply**:
 ```bash
 pzm config ram 16g
 pzm server restart 5m
@@ -376,51 +376,51 @@ pzm server restart 5m
 
 ## RCON
 
-### Envoyer Commande
+### Send Command
 
 ```bash
-pzm rcon "<commande>"
+pzm rcon "<command>"
 ```
 
-**Commandes utiles** :
+**Useful commands**:
 
-#### Sauvegarder
+#### Save
 ```bash
 pzm rcon "save"
 ```
 
-#### Message Broadcast
+#### Broadcast Message
 ```bash
-pzm rcon "servermsg 'Redémarrage dans 5 minutes'"
+pzm rcon "servermsg 'Restart in 5 minutes'"
 ```
 
-#### Arrêter Serveur
+#### Stop Server
 ```bash
 pzm rcon "quit"
 ```
 
-#### Lister Joueurs
+#### List Players
 ```bash
 pzm rcon "players"
 ```
 
-#### Téléporter Joueur
+#### Teleport Player
 ```bash
 pzm rcon "teleport PlayerName 1000 1000 0"
 ```
 
-#### Ajouter Item
+#### Add Item
 ```bash
 pzm rcon "giveitem PlayerName Base.Axe"
 ```
 
-#### Bannir/Débannir
+#### Ban/Unban
 ```bash
 pzm rcon "banuser PlayerName"
 pzm rcon "unbanuser PlayerName"
 ```
 
-#### Kick Joueur
+#### Kick Player
 ```bash
 pzm rcon "kickuser PlayerName"
 ```
@@ -435,31 +435,31 @@ pzm rcon "godmode PlayerName"
 pzm rcon "invisible PlayerName"
 ```
 
-#### Changer Météo
+#### Change Weather
 ```bash
 pzm rcon "setweather rain"
 pzm rcon "setweather sunny"
 ```
 
-#### Aide Complète
+#### Complete Help
 ```bash
 pzm rcon "help"
 ```
 
-**Documentation officielle** : [PZ Wiki - Server Commands](https://pzwiki.net/wiki/Server_commands)
+**Official documentation**: [PZ Wiki - Server Commands](https://pzwiki.net/wiki/Server_commands)
 
 ---
 
-## Scripts Directs
+## Direct Scripts
 
-Alternative à `pzm` : scripts directs avec nouveaux chemins.
+Alternative to `pzm`: direct scripts with new paths.
 
-### Serveur
+### Server
 
 ```bash
 ./scripts/core/pz.sh start
-./scripts/core/pz.sh stop [délai]
-./scripts/core/pz.sh restart [délai]
+./scripts/core/pz.sh stop [delay]
+./scripts/core/pz.sh restart [delay]
 ./scripts/core/pz.sh status
 ```
 
@@ -468,188 +468,188 @@ Alternative à `pzm` : scripts directs avec nouveaux chemins.
 ```bash
 ./scripts/backup/dataBackup.sh
 ./scripts/backup/fullBackup.sh
-./scripts/backup/restoreZomboidData.sh <chemin>
+./scripts/backup/restoreZomboidData.sh <path>
 ```
 
 ### Administration
 
 ```bash
 ./scripts/admin/manageWhitelist.sh list
-./scripts/admin/manageWhitelist.sh add "<nom>" "<steam_id>"
+./scripts/admin/manageWhitelist.sh add "<name>" "<steam_id>"
 ./scripts/admin/manageWhitelist.sh remove "<steam_id>"
 ./scripts/admin/resetServer.sh [--keep-whitelist]
-./scripts/admin/setram.sh <valeur>
-./scripts/admin/performFullMaintenance.sh [délai]
+./scripts/admin/setram.sh <value>
+./scripts/admin/performFullMaintenance.sh [delay]
 ```
 
 ### RCON
 
 ```bash
-./scripts/internal/sendCommand.sh "<commande>"
+./scripts/internal/sendCommand.sh "<command>"
 ./scripts/internal/sendDiscord.sh "<message>"
 ```
 
-**Recommandation** : Utiliser `pzm` pour interface unifiée
+**Recommendation**: Use `pzm` for unified interface
 
 ---
 
-## Cas d'Usage
+## Use Cases
 
-### Démarrage Quotidien
+### Daily Startup
 
 ```bash
 su - pzuser
 cd /home/pzuser/pzmanager
 pzm server status
-# Si arrêté :
+# If stopped:
 pzm server start
 ```
 
-### Appliquer Configuration Serveur
+### Apply Server Configuration
 
 ```bash
-# 1. Éditer configuration
+# 1. Edit configuration
 nano /home/pzuser/pzmanager/Zomboid/Server/servertest.ini
 
-# 2. Redémarrer avec avertissement
+# 2. Restart with warning
 pzm server restart 5m
 ```
 
-### Mise à Jour Manuelle
+### Manual Update
 
 ```bash
-# Maintenance complète (MAJ système + serveur)
+# Complete maintenance (system + server update)
 pzm admin maintenance 30m
 ```
 
-### Ajouter Joueur Whitelist
+### Add Player to Whitelist
 
 ```bash
-# 1. Obtenir Steam ID 32 depuis Steam64 ID
-# https://steamid.xyz/ → Convertir 76561198XXXXXXXXX
+# 1. Get Steam ID 32 from Steam64 ID
+# https://steamid.xyz/ → Convert 76561198XXXXXXXXX
 
-# 2. Ajouter à whitelist
-pzm whitelist add "NomJoueur" "STEAM_0:1:12345678"
+# 2. Add to whitelist
+pzm whitelist add "PlayerName" "STEAM_0:1:12345678"
 
-# 3. Vérifier
+# 3. Verify
 pzm whitelist list
 ```
 
-### Restaurer Backup
+### Restore Backup
 
 ```bash
-# 1. Lister backups disponibles
+# 1. List available backups
 pzm backup list
 
-# 2. Restaurer backup spécifique
+# 2. Restore specific backup
 pzm backup restore data/dataBackups/backup_2026-01-12_14h14m00s
 
-# 3. Démarrer serveur
+# 3. Start server
 pzm server start
 ```
 
-### Nouveau Monde (Wipe)
+### New World (Wipe)
 
 ```bash
-# Avec conservation whitelist
+# With whitelist preservation
 pzm admin reset --keep-whitelist
-# Confirmer en tapant "RESET"
+# Confirm by typing "RESET"
 
-# Démarrer nouveau monde
+# Start new world
 pzm server start
 ```
 
-### Augmenter RAM Serveur
+### Increase Server RAM
 
 ```bash
-# 1. Configurer RAM
+# 1. Configure RAM
 pzm config ram 16g
 
-# 2. Appliquer avec redémarrage
+# 2. Apply with restart
 pzm server restart 5m
 ```
 
-### Envoyer Message aux Joueurs
+### Send Message to Players
 
 ```bash
-pzm rcon "servermsg 'Maintenance dans 10 minutes'"
+pzm rcon "servermsg 'Maintenance in 10 minutes'"
 ```
 
-### Sauvegarder Manuellement
+### Manual Save
 
 ```bash
 # Via RCON
 pzm rcon "save"
 
-# Via backup incrémental
+# Via incremental backup
 pzm backup create
 ```
 
-### Vérifier Logs
+### Check Logs
 
 ```bash
-# Logs récents
+# Recent logs
 pzm server status
 
-# Logs complets serveur
+# Complete server logs
 ls -lh scripts/logs/zomboid/
 cat scripts/logs/zomboid/zomboid_2026-01-12_10h30m00s.log
 
-# Logs maintenance
+# Maintenance logs
 ls -lh scripts/logs/maintenance/
 cat scripts/logs/maintenance/maintenance_2026-01-12_04h30m00s.log
 
-# Logs backups
+# Backup logs
 cat scripts/logs/data_backup.log
 ```
 
 ### Test Discord
 
 ```bash
-# Via script direct
+# Via direct script
 ./scripts/internal/sendDiscord.sh "Test notification"
 
-# Via RCON (déclenche notification)
+# Via RCON (triggers notification)
 pzm rcon "save"
 ```
 
-### Surveillance Serveur
+### Server Monitoring
 
 ```bash
-# Statut service systemd
+# Systemd service status
 systemctl --user status zomboid.service
 
-# Logs temps réel journald
+# Real-time journald logs
 journalctl --user -u zomboid.service -f
 
-# Ressources système
+# System resources
 htop
-# Chercher processus "java"
+# Search for "java" process
 ```
 
-### Modification Massive Whitelist
+### Bulk Whitelist Modification
 
 ```bash
-# Via SQLite direct
+# Via direct SQLite
 sqlite3 /home/pzuser/pzmanager/Zomboid/db/servertest.db
 
-# Lister tous
+# List all
 SELECT username, steamid FROM whitelist;
 
-# Supprimer tous (sauf admin)
+# Delete all (except admin)
 DELETE FROM whitelist WHERE username != 'admin';
 
-# Quitter
+# Quit
 .quit
 ```
 
-### Backup Avant Maintenance
+### Backup Before Maintenance
 
 ```bash
-# 1. Backup complet manuel
+# 1. Manual complete backup
 pzm backup full
 
-# 2. Vérifier création
+# 2. Verify creation
 ls -lh data/fullBackups/
 
 # 3. Maintenance
@@ -658,69 +658,69 @@ pzm admin maintenance 30m
 
 ---
 
-## Dépannage Rapide
+## Quick Troubleshooting
 
-### Serveur Ne Démarre Pas
+### Server Won't Start
 
 ```bash
-# Vérifier logs
+# Check logs
 pzm server status
 journalctl --user -u zomboid.service -n 100
 
-# Vérifier service
+# Check service
 systemctl --user status zomboid.service
 
-# Redémarrer service
+# Restart service
 systemctl --user restart zomboid.service
 ```
 
-### Serveur Lent / Lag
+### Server Slow / Lag
 
 ```bash
-# Augmenter RAM
+# Increase RAM
 pzm config ram 16g
 pzm server restart 5m
 
-# Vérifier ressources
+# Check resources
 htop
 ```
 
-### Corruption Données
+### Data Corruption
 
 ```bash
-# Restaurer backup récent
+# Restore recent backup
 pzm backup list
 pzm backup restore data/dataBackups/backup_RECENT
 
-# Ou reset complet
+# Or complete reset
 pzm admin reset --keep-whitelist
 ```
 
-### Backup Échoue
+### Backup Fails
 
 ```bash
-# Vérifier espace disque
+# Check disk space
 df -h
 
-# Vérifier logs
+# Check logs
 cat scripts/logs/data_backup.log
 
-# Nettoyage backups anciens
-# (automatique via maintenance quotidienne)
+# Old backup cleanup
+# (automatic via daily maintenance)
 ```
 
 ---
 
-## Variables d'Environnement
+## Environment Variables
 
-**Fichier** : `scripts/.env`
+**File**: `scripts/.env`
 
-**Modifier** :
+**Edit**:
 ```bash
 nano scripts/.env
 ```
 
-**Variables utiles** :
+**Useful variables**:
 
 ```bash
 # RAM / Java
@@ -729,65 +729,65 @@ JAVA_VERSION="25"
 # Backups
 BACKUP_RETENTION_DAYS="30"
 
-# Discord (optionnel)
+# Discord (optional)
 DISCORD_WEBHOOK="https://discord.com/api/webhooks/..."
 
-# Serveur PZ
+# PZ Server
 STEAM_BETA_BRANCH="legacy_41_78_7"
 ```
 
-**Appliquer** : Redémarrer services concernés
+**Apply**: Restart affected services
 
-**Documentation** : [CONFIGURATION.md](CONFIGURATION.md)
+**Documentation**: [CONFIGURATION.md](CONFIGURATION.md)
 
 ---
 
-## Automatisations
+## Automations
 
 ### Crontab
 
-**Voir tâches** :
+**View tasks**:
 ```bash
 crontab -l
 ```
 
-**Tâches configurées** :
+**Configured tasks**:
 
-#### Backup Horaire (:14)
+#### Hourly Backup (:14)
 ```
 14 * * * *  /bin/bash  /home/pzuser/pzmanager/scripts/backup/dataBackup.sh >> /home/pzuser/pzmanager/scripts/logs/data_backup.log 2>&1
 ```
 
-#### Maintenance Quotidienne (4h30)
+#### Daily Maintenance (4:30 AM)
 ```
 30 4 * * *  /bin/bash  /home/pzuser/pzmanager/scripts/admin/performFullMaintenance.sh
 ```
 
-**Modifier crontab** :
+**Edit crontab**:
 ```bash
 crontab -e
 ```
 
 ---
 
-## Aide et Support
+## Help and Support
 
-**Aide pzm** :
+**pzm Help**:
 ```bash
 pzm --help
 ```
 
-**Aide script spécifique** :
+**Specific script help**:
 ```bash
 ./scripts/admin/setram.sh --help
 ```
 
-**Documentation** :
-- [INSTALLATION.md](INSTALLATION.md) - Installation détaillée
-- [CONFIGURATION.md](CONFIGURATION.md) - Variables .env
-- [SERVER_CONFIG.md](SERVER_CONFIG.md) - Config serveur PZ
-- [ADVANCED.md](ADVANCED.md) - Optimisations
-- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Résolution problèmes
-- [WHAT_IS_INSTALLED.md](WHAT_IS_INSTALLED.md) - Détails installation
+**Documentation**:
+- [INSTALLATION.md](INSTALLATION.md) - Detailed installation
+- [CONFIGURATION.md](CONFIGURATION.md) - .env variables
+- [SERVER_CONFIG.md](SERVER_CONFIG.md) - PZ server config
+- [ADVANCED.md](ADVANCED.md) - Optimizations
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Troubleshooting
+- [WHAT_IS_INSTALLED.md](WHAT_IS_INSTALLED.md) - Installation details
 
-**Support** : Ouvrir issue sur GitHub
+**Support**: Open issue on GitHub

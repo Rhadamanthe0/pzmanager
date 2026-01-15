@@ -1,64 +1,64 @@
 # Quick Start Guide
 
-Installation rapide du serveur Project Zomboid en 10 minutes.
+Quick installation of Project Zomboid server in 10 minutes.
 
-## Table des matières
+## Table of Contents
 
-- [Prérequis](#prérequis)
+- [Prerequisites](#prerequisites)
 - [Installation](#installation)
-- [Configuration serveur](#configuration-serveur)
-- [Commandes](#commandes)
-- [Discord (Optionnel)](#discord-optionnel)
-- [Automatisations](#automatisations)
-- [Problèmes courants](#problèmes-courants)
-- [Ressources](#ressources)
+- [Server Configuration](#server-configuration)
+- [Commands](#commands)
+- [Discord (Optional)](#discord-optional)
+- [Automations](#automations)
+- [Common Issues](#common-issues)
+- [Resources](#resources)
 
-## Prérequis
+## Prerequisites
 
-- **OS** : Debian 12 ou Ubuntu 22.04+
-- **Accès** : Root/sudo
-- **RAM** : 4GB minimum
-- **Disque** : 20GB+ libre
+- **OS**: Debian 12 or Ubuntu 22.04+
+- **Access**: Root/sudo
+- **RAM**: 4GB minimum
+- **Disk**: 20GB+ free
 
-**Ports** : 16261/UDP, 16262/UDP, 8766/UDP, 27015/TCP (ouverts automatiquement)
+**Ports**: 16261/UDP, 16262/UDP, 8766/UDP, 27015/TCP (automatically opened)
 
 ## Installation
 
-⚠️ **Installation en tant que root** - exploitation en pzuser après installation
+⚠️ **Installation as root** - operation as pzuser after installation
 
 ```bash
-# Cloner
+# Clone
 git clone https://github.com/YOUR_USERNAME/pzmanager.git /opt/pzmanager
 cd /opt/pzmanager
 
-# Si git manquant
+# If git missing
 apt install -y git
 
-# Configuration système (crée pzuser, firewall, packages)
+# System configuration (creates pzuser, firewall, packages)
 ./scripts/install/setupSystem.sh
 
-# Permissions sudo
+# Sudo permissions
 visudo -cf data/setupTemplates/pzuser-sudoers && \
 cp data/setupTemplates/pzuser-sudoers /etc/sudoers.d/pzuser
 
-# Installation finale
+# Final installation
 mv /opt/pzmanager /home/pzuser/
 chown -R pzuser:pzuser /home/pzuser/pzmanager
 sudo -u pzuser crontab /home/pzuser/pzmanager/data/setupTemplates/pzuser-crontab
 /home/pzuser/pzmanager/scripts/install/configurationInitiale.sh zomboid
 ```
 
-**Durée totale** : 15-35 minutes (selon connexion)
+**Total duration**: 15-35 minutes (depending on connection)
 
-**Version installée** : Project Zomboid Build 41 (branche `legacy_41_78_7`)
+**Installed version**: Project Zomboid Build 41 (branch `legacy_41_78_7`)
 
-**Optimisations appliquées automatiquement** :
-- ZGC (Garbage Collector Java)
-- RAM 8GB par défaut
+**Automatically applied optimizations**:
+- ZGC (Java Garbage Collector)
+- 8GB RAM by default
 
 ---
 
-**Démarrage** (en tant que pzuser):
+**Startup** (as pzuser):
 ```bash
 su - pzuser
 cd /home/pzuser/pzmanager
@@ -66,7 +66,7 @@ pzm server start
 pzm server status
 ```
 
-**Attendu** :
+**Expected**:
 ```
 Status: RUNNING
 Active since: [timestamp]
@@ -75,89 +75,89 @@ Recent logs:
 [...] RCON: listening on port 27015
 ```
 
-✅ Serveur opérationnel !
+✅ Server operational!
 
-## Configuration serveur
+## Server Configuration
 
 ```bash
 nano /home/pzuser/pzmanager/Zomboid/Server/servertest.ini
 ```
 
-Paramètres importants :
+Important parameters:
 ```ini
 ServerName=MyServer
 PublicName=My Public Server
-Password=                    # Vide = public
-AdminPassword=CHANGEME       # ⚠️ CHANGER!
+Password=                    # Empty = public
+AdminPassword=CHANGEME       # ⚠️ CHANGE IT!
 MaxPlayers=32
 PauseEmpty=true
 ```
 
-Appliquer : `pzm server restart 5m`
+Apply: `pzm server restart 5m`
 
-Documentation complète : [SERVER_CONFIG.md](SERVER_CONFIG.md)
+Complete documentation: [SERVER_CONFIG.md](SERVER_CONFIG.md)
 
-## Commandes
+## Commands
 
 ```bash
-pzm server start              # Démarrer
-pzm server stop [délai]       # Arrêter (défaut: 2m avertissement)
-pzm server restart [délai]    # Redémarrer
-pzm server status             # État + logs
+pzm server start              # Start
+pzm server stop [delay]       # Stop (default: 2m warning)
+pzm server restart [delay]    # Restart
+pzm server status             # Status + logs
 ```
 
-**Délais** : `30m`, `15m`, `5m`, `2m`, `30s`, `now`
+**Delays**: `30m`, `15m`, `5m`, `2m`, `30s`, `now`
 
-Exemples :
+Examples:
 ```bash
-pzm server restart 30m    # Avertir 30min avant
-pzm server stop now       # Arrêt immédiat
+pzm server restart 30m    # Warn 30min before
+pzm server stop now       # Immediate stop
 ```
 
-## Discord (Optionnel)
+## Discord (Optional)
 
-Configuration : [CONFIGURATION.md - Discord](CONFIGURATION.md#notifications-discord)
+Configuration: [CONFIGURATION.md - Discord](CONFIGURATION.md#notifications-discord)
 
-## Automatisations
+## Automations
 
-**Maintenance quotidienne (4h30)** :
-- Arrêt serveur (30m avertissement)
-- Rotation backups
-- MAJ système (apt + Java + SteamCMD)
-- Backup complet
+**Daily maintenance (4:30 AM)**:
+- Server shutdown (30m warning)
+- Backup rotation
+- System updates (apt + Java + SteamCMD)
+- Complete backup
 - Reboot
 
-**Backups horaires (:14)** :
-- Backup incrémental Zomboid data
-- Rétention 14j (configurable .env)
+**Hourly backups (:14)**:
+- Incremental Zomboid data backup
+- 14-day retention (configurable in .env)
 
-## Problèmes courants
+## Common Issues
 
-**Serveur ne démarre pas**
+**Server won't start**
 ```bash
 sudo -u pzuser systemctl --user status zomboid.service
 sudo -u pzuser journalctl --user -u zomboid.service -n 50
 ```
 
-**Impossible de se connecter**
+**Cannot connect**
 ```bash
-sudo ufw status    # Vérifier firewall
-pzm server status    # Vérifier serveur actif
+sudo ufw status    # Check firewall
+pzm server status    # Check server active
 ```
 
-**Backups ne marchent pas**
+**Backups not working**
 ```bash
-crontab -l    # Vérifier planification
-pzm backup create  # Test manuel
+crontab -l    # Check scheduling
+pzm backup create  # Manual test
 ```
 
-Documentation complète : [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+Complete documentation: [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 
-## Ressources
+## Resources
 
-- [INSTALLATION.md](INSTALLATION.md) - Installation détaillée
-- [CONFIGURATION.md](CONFIGURATION.md) - Variables .env, backups
-- [SERVER_CONFIG.md](SERVER_CONFIG.md) - Configuration serveur PZ
-- [ADVANCED.md](ADVANCED.md) - Optimisations, RCON
-- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Résolution problèmes
-- [PZ Wiki](https://pzwiki.net/wiki/Dedicated_Server) - Documentation officielle
+- [INSTALLATION.md](INSTALLATION.md) - Detailed installation
+- [CONFIGURATION.md](CONFIGURATION.md) - .env variables, backups
+- [SERVER_CONFIG.md](SERVER_CONFIG.md) - PZ server configuration
+- [ADVANCED.md](ADVANCED.md) - Optimizations, RCON
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Troubleshooting
+- [PZ Wiki](https://pzwiki.net/wiki/Dedicated_Server) - Official documentation

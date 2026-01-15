@@ -1,28 +1,28 @@
 # Configuration Guide
 
-Configuration des variables d'environnement, backups et Discord.
+Configuration of environment variables, backups, and Discord.
 
-## Table des matières
+## Table of Contents
 
-- [Fichier .env](#fichier-env)
-- [Configuration Backups](#configuration-backups)
-- [Intégration Discord](#intégration-discord)
-- [Configuration Logs](#configuration-logs)
+- [.env File](#env-file)
+- [Backups Configuration](#backups-configuration)
+- [Discord Integration](#discord-integration)
+- [Logs Configuration](#logs-configuration)
 
-Pour les paramètres du serveur de jeu, voir [SERVER_CONFIG.md](SERVER_CONFIG.md).
-Pour les réglages avancés, voir [ADVANCED.md](ADVANCED.md).
+For game server parameters, see [SERVER_CONFIG.md](SERVER_CONFIG.md).
+For advanced settings, see [ADVANCED.md](ADVANCED.md).
 
-## Fichier .env
+## .env File
 
-**Localisation** : `scripts/.env`
+**Location**: `scripts/.env`
 
-Le fichier .env est créé automatiquement depuis .env.example au premier lancement.
+The .env file is automatically created from .env.example on first run.
 
-**Éditer** : `nano /home/pzuser/pzmanager/scripts/.env`
+**Edit**: `nano /home/pzuser/pzmanager/scripts/.env`
 
-### Chemins principaux
+### Main Paths
 
-⚠️ Ne modifier que si installation personnalisée
+⚠️ Only modify for custom installation
 
 ```bash
 export PZ_USER="pzuser"
@@ -32,7 +32,7 @@ export PZ_SCRIPTS_DIR="${PZ_MANAGER_DIR}/scripts"
 export PZ_DATA_DIR="${PZ_MANAGER_DIR}/data"
 ```
 
-### Serveur Project Zomboid
+### Project Zomboid Server
 
 ```bash
 export PZ_INSTALL_DIR="${PZ_DATA_DIR}/pzserver"
@@ -50,10 +50,10 @@ export STEAM_APP_ID="380870"
 export STEAM_BETA_BRANCH="legacy_41_78_7"
 ```
 
-**Branches disponibles** :
-- `legacy_41_78_7` : Build 41.78.7 (stable, recommandé)
-- `public` : Dernière version stable
-- Voir [SteamDB](https://steamdb.info/app/380870/depots/) pour autres branches
+**Available branches**:
+- `legacy_41_78_7`: Build 41.78.7 (stable, recommended)
+- `public`: Latest stable version
+- See [SteamDB](https://steamdb.info/app/380870/depots/) for other branches
 
 ### Java Runtime
 
@@ -63,12 +63,12 @@ export JAVA_PACKAGE="openjdk-${JAVA_VERSION}-jre-headless"
 export JAVA_PATH="/usr/lib/jvm/java-${JAVA_VERSION}-openjdk-amd64"
 ```
 
-**Versions compatibles** : 17, 21, 25
-**Recommandé** : 25 (performances optimales)
+**Compatible versions**: 17, 21, 25
+**Recommended**: 25 (optimal performance)
 
-**Changer de version** :
-1. Modifier `JAVA_VERSION` dans .env
-2. Lancer maintenance : `./scripts/admin/performFullMaintenance.sh now`
+**Change version**:
+1. Modify `JAVA_VERSION` in .env
+2. Run maintenance: `./scripts/admin/performFullMaintenance.sh now`
 
 ### Backups
 
@@ -78,15 +78,15 @@ export BACKUP_LATEST_LINK="${BACKUP_DIR}/latest"
 export BACKUP_RETENTION_DAYS=30
 ```
 
-**BACKUP_RETENTION_DAYS** : Nombre de jours de conservation (défaut: 30)
+**BACKUP_RETENTION_DAYS**: Number of days to keep (default: 30)
 
-### Synchronisation externe
+### External Synchronization
 
 ```bash
 export SYNC_BACKUPS_DIR="${PZ_DATA_DIR}/fullBackups"
 ```
 
-Backups complets horodatés (YYYY-MM-DD_HH-MM) créés par fullBackup.sh.
+Timestamped complete backups (YYYY-MM-DD_HH-MM) created by fullBackup.sh.
 
 ### Logs
 
@@ -97,184 +97,184 @@ export LOG_MAINTENANCE_DIR="${LOG_BASE_DIR}/maintenance"
 export LOG_RETENTION_DAYS=30
 ```
 
-### Discord (Optionnel)
+### Discord (Optional)
 
 ```bash
 export DISCORD_WEBHOOK=""
 ```
 
-Laisser vide pour désactiver. Voir [Intégration Discord](#intégration-discord).
+Leave empty to disable. See [Discord Integration](#discord-integration).
 
-## Configuration Backups
+## Backups Configuration
 
-### Backups horaires
+### Hourly Backups
 
-**Script** : `scripts/backup/dataBackup.sh`
-**Planification** : Chaque heure à :14
-**Méthode** : Incrémentale avec hard links (rsync)
-**Rétention** : Configurable via `BACKUP_RETENTION_DAYS`
+**Script**: `scripts/backup/dataBackup.sh`
+**Schedule**: Every hour at :14
+**Method**: Incremental with hard links (rsync)
+**Retention**: Configurable via `BACKUP_RETENTION_DAYS`
 
-**Contenu** :
-- `Zomboid/Saves/` - Sauvegardes mondes
-- `Zomboid/db/` - Base de données serveur
-- `Zomboid/Server/` - Configuration serveur
+**Contents**:
+- `Zomboid/Saves/` - World saves
+- `Zomboid/db/` - Server database
+- `Zomboid/Server/` - Server configuration
 
-**Emplacement** : `/home/pzuser/pzmanager/data/dataBackups/backup_YYYY-MM-DD_HHhMMmSSs/`
+**Location**: `/home/pzuser/pzmanager/data/dataBackups/backup_YYYY-MM-DD_HHhMMmSSs/`
 
-### Backups complets
+### Complete Backups
 
-**Script** : `scripts/backup/fullBackup.sh`
-**Planification** : Quotidien à 4h30 (durant maintenance)
-**Méthode** : Snapshot complet + archive ZIP
+**Script**: `scripts/backup/fullBackup.sh`
+**Schedule**: Daily at 4:30 AM (during maintenance)
+**Method**: Complete snapshot + ZIP archive
 
-**Contenu** :
-- Configuration système (crontab, sudoers)
-- Clés SSH
-- Services systemd
-- Tous les scripts
-- Archive ZIP du dernier backup Zomboid
+**Contents**:
+- System configuration (crontab, sudoers)
+- SSH keys
+- Systemd services
+- All scripts
+- ZIP archive of latest Zomboid backup
 
-**Emplacement** : `/home/pzuser/pzmanager/data/fullBackups/YYYY-MM-DD_HH-MM/`
+**Location**: `/home/pzuser/pzmanager/data/fullBackups/YYYY-MM-DD_HH-MM/`
 
-### Backup manuel
+### Manual Backup
 
 ```bash
-# Backup horaire
+# Hourly backup
 pzm backup create
 
-# Backup complet
+# Complete backup
 sudo ./scripts/backup/fullBackup.sh
 ```
 
-### Restaurer depuis backup
+### Restore from Backup
 
 ```bash
 sudo ./scripts/install/configurationInitiale.sh restore /home/pzuser/pzmanager/data/fullBackups/2026-01-10_04-30
 ```
 
-### Ajuster la rétention
+### Adjust Retention
 
 ```bash
 nano /home/pzuser/pzmanager/scripts/.env
 
-# Modifier
-export BACKUP_RETENTION_DAYS=14    # 14 jours au lieu de 30
-export LOG_RETENTION_DAYS=14        # Logs 14 jours
+# Modify
+export BACKUP_RETENTION_DAYS=14    # 14 days instead of 30
+export LOG_RETENTION_DAYS=14        # Logs 14 days
 ```
 
-**Estimation espace disque** :
-- Petit serveur (1-2 joueurs) : ~500MB par backup
-- Serveur moyen (5-10 joueurs) : ~1GB par backup
-- Grand serveur (20+ joueurs) : ~2GB+ par backup
+**Disk space estimate**:
+- Small server (1-2 players): ~500MB per backup
+- Medium server (5-10 players): ~1GB per backup
+- Large server (20+ players): ~2GB+ per backup
 
-Avec rétention 14j et backups horaires : ~15-30GB
+With 14-day retention and hourly backups: ~15-30GB
 
-## Intégration Discord
+## Discord Integration
 
-Notifications optionnelles des événements serveur.
+Optional notifications for server events.
 
 ### Configuration
 
-**1. Créer webhook Discord**
-- Paramètres serveur → Intégrations → Webhooks
-- Nouveau Webhook
-- Nommer (ex: "PZ Server")
-- Choisir le canal
-- Copier l'URL
+**1. Create Discord webhook**
+- Server Settings → Integrations → Webhooks
+- New Webhook
+- Name it (e.g., "PZ Server")
+- Choose channel
+- Copy URL
 
-**2. Configurer .env**
+**2. Configure .env**
 ```bash
 nano /home/pzuser/pzmanager/scripts/.env
 
-# Coller l'URL
+# Paste URL
 export DISCORD_WEBHOOK="https://discord.com/api/webhooks/1234567890/abcdefghijklmnopqrstuvwxyz"
 ```
 
-**3. Tester**
+**3. Test**
 ```bash
-./scripts/internal/sendDiscord.sh "Test notification serveur PZ"
+./scripts/internal/sendDiscord.sh "Test PZ server notification"
 ```
 
-### Désactiver notifications
+### Disable Notifications
 
 ```bash
-# Dans .env, vider la variable
+# In .env, empty the variable
 export DISCORD_WEBHOOK=""
 ```
 
-### Événements notifiés
+### Notified Events
 
-- Démarrage serveur
-- Serveur en ligne (RCON prêt)
-- Arrêt serveur (avec délai)
-- Début maintenance quotidienne
-- Redémarrage système
+- Server startup
+- Server online (RCON ready)
+- Server shutdown (with delay)
+- Daily maintenance start
+- System reboot
 
-## Configuration Logs
+## Logs Configuration
 
-### Logs Zomboid
+### Zomboid Logs
 
-**Emplacement** : `scripts/logs/zomboid/`
-**Format** : `zomboid_YYYY-MM-DD_HHhMMmSS.log`
-**Source** : journald (via captureLogs.sh)
-**Rétention** : `LOG_RETENTION_DAYS` (défaut: 30j)
+**Location**: `scripts/logs/zomboid/`
+**Format**: `zomboid_YYYY-MM-DD_HHhMMmSS.log`
+**Source**: journald (via captureLogs.sh)
+**Retention**: `LOG_RETENTION_DAYS` (default: 30 days)
 
-### Logs Maintenance
+### Maintenance Logs
 
-**Emplacement** : `scripts/logs/maintenance/`
-**Format** : `maintenance_YYYY-MM-DD_HHhMMmSS.log`
-**Contenu** : Logs de performFullMaintenance.sh
-**Rétention** : `LOG_RETENTION_DAYS`
+**Location**: `scripts/logs/maintenance/`
+**Format**: `maintenance_YYYY-MM-DD_HHhMMmSS.log`
+**Content**: Logs from performFullMaintenance.sh
+**Retention**: `LOG_RETENTION_DAYS`
 
-### Consulter les logs
+### View Logs
 
 ```bash
-# Status + derniers logs
+# Status + recent logs
 pzm server status
 
-# Logs temps réel
+# Real-time logs
 sudo journalctl -u zomboid.service -f
 
-# Logs maintenance
+# Maintenance logs
 ls -lt scripts/logs/maintenance/
 cat scripts/logs/maintenance/maintenance_YYYY-MM-DD_HHhMMmSS.log
 ```
 
-## Validation configuration
+## Configuration Validation
 
-### Vérifier syntaxe .env
+### Check .env Syntax
 
 ```bash
 bash -n /home/pzuser/pzmanager/scripts/.env
 ```
 
-### Vérifier sudoers
+### Check sudoers
 
 ```bash
 sudo visudo -cf /home/pzuser/pzmanager/data/setupTemplates/pzuser-sudoers
 ```
 
-### Vérifier crontab
+### Check crontab
 
 ```bash
 crontab -l
 ```
 
-### Tester backups
+### Test Backups
 
 ```bash
 pzm backup create
 ls -la /home/pzuser/pzmanager/data/dataBackups/
 ```
 
-### Tester Discord
+### Test Discord
 
 ```bash
 ./scripts/internal/sendDiscord.sh "Test configuration"
 ```
 
-## Ressources
+## Resources
 
-- [SERVER_CONFIG.md](SERVER_CONFIG.md) - Configuration serveur de jeu
-- [ADVANCED.md](ADVANCED.md) - Réglages avancés et optimisations
-- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Résolution problèmes
+- [SERVER_CONFIG.md](SERVER_CONFIG.md) - Game server configuration
+- [ADVANCED.md](ADVANCED.md) - Advanced settings and optimizations
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Troubleshooting

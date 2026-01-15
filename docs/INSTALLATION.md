@@ -1,96 +1,96 @@
 # Installation Guide
 
-Installation détaillée de pzmanager - Project Zomboid Server Manager.
+Detailed installation of pzmanager - Project Zomboid Server Manager.
 
-## Table des matières
+## Table of Contents
 
-- [Prérequis](#prérequis)
-- [Installation rapide](#installation-rapide)
-- [Installation détaillée](#installation-détaillée)
+- [Prerequisites](#prerequisites)
+- [Quick Installation](#quick-installation)
+- [Detailed Installation](#detailed-installation)
 - [Post-installation](#post-installation)
-- [Restauration depuis backup](#restauration-depuis-backup)
-- [Résolution problèmes](#résolution-problèmes)
-- [Désinstallation](#désinstallation)
-- [Ressources](#ressources)
+- [Restore from Backup](#restore-from-backup)
+- [Troubleshooting](#troubleshooting)
+- [Uninstallation](#uninstallation)
+- [Resources](#resources)
 
-## Prérequis
+## Prerequisites
 
-### Système
-- **Debian 12** (Bookworm) ou **Ubuntu 22.04 LTS+**
-- Installation fraîche recommandée
+### System
+- **Debian 12** (Bookworm) or **Ubuntu 22.04 LTS+**
+- Fresh installation recommended
 
-### Matériel
-- **CPU** : 2+ cores
-- **RAM** : 4GB minimum, 8GB recommandé
-- **Disque** : 20GB+ libre (SSD recommandé)
+### Hardware
+- **CPU**: 2+ cores
+- **RAM**: 4GB minimum, 8GB recommended
+- **Disk**: 20GB+ free (SSD recommended)
 
-### Réseau
-Ports requis (ouverts automatiquement) :
-- **16261/UDP** - Jeu principal
-- **16262/UDP** - Jeu secondaire
+### Network
+Required ports (automatically opened):
+- **16261/UDP** - Main game
+- **16262/UDP** - Secondary game
 - **8766/UDP** - RCON
 - **27015/TCP** - Steam query
-- **22/TCP** - SSH (gestion)
+- **22/TCP** - SSH (management)
 
-### Dépendances
-Installées automatiquement :
+### Dependencies
+Automatically installed:
 - rsync, unzip, ufw
 - steamcmd
 - openjdk-*-jre-headless
 
-## Installation rapide
+## Quick Installation
 
-Voir [QUICKSTART.md](QUICKSTART.md) pour version condensée.
+See [QUICKSTART.md](QUICKSTART.md) for condensed version.
 
-## Installation détaillée
+## Detailed Installation
 
-⚠️ **Installation en root** - exploitation en pzuser après installation
+⚠️ **Installation as root** - operation as pzuser after installation
 
-### 1. Mise à jour système
+### 1. System Update
 
 ```bash
 apt update && apt upgrade -y
 ```
 
-### 2. Cloner et configurer
+### 2. Clone and Configure
 
 ```bash
 git clone https://github.com/YOUR_USERNAME/pzmanager.git /opt/pzmanager
 cd /opt/pzmanager
 
-# Si git absent
+# If git missing
 apt install -y git
 ```
 
-### 3. Configuration système
+### 3. System Configuration
 
 ```bash
 ./scripts/install/setupSystem.sh
 ```
 
-**Actions** :
-- Crée utilisateur pzuser
-- Installe rsync, unzip, ufw
-- Configure firewall (ports + règles par défaut)
-- Active firewall
+**Actions**:
+- Creates pzuser user
+- Installs rsync, unzip, ufw
+- Configures firewall (ports + default rules)
+- Enables firewall
 
-**Vérification** :
+**Verification**:
 ```bash
-id pzuser       # Utilisateur existe
-ufw status      # Firewall actif
+id pzuser       # User exists
+ufw status      # Firewall active
 ```
 
-### 4. Permissions sudo
+### 4. Sudo Permissions
 
 ```bash
 visudo -cf data/setupTemplates/pzuser-sudoers && \
 cp data/setupTemplates/pzuser-sudoers /etc/sudoers.d/pzuser
 
-# Vérifier
+# Verify
 sudo -u pzuser sudo -l
 ```
 
-### 5. Installation finale
+### 5. Final Installation
 
 ```bash
 mv /opt/pzmanager /home/pzuser/
@@ -99,23 +99,23 @@ sudo -u pzuser crontab /home/pzuser/pzmanager/data/setupTemplates/pzuser-crontab
 /home/pzuser/pzmanager/scripts/install/configurationInitiale.sh zomboid
 ```
 
-**Durée** : 10-30 minutes (téléchargement ~1-2GB)
+**Duration**: 10-30 minutes (download ~1-2GB)
 
-**Version installée** : Project Zomboid Build 41 (branche `legacy_41_78_7`)
+**Installed version**: Project Zomboid Build 41 (branch `legacy_41_78_7`)
 
-**Optimisations appliquées automatiquement** :
-- ZGC (Garbage Collector Java)
-- RAM 8GB par défaut (modifiable via `pzm config ram <valeur>`)
+**Automatically applied optimizations**:
+- ZGC (Java Garbage Collector)
+- 8GB RAM by default (modifiable via `pzm config ram <value>`)
 
-**Vérification** :
+**Verification**:
 ```bash
 ls -la /home/pzuser/pzmanager/data/pzserver/
 sudo -u pzuser systemctl --user status zomboid.service
 ```
 
-### 6. Démarrage serveur
+### 6. Server Startup
 
-⚠️ **En tant que pzuser pour l'exploitation**
+⚠️ **As pzuser for operation**
 
 ```bash
 su - pzuser
@@ -124,9 +124,9 @@ pzm server start
 pzm server status
 ```
 
-Premier démarrage : 2-5 minutes (génération monde).
+First startup: 2-5 minutes (world generation).
 
-**Attendu** :
+**Expected**:
 ```
 Status: RUNNING
 Active since: [timestamp]
@@ -137,145 +137,145 @@ Recent logs:
 
 ## Post-installation
 
-Toutes les commandes post-installation s'exécutent en tant que **pzuser** (`su - pzuser`).
+All post-installation commands are executed as **pzuser** (`su - pzuser`).
 
-### Configuration .env (optionnel)
+### .env Configuration (optional)
 
-Fichier `.env` créé automatiquement depuis `.env.example` au premier lancement.
+`.env` file automatically created from `.env.example` on first run.
 
-Pour personnaliser : `nano /home/pzuser/pzmanager/scripts/.env`
+To customize: `nano /home/pzuser/pzmanager/scripts/.env`
 
-Variables utiles :
-- `JAVA_VERSION` : Version Java (défaut: 25)
-- `STEAM_BETA_BRANCH` : Branche PZ (défaut: legacy_41_78_7)
-- `BACKUP_RETENTION_DAYS` : Rétention backups (défaut: 30)
-- `DISCORD_WEBHOOK` : Notifications Discord
+Useful variables:
+- `JAVA_VERSION`: Java version (default: 25)
+- `STEAM_BETA_BRANCH`: PZ branch (default: legacy_41_78_7)
+- `BACKUP_RETENTION_DAYS`: Backup retention (default: 30)
+- `DISCORD_WEBHOOK`: Discord notifications
 
-Documentation : [CONFIGURATION.md](CONFIGURATION.md)
+Documentation: [CONFIGURATION.md](CONFIGURATION.md)
 
-### Configuration serveur
+### Server Configuration
 
-Fichier : `/home/pzuser/pzmanager/Zomboid/Server/servertest.ini`
+File: `/home/pzuser/pzmanager/Zomboid/Server/servertest.ini`
 
-Paramètres à modifier :
-- `AdminPassword` : ⚠️ CHANGER impérativement !
-- `PublicName` : Nom affiché dans liste serveurs
-- `Password` : Mot de passe serveur (vide = public)
+Parameters to modify:
+- `AdminPassword`: ⚠️ MUST CHANGE!
+- `PublicName`: Name displayed in server list
+- `Password`: Server password (empty = public)
 
-**Appliquer** : `pzm server restart 2m`
+**Apply**: `pzm server restart 2m`
 
-Documentation : [SERVER_CONFIG.md](SERVER_CONFIG.md)
+Documentation: [SERVER_CONFIG.md](SERVER_CONFIG.md)
 
-### Admins et whitelist
+### Admins and Whitelist
 
-- **Admins** : [SERVER_CONFIG.md - Admins](SERVER_CONFIG.md#gestion-admins)
-- **Whitelist** : [SERVER_CONFIG.md - Whitelist](SERVER_CONFIG.md#gestion-whitelist)
+- **Admins**: [SERVER_CONFIG.md - Admins](SERVER_CONFIG.md#gestion-admins)
+- **Whitelist**: [SERVER_CONFIG.md - Whitelist](SERVER_CONFIG.md#gestion-whitelist)
 
-### Discord (optionnel)
+### Discord (optional)
 
-Configuration : [CONFIGURATION.md - Discord](CONFIGURATION.md#notifications-discord)
+Configuration: [CONFIGURATION.md - Discord](CONFIGURATION.md#notifications-discord)
 
-### Maintenance à distance (Optionnel)
+### Remote Maintenance (Optional)
 
-**Générer clé (machine locale)** :
+**Generate key (local machine)**:
 ```bash
 ssh-keygen -t ed25519 -f ~/.ssh/pz_maintenance
 ```
 
-**Ajouter au serveur** :
+**Add to server**:
 ```bash
 nano ~/.ssh/authorized_keys
 
-# Ajouter
+# Add
 command="/home/pzuser/pzmanager/scripts/admin/performFullMaintenance.sh $SSH_ORIGINAL_COMMAND",no-port-forwarding,no-X11-forwarding,no-agent-forwarding ssh-ed25519 AAAA...
 ```
 
-**Utiliser** :
+**Use**:
 ```bash
-ssh -i ~/.ssh/pz_maintenance pzuser@SERVEUR_IP 30m
+ssh -i ~/.ssh/pz_maintenance pzuser@SERVER_IP 30m
 ```
 
-Documentation : [ADVANCED.md](ADVANCED.md)
+Documentation: [ADVANCED.md](ADVANCED.md)
 
-## Restauration depuis backup
+## Restore from Backup
 
-### Restauration complète (système + données)
+### Complete Restore (system + data)
 
 ```bash
 sudo ./scripts/install/configurationInitiale.sh restore /home/pzuser/pzmanager/data/fullBackups/YYYY-MM-DD_HH-MM
 ```
 
-Restaure :
-- Configuration système (crontab, sudoers)
-- Clés SSH, services systemd
-- Scripts et .env
-- Dernière sauvegarde Zomboid (auto-décompressée)
+Restores:
+- System configuration (crontab, sudoers)
+- SSH keys, systemd services
+- Scripts and .env
+- Latest Zomboid backup (auto-decompressed)
 
-### Restauration données Zomboid uniquement
+### Zomboid Data Only Restore
 
 ```bash
 ./scripts/backup/restoreZomboidData.sh data/dataBackups/backup_YYYY-MM-DD_HHhMMmSSs
 ```
 
-Restaure uniquement les données du jeu (Saves, db, Server).
-Crée backup de sécurité avant écrasement.
+Restores only game data (Saves, db, Server).
+Creates safety backup before overwriting.
 
-Documentation : [TROUBLESHOOTING.md - Restaurer données Zomboid](TROUBLESHOOTING.md#restaurer-données-zomboid)
+Documentation: [TROUBLESHOOTING.md - Restore Zomboid Data](TROUBLESHOOTING.md#restaurer-données-zomboid)
 
-## Résolution problèmes
+## Troubleshooting
 
-Voir [TROUBLESHOOTING.md](TROUBLESHOOTING.md) pour guide complet.
+See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for complete guide.
 
-**Problèmes fréquents** :
+**Common issues**:
 
-**Serveur ne démarre pas**
+**Server won't start**
 ```bash
 sudo -u pzuser systemctl --user status zomboid.service
 sudo -u pzuser journalctl --user -u zomboid.service -n 100
 ```
 
-**Connexion impossible**
+**Cannot connect**
 ```bash
-sudo ufw status                    # Vérifier firewall
-sudo netstat -tulpn | grep java    # Vérifier écoute ports
+sudo ufw status                    # Check firewall
+sudo netstat -tulpn | grep java    # Check port listening
 ```
 
-**Backups non fonctionnels**
+**Backups not working**
 ```bash
-crontab -l                   # Vérifier planification
-pzm backup create  # Test manuel
+crontab -l                   # Check scheduling
+pzm backup create  # Manual test
 ```
 
-## Désinstallation
+## Uninstallation
 
 ```bash
-# 1. Arrêter serveur
+# 1. Stop server
 sudo su - pzuser
 pzm server stop now
 exit
 
-# 2. Désactiver service
+# 2. Disable service
 sudo -u pzuser systemctl --user disable zomboid.service
 sudo -u pzuser systemctl --user stop zomboid.service
 
-# 3. Supprimer crontab
+# 3. Remove crontab
 sudo -u pzuser crontab -r
 
-# 4. Supprimer sudoers
+# 4. Remove sudoers
 sudo rm /etc/sudoers.d/pzuser
 
-# 5. Supprimer installation (⚠️ supprime toutes données!)
+# 5. Remove installation (⚠️ deletes all data!)
 sudo rm -rf /home/pzuser/pzmanager
 
-# 6. (Optionnel) Supprimer utilisateur
+# 6. (Optional) Remove user
 sudo userdel -r pzuser
 ```
 
-## Ressources
+## Resources
 
-- [QUICKSTART.md](QUICKSTART.md) - Installation rapide
-- [CONFIGURATION.md](CONFIGURATION.md) - Configuration .env, backups
-- [SERVER_CONFIG.md](SERVER_CONFIG.md) - Configuration serveur PZ
-- [ADVANCED.md](ADVANCED.md) - Optimisations, RCON
-- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Résolution problèmes
-- [PZ Wiki](https://pzwiki.net/wiki/Dedicated_Server) - Documentation officielle
+- [QUICKSTART.md](QUICKSTART.md) - Quick installation
+- [CONFIGURATION.md](CONFIGURATION.md) - .env configuration, backups
+- [SERVER_CONFIG.md](SERVER_CONFIG.md) - PZ server configuration
+- [ADVANCED.md](ADVANCED.md) - Optimizations, RCON
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Troubleshooting
+- [PZ Wiki](https://pzwiki.net/wiki/Dedicated_Server) - Official documentation

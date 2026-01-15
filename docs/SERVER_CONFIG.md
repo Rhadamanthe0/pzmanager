@@ -1,120 +1,120 @@
-# Configuration Serveur Project Zomboid
+# Project Zomboid Server Configuration
 
-Configuration des paramètres du serveur de jeu.
+Configuration of game server parameters.
 
-## Table des matières
+## Table of Contents
 
-- [Documentation officielle](#documentation-officielle)
-- [Spécificités pzmanager](#spécificités-pzmanager)
-  - [Fichiers de configuration](#fichiers-de-configuration)
-  - [Appliquer les modifications](#appliquer-les-modifications)
-  - [Paramètres importants](#paramètres-importants)
-  - [Gestion whitelist](#gestion-whitelist)
+- [Official Documentation](#official-documentation)
+- [pzmanager Specifics](#pzmanager-specifics)
+  - [Configuration Files](#configuration-files)
+  - [Apply Changes](#apply-changes)
+  - [Important Parameters](#important-parameters)
+  - [Whitelist Management](#whitelist-management)
   - [Mods](#mods)
-  - [Ports réseau](#ports-réseau)
-- [Ressources](#ressources)
+  - [Network Ports](#network-ports)
+- [Resources](#resources)
 
-## Documentation officielle
+## Official Documentation
 
-Pour la configuration complète du serveur Project Zomboid :
+For complete Project Zomboid server configuration:
 - [Server Settings](https://pzwiki.net/wiki/Server_Settings)
 - [Sandbox Variables](https://pzwiki.net/wiki/Sandbox)
 - [Dedicated Server Guide](https://pzwiki.net/wiki/Dedicated_Server)
 
-## Spécificités pzmanager
+## pzmanager Specifics
 
-### Fichiers de configuration
+### Configuration Files
 
-**Localisation** : `/home/pzuser/pzmanager/Zomboid/Server/`
+**Location**: `/home/pzuser/pzmanager/Zomboid/Server/`
 
-Fichiers principaux :
-- `servertest.ini` - Configuration serveur (nom, ports, joueurs, etc.)
-- `servertest_SandboxVars.lua` - Règles du jeu (zombies, difficulté, loot)
-- `servertest_access.txt` - Liste admins (Steam64 IDs)
+Main files:
+- `servertest.ini` - Server configuration (name, ports, players, etc.)
+- `servertest_SandboxVars.lua` - Game rules (zombies, difficulty, loot)
+- `servertest_access.txt` - Admin list (Steam64 IDs)
 
-### Appliquer les modifications
+### Apply Changes
 
 ```bash
-# Après modification, redémarrer avec avertissement joueurs
+# After modification, restart with player warning
 pzm server restart 5m
 ```
 
-### Paramètres importants
+### Important Parameters
 
 ```ini
 # servertest.ini
-ServerName=MyServer           # Nom interne
-PublicName=My Public Name     # Nom affiché browser
-Password=                     # Mot de passe (vide = public)
-AdminPassword=CHANGEME        # Password RCON (⚠️ CHANGER!)
-MaxPlayers=32                # Maximum joueurs
-PauseEmpty=true              # Pause si vide (économise CPU)
-SaveWorldEveryMinutes=30     # Fréquence auto-save
+ServerName=MyServer           # Internal name
+PublicName=My Public Name     # Browser display name
+Password=                     # Password (empty = public)
+AdminPassword=CHANGEME        # RCON password (⚠️ CHANGE IT!)
+MaxPlayers=32                # Maximum players
+PauseEmpty=true              # Pause if empty (saves CPU)
+SaveWorldEveryMinutes=30     # Auto-save frequency
 ```
 
-⚠️ **Sécurité** : Changez toujours `AdminPassword` !
+⚠️ **Security**: Always change `AdminPassword`!
 
-### Gestion whitelist
+### Whitelist Management
 
-**Script dédié** : `manageWhitelist.sh`
+**Dedicated script**: `manageWhitelist.sh`
 
-Gérer les utilisateurs autorisés à se connecter au serveur.
+Manage users authorized to connect to the server.
 
-**Voir la whitelist** :
+**View whitelist**:
 ```bash
 pzm whitelist list
 ```
 
-**Ajouter un joueur** :
+**Add player**:
 ```bash
 pzm whitelist add "PlayerName" "STEAM_0:1:12345678"
 ```
 
-**Retirer un joueur** :
+**Remove player**:
 ```bash
 pzm whitelist remove "STEAM_0:1:12345678"
 ```
 
-**Notes** :
-- Steam ID requis : **Steam ID 32** (format `STEAM_0:X:YYYYYYYY`)
-- Convertir Steam64 → Steam32 : [steamid.xyz](https://steamid.xyz/)
-- Changements appliqués au prochain redémarrage serveur
+**Notes**:
+- Required Steam ID: **Steam ID 32** (format `STEAM_0:X:YYYYYYYY`)
+- Convert Steam64 → Steam32: [steamid.xyz](https://steamid.xyz/)
+- Changes applied at next server restart
 
 ### Mods
 
-Documentation complète : [PZ Wiki - Modding](https://pzwiki.net/wiki/Modding)
+Complete documentation: [PZ Wiki - Modding](https://pzwiki.net/wiki/Modding)
 
-**Installation rapide** :
-1. Trouver mod sur [Steam Workshop](https://steamcommunity.com/app/108600/workshop/)
-2. Noter le Workshop ID (numéro dans l'URL)
-3. Éditer servertest.ini :
+**Quick installation**:
+1. Find mod on [Steam Workshop](https://steamcommunity.com/app/108600/workshop/)
+2. Note the Workshop ID (number in URL)
+3. Edit servertest.ini:
 
 ```ini
 Mods=modname1;modname2
 WorkshopItems=2992700364;111111111
 ```
 
-4. Redémarrer : `pzm server restart 15m`
+4. Restart: `pzm server restart 15m`
 
-### Ports réseau
+### Network Ports
 
-Ports par défaut (configurés automatiquement par pzmanager) :
-- **16261/UDP** - Jeu principal
-- **16262/UDP** - Jeu secondaire
+Default ports (automatically configured by pzmanager):
+- **16261/UDP** - Main game
+- **16262/UDP** - Secondary game
 - **8766/UDP** - RCON
 - **27015/TCP** - Steam query
 
-Modification (seulement si conflit) :
+Modification (only if conflict):
 ```ini
 # servertest.ini
 DefaultPort=16261
 UDPPort=16262
 ```
 
-⚠️ Modifier nécessite reconfigurer le firewall manuellement
+⚠️ Modification requires reconfiguring firewall manually
 
-## Ressources
+## Resources
 
-- [CONFIGURATION.md](CONFIGURATION.md) - Variables .env, backups, Discord
-- [ADVANCED.md](ADVANCED.md) - Performance, RCON, optimisations
-- [Documentation officielle PZ](https://pzwiki.net/wiki/Dedicated_Server)
+- [CONFIGURATION.md](CONFIGURATION.md) - .env variables, backups, Discord
+- [ADVANCED.md](ADVANCED.md) - Performance, RCON, optimizations
+- [Official PZ Documentation](https://pzwiki.net/wiki/Dedicated_Server)

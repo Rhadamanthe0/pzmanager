@@ -1,70 +1,70 @@
 # Troubleshooting Guide
 
-Guide de résolution des problèmes courants pour pzmanager.
+Guide to resolving common issues with pzmanager.
 
-## Table des matières
+## Table of Contents
 
-- [Serveur ne démarre pas](#serveur-ne-démarre-pas)
-- [Impossible de se connecter](#impossible-de-se-connecter)
-- [Serveur plante régulièrement](#serveur-plante-régulièrement)
-- [Reset complet du serveur](#reset-complet-du-serveur)
-- [Backups ne fonctionnent pas](#backups-ne-fonctionnent-pas)
-- [Restaurer données Zomboid](#restaurer-données-zomboid)
-- [Notifications Discord défaillantes](#notifications-discord-défaillantes)
-- [Erreurs de permissions](#erreurs-de-permissions)
-- [Espace disque insuffisant](#espace-disque-insuffisant)
-- [Problèmes de performances](#problèmes-de-performances)
-- [Obtenir de l'aide](#obtenir-de-laide)
+- [Server Won't Start](#server-wont-start)
+- [Cannot Connect](#cannot-connect)
+- [Server Crashes Regularly](#server-crashes-regularly)
+- [Complete Server Reset](#complete-server-reset)
+- [Backups Not Working](#backups-not-working)
+- [Restore Zomboid Data](#restore-zomboid-data)
+- [Discord Notifications Failing](#discord-notifications-failing)
+- [Permission Errors](#permission-errors)
+- [Insufficient Disk Space](#insufficient-disk-space)
+- [Performance Issues](#performance-issues)
+- [Getting Help](#getting-help)
 
-## Serveur ne démarre pas
+## Server Won't Start
 
-### Vérifier le statut du service
+### Check Service Status
 
 ```bash
 sudo -u pzuser systemctl --user status zomboid.service
 sudo -u pzuser journalctl --user -u zomboid.service -n 100
 ```
 
-### Causes fréquentes
+### Common Causes
 
-**Java introuvable**
+**Java not found**
 ```bash
-# Vérifier le symlink Java
+# Check Java symlink
 ls -la /home/pzuser/pzmanager/data/pzserver/jre64
 
-# Si manquant, recréer
+# If missing, recreate
 sudo rm -f /home/pzuser/pzmanager/data/pzserver/jre64
 sudo ln -s /usr/lib/jvm/java-25-openjdk-amd64 /home/pzuser/pzmanager/data/pzserver/jre64
 ```
 
-**Permission refusée**
+**Permission denied**
 ```bash
-# Vérifier les permissions
+# Check permissions
 ls -la /home/pzuser/pzmanager/data/pzserver/
 
-# Corriger si nécessaire
+# Fix if necessary
 sudo chown -R pzuser:pzuser /home/pzuser/pzmanager
 ```
 
-**Port déjà utilisé**
+**Port already in use**
 ```bash
-# Vérifier les ports
+# Check ports
 sudo netstat -tulpn | grep 16261
 
-# Si occupé, tuer le processus concurrent
+# If occupied, kill conflicting process
 sudo kill <PID>
 ```
 
-## Impossible de se connecter
+## Cannot Connect
 
-### Vérifier le firewall
+### Check Firewall
 
 ```bash
 sudo ufw status verbose
-# Doit afficher: 16261/udp, 16262/udp, 8766/udp, 27015/tcp ALLOW
+# Should show: 16261/udp, 16262/udp, 8766/udp, 27015/tcp ALLOW
 ```
 
-**Ouvrir les ports manuellement**
+**Open ports manually**
 ```bash
 sudo ufw allow 16261/udp
 sudo ufw allow 16262/udp
@@ -72,335 +72,335 @@ sudo ufw allow 8766/udp
 sudo ufw allow 27015/tcp
 ```
 
-### Vérifier que le serveur écoute
+### Check Server Listening
 
 ```bash
 sudo netstat -tulpn | grep java
-# Devrait afficher java sur les ports 16261, 8766, 27015
+# Should show java on ports 16261, 8766, 27015
 ```
 
-### Test réseau externe
+### External Network Test
 
-Depuis un autre ordinateur :
+From another computer:
 ```bash
-nc -vuz VOTRE_IP_SERVEUR 16261
+nc -vuz YOUR_SERVER_IP 16261
 ```
 
-### Serveur public
+### Public Server
 
-- Vérifier le NAT/port forwarding sur votre routeur
-- Vérifier les règles firewall de votre hébergeur (AWS, OVH, etc.)
+- Check NAT/port forwarding on your router
+- Check firewall rules from your hosting provider (AWS, OVH, etc.)
 
-### Serveur privé
+### Private Server
 
-- Utiliser l'IP directe dans Project Zomboid
-- Pas besoin d'être dans le browser de serveurs
+- Use direct IP in Project Zomboid
+- No need to be in the server browser
 
-## Serveur plante régulièrement
+## Server Crashes Regularly
 
-### Vérifier les ressources
+### Check Resources
 
 ```bash
-# RAM disponible
+# Available RAM
 free -h
 
-# Espace disque
+# Disk space
 df -h
 
-# Charge CPU
+# CPU load
 top
 ```
 
-### Causes fréquentes
+### Common Causes
 
-**RAM insuffisante** (< 4GB)
-- Réduire MaxPlayers dans servertest.ini
-- Augmenter la RAM du serveur
-- Désactiver des mods
+**Insufficient RAM** (< 4GB)
+- Reduce MaxPlayers in servertest.ini
+- Increase server RAM
+- Disable mods
 
-**Disque plein** (< 10GB libre)
-- Réduire la rétention des backups
-- Nettoyer les anciens backups manuellement
+**Full Disk** (< 10GB free)
+- Reduce backup retention
+- Manually clean old backups
 
-**Trop de mods**
-- Désactiver les mods un par un pour identifier le problème
-- Vérifier la compatibilité des mods entre eux
+**Too Many Mods**
+- Disable mods one by one to identify the issue
+- Check mod compatibility
 
-### Analyser les crashs
+### Analyze Crashes
 
 ```bash
-# Logs complets du dernier crash
+# Complete logs of last crash
 pzm server status
 
-# Logs system
+# System logs
 sudo journalctl -xe
 ```
 
-## Reset complet du serveur
+## Complete Server Reset
 
-### Quand utiliser
+### When to Use
 
-Solution ultime quand :
-- Monde corrompu irréparable
-- Changement complet de règles/mods
-- Performance dégradée persistante
-- Recommencer à zéro
+Ultimate solution when:
+- Irreparable world corruption
+- Complete rules/mods change
+- Persistent degraded performance
+- Starting from scratch
 
-### Reset complet (nouveau monde)
+### Complete Reset (new world)
 
 ```bash
 ./scripts/admin/resetServer.sh
 ```
 
-Crée serveur complètement vierge, nouveau monde.
+Creates completely clean server, new world.
 
-### Reset avec conservation données
+### Reset with Data Preservation
 
 ```bash
 ./scripts/admin/resetServer.sh --keep-whitelist
 ```
 
-Nouveau monde mais conserve :
-- Whitelist joueurs (sauf admin)
-- Configuration serveur (servertest.ini)
-- Règles du jeu (servertest_SandboxVars.lua)
+New world but preserves:
+- Player whitelist (except admin)
+- Server configuration (servertest.ini)
+- Game rules (servertest_SandboxVars.lua)
 
-### Processus automatique
+### Automatic Process
 
-1. **Confirmation** : Taper `RESET` en majuscules
-2. **Backup** : Sauvegarde dans `/home/pzuser/OLD/Zomboid_OLD_TIMESTAMP/`
-3. **Setup initial** :
-   - Saisir mot de passe admin (2 fois)
-   - Quand "If the server hangs here, set UPnP=false" → **Ctrl+C**
-4. **Restauration** (si --keep-whitelist) : Whitelist et configs
-5. **Démarrage** : Nouveau serveur prêt
+1. **Confirmation**: Type `RESET` in uppercase
+2. **Backup**: Saved to `/home/pzuser/OLD/Zomboid_OLD_TIMESTAMP/`
+3. **Initial setup**:
+   - Enter admin password (twice)
+   - When "If the server hangs here, set UPnP=false" → **Ctrl+C**
+4. **Restoration** (if --keep-whitelist): Whitelist and configs
+5. **Startup**: New server ready
 
-**⚠️ Attention** : Supprime toutes les données actuelles ! Backup automatique créé.
+**⚠️ Warning**: Deletes all current data! Automatic backup created.
 
-Documentation complète : [ADVANCED.md - Reset complet serveur](ADVANCED.md#reset-complet-serveur)
+Complete documentation: [ADVANCED.md - Complete Server Reset](ADVANCED.md#reset-complet-serveur)
 
-## Backups ne fonctionnent pas
+## Backups Not Working
 
-### Vérifier le crontab
+### Check Crontab
 
 ```bash
 crontab -l
-# Doit afficher les 2 tâches programmées
+# Should show 2 scheduled tasks
 ```
 
-**Réinstaller le crontab**
+**Reinstall crontab**
 ```bash
 crontab /home/pzuser/pzmanager/data/setupTemplates/pzuser-crontab
 ```
 
-### Vérifier les logs cron
+### Check Cron Logs
 
 ```bash
 grep CRON /var/log/syslog | tail -20
 ```
 
-### Test manuel
+### Manual Test
 
 ```bash
-# Test backup horaire
+# Test hourly backup
 pzm backup create
 
-# Vérifier le résultat
+# Check result
 ls -la /home/pzuser/pzmanager/data/dataBackups/
 ```
 
-### Espace disque
+### Disk Space
 
 ```bash
 du -sh /home/pzuser/pzmanager/data/dataBackups/*
 ```
 
-Si trop volumineux, réduire BACKUP_RETENTION_DAYS dans .env.
+If too large, reduce BACKUP_RETENTION_DAYS in .env.
 
-## Restaurer données Zomboid
+## Restore Zomboid Data
 
-### Restauration ciblée (données jeu uniquement)
+### Targeted Restoration (game data only)
 
-**Quand utiliser** : Monde corrompu, rollback vers ancienne save, test d'ancienne version.
+**When to use**: Corrupted world, rollback to old save, test old version.
 
 ```bash
-# Lister backups disponibles
+# List available backups
 ./scripts/backup/restoreZomboidData.sh
 
-# Restaurer backup spécifique
+# Restore specific backup
 ./scripts/backup/restoreZomboidData.sh data/dataBackups/backup_2026-01-11_14h15m00s
 
-# Restaurer dernier backup
+# Restore latest backup
 ./scripts/backup/restoreZomboidData.sh data/dataBackups/latest
 ```
 
-**Fonctionnement** :
-- Crée backup de sécurité du Zomboid actuel (`ZomboidBROKEN_TIMESTAMP`)
-- Restaure uniquement données Zomboid (Saves, db, Server)
-- Conserve configuration système et scripts
+**How it works**:
+- Creates safety backup of current Zomboid (`ZomboidBROKEN_TIMESTAMP`)
+- Restores only Zomboid data (Saves, db, Server)
+- Preserves system configuration and scripts
 
-**Appliquer** :
+**Apply**:
 ```bash
 pzm server restart 2m
 ```
 
-### Restauration complète (système + données)
+### Complete Restoration (system + data)
 
-**Quand utiliser** : Crash système, migration serveur, reconfiguration complète.
+**When to use**: System crash, server migration, complete reconfiguration.
 
 ```bash
-# Lister backups complets
+# List complete backups
 ls -lt /home/pzuser/pzmanager/data/fullBackups/
 
-# Restaurer tout
+# Restore everything
 sudo ./scripts/install/configurationInitiale.sh restore /home/pzuser/pzmanager/data/fullBackups/2026-01-11_04-30
 ```
 
-**Restaure** : Crontab, sudoers, SSH, systemd, scripts, .env, données Zomboid.
+**Restores**: Crontab, sudoers, SSH, systemd, scripts, .env, Zomboid data.
 
-### Comparaison
+### Comparison
 
-| Type | Scope | Backup sécurité | Usage |
-|------|-------|-----------------|-------|
-| `restoreZomboidData.sh` | Données jeu | ✅ Oui | Problème monde/save |
-| `configurationInitiale.sh restore` | Système complet | ❌ Non | Crash système, migration |
+| Type | Scope | Safety Backup | Usage |
+|------|-------|---------------|-------|
+| `restoreZomboidData.sh` | Game data | ✅ Yes | World/save issue |
+| `configurationInitiale.sh restore` | Complete system | ❌ No | System crash, migration |
 
-## Notifications Discord défaillantes
+## Discord Notifications Failing
 
-### Test manuel
+### Manual Test
 
 ```bash
 ./scripts/internal/sendDiscord.sh "Test message"
 ```
 
-**Si aucun message reçu** :
-1. Vérifier l'URL du webhook dans .env
-2. Vérifier que le webhook existe toujours dans Discord
-3. Vérifier que le canal n'a pas été supprimé
+**If no message received**:
+1. Check webhook URL in .env
+2. Check that webhook still exists in Discord
+3. Check that channel hasn't been deleted
 
-### Vérifier la configuration
+### Check Configuration
 
 ```bash
 cat scripts/.env | grep DISCORD_WEBHOOK
-# Ne doit pas être vide si Discord activé
+# Should not be empty if Discord enabled
 ```
 
-### Webhook invalide
+### Invalid Webhook
 
-- Recréer le webhook dans Discord (Server Settings → Integrations → Webhooks)
-- Copier la nouvelle URL dans .env
+- Recreate webhook in Discord (Server Settings → Integrations → Webhooks)
+- Copy new URL to .env
 
-## Erreurs de permissions
+## Permission Errors
 
-### Réinitialiser les permissions
+### Reset Permissions
 
 ```bash
-# Tout le projet
+# Entire project
 sudo chown -R pzuser:pzuser /home/pzuser/pzmanager
 
-# Scripts exécutables
+# Executable scripts
 chmod +x /home/pzuser/pzmanager/scripts/*.sh
 
-# SSH (si configuré)
+# SSH (if configured)
 chmod 700 /home/pzuser/.ssh
 chmod 600 /home/pzuser/.ssh/* 2>/dev/null
 ```
 
-### Sudoers invalide
+### Invalid Sudoers
 
 ```bash
-# Vérifier le fichier
+# Check file
 sudo visudo -cf /home/pzuser/pzmanager/data/setupTemplates/pzuser-sudoers
 
-# Réinstaller si OK
+# Reinstall if OK
 sudo cp /home/pzuser/pzmanager/data/setupTemplates/pzuser-sudoers /etc/sudoers.d/pzuser
 sudo chmod 440 /etc/sudoers.d/pzuser
 ```
 
-## Espace disque insuffisant
+## Insufficient Disk Space
 
-### Identifier l'utilisation
+### Identify Usage
 
 ```bash
 du -sh /home/pzuser/pzmanager/*
 du -sh /home/pzuser/pzmanager/data/*
 ```
 
-### Nettoyer les backups
+### Clean Backups
 
 ```bash
-# Supprimer manuellement les vieux backups
+# Manually delete old backups
 rm -rf /home/pzuser/pzmanager/data/dataBackups/backup_YYYY-MM-DD*
 rm -rf /home/pzuser/pzmanager/data/fullBackups/YYYY-MM-DD*
 
-# Ou réduire la rétention
+# Or reduce retention
 nano scripts/.env
-# Modifier: BACKUP_RETENTION_DAYS=7
+# Modify: BACKUP_RETENTION_DAYS=7
 ```
 
-### Nettoyer les logs
+### Clean Logs
 
 ```bash
-# Supprimer les vieux logs
+# Delete old logs
 find /home/pzuser/pzmanager/scripts/logs -type f -mtime +7 -delete
 ```
 
-### Purger APT
+### Purge APT
 
 ```bash
 sudo apt-get autoclean
 sudo apt-get autoremove
 ```
 
-## Problèmes de performances
+## Performance Issues
 
-### Lag important
+### Significant Lag
 
-**Réduire la fréquence de sauvegarde**
+**Reduce save frequency**
 ```ini
-# Dans Zomboid/Server/servertest.ini
-SaveWorldEveryMinutes=60  # Au lieu de 30
+# In Zomboid/Server/servertest.ini
+SaveWorldEveryMinutes=60  # Instead of 30
 ```
 
-**Limiter les joueurs**
+**Limit players**
 ```ini
-MaxPlayers=16  # Au lieu de 32
+MaxPlayers=16  # Instead of 32
 ```
 
-**Activer pause si vide**
+**Enable pause if empty**
 ```ini
 PauseEmpty=true
 ```
 
-### Java Heap trop petit
+### Java Heap Too Small
 
 ```bash
-# Éditer le service
+# Edit service
 nano ~/.config/systemd/user/zomboid.service
 
-# Modifier sous [Service]:
+# Modify under [Service]:
 Environment="JAVA_OPTS=-Xms4g -Xmx8g -XX:+UseZGC"
 
-# Recharger
+# Reload
 systemctl --user daemon-reload
 pzm server restart 5m
 ```
 
-### Optimiser le Garbage Collector
+### Optimize Garbage Collector
 
-Pour serveurs > 16 joueurs, utiliser ZGC :
+For servers > 16 players, use ZGC:
 ```bash
 Environment="JAVA_OPTS=-Xms4g -Xmx8g -XX:+UseZGC -XX:ZCollectionInterval=30"
 ```
 
-## Obtenir de l'aide
+## Getting Help
 
-Si le problème persiste :
+If the issue persists:
 
-1. **Vérifier les logs** : `pzm server status`
-2. **Consulter les docs** : [INSTALLATION.md](INSTALLATION.md), [CONFIGURATION.md](CONFIGURATION.md)
-3. **Ouvrir une issue** sur GitHub avec :
-   - Version OS (Debian/Ubuntu)
-   - Logs pertinents
-   - Configuration (.env sans secrets)
-   - Étapes pour reproduire le problème
+1. **Check logs**: `pzm server status`
+2. **Consult docs**: [INSTALLATION.md](INSTALLATION.md), [CONFIGURATION.md](CONFIGURATION.md)
+3. **Open an issue** on GitHub with:
+   - OS version (Debian/Ubuntu)
+   - Relevant logs
+   - Configuration (.env without secrets)
+   - Steps to reproduce the issue
