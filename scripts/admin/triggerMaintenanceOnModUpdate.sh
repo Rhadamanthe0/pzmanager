@@ -117,18 +117,17 @@ check_mods() {
         return 1
     fi
 
-    # Mods up to date - silent (routine)
     if is_mods_up_to_date "${output}"; then
+        log_event "OK - mods up to date"
         return 1
     fi
 
-    # Updates detected - log!
     if has_mod_updates "${output}"; then
         log_event "MOD UPDATES DETECTED"
         return 0
     fi
 
-    # Unknown format - silent (assume OK)
+    log_event "OK - no updates"
     return 1
 }
 
