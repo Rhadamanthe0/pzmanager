@@ -1,163 +1,108 @@
 # Quick Start Guide
 
-Quick installation of Project Zomboid server in 10 minutes.
-
-## Table of Contents
-
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
-- [Server Configuration](#server-configuration)
-- [Commands](#commands)
-- [Discord (Optional)](#discord-optional)
-- [Automations](#automations)
-- [Common Issues](#common-issues)
-- [Resources](#resources)
+Get your Project Zomboid server running in 10 minutes.
 
 ## Prerequisites
 
 - **OS**: Debian 12 or Ubuntu 22.04+
-- **Access**: Root/sudo
-- **RAM**: 4GB minimum
+- **RAM**: 4GB minimum (8GB recommended)
 - **Disk**: 20GB+ free
-
-**Ports**: 16261/UDP, 16262/UDP, 8766/UDP, 27015/TCP (automatically opened)
+- **Access**: Root/sudo
 
 ## Installation
 
-⚠️ **Installation as root** - operation as pzuser after installation
-
 ```bash
-# Clone
-git clone https://github.com/YOUR_USERNAME/pzmanager.git /opt/pzmanager
-cd /opt/pzmanager
-
-# If git missing
-apt install -y git
-
-# System configuration (creates pzuser, firewall, packages)
-./scripts/install/setupSystem.sh
-
-# Sudo permissions
-visudo -cf data/setupTemplates/pzuser-sudoers && \
-cp data/setupTemplates/pzuser-sudoers /etc/sudoers.d/pzuser
-
-# Final installation
-mv /opt/pzmanager /home/pzuser/
-chown -R pzuser:pzuser /home/pzuser/pzmanager
-cp /home/pzuser/pzmanager/data/setupTemplates/pzuser-crontab /etc/cron.d/pzuser
-/home/pzuser/pzmanager/scripts/install/configurationInitiale.sh zomboid
+curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/pzmanager/main/install.sh | sudo bash
 ```
 
-**Total duration**: 15-35 minutes (depending on connection)
+The installer will:
+1. Create `pzuser` account
+2. Configure firewall (ports 16261, 16262, 8766, 27015)
+3. Install SteamCMD, Java 25, dependencies
+4. Download Project Zomboid server
+5. Set up systemd services and timers
 
-**Installed version**: Project Zomboid Build 41 (branch `legacy_41_78_7`)
+**Duration**: 10-30 minutes depending on connection.
 
-**Automatically applied optimizations**:
-- ZGC (Java Garbage Collector)
-- 8GB RAM by default
+## First Start
 
----
-
-**Startup** (as pzuser):
 ```bash
 su - pzuser
-cd /home/pzuser/pzmanager
 pzm server start
 pzm server status
 ```
 
-**Expected**:
+Expected output:
 ```
 Status: RUNNING
 Active since: [timestamp]
 Control pipe: Available
-Recent logs:
-[...] RCON: listening on port 27015
 ```
 
-✅ Server operational!
-
-## Server Configuration
+## Basic Commands
 
 ```bash
-nano /home/pzuser/pzmanager/Zomboid/Server/servertest.ini
-```
-
-Important parameters:
-```ini
-ServerName=MyServer
-PublicName=My Public Server
-Password=                    # Empty = public
-AdminPassword=CHANGEME       # ⚠️ CHANGE IT!
-MaxPlayers=32
-PauseEmpty=true
-```
-
-Apply: `pzm server restart 5m`
-
-Complete documentation: [SERVER_CONFIG.md](SERVER_CONFIG.md)
-
-## Commands
-
-```bash
-pzm server start              # Start
-pzm server stop [delay]       # Stop (default: 2m warning)
-pzm server restart [delay]    # Restart
-pzm server status             # Status + logs
+pzm server start           # Start server
+pzm server stop 5m         # Stop with 5-min warning
+pzm server restart 2m      # Restart with 2-min warning
+pzm server status          # Check status
+pzm backup create          # Manual backup
 ```
 
 **Delays**: `30m`, `15m`, `5m`, `2m`, `30s`, `now`
 
-Examples:
+## Server Configuration
+
 ```bash
-pzm server restart 30m    # Warn 30min before
-pzm server stop now       # Immediate stop
+nano ~/pzmanager/Zomboid/Server/servertest.ini
 ```
 
-## Discord (Optional)
-
-Configuration: [CONFIGURATION.md - Discord](CONFIGURATION.md#notifications-discord)
-
-## Automations
-
-**Daily maintenance (4:30 AM)**:
-- Server shutdown (30m warning)
-- Backup rotation
-- System updates (apt + Java + SteamCMD)
-- Complete backup
-- Reboot
-
-**Hourly backups (:14)**:
-- Incremental Zomboid data backup
-- 14-day retention (configurable in .env)
-
-## Common Issues
-
-**Server won't start**
-```bash
-sudo -u pzuser systemctl --user status zomboid.service
-sudo -u pzuser journalctl --user -u zomboid.service -n 50
+Key settings:
+```ini
+PublicName=My Server       # Server name
+Password=                  # Empty = public
+AdminPassword=CHANGEME     # Change this!
+MaxPlayers=32
 ```
 
-**Cannot connect**
+Apply changes: `pzm server restart 5m`
+
+## Discord Notifications (Optional)
+
 ```bash
-sudo ufw status    # Check firewall
-pzm server status    # Check server active
+nano ~/pzmanager/scripts/.env
 ```
 
-**Backups not working**
-```bash
-cat /etc/cron.d/pzuser    # Check scheduling
-pzm backup create  # Manual test
+Add your webhook:
+```
+DISCORD_WEBHOOK="https://discord.com/api/webhooks/..."
 ```
 
-Complete documentation: [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+## What's Automated
 
-## Resources
+| Task | Schedule | Description |
+|------|----------|-------------|
+| Mod check | Every 5 min | Auto-maintenance if updates detected |
+| Backup | Hourly (:14) | Incremental, 14-day retention |
+| Maintenance | Daily 4:30 AM | Updates + full backup + reboot |
 
-- [INSTALLATION.md](INSTALLATION.md) - Detailed installation
-- [CONFIGURATION.md](CONFIGURATION.md) - .env variables, backups
-- [SERVER_CONFIG.md](SERVER_CONFIG.md) - PZ server configuration
-- [ADVANCED.md](ADVANCED.md) - Optimizations, RCON
-- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Troubleshooting
-- [PZ Wiki](https://pzwiki.net/wiki/Dedicated_Server) - Official documentation
+View timers: `systemctl --user list-timers`
+
+## Troubleshooting
+
+**Server won't start**:
+```bash
+journalctl --user -u zomboid.service -n 50
+```
+
+**Can't connect**:
+```bash
+sudo ufw status
+pzm server status
+```
+
+## Next Steps
+
+- [USAGE.md](USAGE.md) - All commands
+- [SERVER_CONFIG.md](SERVER_CONFIG.md) - PZ server settings
+- [CONFIGURATION.md](CONFIGURATION.md) - Environment variables

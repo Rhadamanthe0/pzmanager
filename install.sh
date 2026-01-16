@@ -1,0 +1,124 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+# pzmanager - One-line installer
+# ------------------------------------------------------------------------------
+# Usage: curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/pzmanager/main/install.sh | sudo bash
+#
+# Requirements: Debian/Ubuntu, root access, git, curl
+# ------------------------------------------------------------------------------
+
+set -euo pipefail
+
+readonly REPO_URL="https://github.com/YOUR_USERNAME/pzmanager.git"
+readonly INSTALL_DIR="/home/pzuser/pzmanager"
+readonly TMP_DIR="/tmp/pzmanager-install"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+log()   { echo -e "${GREEN}[pzmanager]${NC} $*"; }
+warn()  { echo -e "${YELLOW}[pzmanager]${NC} $*"; }
+error() { echo -e "${RED}[pzmanager]${NC} $*" >&2; exit 1; }
+
+check_root() {
+    [[ $EUID -eq 0 ]] || error "This script must be run as root (use sudo)"
+}
+
+check_os() {
+    if [[ ! -f /etc/debian_version ]]; then
+        error "This script only supports Debian/Ubuntu"
+    fi
+    log "OS: $(cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '"')"
+}
+
+check_dependencies() {
+    for cmd in git curl; do
+        if ! command -v "$cmd" &>/dev/null; then
+            log "Installing $cmd..."
+            apt-get update -qq && apt-get install -y -qq "$cmd"
+        fi
+    done
+}
+
+clone_repo() {
+    log "Cloning pzmanager..."
+    rm -rf "${TMP_DIR}"
+    git clone --depth 1 "${REPO_URL}" "${TMP_DIR}"
+}
+
+run_setup() {
+    log "Running system setup..."
+    bash "${TMP_DIR}/scripts/install/setupSystem.sh"
+}
+
+install_sudoers() {
+    log "Installing sudoers configuration..."
+    local sudoers_file="${TMP_DIR}/data/setupTemplates/pzuser-sudoers"
+
+    if visudo -cf "${sudoers_file}"; then
+        cp "${sudoers_file}" /etc/sudoers.d/pzuser
+        chmod 440 /etc/sudoers.d/pzuser
+    else
+        error "Invalid sudoers file"
+    fi
+}
+
+move_to_home() {
+    log "Installing to ${INSTALL_DIR}..."
+
+    if [[ -d "${INSTALL_DIR}" ]]; then
+        warn "Existing installation found, backing up..."
+        mv "${INSTALL_DIR}" "${INSTALL_DIR}.backup.$(date +%s)"
+    fi
+
+    mv "${TMP_DIR}" "${INSTALL_DIR}"
+    chown -R pzuser:pzuser "${INSTALL_DIR}"
+}
+
+run_initial_config() {
+    log "Running initial configuration (this may take a while)..."
+    sudo -u pzuser bash "${INSTALL_DIR}/scripts/install/configurationInitiale.sh" zomboid
+}
+
+print_success() {
+    echo ""
+    log "=========================================="
+    log "  pzmanager installed successfully!"
+    log "=========================================="
+    echo ""
+    echo "Next steps:"
+    echo "  1. Switch to pzuser:  su - pzuser"
+    echo "  2. Go to pzmanager:   cd /home/pzuser/pzmanager"
+    echo "  3. Start server:      pzm server start"
+    echo ""
+    echo "Documentation: ${INSTALL_DIR}/docs/"
+    echo ""
+}
+
+main() {
+    echo ""
+    echo "  ____  _____                                         "
+    echo " |  _ \|__  /_ __ ___   __ _ _ __   __ _  __ _  ___ _ __ "
+    echo " | |_) | / /| '_ \` _ \ / _\` | '_ \ / _\` |/ _\` |/ _ \ '__|"
+    echo " |  __/ / /_| | | | | | (_| | | | | (_| | (_| |  __/ |   "
+    echo " |_|   /____|_| |_| |_|\__,_|_| |_|\__,_|\__, |\___|_|   "
+    echo "                                         |___/           "
+    echo ""
+    echo " Project Zomboid Server Manager - Installer"
+    echo ""
+
+    check_root
+    check_os
+    check_dependencies
+    clone_repo
+    run_setup
+    install_sudoers
+    move_to_home
+    run_initial_config
+    print_success
+}
+
+main "$@"

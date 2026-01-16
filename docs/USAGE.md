@@ -331,12 +331,6 @@ pzm admin maintenance now       # Immediate maintenance (no warnings)
 pzm admin maintenance --silent  # Maintenance without Discord notifications
 ```
 
-**Remote trigger**:
-```bash
-# From local machine
-ssh pzuser@SERVER 30m
-```
-
 ---
 
 ## Configuration
