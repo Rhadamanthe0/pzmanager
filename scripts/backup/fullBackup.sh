@@ -3,8 +3,8 @@
 # fullBackup.sh - Complete backup for external synchronization
 # ------------------------------------------------------------------------------
 # Creates timestamped backup in fullBackups/YYYY-MM-DD_HH-MM/ containing:
-#   - System config (crontab, sudoers)
-#   - SSH keys, systemd services, scripts
+#   - System config (sudoers)
+#   - SSH keys, systemd services/timers, scripts
 #   - ZIP archive of latest Zomboid backup
 # Retention defined in .env
 # ------------------------------------------------------------------------------
@@ -19,10 +19,6 @@ source_env "${SCRIPT_DIR}/.."
 readonly TIMESTAMP=$(date +"%Y-%m-%d_%H-%M")
 readonly BACKUP_DEST="${SYNC_BACKUPS_DIR}/${TIMESTAMP}"
 
-readonly FILES_TO_SYNC=(
-    "/etc/sudoers.d/${PZ_USER}"
-    "${PZ_HOME}/sudoers-${PZ_USER}"
-)
 readonly DIRS_TO_SYNC=(
     "${PZ_HOME}/.ssh"
     "${PZ_HOME}/.config/systemd/user"
@@ -34,21 +30,22 @@ log() { echo -e "\033[0;32m[INFO]\033[0m $1"; }
 
 trap 'echo -e "\033[0;31m[ERROR]\033[0m Line $LINENO: $BASH_COMMAND failed." >&2' ERR
 
-export_crontab() {
-    log "Exporting ${PZ_USER} crontab..."
-    local crontab_file="${PZ_HOME}/pzmanager/data/setupTemplates/pzuser-crontab"
-    mkdir -p "$(dirname "$crontab_file")"
-    crontab -u "${PZ_USER}" -l > "$crontab_file" 2>/dev/null || echo "No crontab for ${PZ_USER}"
-    chown "${PZ_USER}:${PZ_USER}" "$crontab_file"
-}
-
 sync_files() {
     log "Syncing configuration files..."
     mkdir -p "${BACKUP_DEST}"
 
-    for item in "${FILES_TO_SYNC[@]}" "${DIRS_TO_SYNC[@]}"; do
+    for item in "${DIRS_TO_SYNC[@]}"; do
         [[ -e "$item" ]] && rsync -aR --delete "$item" "${BACKUP_DEST}/" || echo "Skipped: $item"
     done
+}
+
+backup_sudoers() {
+    log "Backing up sudoers configuration..."
+    local sudoers_dest="${BACKUP_DEST}/etc/sudoers.d"
+    mkdir -p "$sudoers_dest"
+
+    # Use sudo cat (read-only, output redirected by user shell)
+    sudo /bin/cat "/etc/sudoers.d/${PZ_USER}" > "$sudoers_dest/${PZ_USER}" 2>/dev/null || echo "Skipped: /etc/sudoers.d/${PZ_USER}"
 }
 
 archive_game_data() {
@@ -71,8 +68,8 @@ cleanup_old_backups() {
     find "${SYNC_BACKUPS_DIR}" -mindepth 1 -maxdepth 1 -type d -mtime "+${BACKUP_RETENTION_DAYS}" -print -exec rm -rf {} +
 }
 
-export_crontab
 sync_files
+backup_sudoers
 archive_game_data
 cleanup_old_backups
 

@@ -1,0 +1,9 @@
+[Unit]
+Description=Project Zomboid - Check for Mod Updates
+After=zomboid.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/pzuser/pzmanager/scripts/admin/triggerMaintenanceOnModUpdate.sh
+StandardOutput=journal
+StandardError=journal

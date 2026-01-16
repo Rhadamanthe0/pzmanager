@@ -21,6 +21,9 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
 source_env "${SCRIPT_DIR}/.."
 
+# Set XDG_RUNTIME_DIR for journalctl --user (required when running via cron)
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
 # Parse arguments
 NO_OUTPUT=false
 CMD_ARGS=()

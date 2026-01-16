@@ -31,7 +31,6 @@ cd /opt/pzmanager
 visudo -cf data/setup/pzuser-sudoers && cp data/setup/pzuser-sudoers /etc/sudoers.d/pzuser
 mv /opt/pzmanager /home/pzuser/
 chown -R pzuser:pzuser /home/pzuser/pzmanager
-sudo -u pzuser crontab /home/pzuser/pzmanager/data/setup/pzuser-crontab
 /home/pzuser/pzmanager/scripts/install/configurationInitiale.sh zomboid
 ```
 
@@ -128,7 +127,7 @@ pzmanager/
 │   │   ├── fullBackup.sh     # Complete backup with sync
 │   │   └── restoreZomboidData.sh  # Data-only restoration
 │   ├── admin/
-│   │   ├── checkModUpdates.sh      # Mod update detection (automated)
+│   │   ├── triggerMaintenanceOnModUpdate.sh  # Auto-maintenance if mods need update
 │   │   ├── manageWhitelist.sh      # Whitelist management
 │   │   ├── resetServer.sh          # Complete server reset
 │   │   └── performFullMaintenance.sh  # Daily maintenance
@@ -142,10 +141,10 @@ pzmanager/
 │   │   └── notifyServerReady.sh   # Startup notification
 │   └── logs/
 └── data/
-    ├── setup/                # System config files
+    ├── setupTemplates/       # System config files
     │   ├── .env.example      # Config template (versioned)
-    │   ├── pzuser-crontab
-    │   └── pzuser-sudoers
+    │   ├── pzuser-sudoers    # Sudo permissions
+    │   └── pz-*.service/timer  # Systemd automation units
     ├── pzserver/             # Server installation
     ├── dataBackups/          # Hourly backups (14 days)
     ├── fullBackups/          # Timestamped complete backups
@@ -156,30 +155,30 @@ pzmanager/
 
 Configuration in `/etc/sudoers.d/pzuser`:
 
-- **APT**: update, upgrade, install openjdk, autoremove, autoclean
+- **APT**: update, upgrade, install openjdk-17/21, autoremove, autoclean
 - **Java**: Manage symlink `/home/pzuser/pzmanager/data/pzserver/jre64`
-- **Backup**: Execute fullBackup.sh as root
+- **Backup**: Read-only access to `/etc/sudoers.d/pzuser`
 - **Reboot**: `/sbin/reboot`
 
-## Automations (crontab)
+## Automations (systemd timers)
 
-**Mod update check (every 5 minutes)**:
+**Mod update check (every 5 minutes)** - `pz-modcheck.timer`:
 - RCON `checkModsNeedUpdate`
 - Triggers maintenance (5m delay) if updates found
 - Discord notifications
 
-**Daily maintenance (4:30 AM)**:
+**Daily maintenance (4:30 AM)** - `pz-maintenance.timer`:
 - Server shutdown (warnings)
 - Backup rotation
 - System updates (APT + Java + SteamCMD)
 - Complete backup
 - System reboot
 
-**Hourly backup (:14)**:
+**Hourly backup (:14)** - `pz-backup.timer`:
 - Incremental backup with hard links
 - 14-day retention
 
-**View**: `crontab -l`
+**View**: `systemctl --user list-timers`
 
 ## Remote Maintenance
 

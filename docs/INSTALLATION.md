@@ -95,7 +95,7 @@ sudo -u pzuser sudo -l
 ```bash
 mv /opt/pzmanager /home/pzuser/
 chown -R pzuser:pzuser /home/pzuser/pzmanager
-sudo -u pzuser crontab /home/pzuser/pzmanager/data/setupTemplates/pzuser-crontab
+cp /home/pzuser/pzmanager/data/setupTemplates/pzuser-crontab /etc/cron.d/pzuser
 /home/pzuser/pzmanager/scripts/install/configurationInitiale.sh zomboid
 ```
 
@@ -242,7 +242,7 @@ sudo netstat -tulpn | grep java    # Check port listening
 
 **Backups not working**
 ```bash
-crontab -l                   # Check scheduling
+cat /etc/cron.d/pzuser       # Check scheduling
 pzm backup create  # Manual test
 ```
 
@@ -259,7 +259,7 @@ sudo -u pzuser systemctl --user disable zomboid.service
 sudo -u pzuser systemctl --user stop zomboid.service
 
 # 3. Remove crontab
-sudo -u pzuser crontab -r
+sudo rm /etc/cron.d/pzuser
 
 # 4. Remove sudoers
 sudo rm /etc/sudoers.d/pzuser

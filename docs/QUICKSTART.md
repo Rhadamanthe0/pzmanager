@@ -44,7 +44,7 @@ cp data/setupTemplates/pzuser-sudoers /etc/sudoers.d/pzuser
 # Final installation
 mv /opt/pzmanager /home/pzuser/
 chown -R pzuser:pzuser /home/pzuser/pzmanager
-sudo -u pzuser crontab /home/pzuser/pzmanager/data/setupTemplates/pzuser-crontab
+cp /home/pzuser/pzmanager/data/setupTemplates/pzuser-crontab /etc/cron.d/pzuser
 /home/pzuser/pzmanager/scripts/install/configurationInitiale.sh zomboid
 ```
 
@@ -147,7 +147,7 @@ pzm server status    # Check server active
 
 **Backups not working**
 ```bash
-crontab -l    # Check scheduling
+cat /etc/cron.d/pzuser    # Check scheduling
 pzm backup create  # Manual test
 ```
 

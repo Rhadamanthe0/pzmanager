@@ -257,7 +257,7 @@ sudo visudo -cf /home/pzuser/pzmanager/data/setupTemplates/pzuser-sudoers
 ### Check crontab
 
 ```bash
-crontab -l
+cat /etc/cron.d/pzuser
 ```
 
 ### Test Backups

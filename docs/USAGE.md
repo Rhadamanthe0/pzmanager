@@ -755,26 +755,28 @@ STEAM_BETA_BRANCH="legacy_41_78_7"
 
 ### Crontab
 
+**Location**: `/etc/cron.d/pzuser`
+
 **View tasks**:
 ```bash
-crontab -l
+cat /etc/cron.d/pzuser
 ```
 
 **Configured tasks**:
 
 #### Hourly Backup (:14)
 ```
-14 * * * *  /bin/bash  /home/pzuser/pzmanager/scripts/backup/dataBackup.sh >> /home/pzuser/pzmanager/scripts/logs/data_backup.log 2>&1
+14 * * * *  pzuser  /bin/bash /home/pzuser/pzmanager/scripts/backup/dataBackup.sh >> /home/pzuser/pzmanager/scripts/logs/data_backup.log 2>&1
 ```
 
 #### Daily Maintenance (4:30 AM)
 ```
-30 4 * * *  /bin/bash  /home/pzuser/pzmanager/scripts/admin/performFullMaintenance.sh
+30 4 * * *  pzuser  /bin/bash /home/pzuser/pzmanager/scripts/admin/performFullMaintenance.sh
 ```
 
-**Edit crontab**:
+**Edit crontab** (as root):
 ```bash
-crontab -e
+nano /etc/cron.d/pzuser
 ```
 
 ---

@@ -5,7 +5,7 @@
 # Usage: ./performFullMaintenance.sh [délai]
 # Délais: 30m|15m|5m|2m|30s (défaut: 30m)
 #
-# Exécution: pzuser (via crontab pzuser)
+# Exécution: pzuser (via systemd timer)
 #
 # Étapes:
 #   1. Arrêt du serveur (avec avertissements)
@@ -15,6 +15,8 @@
 #   5. Restauration symlink Java
 #   6. Synchronisation externe (fullBackup.sh)
 #   7. Reboot système
+#
+# Verrou: Une seule instance peut s'exécuter à la fois (flock)
 # ------------------------------------------------------------------------------
 
 set -euo pipefail
@@ -23,6 +25,16 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 source "${SCRIPT_DIR}/../lib/common.sh"
 source_env "${SCRIPT_DIR}/.."
+
+# Lock file to prevent concurrent maintenance runs
+readonly LOCK_FILE="/tmp/pzmanager-maintenance.lock"
+
+# Acquire exclusive lock (non-blocking)
+exec 200>"${LOCK_FILE}"
+if ! flock -n 200; then
+    echo "[$(date +'%H:%M:%S')] Maintenance already running, skipping."
+    exit 0
+fi
 
 cd "${PZ_HOME}"
 
@@ -78,7 +90,7 @@ restore_java_symlink() {
 
 sync_external_data() {
     log "Synchronisation externe..."
-    [[ -x "${SCRIPT_DIR}/../backup/fullBackup.sh" ]] && sudo -n "${SCRIPT_DIR}/../backup/fullBackup.sh" < /dev/null
+    [[ -x "${SCRIPT_DIR}/../backup/fullBackup.sh" ]] && "${SCRIPT_DIR}/../backup/fullBackup.sh"
 }
 
 main() {

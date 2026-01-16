@@ -1,8 +1,11 @@
-# Daily maintenance
-30 4 * * *  /bin/bash  /home/pzuser/pzmanager/scripts/admin/performFullMaintenance.sh
+# Cron jobs for pzuser - Project Zomboid Server Manager
+# Location: /etc/cron.d/pzuser
 
-# Check for mod updates every 5 minutes
-*/5 * * * *  /bin/bash  /home/pzuser/pzmanager/scripts/admin/checkModUpdates.sh >> /home/pzuser/pzmanager/scripts/logs/maintenance/mod_check_cron.log 2>&1
+# Daily maintenance at 4:30 AM
+30 4 * * *  pzuser  /bin/bash /home/pzuser/pzmanager/scripts/admin/performFullMaintenance.sh
 
-# Create backups with hard links of the server at every hour + 15 minutes
-14 * * * *  /bin/bash  /home/pzuser/pzmanager/scripts/backup/dataBackup.sh >> /home/pzuser/pzmanager/scripts/logs/data_backup.log 2>&1
+# Auto-trigger maintenance if mod updates detected (every 5 minutes)
+*/5 * * * *  pzuser  /bin/bash /home/pzuser/pzmanager/scripts/admin/triggerMaintenanceOnModUpdate.sh 2>&1
+
+# Create backups with hard links every hour at :14
+14 * * * *  pzuser  /bin/bash /home/pzuser/pzmanager/scripts/backup/dataBackup.sh >> /home/pzuser/pzmanager/scripts/logs/data_backup.log 2>&1

@@ -1,0 +1,9 @@
+[Unit]
+Description=Project Zomboid - Hourly Backup Timer
+
+[Timer]
+OnCalendar=*:14
+Persistent=true
+
+[Install]
+WantedBy=timers.target

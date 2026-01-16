@@ -78,24 +78,27 @@ This document details **everything** modified on your system to ensure transpare
 
 **Allowed commands** (NOPASSWD):
 
-**APT (package management)**:
+**APT (package management)** - specific commands only:
 ```
-/usr/bin/apt-get update
-/usr/bin/apt-get upgrade
-/usr/bin/apt-get install openjdk-*-jre-headless
-/usr/bin/apt-get autoremove
-/usr/bin/apt-get autoclean
-```
-
-**Java (symlink)**:
-```
-/usr/bin/rm -rf /home/pzuser/pzmanager/data/pzserver/jre64
-/usr/bin/ln -s /usr/lib/jvm/java-*-openjdk-amd64 /home/pzuser/pzmanager/data/pzserver/jre64
+/usr/bin/apt-get update -qq
+/usr/bin/apt-get upgrade -y -qq
+/usr/bin/apt-get install -y -qq openjdk-21-jre-headless
+/usr/bin/apt-get install -y -qq openjdk-17-jre-headless
+/usr/bin/apt-get autoremove -y -qq
+/usr/bin/apt-get autoclean -qq
 ```
 
-**Backups**:
+**Java (symlink)** - exact paths only:
 ```
-/home/pzuser/pzmanager/scripts/backup/fullBackup.sh
+/bin/rm -f /home/pzuser/pzmanager/data/pzserver/jre64
+/bin/rm -rf /home/pzuser/pzmanager/data/pzserver/jre64
+/bin/ln -s /usr/lib/jvm/java-21-openjdk-amd64 /home/pzuser/pzmanager/data/pzserver/jre64
+/bin/ln -s /usr/lib/jvm/java-17-openjdk-amd64 /home/pzuser/pzmanager/data/pzserver/jre64
+```
+
+**Backups** - read-only access:
+```
+/bin/cat /etc/sudoers.d/pzuser
 ```
 
 **System**:
@@ -313,37 +316,35 @@ RestartSec=5
 
 ## Automations
 
-### pzuser Crontab
+### Systemd Timers
 
-**Source file**: `/home/pzuser/pzmanager/data/setupTemplates/pzuser-crontab`
+**Location**: `~/.config/systemd/user/`
+**Templates**: `/home/pzuser/pzmanager/data/setupTemplates/pz-*.service` and `pz-*.timer`
 
-**Configured tasks**:
+**Configured timers**:
 
-#### Mod update check (every 5 minutes)
-```cron
-*/5 * * * *  /bin/bash  /home/pzuser/pzmanager/scripts/admin/checkModUpdates.sh >> /home/pzuser/pzmanager/scripts/logs/maintenance/mod_check_cron.log 2>&1
-```
+#### pz-modcheck.timer - Mod update check (every 5 minutes)
+
+**Schedule**: Every 5 minutes after boot
 
 **Function**:
 - Checks Workshop mod updates via RCON `checkModsNeedUpdate`
 - Triggers `performFullMaintenance.sh` (5m delay) if updates found
 - Sends Discord notifications
-- Logs: `/home/pzuser/pzmanager/scripts/logs/maintenance/mod_check_*.log`
+- Logs: `/home/pzuser/pzmanager/scripts/logs/mod_checks/*.log` (7-day retention)
 
-#### Hourly backup (every day at :14)
-```cron
-14 * * * *  /bin/bash  /home/pzuser/pzmanager/scripts/backup/dataBackup.sh >> /home/pzuser/pzmanager/scripts/logs/data_backup.log 2>&1
-```
+#### pz-backup.timer - Hourly backup
+
+**Schedule**: Every hour at :14
 
 **Function**:
 - Incremental backup with hard links
 - Retention: 14 days (configurable via `.env`)
 - Destination: `/home/pzuser/pzmanager/data/dataBackups/`
 
-#### Daily maintenance (4:30 AM)
-```cron
-30 4 * * *  /bin/bash  /home/pzuser/pzmanager/scripts/admin/performFullMaintenance.sh
-```
+#### pz-maintenance.timer - Daily maintenance (4:30 AM)
+
+**Schedule**: Daily at 04:30
 
 **Steps**:
 1. Server shutdown with warnings (30min default)
@@ -357,7 +358,7 @@ RestartSec=5
 
 **Logs**: `/home/pzuser/pzmanager/scripts/logs/maintenance/`
 
-**Check crontab**: `crontab -l`
+**View timers**: `systemctl --user list-timers`
 
 ---
 
@@ -392,7 +393,7 @@ RestartSec=5
 │   │   └── restoreZomboidData.sh     # Data-only restoration
 │   │
 │   ├── admin/
-│   │   ├── checkModUpdates.sh        # Mod update detection (automated)
+│   │   ├── triggerMaintenanceOnModUpdate.sh  # Auto-maintenance if mods need update
 │   │   ├── manageWhitelist.sh        # SQLite whitelist management
 │   │   ├── resetServer.sh            # Complete server reset
 │   │   ├── setram.sh                 # Server RAM configuration
@@ -415,11 +416,13 @@ RestartSec=5
 │
 ├── data/
 │   ├── setupTemplates/
-│   │   ├── pzuser-crontab            # Crontab to install
 │   │   ├── pzuser-sudoers            # Sudo permissions
-│   │   ├── zomboid.service           # Systemd service template
-│   │   ├── zomboid.socket            # Systemd socket template
-│   │   ├── zomboid_logger.service    # Systemd logger template
+│   │   ├── zomboid.service           # Systemd service (server)
+│   │   ├── zomboid.socket            # Systemd socket (RCON)
+│   │   ├── zomboid_logger.service    # Systemd logger
+│   │   ├── pz-backup.service/timer   # Hourly backup automation
+│   │   ├── pz-modcheck.service/timer # Mod update check automation
+│   │   ├── pz-maintenance.service/timer  # Daily maintenance automation
 │   │   └── .env.example              # Environment variables template
 │   │
 │   ├── pzserver/                     # PZ server installation (~1-2GB)
@@ -585,8 +588,8 @@ ResetID=0
 - `/etc/apt/sources.list.d/steam.list` (SteamCMD repository)
 
 **pzuser user**:
-- `~/.config/systemd/user/zomboid.service` (service)
-- Personal crontab (`crontab -l` to view)
+- `~/.config/systemd/user/zomboid.service` (server)
+- `~/.config/systemd/user/pz-*.service` and `pz-*.timer` (automations)
 
 **No modification of**:
 - SSH configuration (`/etc/ssh/sshd_config`)
@@ -614,15 +617,12 @@ To completely remove pzmanager:
 ```bash
 # As root
 
-# 1. Stop and disable service
-sudo -u pzuser systemctl --user stop zomboid.service
-sudo -u pzuser systemctl --user disable zomboid.service
+# 1. Stop and disable services
+sudo -u pzuser systemctl --user stop zomboid.service pz-backup.timer pz-modcheck.timer pz-maintenance.timer
+sudo -u pzuser systemctl --user disable zomboid.service pz-backup.timer pz-modcheck.timer pz-maintenance.timer
 loginctl disable-linger pzuser
 
-# 2. Remove crontab
-sudo -u pzuser crontab -r
-
-# 3. Remove files
+# 2. Remove files
 rm -rf /home/pzuser/pzmanager
 
 # 4. Remove user

@@ -125,15 +125,15 @@ Edit `scripts/core/pz.sh` line 76 to modify messages sent to players.
 
 ### Maintenance Scheduling
 
-Modify crontab:
+Edit crontab (as root):
 ```bash
-crontab -e
+nano /etc/cron.d/pzuser
 
 # Daily maintenance (default: 4:30 AM)
-30 4 * * *  /bin/bash  /home/pzuser/pzmanager/scripts/admin/performFullMaintenance.sh
+30 4 * * *  pzuser  /bin/bash /home/pzuser/pzmanager/scripts/admin/performFullMaintenance.sh
 
 # Hourly backups (default: :14)
-14 * * * *  /bin/bash  /home/pzuser/pzmanager/scripts/backup/dataBackup.sh >> /home/pzuser/pzmanager/scripts/logs/data_backup.log 2>&1
+14 * * * *  pzuser  /bin/bash /home/pzuser/pzmanager/scripts/backup/dataBackup.sh >> /home/pzuser/pzmanager/scripts/logs/data_backup.log 2>&1
 ```
 
 ## Multi-Server Configuration
@@ -143,7 +143,7 @@ To run multiple servers on the same machine:
 1. Clone pzmanager to another directory
 2. Modify ports in servertest.ini (16261 → 16271, etc.)
 3. Create a new user or modify PZ_USER in .env
-4. Adjust crontab schedules to avoid conflicts
+4. Adjust crontab schedules in `/etc/cron.d/` to avoid conflicts
 
 ## Remote Maintenance
 

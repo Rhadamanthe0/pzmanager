@@ -184,13 +184,13 @@ Complete documentation: [ADVANCED.md - Complete Server Reset](ADVANCED.md#reset-
 ### Check Crontab
 
 ```bash
-crontab -l
-# Should show 2 scheduled tasks
+cat /etc/cron.d/pzuser
+# Should show 3 scheduled tasks
 ```
 
-**Reinstall crontab**
+**Reinstall crontab** (as root):
 ```bash
-crontab /home/pzuser/pzmanager/data/setupTemplates/pzuser-crontab
+cp /home/pzuser/pzmanager/data/setupTemplates/pzuser-crontab /etc/cron.d/pzuser
 ```
 
 ### Check Cron Logs

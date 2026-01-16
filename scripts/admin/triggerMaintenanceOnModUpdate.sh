@@ -1,14 +1,16 @@
 #!/bin/bash
 # ------------------------------------------------------------------------------
-# checkModUpdates.sh - Check for Project Zomboid mod updates
+# triggerMaintenanceOnModUpdate.sh - Auto-trigger maintenance if mods need update
 # ------------------------------------------------------------------------------
-# Usage: ./checkModUpdates.sh
+# Usage: ./triggerMaintenanceOnModUpdate.sh
 #
 # Checks if Workshop mods have updates via RCON checkModsNeedUpdate command.
-# If updates detected, triggers performFullMaintenance.sh with 5m delay.
+# If updates detected, triggers performFullMaintenance.sh with 5m delay
+# (server shutdown with player warnings, updates, reboot).
 #
-# Execution: pzuser (via crontab every 5 minutes)
-# Logs: LOG_MAINTENANCE_DIR/mod_check_YYYY-MM-DD_HHhMMmSSs.log
+# Execution: pzuser (via systemd timer every 5 minutes)
+# Logs: LOG_BASE_DIR/mod_checks/YYYY-MM-DD_HHhMMmSS.log (7-day retention)
+# Lock: Skips if maintenance already running (shared lock with performFullMaintenance.sh)
 # ------------------------------------------------------------------------------
 
 set -euo pipefail
@@ -18,9 +20,17 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
 source_env "${SCRIPT_DIR}/.."
 
-readonly LOG_FILE="${LOG_MAINTENANCE_DIR}/mod_check_$(date +'%Y-%m-%d_%Hh%Mm%S').log"
+# Set XDG_RUNTIME_DIR for systemctl --user (required when running via cron)
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 
-ensure_directory "${LOG_MAINTENANCE_DIR}"
+# Lock file shared with performFullMaintenance.sh
+readonly MAINTENANCE_LOCK_FILE="/tmp/pzmanager-maintenance.lock"
+
+readonly MOD_CHECK_LOG_DIR="${LOG_BASE_DIR}/mod_checks"
+readonly MOD_CHECK_RETENTION_DAYS=7
+readonly LOG_FILE="${MOD_CHECK_LOG_DIR}/$(date +'%Y-%m-%d_%Hh%Mm%S').log"
+
+ensure_directory "${MOD_CHECK_LOG_DIR}"
 exec > >(tee -a "${LOG_FILE}") 2>&1
 
 is_server_running() {
@@ -35,8 +45,28 @@ has_maintenance_script() {
     [[ -x "${SCRIPT_DIR}/performFullMaintenance.sh" ]]
 }
 
+is_maintenance_running() {
+    # Check if maintenance lock is held
+    if [[ -f "${MAINTENANCE_LOCK_FILE}" ]]; then
+        if flock -n 200 200>"${MAINTENANCE_LOCK_FILE}" 2>/dev/null; then
+            # Lock acquired, maintenance not running - release immediately
+            flock -u 200
+            return 1
+        else
+            # Lock held by another process
+            return 0
+        fi
+    fi
+    return 1
+}
+
 check_prerequisites() {
     log "Checking prerequisites..."
+
+    if is_maintenance_running; then
+        log "Maintenance already in progress - skipping check"
+        exit 0
+    fi
 
     if ! is_server_running; then
         log "Server not running - cannot check mods"
@@ -111,9 +141,14 @@ trigger_maintenance() {
     "${SCRIPT_DIR}/performFullMaintenance.sh" "5m"
 }
 
+cleanup_old_logs() {
+    find "${MOD_CHECK_LOG_DIR}" -name "*.log" -type f -mtime "+${MOD_CHECK_RETENTION_DAYS}" -delete 2>/dev/null || true
+}
+
 main() {
     log "=== MOD UPDATE CHECK STARTED ==="
 
+    cleanup_old_logs
     check_prerequisites
 
     if check_mods; then

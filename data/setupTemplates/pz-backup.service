@@ -1,0 +1,9 @@
+[Unit]
+Description=Project Zomboid - Hourly Data Backup
+After=zomboid.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/pzuser/pzmanager/scripts/backup/dataBackup.sh
+StandardOutput=journal
+StandardError=journal
