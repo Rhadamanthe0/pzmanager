@@ -4,6 +4,7 @@
 # APT package management (specific commands only)
 pzuser ALL=(ALL) NOPASSWD: /usr/bin/apt-get update -qq
 pzuser ALL=(ALL) NOPASSWD: /usr/bin/apt-get upgrade -y -qq
+pzuser ALL=(ALL) NOPASSWD: /usr/bin/apt-get install -y -qq openjdk-25-jre-headless
 pzuser ALL=(ALL) NOPASSWD: /usr/bin/apt-get install -y -qq openjdk-21-jre-headless
 pzuser ALL=(ALL) NOPASSWD: /usr/bin/apt-get install -y -qq openjdk-17-jre-headless
 pzuser ALL=(ALL) NOPASSWD: /usr/bin/apt-get autoremove -y -qq
@@ -12,6 +13,7 @@ pzuser ALL=(ALL) NOPASSWD: /usr/bin/apt-get autoclean -qq
 # Java JRE symlink management (exact paths only)
 pzuser ALL=(ALL) NOPASSWD: /bin/rm -f /home/pzuser/pzmanager/data/pzserver/jre64
 pzuser ALL=(ALL) NOPASSWD: /bin/rm -rf /home/pzuser/pzmanager/data/pzserver/jre64
+pzuser ALL=(ALL) NOPASSWD: /bin/ln -s /usr/lib/jvm/java-25-openjdk-amd64 /home/pzuser/pzmanager/data/pzserver/jre64
 pzuser ALL=(ALL) NOPASSWD: /bin/ln -s /usr/lib/jvm/java-21-openjdk-amd64 /home/pzuser/pzmanager/data/pzserver/jre64
 pzuser ALL=(ALL) NOPASSWD: /bin/ln -s /usr/lib/jvm/java-17-openjdk-amd64 /home/pzuser/pzmanager/data/pzserver/jre64
 
