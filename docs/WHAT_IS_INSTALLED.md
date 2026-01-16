@@ -333,7 +333,9 @@ RestartSec=5
 - Checks Workshop mod updates via RCON `checkModsNeedUpdate`
 - Triggers `performFullMaintenance.sh` (5m delay) if updates found
 - Sends Discord notifications
-- Logs: `/home/pzuser/pzmanager/scripts/logs/mod_checks/*.log` (7-day retention)
+- Logs: `/home/pzuser/pzmanager/scripts/logs/mod_checks/mod_checks_YYYY-MM-DD.log`
+  - Daily log file (7-day retention)
+  - Only logs significant events (updates detected, errors, maintenance triggered)
 
 #### pz-backup.timer - Hourly backup
 
