@@ -20,5 +20,5 @@ pzuser ALL=(ALL) NOPASSWD: /bin/ln -s /usr/lib/jvm/java-17-openjdk-amd64 /home/p
 # Backup: read-only access to sudoers config
 pzuser ALL=(ALL) NOPASSWD: /bin/cat /etc/sudoers.d/pzuser
 
-# System reboot (no arguments allowed)
-pzuser ALL=(ALL) NOPASSWD: /sbin/reboot ""
+# System reboot
+pzuser ALL=(ALL) NOPASSWD: /sbin/reboot

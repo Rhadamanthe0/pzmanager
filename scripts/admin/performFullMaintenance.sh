@@ -115,7 +115,7 @@ main() {
     [[ "$SILENT_MODE" == true ]] && touch "${SILENT_FLAG_FILE}"
 
     log "Maintenance terminée, redémarrage..."
-    sudo /sbin/reboot ""
+    sudo /sbin/reboot
 }
 
 main

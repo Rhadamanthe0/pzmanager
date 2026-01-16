@@ -139,7 +139,7 @@ pzm backup create
 
 **Destination**: `data/dataBackups/backup_YYYY-MM-DD_HHhMMmSSs/`
 
-**Automatic**: Every hour at :14 (crontab)
+**Automatic**: Every hour at :14 (systemd timer)
 
 **Duration**: 10-60 seconds
 
@@ -299,10 +299,13 @@ pzm admin reset --keep-whitelist
 ### Maintenance
 
 ```bash
-pzm admin maintenance [delay]
+pzm admin maintenance [delay] [--silent]
 ```
 
 **Default delay**: `30m`
+
+**Options**:
+- `--silent`: Disables Discord notifications (persists after reboot for next startup)
 
 **Steps**:
 1. Server shutdown with warnings
@@ -314,7 +317,7 @@ pzm admin maintenance [delay]
 7. External complete backup
 8. System reboot
 
-**Automatic**: Daily at 4:30 AM (crontab)
+**Automatic**: Daily at 4:30 AM (systemd timer)
 
 **Logs**: `scripts/logs/maintenance/maintenance_YYYY-MM-DD_HHhMMmSSs.log`
 
@@ -322,9 +325,10 @@ pzm admin maintenance [delay]
 
 **Examples**:
 ```bash
-pzm admin maintenance        # Maintenance in 30 minutes
-pzm admin maintenance 15m    # Maintenance in 15 minutes
-pzm admin maintenance 2m     # Maintenance in 2 minutes
+pzm admin maintenance           # Maintenance in 30 minutes
+pzm admin maintenance 15m       # Maintenance in 15 minutes
+pzm admin maintenance now       # Immediate maintenance (no warnings)
+pzm admin maintenance --silent  # Maintenance without Discord notifications
 ```
 
 **Remote trigger**:
@@ -753,30 +757,48 @@ STEAM_BETA_BRANCH="legacy_41_78_7"
 
 ## Automations
 
-### Crontab
+### Systemd Timers
 
-**Location**: `/etc/cron.d/pzuser`
+All automations run as user-level systemd timers.
 
-**View tasks**:
+**View timers**:
 ```bash
-cat /etc/cron.d/pzuser
+systemctl --user list-timers
 ```
 
-**Configured tasks**:
+**Configured timers**:
 
 #### Hourly Backup (:14)
-```
-14 * * * *  pzuser  /bin/bash /home/pzuser/pzmanager/scripts/backup/dataBackup.sh >> /home/pzuser/pzmanager/scripts/logs/data_backup.log 2>&1
+```bash
+# pz-backup.timer
+systemctl --user status pz-backup.timer
 ```
 
 #### Daily Maintenance (4:30 AM)
+```bash
+# pz-maintenance.timer
+systemctl --user status pz-maintenance.timer
 ```
-30 4 * * *  pzuser  /bin/bash /home/pzuser/pzmanager/scripts/admin/performFullMaintenance.sh
+Runs with `--silent` option (no Discord notifications).
+
+#### Mod Update Check (every 5 minutes)
+```bash
+# pz-modcheck.timer
+systemctl --user status pz-modcheck.timer
+```
+Automatically triggers maintenance with 5-minute delay if updates detected.
+
+**Manual trigger**:
+```bash
+systemctl --user start pz-backup.service
+systemctl --user start pz-maintenance.service
 ```
 
-**Edit crontab** (as root):
+**View logs**:
 ```bash
-nano /etc/cron.d/pzuser
+journalctl --user -u pz-backup.service -n 50
+journalctl --user -u pz-maintenance.service -n 50
+journalctl --user -u pz-modcheck.service -n 50
 ```
 
 ---
