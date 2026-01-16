@@ -82,6 +82,7 @@ This document details **everything** modified on your system to ensure transpare
 ```
 /usr/bin/apt-get update -qq
 /usr/bin/apt-get upgrade -y -qq
+/usr/bin/apt-get install -y -qq openjdk-25-jre-headless
 /usr/bin/apt-get install -y -qq openjdk-21-jre-headless
 /usr/bin/apt-get install -y -qq openjdk-17-jre-headless
 /usr/bin/apt-get autoremove -y -qq
@@ -92,6 +93,7 @@ This document details **everything** modified on your system to ensure transpare
 ```
 /bin/rm -f /home/pzuser/pzmanager/data/pzserver/jre64
 /bin/rm -rf /home/pzuser/pzmanager/data/pzserver/jre64
+/bin/ln -s /usr/lib/jvm/java-25-openjdk-amd64 /home/pzuser/pzmanager/data/pzserver/jre64
 /bin/ln -s /usr/lib/jvm/java-21-openjdk-amd64 /home/pzuser/pzmanager/data/pzserver/jre64
 /bin/ln -s /usr/lib/jvm/java-17-openjdk-amd64 /home/pzuser/pzmanager/data/pzserver/jre64
 ```

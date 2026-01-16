@@ -155,7 +155,7 @@ pzmanager/
 
 Configuration in `/etc/sudoers.d/pzuser`:
 
-- **APT**: update, upgrade, install openjdk-17/21, autoremove, autoclean
+- **APT**: update, upgrade, install openjdk-17/21/25, autoremove, autoclean
 - **Java**: Manage symlink `/home/pzuser/pzmanager/data/pzserver/jre64`
 - **Backup**: Read-only access to `/etc/sudoers.d/pzuser`
 - **Reboot**: `/sbin/reboot`
