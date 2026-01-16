@@ -45,6 +45,8 @@ Commandes disponibles:
 
   rcon <commande>      Envoyer commande RCON au serveur
 
+  discord <message>    Envoyer message sur Discord
+
 Exemples:
   pzm server start
   pzm server restart 5m
@@ -194,6 +196,16 @@ cmd_rcon() {
     exec "${SCRIPT_DIR}/scripts/internal/sendCommand.sh" "$@"
 }
 
+# Routage commande discord
+cmd_discord() {
+    if [[ $# -eq 0 ]]; then
+        echo "Erreur: Message requis"
+        echo "Usage: pzm discord <message>"
+        exit 1
+    fi
+    exec "${SCRIPT_DIR}/scripts/internal/sendDiscord.sh" "$*"
+}
+
 # Point d'entrée principal
 main() {
     if [[ $# -eq 0 ]]; then
@@ -225,6 +237,9 @@ main() {
             ;;
         rcon)
             cmd_rcon "$@"
+            ;;
+        discord)
+            cmd_discord "$@"
             ;;
         help|--help|-h)
             show_help
