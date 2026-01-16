@@ -2,21 +2,13 @@
 # ------------------------------------------------------------------------------
 # performFullMaintenance.sh - Maintenance quotidienne du serveur
 # ------------------------------------------------------------------------------
-# Usage: ./performFullMaintenance.sh [délai]
-# Délais: 30m|15m|5m|2m|30s (défaut: 30m)
+# Usage: ./performFullMaintenance.sh [délai] [--silent]
+# Délais: 30m|15m|5m|2m|30s|now (défaut: 30m)
 #
-# Exécution: pzuser (via systemd timer)
+# Options:
+#   --silent  Pas de notifications Discord, marque le prochain démarrage silencieux
 #
-# Étapes:
-#   1. Arrêt du serveur (avec avertissements)
-#   2. Rotation des backups (suppression > 30 jours)
-#   3. Mise à jour système (apt + Java)
-#   4. Mise à jour SteamCMD
-#   5. Restauration symlink Java
-#   6. Synchronisation externe (fullBackup.sh)
-#   7. Reboot système
-#
-# Verrou: Une seule instance peut s'exécuter à la fois (flock)
+# Verrou: Une seule instance (flock), nettoyage si >1h
 # ------------------------------------------------------------------------------
 
 set -euo pipefail
@@ -26,8 +18,17 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
 source_env "${SCRIPT_DIR}/.."
 
-# Lock file to prevent concurrent maintenance runs
 readonly LOCK_FILE="/tmp/pzmanager-maintenance.lock"
+readonly SILENT_FLAG_FILE="${PZ_MANAGER_DIR}/.silent_next_start"
+readonly LOCK_MAX_AGE_SECONDS=3600
+
+# Clean stale lock (>1 hour old)
+if [[ -f "${LOCK_FILE}" ]]; then
+    lock_age=$(( $(date +%s) - $(stat -c %Y "${LOCK_FILE}" 2>/dev/null || echo 0) ))
+    if (( lock_age > LOCK_MAX_AGE_SECONDS )); then
+        rm -f "${LOCK_FILE}"
+    fi
+fi
 
 # Acquire exclusive lock (non-blocking)
 exec 200>"${LOCK_FILE}"
@@ -36,24 +37,31 @@ if ! flock -n 200; then
     exit 0
 fi
 
+# Parse arguments
+DELAY="30m"
+SILENT_MODE=false
+for arg in "${SSH_ORIGINAL_COMMAND:-}" "$@"; do
+    [[ -z "$arg" ]] && continue
+    [[ "$arg" == "--silent" ]] && SILENT_MODE=true && continue
+    [[ "$arg" =~ ^(30m|15m|5m|2m|30s|now)$ ]] && DELAY="$arg"
+done
+
 cd "${PZ_HOME}"
 
-readonly DELAY="${SSH_ORIGINAL_COMMAND:-${1:-30m}}"
-
 readonly LOG_FILE="${LOG_MAINTENANCE_DIR}/maintenance_$(date +'%Y-%m-%d_%Hh%Mm%S').log"
-
 ensure_directory "${LOG_MAINTENANCE_DIR}"
 exec > >(tee -a "${LOG_FILE}") 2>&1
 
 validate_prerequisites() {
     log "Validation des prérequis..."
     [[ -x "${SCRIPT_DIR}/../core/pz.sh" ]] || die "pz.sh introuvable"
-    [[ "$DELAY" =~ ^(30m|15m|5m|2m|30s)$ ]] || die "Délai '$DELAY' invalide"
 }
 
 stop_server() {
+    local silent_opt=""
+    [[ "$SILENT_MODE" == true ]] && silent_opt="--silent"
     log "Arrêt du serveur ($DELAY)..."
-    "${SCRIPT_DIR}/../core/pz.sh" stop "$DELAY"
+    "${SCRIPT_DIR}/../core/pz.sh" stop "$DELAY" $silent_opt
 }
 
 rotate_backups() {
@@ -102,8 +110,12 @@ main() {
     update_game_server
     restore_java_symlink
     sync_external_data
+
+    # Mark next server start as silent (persists after reboot)
+    [[ "$SILENT_MODE" == true ]] && touch "${SILENT_FLAG_FILE}"
+
     log "Maintenance terminée, redémarrage..."
-    sudo /sbin/reboot
+    sudo /sbin/reboot ""
 }
 
 main

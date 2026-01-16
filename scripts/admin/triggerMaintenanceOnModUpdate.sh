@@ -25,6 +25,7 @@ export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 
 # Lock file shared with performFullMaintenance.sh
 readonly MAINTENANCE_LOCK_FILE="/tmp/pzmanager-maintenance.lock"
+readonly LOCK_MAX_AGE_SECONDS=3600
 
 readonly MOD_CHECK_LOG_DIR="${LOG_BASE_DIR}/mod_checks"
 readonly MOD_CHECK_RETENTION_DAYS=7
@@ -46,16 +47,20 @@ has_maintenance_script() {
 }
 
 is_maintenance_running() {
-    # Check if maintenance lock is held
+    # Clean stale lock (>1 hour old)
     if [[ -f "${MAINTENANCE_LOCK_FILE}" ]]; then
+        local lock_age=$(( $(date +%s) - $(stat -c %Y "${MAINTENANCE_LOCK_FILE}" 2>/dev/null || echo 0) ))
+        if (( lock_age > LOCK_MAX_AGE_SECONDS )); then
+            rm -f "${MAINTENANCE_LOCK_FILE}"
+            return 1
+        fi
+
+        # Check if lock is held
         if flock -n 200 200>"${MAINTENANCE_LOCK_FILE}" 2>/dev/null; then
-            # Lock acquired, maintenance not running - release immediately
             flock -u 200
             return 1
-        else
-            # Lock held by another process
-            return 0
         fi
+        return 0
     fi
     return 1
 }
