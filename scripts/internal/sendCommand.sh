@@ -45,6 +45,9 @@ if [[ ! -p "${PZ_CONTROL_PIPE}" ]]; then
     exit 1
 fi
 
+# Capture timestamp BEFORE sending command
+TIMESTAMP_BEFORE=$(date +%s.%N)
+
 # Send command
 echo "$CMD" > "${PZ_CONTROL_PIPE}"
 
@@ -56,25 +59,29 @@ fi
 # Wait for command to be processed
 sleep 3
 
-# Capture output from journald logs
-# Look for the command entry and capture subsequent lines
-OUTPUT=$(journalctl --user -u "${PZ_SERVICE_NAME}" --since "5 seconds ago" --no-pager 2>/dev/null | \
+# Capture output from journald logs (only after our timestamp)
+OUTPUT=$(journalctl --user -u "${PZ_SERVICE_NAME}" \
+    --since "@${TIMESTAMP_BEFORE}" --no-pager 2>/dev/null | \
     awk -v cmd="$CMD" '
-        BEGIN { found=0; capture=0 }
+        BEGIN { capture=0 }
+
+        # Start capturing when we find our command
         /command entered via server console/ && $0 ~ cmd {
-            found=1
             capture=1
             next
         }
-        capture && /^[A-Z]+ *: / {
-            # Stop capturing when we hit another log level line (new command/event)
-            if (!/^-/) exit
-        }
+
+        # Stop on new command or unrelated events
+        capture && /command entered via server console/ { exit }
+        capture && /ConnectionManager:/ { exit }
+        capture && /ChatMessage\{/ { exit }
+        capture && /User:.*is trying to connect/ { exit }
+
+        # Capture response lines
         capture {
-            # Remove log prefix and print content
             sub(/^.*> [0-9,]+> /, "")
             sub(/^.*sh\[[0-9]+\]: /, "")
-            print
+            if ($0 !~ /^[[:space:]]*$/) print
         }
     ')
 
