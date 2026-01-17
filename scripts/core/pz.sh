@@ -71,11 +71,20 @@ warn_players() {
     [[ -z "${sequences[$DELAY]:-}" ]] && { echo "Délai invalide: $DELAY" >&2; exit 1; }
 
     echo "Envoi des avertissements ($DELAY)..."
+    local first_message=true
     for entry in ${sequences[$DELAY]}; do
         local time_label="${entry%%:*}"
         time_label="${time_label//_/ }"
         local wait_seconds="${entry##*:}"
-        send_msg "ATTENTION : ${action_type} DU SERVEUR DANS ${time_label} !"
+        local msg="ATTENTION : ${action_type} DU SERVEUR DANS ${time_label} !"
+        if [[ "$first_message" == true ]]; then
+            # Premier message avec @here sur Discord
+            "${SCRIPT_DIR}/../internal/sendCommand.sh" "servermsg \"$msg\"" --no-output
+            send_discord "@here $msg"
+            first_message=false
+        else
+            send_msg "$msg"
+        fi
         sleep "$wait_seconds"
     done
     send_msg "${action_type} DU SERVEUR"
@@ -85,11 +94,16 @@ warn_players() {
 do_start() {
     echo "Démarrage du service..."
     systemctl --user start "${PZ_SERVICE_NAME}"
+    send_discord "@here Le serveur est maintenant EN LIGNE !"
     echo "Terminé."
 }
 
 do_stop() {
-    warn_players "ARRET"
+    if [[ "$DELAY" == "now" ]]; then
+        send_discord "@here ARRÊT IMMÉDIAT DU SERVEUR"
+    else
+        warn_players "ARRÊT"
+    fi
 
     if systemctl --user is-active --quiet "${PZ_SERVICE_NAME}"; then
         echo "Arrêt du service..."
@@ -103,7 +117,11 @@ do_stop() {
 }
 
 do_restart() {
-    warn_players "REDEMARRAGE"
+    if [[ "$DELAY" == "now" ]]; then
+        send_discord "@here REDÉMARRAGE IMMÉDIAT DU SERVEUR"
+    else
+        warn_players "REDÉMARRAGE"
+    fi
 
     echo "Arrêt du service..."
     systemctl --user stop "${PZ_SERVICE_NAME}"
@@ -114,6 +132,7 @@ do_restart() {
 
     echo "Démarrage du service..."
     systemctl --user start "${PZ_SERVICE_NAME}"
+    send_discord "@here Le serveur est maintenant EN LIGNE !"
     echo "Terminé."
 }
 
