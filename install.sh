@@ -2,14 +2,14 @@
 # ------------------------------------------------------------------------------
 # pzmanager - One-line installer
 # ------------------------------------------------------------------------------
-# Usage: curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/pzmanager/main/install.sh | sudo bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/Rhadamanthe0/pzmanager/main/install.sh | sudo bash
 #
 # Requirements: Debian/Ubuntu, root access, git, curl
 # ------------------------------------------------------------------------------
 
 set -euo pipefail
 
-readonly REPO_URL="https://github.com/YOUR_USERNAME/pzmanager.git"
+readonly REPO_URL="https://github.com/Rhadamanthe0/pzmanager.git"
 readonly INSTALL_DIR="/home/pzuser/pzmanager"
 readonly TMP_DIR="/tmp/pzmanager-install"
 

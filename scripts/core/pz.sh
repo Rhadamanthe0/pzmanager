@@ -94,7 +94,6 @@ warn_players() {
 do_start() {
     echo "Démarrage du service..."
     systemctl --user start "${PZ_SERVICE_NAME}"
-    send_discord "@here Le serveur est maintenant EN LIGNE !"
     echo "Terminé."
 }
 

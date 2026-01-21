@@ -165,7 +165,7 @@ install_zomboid_dependencies() {
     echo "Installation des dépendances..."
     dpkg --add-architecture i386
     apt-get update -qq
-    apt-get install -yqq lib32gcc-s1 libsdl2-2.0-0:i386 steamcmd
+    apt-get install -yqq lib32gcc-s1 libsdl2-2.0-0:i386 steamcmd "${JAVA_PACKAGE}"
 }
 
 download_zomboid_server() {

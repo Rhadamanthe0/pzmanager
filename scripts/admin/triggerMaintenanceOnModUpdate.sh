@@ -132,7 +132,7 @@ check_mods() {
 }
 
 send_update_notification() {
-    local message="@here ⚠️ MOD UPDATES DETECTED - Starting maintenance in 5 minutes"
+    local message="⚠️ Mods mis à jour ⚠️"
     "${SCRIPT_DIR}/../internal/sendDiscord.sh" "${message}" || true
 }
 

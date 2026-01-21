@@ -19,7 +19,7 @@
 **Requirements**: Debian 12 / Ubuntu 22.04+, 4GB+ RAM, root access
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Rhadamanthe0/pzmanager/refs/heads/main/install.sh | sudo bash
+curl -fsSL curl -fsSL https://raw.githubusercontent.com/Rhadamanthe0/pzmanager/main/install.sh | sudo bash
 ```
 
 That's it. Server ready in ~10 minutes.
