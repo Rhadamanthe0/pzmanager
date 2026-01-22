@@ -86,8 +86,6 @@ Convertir Steam64 → Steam32: https://steamid.xyz/"
     echo "✓ Utilisateur ajouté à la whitelist:"
     echo "  Nom: $username"
     echo "  Steam ID 32: $steamid"
-    echo ""
-    echo "Note: Le joueur pourra se connecter au prochain redémarrage du serveur."
 }
 
 remove_from_whitelist() {
@@ -114,8 +112,6 @@ remove_from_whitelist() {
         die "Échec de la suppression de la whitelist"
 
     echo "✓ Utilisateur retiré de la whitelist"
-    echo ""
-    echo "Note: Le joueur ne pourra plus se connecter au prochain redémarrage du serveur."
 }
 
 show_help() {
@@ -137,7 +133,6 @@ Exemples:
 Notes:
   - Steam ID requis: Steam ID 32 (format STEAM_0:X:YYYYYYYY)
   - Convertir Steam64 → Steam32: https://steamid.xyz/
-  - Changements appliqués au redémarrage du serveur
 HELPEOF
 }
 
