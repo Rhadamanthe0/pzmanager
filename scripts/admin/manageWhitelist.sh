@@ -5,17 +5,17 @@
 # Usage: ./manageWhitelist.sh <list|add|remove> [arguments]
 #
 # Commandes:
-#   list                          - Afficher tous les utilisateurs whitelistés
-#   add <username> <steamid32>    - Ajouter un utilisateur (Steam ID 32)
-#   remove <steamid32>            - Retirer un utilisateur
+#   list                        - Afficher tous les utilisateurs whitelistés
+#   add <username> <steam64>    - Ajouter un utilisateur (Steam ID 64)
+#   remove <steam64>            - Retirer un utilisateur
 #
 # Exemples:
 #   ./manageWhitelist.sh list
-#   ./manageWhitelist.sh add "PlayerName" "STEAM_0:1:12345678"
-#   ./manageWhitelist.sh remove "STEAM_0:1:12345678"
+#   ./manageWhitelist.sh add "PlayerName" "76561198012345678"
+#   ./manageWhitelist.sh remove "76561198012345678"
 #
-# Note: Utiliser Steam ID 32 (STEAM_0:X:YYYYYYYY)
-#       Convertir depuis Steam64 ID: https://steamid.xyz/
+# Note: Utiliser Steam ID 64 (17 chiffres, commence par 7656119...)
+#       Trouver sur le profil Steam ou via https://steamid.xyz/
 # ------------------------------------------------------------------------------
 
 set -euo pipefail
@@ -52,10 +52,11 @@ list_whitelist() {
 validate_steamid() {
     local steamid="$1"
 
-    # Steam ID 32 format: STEAM_0:X:YYYYYYYY
-    if [[ ! "$steamid" =~ ^STEAM_[0-5]:[0-1]:[0-9]+$ ]]; then
-        die "Steam ID invalide: $steamid (doit être un Steam ID 32 format STEAM_0:X:YYYYYYYY)
-Convertir depuis Steam64 ID sur: https://steamid.xyz/"
+    # Steam ID 64 format: 17 chiffres commençant par 7656119
+    if [[ ! "$steamid" =~ ^7656119[0-9]{10}$ ]]; then
+        die "Steam ID invalide: $steamid
+Format attendu: Steam ID 64 (17 chiffres, ex: 76561198012345678)
+Trouver sur le profil Steam ou via https://steamid.xyz/"
     fi
 }
 
@@ -63,20 +64,26 @@ add_to_whitelist() {
     local username="${1:-}"
     local steamid="${2:-}"
 
-    [[ -n "$username" ]] || die "Usage: $0 add <username> <steamid32>
-Exemple: $0 add \"PlayerName\" \"STEAM_0:1:12345678\"
-Convertir Steam64 → Steam32: https://steamid.xyz/"
-    [[ -n "$steamid" ]] || die "Usage: $0 add <username> <steamid32>"
+    [[ -n "$username" ]] || die "Usage: $0 add <username> <steam64>
+Exemple: $0 add \"PlayerName\" \"76561198012345678\""
+    [[ -n "$steamid" ]] || die "Usage: $0 add <username> <steam64>"
 
     validate_steamid "$steamid"
 
-    # Vérifier si déjà whitelisté
-    local existing=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE steamid = '$steamid'" 2>/dev/null || echo "0")
-
-    if [[ "$existing" -gt 0 ]]; then
-        echo "⚠️  Utilisateur déjà whitelisté avec Steam ID: $steamid"
+    # Vérifier doublon sur steamid
+    local existing_steamid=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE steamid = '$steamid'" 2>/dev/null || echo "0")
+    if [[ "$existing_steamid" -gt 0 ]]; then
+        echo "⚠️  Steam ID déjà whitelisté: $steamid"
         sqlite3 -header -column "$DB_PATH" "SELECT * FROM whitelist WHERE steamid = '$steamid'"
-        exit 0
+        exit 1
+    fi
+
+    # Vérifier doublon sur username
+    local existing_username=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE username = '$username'" 2>/dev/null || echo "0")
+    if [[ "$existing_username" -gt 0 ]]; then
+        echo "⚠️  Username déjà whitelisté: $username"
+        sqlite3 -header -column "$DB_PATH" "SELECT * FROM whitelist WHERE username = '$username'"
+        exit 1
     fi
 
     # Ajouter
@@ -85,13 +92,13 @@ Convertir Steam64 → Steam32: https://steamid.xyz/"
 
     echo "✓ Utilisateur ajouté à la whitelist:"
     echo "  Nom: $username"
-    echo "  Steam ID 32: $steamid"
+    echo "  Steam ID 64: $steamid"
 }
 
 remove_from_whitelist() {
     local steamid="${1:-}"
 
-    [[ -n "$steamid" ]] || die "Usage: $0 remove <steamid>"
+    [[ -n "$steamid" ]] || die "Usage: $0 remove <steam64>"
 
     validate_steamid "$steamid"
 
@@ -121,18 +128,18 @@ Gestion de la whitelist du serveur Project Zomboid
 Usage: $0 <commande> [arguments]
 
 Commandes:
-  list                          Afficher tous les utilisateurs whitelistés
-  add <username> <steamid32>    Ajouter un utilisateur
-  remove <steamid32>            Retirer un utilisateur
+  list                        Afficher tous les utilisateurs whitelistés
+  add <username> <steam64>    Ajouter un utilisateur
+  remove <steam64>            Retirer un utilisateur
 
 Exemples:
   $0 list
-  $0 add "PlayerName" "STEAM_0:1:12345678"
-  $0 remove "STEAM_0:1:12345678"
+  $0 add "PlayerName" "76561198012345678"
+  $0 remove "76561198012345678"
 
 Notes:
-  - Steam ID requis: Steam ID 32 (format STEAM_0:X:YYYYYYYY)
-  - Convertir Steam64 → Steam32: https://steamid.xyz/
+  - Steam ID requis: Steam ID 64 (17 chiffres, ex: 76561198012345678)
+  - Trouver sur le profil Steam ou via https://steamid.xyz/
 HELPEOF
 }
 
