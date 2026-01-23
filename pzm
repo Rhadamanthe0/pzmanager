@@ -28,8 +28,8 @@ Commandes disponibles:
 
   whitelist <action> [arguments]
     list               Lister utilisateurs whitelistés
-    add <nom> <id32>   Ajouter (Steam ID 32: STEAM_0:X:Y)
-    remove <id32>      Retirer utilisateur
+    add <nom> <id64>   Ajouter (Steam ID 64: 76561198XXXXXXXXX)
+    remove <id64>      Retirer utilisateur
 
   admin <action> [arguments]
     reset              Reset serveur complet (nouveau monde)
