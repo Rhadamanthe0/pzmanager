@@ -78,7 +78,7 @@ show_summary() {
 
     echo ""
     echo "Pour appliquer les changements:"
-    echo "  ./scripts/pz.sh restart 2m"
+    echo "  pzm server restart 2m"
 }
 
 main() {

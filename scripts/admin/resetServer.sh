@@ -126,7 +126,7 @@ finalize() {
     echo ""
     echo "✓ RESET TERMINÉ"
     echo "Backup: $OLD_DIR"
-    echo "Status: ./scripts/pz.sh status"
+    echo "Status: pzm server status"
 }
 
 show_help() {
