@@ -150,11 +150,20 @@ restore_backup() {
     restore_zomboid_data "$backup_path"
 
     local uid=$(id -u "$PZ_USER")
+    local runtime_dir="/run/user/$uid"
+
+    # Create runtime directory if it doesn't exist
+    if [[ ! -d "$runtime_dir" ]]; then
+        mkdir -p "$runtime_dir"
+        chown "$PZ_USER:$PZ_USER" "$runtime_dir"
+        chmod 700 "$runtime_dir"
+    fi
+
     echo "Rechargement des services systemd..."
-    sudo -u "$PZ_USER" XDG_RUNTIME_DIR=/run/user/$uid systemctl --user daemon-reload
-    sudo -u "$PZ_USER" XDG_RUNTIME_DIR=/run/user/$uid systemctl --user enable --now pz-backup.timer || true
-    sudo -u "$PZ_USER" XDG_RUNTIME_DIR=/run/user/$uid systemctl --user enable --now pz-modcheck.timer || true
-    sudo -u "$PZ_USER" XDG_RUNTIME_DIR=/run/user/$uid systemctl --user enable --now pz-maintenance.timer || true
+    sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user daemon-reload || true
+    sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user enable --now pz-backup.timer || true
+    sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user enable --now pz-modcheck.timer || true
+    sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user enable --now pz-maintenance.timer || true
 
     echo "=== Restauration terminée ==="
     show_summary
@@ -228,13 +237,21 @@ install_systemd_services() {
 
 enable_zomboid_service() {
     local uid=$(id -u "$PZ_USER")
+    local runtime_dir="/run/user/$uid"
+
+    # Create runtime directory if it doesn't exist (no active session)
+    if [[ ! -d "$runtime_dir" ]]; then
+        mkdir -p "$runtime_dir"
+        chown "$PZ_USER:$PZ_USER" "$runtime_dir"
+        chmod 700 "$runtime_dir"
+    fi
 
     echo "Activation des services et timers..."
-    sudo -u "$PZ_USER" XDG_RUNTIME_DIR=/run/user/$uid systemctl --user daemon-reload
-    sudo -u "$PZ_USER" XDG_RUNTIME_DIR=/run/user/$uid systemctl --user enable zomboid.service
-    sudo -u "$PZ_USER" XDG_RUNTIME_DIR=/run/user/$uid systemctl --user enable --now pz-backup.timer
-    sudo -u "$PZ_USER" XDG_RUNTIME_DIR=/run/user/$uid systemctl --user enable --now pz-modcheck.timer
-    sudo -u "$PZ_USER" XDG_RUNTIME_DIR=/run/user/$uid systemctl --user enable --now pz-maintenance.timer
+    sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user daemon-reload || true
+    sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user enable zomboid.service || true
+    sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user enable --now pz-backup.timer || true
+    sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user enable --now pz-modcheck.timer || true
+    sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user enable --now pz-maintenance.timer || true
 }
 
 install_zomboid() {
