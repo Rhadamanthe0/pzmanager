@@ -19,6 +19,7 @@ set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
+source_env "${SCRIPT_DIR}"
 
 readonly BACKUPS_PATH="/home/pzuser/pzmanager/data/fullBackups"
 readonly PZ_USER="pzuser"
