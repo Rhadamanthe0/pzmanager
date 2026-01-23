@@ -166,6 +166,11 @@ install_zomboid_dependencies() {
     echo "Installation des dépendances..."
     dpkg --add-architecture i386
     apt-get update -qq
+
+    # Accept Steam license automatically
+    echo steam steam/question select "I AGREE" | debconf-set-selections
+    echo steam steam/license note '' | debconf-set-selections
+
     apt-get install -yqq lib32gcc-s1 libsdl2-2.0-0:i386 steamcmd "${JAVA_PACKAGE}"
 }
 
