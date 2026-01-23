@@ -187,7 +187,14 @@ download_zomboid_server() {
     echo "Téléchargement du serveur via SteamCMD..."
     mkdir -p "$INSTALL_DIR"
     chown "$PZ_USER:$PZ_USER" "$INSTALL_DIR"
-    sudo -u "$PZ_USER" /usr/games/steamcmd +force_install_dir "$INSTALL_DIR" +login anonymous +app_update 380870 validate +quit
+
+    local beta_args=""
+    if [[ -n "${STEAM_BETA_BRANCH:-}" ]]; then
+        echo "  → Branche beta: $STEAM_BETA_BRANCH"
+        beta_args="-beta $STEAM_BETA_BRANCH"
+    fi
+
+    sudo -u "$PZ_USER" /usr/games/steamcmd +force_install_dir "$INSTALL_DIR" +login anonymous +app_update 380870 $beta_args validate +quit
 }
 
 configure_zomboid_jvm() {
