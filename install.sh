@@ -80,7 +80,7 @@ move_to_home() {
 
 run_initial_config() {
     log "Running initial configuration (this may take a while)..."
-    sudo -u pzuser bash "${INSTALL_DIR}/scripts/install/configurationInitiale.sh" zomboid
+    bash "${INSTALL_DIR}/scripts/install/configurationInitiale.sh" zomboid --force
 }
 
 print_success() {
