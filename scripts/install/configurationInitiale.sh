@@ -145,6 +145,7 @@ restore_backup() {
     fi
 
     restore_directory "$backup_path$PZ_HOME/.config/systemd/user" "$PZ_HOME/.config/systemd/user" "$PZ_USER"
+    chown -R "$PZ_USER:$PZ_USER" "$PZ_HOME/.config"
     restore_scripts "$backup_path$PZ_HOME/pzmanager" "$PZ_HOME/pzmanager" "$PZ_USER"
     restore_sudoers "$backup_path"
     restore_zomboid_data "$backup_path"
@@ -218,6 +219,7 @@ install_systemd_services() {
 
     echo "Installation des services systemd..."
     mkdir -p "$systemd_dir"
+    chown -R "$PZ_USER:$PZ_USER" "$PZ_HOME/.config"
 
     # Server services
     for service_file in zomboid.service zomboid.socket zomboid_logger.service; do
