@@ -207,36 +207,36 @@ pzm whitelist list
 
 **Displays**:
 - Username
-- Steam ID 32
+- Steam ID 64
 - Last connection
 - Sorted by last connection
 
 **Example output**:
 ```
-Username       | Steam ID           | Last Connection
----------------|--------------------|-----------------
-PlayerOne      | STEAM_0:1:12345678 | 2026-01-12 14:30
-PlayerTwo      | STEAM_0:0:87654321 | 2026-01-10 18:45
+Username       | Steam ID          | Last Connection
+---------------|-------------------|-----------------
+PlayerOne      | 76561198012345678 | 2026-01-12 14:30
+PlayerTwo      | 76561198087654321 | 2026-01-10 18:45
 ```
 
 ### Add
 
 ```bash
-pzm whitelist add "<name>" "<steam_id_32>"
+pzm whitelist add "<name>" "<steam_id_64>"
 ```
 
 **Parameters**:
 - `<name>`: Player name (quotes if spaces)
-- `<steam_id_32>`: Steam ID format `STEAM_0:X:YYYYYYYY`
+- `<steam_id_64>`: Steam ID 64 (17 digits, starts with `7656119...`)
 
-**Validation**: Steam ID 32 format verified automatically
+**Validation**: Steam ID 64 format verified automatically
 
-**Conversion**: Steam64 ID → Steam ID 32 via https://steamid.xyz/
+**Find Steam ID**: On Steam profile or via https://steamid.xyz/
 
 **Examples**:
 ```bash
-pzm whitelist add "John Doe" "STEAM_0:1:12345678"
-pzm whitelist add PlayerOne "STEAM_0:0:87654321"
+pzm whitelist add "John Doe" "76561198012345678"
+pzm whitelist add PlayerOne "76561198087654321"
 ```
 
 **Immediate effect**: No need to restart server
@@ -244,17 +244,17 @@ pzm whitelist add PlayerOne "STEAM_0:0:87654321"
 ### Remove
 
 ```bash
-pzm whitelist remove "<steam_id_32>"
+pzm whitelist remove "<steam_id_64>"
 ```
 
 **Parameters**:
-- `<steam_id_32>`: Steam ID to remove
+- `<steam_id_64>`: Steam ID 64 to remove
 
 **Confirmation**: Requested before deletion
 
 **Examples**:
 ```bash
-pzm whitelist remove "STEAM_0:1:12345678"
+pzm whitelist remove "76561198012345678"
 ```
 
 ---
@@ -532,11 +532,10 @@ pzm admin maintenance 30m
 ### Add Player to Whitelist
 
 ```bash
-# 1. Get Steam ID 32 from Steam64 ID
-# https://steamid.xyz/ → Convert 76561198XXXXXXXXX
+# 1. Get Steam ID 64 from Steam profile or https://steamid.xyz/
 
 # 2. Add to whitelist
-pzm whitelist add "PlayerName" "STEAM_0:1:12345678"
+pzm whitelist add "PlayerName" "76561198012345678"
 
 # 3. Verify
 pzm whitelist list

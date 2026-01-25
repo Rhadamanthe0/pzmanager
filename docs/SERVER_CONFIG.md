@@ -67,18 +67,18 @@ pzm whitelist list
 
 **Add player**:
 ```bash
-pzm whitelist add "PlayerName" "STEAM_0:1:12345678"
+pzm whitelist add "PlayerName" "76561198012345678"
 ```
 
 **Remove player**:
 ```bash
-pzm whitelist remove "STEAM_0:1:12345678"
+pzm whitelist remove "76561198012345678"
 ```
 
 **Notes**:
-- Required Steam ID: **Steam ID 32** (format `STEAM_0:X:YYYYYYYY`)
-- Convert Steam64 → Steam32: [steamid.xyz](https://steamid.xyz/)
-- Changes applied at next server restart
+- Required Steam ID: **Steam ID 64** (17 digits, starts with `7656119...`)
+- Find on Steam profile or via [steamid.xyz](https://steamid.xyz/)
+- Changes applied immediately (no restart needed)
 
 ### Mods
 
