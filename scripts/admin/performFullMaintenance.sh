@@ -85,7 +85,7 @@ update_system() {
 
 update_game_server() {
     log "Mise à jour SteamCMD..."
-    sudo rm -f "${PZ_JRE_LINK}"
+    sudo rm -rf "${PZ_JRE_LINK}"
     "${STEAMCMD_PATH}" +login anonymous +force_install_dir "${PZ_INSTALL_DIR}" \
         +app_update "${STEAM_APP_ID}" -beta "${STEAM_BETA_BRANCH}" validate +quit
 }
