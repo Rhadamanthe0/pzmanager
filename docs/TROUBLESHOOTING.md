@@ -32,8 +32,8 @@ sudo -u pzuser journalctl --user -u zomboid.service -n 100
 # Check Java symlink
 ls -la /home/pzuser/pzmanager/data/pzserver/jre64
 
-# If missing, recreate
-sudo rm -f /home/pzuser/pzmanager/data/pzserver/jre64
+# If missing or broken, recreate
+sudo rm -rf /home/pzuser/pzmanager/data/pzserver/jre64
 sudo ln -s /usr/lib/jvm/java-25-openjdk-amd64 /home/pzuser/pzmanager/data/pzserver/jre64
 ```
 
