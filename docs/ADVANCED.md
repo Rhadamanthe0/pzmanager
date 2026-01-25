@@ -1,212 +1,70 @@
 # Advanced Configuration
 
-Optimizations, RCON, and expert settings for pzmanager.
+Performance tuning and server reset procedures.
 
-## Table of Contents
+## RAM Configuration
 
-- [Performance Optimization](#performance-optimization)
-- [RCON Commands](#rcon-commands)
-- [Script Customization](#script-customization)
-- [Multi-Server Configuration](#multi-server-configuration)
-- [Remote Maintenance](#remote-maintenance)
+**Default**: 8GB with ZGC garbage collector (automatically configured)
 
-## Performance Optimization
-
-Official documentation: [PZ Wiki - Performance](https://pzwiki.net/wiki/Dedicated_Server#Performance)
-
-### RAM Configuration
-
-✅ **Automatically applied at installation**:
-- **ZGC** (`-XX:+UseZGC`): Optimized garbage collector
-- **RAM**: 8GB by default (`-Xmx8g`)
-
-**Modify RAM allocation**:
 ```bash
-pzm config ram 4g    # 4GB
-pzm config ram 8g    # 8GB
-pzm config ram 16g   # 16GB
-pzm config ram 32g   # 32GB
+pzm config ram 4g    # 4GB  - <10 players
+pzm config ram 8g    # 8GB  - <25 players (default)
+pzm config ram 16g   # 16GB - <60 players
+pzm config ram 32g   # 32GB - 60+ players
 ```
 
-**Recommendations**:
-- 4GB: <10 simultaneous players
-- 8GB: <25 players (default)
-- 16GB: <60 players
-
-**Apply**: Restart server after modification
+Apply: `pzm server restart 5m`
 
 ## RCON Commands
 
-### Usage via pzmanager
-
 ```bash
-pzm rcon "COMMAND"
+pzm rcon "save"                          # Force save
+pzm rcon "servermsg 'Message'"           # Broadcast
+pzm rcon "players"                       # List players
+pzm rcon "quit"                          # Stop server
+pzm rcon "help"                          # All commands
 ```
 
-### Useful Commands
-
-```bash
-# Save
-pzm rcon "save"
-
-# Broadcast message
-pzm rcon "servermsg 'Message to players'"
-
-# Stop server
-pzm rcon "quit"
-
-# List players
-pzm rcon "players"
-
-# Help
-pzm rcon "help"
-```
-
-Complete documentation: [PZ Wiki - Admin Commands](https://pzwiki.net/wiki/Server_commands)
-
-## Whitelist Management
-
-Advanced whitelist via SQLite: [SERVER_CONFIG.md - Whitelist](SERVER_CONFIG.md#gestion-whitelist)
-
-Database: `/home/pzuser/pzmanager/Zomboid/db/servertest.db`
+Full list: [PZ Wiki - Server Commands](https://pzwiki.net/wiki/Server_commands)
 
 ## Complete Server Reset
 
-### resetServer.sh Script
+Use when: corrupted world, major config change, fresh start.
 
-**Script**: `resetServer.sh`
-
-Complete server reset with new world. Useful for starting from scratch.
-
-**Complete reset (clean server)**:
+**New world (clean slate)**:
 ```bash
-./scripts/admin/resetServer.sh
+pzm admin reset
 ```
 
-**Reset with whitelist and config preservation**:
+**New world but keep whitelist and config**:
 ```bash
-./scripts/admin/resetServer.sh --keep-whitelist
+pzm admin reset --keep-whitelist
 ```
 
-### Process
+Process:
+1. Type `RESET` to confirm
+2. Backup created in `/home/pzuser/OLD/`
+3. Enter admin password (twice)
+4. When "UPnP" message appears → **Ctrl+C**
+5. Server ready
 
-**Step 1 - Confirmation**:
-- Request confirmation (type `RESET` in uppercase)
+## Maintenance Scheduling
 
-**Step 2 - Stop and backup**:
-- Server shutdown
-- Complete backup in `/home/pzuser/OLD/Zomboid_OLD_TIMESTAMP/`
+Automations use systemd timers (not crontab).
 
-**Step 3 - Initial configuration**:
-- Start interactive initial setup
-- Enter admin password (twice)
-- When message "If the server hangs here, set UPnP=false": **Ctrl+C**
-
-**Step 4 - Restoration (if --keep-whitelist)**:
-- Restore whitelist from old server (except admin)
-- Copy `servertest.ini` and `servertest_SandboxVars.lua`
-
-**Step 5 - Startup**:
-- Start new server
-
-### Use Cases
-
-**New world**: Corrupted server, complete rules change, fresh start.
-
-**With whitelist**: Keep authorized players and server parameters.
-
-**⚠️ Warning**: Complete data deletion! Backup created automatically.
-
-## Script Customization
-
-### Custom Warning Messages
-
-Edit `scripts/core/pz.sh` line 76 to modify messages sent to players.
-
-### Maintenance Scheduling
-
-Edit crontab (as root):
+**View timers**:
 ```bash
-nano /etc/cron.d/pzuser
-
-# Daily maintenance (default: 4:30 AM)
-30 4 * * *  pzuser  /bin/bash /home/pzuser/pzmanager/scripts/admin/performFullMaintenance.sh
-
-# Hourly backups (default: :14)
-14 * * * *  pzuser  /bin/bash /home/pzuser/pzmanager/scripts/backup/dataBackup.sh >> /home/pzuser/pzmanager/scripts/logs/data_backup.log 2>&1
+systemctl --user list-timers
 ```
 
-## Multi-Server Configuration
-
-To run multiple servers on the same machine:
-
-1. Clone pzmanager to another directory
-2. Modify ports in servertest.ini (16261 → 16271, etc.)
-3. Create a new user or modify PZ_USER in .env
-4. Adjust crontab schedules in `/etc/cron.d/` to avoid conflicts
-
-## Remote Maintenance
-
-### Forced SSH Configuration
-
-A special SSH key allows remote maintenance triggering.
-
-**File**: `~/.ssh/authorized_keys`
-
-```
-command="/home/pzuser/pzmanager/scripts/admin/performFullMaintenance.sh $SSH_ORIGINAL_COMMAND",no-port-forwarding,no-X11-forwarding,no-agent-forwarding ssh-ed25519 AAAA...
-```
-
-**Key generation** (on local machine):
+**Modify maintenance time** (default 4:30 AM):
 ```bash
-ssh-keygen -t ed25519 -f ~/.ssh/pz_maintenance
-```
-
-**Usage**:
-```bash
-# From local machine
-ssh -i ~/.ssh/pz_maintenance pzuser@SERVER_IP 30m
-ssh -i ~/.ssh/pz_maintenance pzuser@SERVER_IP 5m
-ssh -i ~/.ssh/pz_maintenance pzuser@SERVER_IP 2m
-```
-
-**Security restrictions**:
-- Forced command (only performFullMaintenance.sh)
-- No port forwarding
-- No X11 forwarding
-- No agent forwarding
-
-## Advanced Monitoring
-
-### Detailed Status
-
-```bash
-pzm server status
-```
-
-Displays:
-- Service status (running/stopped)
-- Uptime
-- Control pipe availability
-- Last save
-- Last 30 log lines
-
-### Real-time Logs
-
-```bash
-# Server logs
-sudo journalctl -u zomboid.service -f
-
-# Maintenance logs
-tail -f scripts/logs/maintenance/maintenance_*.log
-
-# Backup logs
-tail -f scripts/logs/data_backup.log
+nano ~/.config/systemd/user/pz-maintenance.timer
+systemctl --user daemon-reload
 ```
 
 ## Resources
 
-- [CONFIGURATION.md](CONFIGURATION.md) - .env variables, backups
-- [SERVER_CONFIG.md](SERVER_CONFIG.md) - Game server configuration
-- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Troubleshooting
-- [PZ Wiki - Server](https://pzwiki.net/wiki/Dedicated_Server)
+- [SERVER_CONFIG.md](SERVER_CONFIG.md) - Game configuration
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Problem solving
+- [PZ Wiki](https://pzwiki.net/wiki/Dedicated_Server) - Official docs

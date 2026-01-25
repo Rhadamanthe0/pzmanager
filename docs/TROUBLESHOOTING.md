@@ -181,22 +181,22 @@ Complete documentation: [ADVANCED.md - Complete Server Reset](ADVANCED.md#reset-
 
 ## Backups Not Working
 
-### Check Crontab
+### Check Timers
 
 ```bash
-cat /etc/cron.d/pzuser
-# Should show 3 scheduled tasks
+systemctl --user list-timers
+# Should show pz-backup.timer, pz-maintenance.timer, pz-modcheck.timer
 ```
 
-**Reinstall crontab** (as root):
+**Re-enable timers**:
 ```bash
-cp /home/pzuser/pzmanager/data/setupTemplates/pzuser-crontab /etc/cron.d/pzuser
+systemctl --user enable --now pz-backup.timer pz-maintenance.timer pz-modcheck.timer
 ```
 
-### Check Cron Logs
+### Check Timer Logs
 
 ```bash
-grep CRON /var/log/syslog | tail -20
+journalctl --user -u pz-backup.service -n 20
 ```
 
 ### Manual Test
@@ -256,7 +256,7 @@ ls -lt /home/pzuser/pzmanager/data/fullBackups/
 sudo ./scripts/install/configurationInitiale.sh restore /home/pzuser/pzmanager/data/fullBackups/2026-01-11_04-30
 ```
 
-**Restores**: Crontab, sudoers, SSH, systemd, scripts, .env, Zomboid data.
+**Restores**: Sudoers, SSH, systemd services/timers, scripts, .env, Zomboid data.
 
 ### Comparison
 
@@ -398,7 +398,7 @@ Environment="JAVA_OPTS=-Xms4g -Xmx8g -XX:+UseZGC -XX:ZCollectionInterval=30"
 If the issue persists:
 
 1. **Check logs**: `pzm server status`
-2. **Consult docs**: [INSTALLATION.md](INSTALLATION.md), [CONFIGURATION.md](CONFIGURATION.md)
+2. **Consult docs**: [QUICKSTART.md](QUICKSTART.md), [CONFIGURATION.md](CONFIGURATION.md)
 3. **Open an issue** on GitHub with:
    - OS version (Debian/Ubuntu)
    - Relevant logs

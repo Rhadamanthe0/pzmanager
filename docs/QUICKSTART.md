@@ -15,6 +15,8 @@ Get your Project Zomboid server running in 10 minutes.
 curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/pzmanager/main/install.sh | sudo bash
 ```
 
+**Duration**: 10-30 minutes
+
 The installer will:
 1. Create `pzuser` account
 2. Configure firewall (ports 16261, 16262, 8766, 27015)
@@ -22,7 +24,34 @@ The installer will:
 4. Download Project Zomboid server
 5. Set up systemd services and timers
 
-**Duration**: 10-30 minutes depending on connection.
+<details>
+<summary>Manual installation (advanced)</summary>
+
+```bash
+# As root
+apt update && apt upgrade -y
+apt install -y git
+
+# Clone
+git clone https://github.com/YOUR_USERNAME/pzmanager.git /opt/pzmanager
+cd /opt/pzmanager
+
+# System setup
+./scripts/install/setupSystem.sh
+
+# Sudo permissions
+visudo -cf data/setupTemplates/pzuser-sudoers && \
+cp data/setupTemplates/pzuser-sudoers /etc/sudoers.d/pzuser
+
+# Move to home
+mv /opt/pzmanager /home/pzuser/
+chown -R pzuser:pzuser /home/pzuser/pzmanager
+
+# Install server
+/home/pzuser/pzmanager/scripts/install/configurationInitiale.sh zomboid
+```
+
+</details>
 
 ## First Start
 
@@ -32,12 +61,7 @@ pzm server start
 pzm server status
 ```
 
-Expected output:
-```
-Status: RUNNING
-Active since: [timestamp]
-Control pipe: Available
-```
+First startup takes 2-5 minutes (world generation).
 
 ## Basic Commands
 
@@ -88,6 +112,29 @@ DISCORD_WEBHOOK="https://discord.com/api/webhooks/..."
 
 View timers: `systemctl --user list-timers`
 
+## Restore from Backup
+
+```bash
+# Data only (world, saves)
+pzm backup restore data/dataBackups/backup_YYYY-MM-DD_HHhMMmSSs
+
+# Complete system restore
+sudo ./scripts/install/configurationInitiale.sh restore /path/to/fullBackup
+```
+
+## Uninstallation
+
+```bash
+su - pzuser
+pzm server stop now
+systemctl --user disable zomboid.service pz-backup.timer pz-modcheck.timer pz-maintenance.timer
+exit
+
+sudo rm /etc/sudoers.d/pzuser
+sudo rm -rf /home/pzuser/pzmanager
+# (Optional) sudo userdel -r pzuser
+```
+
 ## Troubleshooting
 
 **Server won't start**:
@@ -105,4 +152,4 @@ pzm server status
 
 - [USAGE.md](USAGE.md) - All commands
 - [SERVER_CONFIG.md](SERVER_CONFIG.md) - PZ server settings
-- [CONFIGURATION.md](CONFIGURATION.md) - Environment variables
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Problem solving

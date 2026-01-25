@@ -451,12 +451,11 @@ RestartSec=5
 │
 ├── docs/                             # Documentation
 │   ├── QUICKSTART.md
-│   ├── INSTALLATION.md
+│   ├── USAGE.md
 │   ├── CONFIGURATION.md
 │   ├── SERVER_CONFIG.md
 │   ├── ADVANCED.md
 │   ├── TROUBLESHOOTING.md
-│   ├── MIGRATION.md
 │   └── WHAT_IS_INSTALLED.md          # This file
 │
 ├── README.md
@@ -648,8 +647,8 @@ apt autoremove
 
 ## References
 
-- **Installation**: [INSTALLATION.md](INSTALLATION.md)
+- **Quick Start**: [QUICKSTART.md](QUICKSTART.md)
+- **Usage**: [USAGE.md](USAGE.md)
 - **Configuration**: [CONFIGURATION.md](CONFIGURATION.md)
 - **PZ Server**: [SERVER_CONFIG.md](SERVER_CONFIG.md)
-- **Advanced**: [ADVANCED.md](ADVANCED.md)
 - **Troubleshooting**: [TROUBLESHOOTING.md](TROUBLESHOOTING.md)

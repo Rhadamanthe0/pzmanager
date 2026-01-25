@@ -128,9 +128,9 @@ Leave empty to disable. See [Discord Integration](#discord-integration).
 **Method**: Complete snapshot + ZIP archive
 
 **Contents**:
-- System configuration (crontab, sudoers)
+- System configuration (sudoers)
 - SSH keys
-- Systemd services
+- Systemd services and timers
 - All scripts
 - ZIP archive of latest Zomboid backup
 
@@ -254,10 +254,10 @@ bash -n /home/pzuser/pzmanager/scripts/.env
 sudo visudo -cf /home/pzuser/pzmanager/data/setupTemplates/pzuser-sudoers
 ```
 
-### Check crontab
+### Check timers
 
 ```bash
-cat /etc/cron.d/pzuser
+systemctl --user list-timers
 ```
 
 ### Test Backups
