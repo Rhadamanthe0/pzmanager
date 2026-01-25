@@ -44,7 +44,7 @@ create_user() {
 
 install_packages() {
     require_command apt-get
-    local -a needed=(sudo rsync unzip ufw curl sqlite3)
+    local -a needed=(sudo rsync unzip zip ufw curl sqlite3)
     local -a to_install=()
     for pkg in "${needed[@]}"; do
         if ! dpkg -s "$pkg" >/dev/null 2>&1; then

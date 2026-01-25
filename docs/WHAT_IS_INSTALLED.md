@@ -34,6 +34,7 @@ This document details **everything** modified on your system to ensure transpare
 **Base packages**:
 - `rsync`: Incremental backups with hard links
 - `unzip`: Archive decompression
+- `zip`: Archive creation (full backups)
 - `ufw`: Simplified firewall
 
 **Installed by configurationInitiale.sh**:
