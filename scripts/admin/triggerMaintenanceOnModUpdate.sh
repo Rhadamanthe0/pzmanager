@@ -52,6 +52,11 @@ has_maintenance_script() {
 }
 
 is_maintenance_running() {
+    # Check if scheduled maintenance service is running
+    if systemctl --user is-active --quiet pz-maintenance.service 2>/dev/null; then
+        return 0
+    fi
+
     # Clean stale lock (>1 hour old)
     if [[ -f "${MAINTENANCE_LOCK_FILE}" ]]; then
         local lock_age=$(( $(date +%s) - $(stat -c %Y "${MAINTENANCE_LOCK_FILE}" 2>/dev/null || echo 0) ))

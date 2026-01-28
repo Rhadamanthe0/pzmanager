@@ -7,6 +7,7 @@ set -euo pipefail
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 readonly LOG_DIR="${SCRIPT_DIR}/../logs/zomboid"
 readonly SILENT_FLAG="${SCRIPT_DIR}/../../.silent_next_start"
+readonly NOTIFY_LOCK="/tmp/pzmanager-notify-ready.lock"
 readonly TIMEOUT=300
 
 # Check and consume silent flag
@@ -14,6 +15,15 @@ if [[ -f "$SILENT_FLAG" ]]; then
     rm -f "$SILENT_FLAG"
     exit 0
 fi
+
+# Prevent duplicate notifications (lock for 5 minutes)
+if [[ -f "$NOTIFY_LOCK" ]]; then
+    lock_age=$(( $(date +%s) - $(stat -c %Y "$NOTIFY_LOCK" 2>/dev/null || echo 0) ))
+    if (( lock_age < 300 )); then
+        exit 0
+    fi
+fi
+touch "$NOTIFY_LOCK"
 
 start_time=$(date +%s)
 elapsed=0
