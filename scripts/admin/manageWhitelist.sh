@@ -16,6 +16,7 @@
 #
 # Note: Utiliser Steam ID 64 (17 chiffres, commence par 7656119...)
 #       Trouver sur le profil Steam ou via https://steamid.xyz/
+#       Maximum 2 comptes autorisés par Steam ID
 # ------------------------------------------------------------------------------
 
 set -euo pipefail
@@ -70,12 +71,16 @@ Exemple: $0 add \"PlayerName\" \"76561198012345678\""
 
     validate_steamid "$steamid"
 
-    # Vérifier doublon sur steamid
+    # Vérifier limite de 2 comptes par steamid
     local existing_steamid=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE steamid = '$steamid'" 2>/dev/null || echo "0")
-    if [[ "$existing_steamid" -gt 0 ]]; then
-        echo "⚠️  Steam ID déjà whitelisté: $steamid"
+    if [[ "$existing_steamid" -ge 2 ]]; then
+        echo "⚠️  Steam ID a déjà 2 comptes (limite atteinte): $steamid"
         sqlite3 -header -column "$DB_PATH" "SELECT * FROM whitelist WHERE steamid = '$steamid'"
         exit 1
+    elif [[ "$existing_steamid" -eq 1 ]]; then
+        echo "ℹ️  Steam ID a déjà 1 compte, ajout du 2ème:"
+        sqlite3 -header -column "$DB_PATH" "SELECT * FROM whitelist WHERE steamid = '$steamid'"
+        echo ""
     fi
 
     # Vérifier doublon sur username
@@ -140,6 +145,7 @@ Exemples:
 Notes:
   - Steam ID requis: Steam ID 64 (17 chiffres, ex: 76561198012345678)
   - Trouver sur le profil Steam ou via https://steamid.xyz/
+  - Maximum 2 comptes autorisés par Steam ID
 HELPEOF
 }
 

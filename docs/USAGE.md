@@ -42,6 +42,8 @@ pzm whitelist remove "76561198012345678"        # Remove
 **Steam ID 64**: 17 digits starting with `7656119...`
 Find via [steamid.xyz](https://steamid.xyz/)
 
+**Limit**: Max 2 accounts per Steam ID
+
 ## Administration
 
 ```bash

@@ -28,7 +28,7 @@ Commandes disponibles:
 
   whitelist <action> [arguments]
     list               Lister utilisateurs whitelistés
-    add <nom> <id64>   Ajouter (Steam ID 64: 76561198XXXXXXXXX)
+    add <nom> <id64>   Ajouter (Steam ID 64: 76561198XXXXXXXXX, max 2/ID)
     remove <id64>      Retirer utilisateur
 
   admin <action> [arguments]
