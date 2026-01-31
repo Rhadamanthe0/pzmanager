@@ -43,3 +43,23 @@ ensure_directory() {
     local dir="$1"
     [[ -d "$dir" ]] || mkdir -p "$dir" || die "Impossible de créer le répertoire: $dir"
 }
+
+# Acquire maintenance lock (non-blocking, shared between pz.sh/modcheck/maintenance)
+# Usage: try_acquire_maintenance_lock [lock_file] [max_age_seconds]
+# Returns: 0 if acquired, 1 if already held
+readonly MAINTENANCE_LOCK_FILE="/tmp/pzmanager-maintenance.lock"
+readonly LOCK_MAX_AGE=3600
+
+try_acquire_maintenance_lock() {
+    local lock_file="${1:-$MAINTENANCE_LOCK_FILE}"
+    local max_age="${2:-$LOCK_MAX_AGE}"
+
+    # Clean stale lock (>max_age old)
+    if [[ -f "$lock_file" ]]; then
+        local age=$(( $(date +%s) - $(stat -c %Y "$lock_file" 2>/dev/null || echo 0) ))
+        (( age > max_age )) && rm -f "$lock_file"
+    fi
+
+    exec 200>"$lock_file"
+    flock -n 200
+}
