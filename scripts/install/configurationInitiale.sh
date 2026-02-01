@@ -233,7 +233,7 @@ install_systemd_services() {
     done
 
     # Automation timers and services
-    for unit_file in pz-backup.service pz-backup.timer pz-modcheck.service pz-modcheck.timer pz-maintenance.service pz-maintenance.timer; do
+    for unit_file in pz-backup.service pz-backup.timer pz-modcheck.service pz-modcheck.timer pz-maintenance.service pz-maintenance.timer pz-creation-date-init.service pz-creation-date-init.timer; do
         if [[ -f "$templates_dir/$unit_file" ]]; then
             cp "$templates_dir/$unit_file" "$systemd_dir/$unit_file"
             chown "$PZ_USER:$PZ_USER" "$systemd_dir/$unit_file"
@@ -261,6 +261,7 @@ enable_zomboid_service() {
     sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user enable --now pz-backup.timer || true
     sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user enable --now pz-modcheck.timer || true
     sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user enable --now pz-maintenance.timer || true
+    sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user enable --now pz-creation-date-init.timer || true
 }
 
 install_zomboid() {

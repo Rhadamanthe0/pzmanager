@@ -43,7 +43,7 @@ Commandes disponibles:
     system             Configuration système initiale
     zomboid            Installer serveur Project Zomboid
 
-  rcon <commande>      Envoyer commande RCON au serveur
+  rcon <cmd> [args]    Envoyer commande RCON au serveur
 
   discord <message>    Envoyer message sur Discord
 
@@ -54,7 +54,8 @@ Exemples:
   pzm whitelist add "PlayerName" "76561198012345678"
   pzm admin reset --keep-whitelist
   pzm config ram 8g
-  pzm rcon "save"
+  pzm rcon save
+  pzm rcon setaccesslevel "Marc Rivière" admin
 
 Documentation: docs/QUICKSTART.md
 EOF
@@ -118,12 +119,12 @@ cmd_whitelist() {
     shift || true
 
     case "$action" in
-        list|add|remove)
+        list|add|remove|purge)
             exec "${SCRIPT_DIR}/scripts/admin/manageWhitelist.sh" "$action" "$@"
             ;;
         *)
             echo "Erreur: Action whitelist invalide: $action"
-            echo "Actions: list, add, remove"
+            echo "Actions: list, add, remove, purge"
             exit 1
             ;;
     esac

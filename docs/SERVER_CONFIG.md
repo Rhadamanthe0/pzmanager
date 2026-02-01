@@ -75,11 +75,19 @@ pzm whitelist add "PlayerName" "76561198012345678"
 pzm whitelist remove "PlayerName"
 ```
 
+**Purge inactive accounts**:
+```bash
+pzm whitelist purge              # List old accounts (unknown creation date)
+pzm whitelist purge 3m           # List inactive 3+ months
+pzm whitelist purge 3m --delete  # Delete after confirmation
+```
+
 **Notes**:
 - Steam ID 64 required for add: 17 digits, starts with `7656119...`
 - Find Steam ID via [steamid.xyz](https://steamid.xyz/)
 - Each username must be unique
 - Max 2 accounts per Steam ID
+- Purge delay format: Xm (months) or Xd (days)
 - Changes applied immediately (no restart needed)
 
 ### Mods

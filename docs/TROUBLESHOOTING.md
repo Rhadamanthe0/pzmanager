@@ -185,12 +185,12 @@ Complete documentation: [ADVANCED.md - Complete Server Reset](ADVANCED.md#reset-
 
 ```bash
 systemctl --user list-timers
-# Should show pz-backup.timer, pz-maintenance.timer, pz-modcheck.timer
+# Should show pz-backup, pz-maintenance, pz-modcheck, pz-creation-date-init
 ```
 
 **Re-enable timers**:
 ```bash
-systemctl --user enable --now pz-backup.timer pz-maintenance.timer pz-modcheck.timer
+systemctl --user enable --now pz-backup.timer pz-maintenance.timer pz-modcheck.timer pz-creation-date-init.timer
 ```
 
 ### Check Timer Logs

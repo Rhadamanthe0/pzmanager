@@ -26,17 +26,19 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 # Parse arguments
 NO_OUTPUT=false
-CMD_ARGS=()
+CMD_PARTS=()
 
 for arg in "$@"; do
     if [[ "$arg" == "--no-output" ]]; then
         NO_OUTPUT=true
+    elif [[ "$arg" == *" "* ]]; then
+        CMD_PARTS+=("\"$arg\"")
     else
-        CMD_ARGS+=("$arg")
+        CMD_PARTS+=("$arg")
     fi
 done
 
-readonly CMD="${CMD_ARGS[*]}"
+readonly CMD="${CMD_PARTS[*]}"
 
 if [[ -z "$CMD" ]]; then
     echo "Usage: $0 <commande> [--no-output]"

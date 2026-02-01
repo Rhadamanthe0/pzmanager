@@ -109,6 +109,7 @@ DISCORD_WEBHOOK="https://discord.com/api/webhooks/..."
 | Mod check | Every 5 min | Auto-maintenance if updates detected |
 | Backup | Hourly (:14) | Incremental, 14-day retention |
 | Maintenance | Daily 4:30 AM | Updates + full backup + reboot |
+| Whitelist dates | Daily 00:00 | Init creation dates for purge |
 
 View timers: `systemctl --user list-timers`
 
@@ -127,7 +128,7 @@ sudo ./scripts/install/configurationInitiale.sh restore /path/to/fullBackup
 ```bash
 su - pzuser
 pzm server stop now
-systemctl --user disable zomboid.service pz-backup.timer pz-modcheck.timer pz-maintenance.timer
+systemctl --user disable zomboid.service pz-backup.timer pz-modcheck.timer pz-maintenance.timer pz-creation-date-init.timer
 exit
 
 sudo rm /etc/sudoers.d/pzuser

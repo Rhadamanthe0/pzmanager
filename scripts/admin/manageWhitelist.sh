@@ -8,11 +8,15 @@
 #   list                        - Afficher tous les utilisateurs whitelistés
 #   add <username> <steam64>    - Ajouter un utilisateur (Steam ID 64)
 #   remove <username>           - Retirer un utilisateur par son nom
+#   purge [delay] [--delete]    - Lister/supprimer les comptes inactifs
 #
 # Exemples:
 #   ./manageWhitelist.sh list
 #   ./manageWhitelist.sh add "PlayerName" "76561198012345678"
 #   ./manageWhitelist.sh remove "PlayerName"
+#   ./manageWhitelist.sh purge              # Liste anciens comptes jamais connectés
+#   ./manageWhitelist.sh purge 3m           # Liste inactifs depuis 3 mois
+#   ./manageWhitelist.sh purge 3m --delete  # Supprime après confirmation
 #
 # Note: Utiliser Steam ID 64 (17 chiffres, commence par 7656119...)
 #       Trouver sur le profil Steam ou via https://steamid.xyz/
@@ -37,7 +41,15 @@ check_database() {
     [[ -f "$DB_PATH" ]] || die "Base de données introuvable: $DB_PATH"
 }
 
-readonly WHITELIST_COLUMNS="id, username, lastConnection, steamid, accesslevel, displayName"
+ensure_created_at_column() {
+    # Ajouter la colonne created_at si elle n'existe pas
+    local has_column=$(sqlite3 "$DB_PATH" "PRAGMA table_info(whitelist)" 2>/dev/null | grep -c "created_at" || echo "0")
+    if [[ "$has_column" -eq 0 ]]; then
+        sqlite3 "$DB_PATH" "ALTER TABLE whitelist ADD COLUMN created_at TEXT DEFAULT NULL" 2>/dev/null || true
+    fi
+}
+
+readonly WHITELIST_COLUMNS="id, username, created_at, lastConnection, steamid, accesslevel, displayName"
 
 list_whitelist() {
     echo "=== Whitelist du serveur ==="
@@ -93,13 +105,14 @@ Exemple: $0 add \"PlayerName\" \"76561198012345678\""
         exit 1
     fi
 
-    # Ajouter
-    sqlite3 "$DB_PATH" "INSERT INTO whitelist (username, steamid) VALUES ('$username', '$steamid');" || \
+    # Ajouter avec date de création
+    sqlite3 "$DB_PATH" "INSERT INTO whitelist (username, steamid, created_at) VALUES ('$username', '$steamid', datetime('now'));" || \
         die "Échec de l'ajout à la whitelist"
 
     echo "✓ Utilisateur ajouté à la whitelist:"
     echo "  Nom: $username"
     echo "  Steam ID 64: $steamid"
+    echo "  Créé le: $(date '+%Y-%m-%d %H:%M:%S')"
 }
 
 remove_from_whitelist() {
@@ -125,6 +138,70 @@ remove_from_whitelist() {
     echo "✓ Utilisateur '$username' retiré de la whitelist"
 }
 
+purge_whitelist() {
+    local delay="${1:-}"
+    local do_delete="${2:-}"
+
+    # Construire la condition de filtre
+    local where_clause=""
+    local description=""
+
+    if [[ -z "$delay" ]]; then
+        # Sans argument: anciens comptes jamais connectés (created_at NULL)
+        where_clause="created_at IS NULL AND (lastConnection IS NULL OR lastConnection = '')"
+        description="Comptes anciens jamais connectés (date création inconnue)"
+    else
+        # Avec delay: parser le format (ex: 3m pour 3 mois)
+        local num="${delay%[mMjJdD]}"
+        local unit="${delay: -1}"
+
+        if [[ ! "$num" =~ ^[0-9]+$ ]]; then
+            die "Format invalide: $delay (utiliser ex: 3m pour 3 mois, 30j pour 30 jours)"
+        fi
+
+        local days unit_label
+        case "$unit" in
+            m|M) days=$((num * 30)); unit_label="mois" ;;
+            j|J|d|D) days=$num; unit_label="jour(s)" ;;
+            *) die "Unité inconnue: $unit (utiliser m=mois, j/d=jours)" ;;
+        esac
+
+        # Comptes inactifs OU anciens jamais connectés
+        where_clause="(created_at IS NULL AND (lastConnection IS NULL OR lastConnection = '')) OR (lastConnection < date('now', '-$days days') AND lastConnection != '')"
+        description="Comptes inactifs depuis $num $unit_label OU anciens jamais connectés"
+    fi
+
+    # Lister les comptes concernés
+    echo "=== $description ==="
+    echo ""
+
+    local results=$(sqlite3 -header -column "$DB_PATH" "SELECT $WHITELIST_COLUMNS FROM whitelist WHERE $where_clause ORDER BY lastConnection" 2>/dev/null)
+
+    if [[ -z "$results" ]]; then
+        echo "Aucun compte trouvé."
+        return 0
+    fi
+
+    echo "$results"
+    echo ""
+
+    local count=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE $where_clause" 2>/dev/null || echo "0")
+    echo "Total: $count compte(s)"
+
+    # Suppression si demandée
+    if [[ "$do_delete" == "--delete" ]]; then
+        echo ""
+        read -p "Supprimer ces $count compte(s) ? [oui/NON]: " confirm
+        if [[ "$confirm" == "oui" ]]; then
+            sqlite3 "$DB_PATH" "DELETE FROM whitelist WHERE $where_clause;" || \
+                die "Échec de la suppression"
+            echo "✓ $count compte(s) supprimé(s)"
+        else
+            echo "Suppression annulée."
+        fi
+    fi
+}
+
 show_help() {
     cat <<HELPEOF
 Gestion de la whitelist du serveur Project Zomboid
@@ -135,17 +212,22 @@ Commandes:
   list                        Afficher tous les utilisateurs whitelistés
   add <username> <steam64>    Ajouter un utilisateur
   remove <username>           Retirer un utilisateur par son nom
+  purge [delay] [--delete]    Lister/supprimer les comptes inactifs
 
 Exemples:
   $0 list
   $0 add "PlayerName" "76561198012345678"
   $0 remove "PlayerName"
+  $0 purge                    # Anciens comptes jamais connectés
+  $0 purge 3m                 # Inactifs depuis 3 mois
+  $0 purge 3m --delete        # Supprime après confirmation
 
 Notes:
   - Steam ID requis: Steam ID 64 (17 chiffres, ex: 76561198012345678)
   - Trouver sur le profil Steam ou via https://steamid.xyz/
   - Maximum 2 comptes autorisés par Steam ID
   - Chaque username doit être unique
+  - Délai purge: Xm (mois) ou Xj (jours)
 HELPEOF
 }
 
@@ -155,15 +237,22 @@ main() {
     case "$ACTION" in
         list)
             check_database
+            ensure_created_at_column
             list_whitelist
             ;;
         add)
             check_database
+            ensure_created_at_column
             add_to_whitelist "${2:-}" "${3:-}"
             ;;
         remove)
             check_database
             remove_from_whitelist "${*:2}"
+            ;;
+        purge)
+            check_database
+            ensure_created_at_column
+            purge_whitelist "${2:-}" "${3:-}"
             ;;
         help|--help|-h|"")
             show_help

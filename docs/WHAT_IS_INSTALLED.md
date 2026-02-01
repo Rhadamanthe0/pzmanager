@@ -364,6 +364,12 @@ RestartSec=5
 
 **Logs**: `/home/pzuser/pzmanager/scripts/logs/maintenance/`
 
+#### pz-creation-date-init.timer - Whitelist date init (midnight)
+
+**Schedule**: Daily at 00:00
+
+**Function**: Assigns creation date (yesterday) to whitelist accounts without one. Enables `pzm whitelist purge` to identify truly inactive accounts vs newly added ones.
+
 **View timers**: `systemctl --user list-timers`
 
 ---
@@ -429,6 +435,7 @@ RestartSec=5
 │   │   ├── pz-backup.service/timer   # Hourly backup automation
 │   │   ├── pz-modcheck.service/timer # Mod update check automation
 │   │   ├── pz-maintenance.service/timer  # Daily maintenance automation
+│   │   ├── pz-creation-date-init.service/timer  # Whitelist date init
 │   │   └── .env.example              # Environment variables template
 │   │
 │   ├── pzserver/                     # PZ server installation (~1-2GB)
@@ -623,8 +630,8 @@ To completely remove pzmanager:
 # As root
 
 # 1. Stop and disable services
-sudo -u pzuser systemctl --user stop zomboid.service pz-backup.timer pz-modcheck.timer pz-maintenance.timer
-sudo -u pzuser systemctl --user disable zomboid.service pz-backup.timer pz-modcheck.timer pz-maintenance.timer
+sudo -u pzuser systemctl --user stop zomboid.service pz-backup.timer pz-modcheck.timer pz-maintenance.timer pz-creation-date-init.timer
+sudo -u pzuser systemctl --user disable zomboid.service pz-backup.timer pz-modcheck.timer pz-maintenance.timer pz-creation-date-init.timer
 loginctl disable-linger pzuser
 
 # 2. Remove files
