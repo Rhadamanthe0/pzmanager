@@ -14,8 +14,8 @@
 #   ./manageWhitelist.sh list
 #   ./manageWhitelist.sh add "PlayerName" "76561198012345678"
 #   ./manageWhitelist.sh remove "PlayerName"
-#   ./manageWhitelist.sh purge              # Liste anciens comptes jamais connectés
-#   ./manageWhitelist.sh purge 3m           # Liste inactifs depuis 3 mois
+#   ./manageWhitelist.sh purge              # Inactifs depuis WHITELIST_PURGE_DAYS
+#   ./manageWhitelist.sh purge 3m           # Inactifs depuis 3 mois
 #   ./manageWhitelist.sh purge 3m --delete  # Supprime après confirmation
 #
 # Note: Utiliser Steam ID 64 (17 chiffres, commence par 7656119...)
@@ -142,34 +142,29 @@ purge_whitelist() {
     local delay="${1:-}"
     local do_delete="${2:-}"
 
-    # Construire la condition de filtre
-    local where_clause=""
-    local description=""
-
+    # Utiliser le délai par défaut si non spécifié
     if [[ -z "$delay" ]]; then
-        # Sans argument: anciens comptes jamais connectés (created_at NULL)
-        where_clause="created_at IS NULL AND (lastConnection IS NULL OR lastConnection = '')"
-        description="Comptes anciens jamais connectés (date création inconnue)"
-    else
-        # Avec delay: parser le format (ex: 3m pour 3 mois)
-        local num="${delay%[mMjJdD]}"
-        local unit="${delay: -1}"
-
-        if [[ ! "$num" =~ ^[0-9]+$ ]]; then
-            die "Format invalide: $delay (utiliser ex: 3m pour 3 mois, 30j pour 30 jours)"
-        fi
-
-        local days unit_label
-        case "$unit" in
-            m|M) days=$((num * 30)); unit_label="mois" ;;
-            j|J|d|D) days=$num; unit_label="jour(s)" ;;
-            *) die "Unité inconnue: $unit (utiliser m=mois, j/d=jours)" ;;
-        esac
-
-        # Comptes inactifs OU anciens jamais connectés
-        where_clause="(created_at IS NULL AND (lastConnection IS NULL OR lastConnection = '')) OR (lastConnection < date('now', '-$days days') AND lastConnection != '')"
-        description="Comptes inactifs depuis $num $unit_label OU anciens jamais connectés"
+        delay="${WHITELIST_PURGE_DAYS}d"
     fi
+
+    # Parser le format (ex: 3m pour 3 mois, 60d pour 60 jours)
+    local num="${delay%[mMjJdD]}"
+    local unit="${delay: -1}"
+
+    if [[ ! "$num" =~ ^[0-9]+$ ]]; then
+        die "Format invalide: $delay (utiliser ex: 3m pour 3 mois, 30j pour 30 jours)"
+    fi
+
+    local days unit_label
+    case "$unit" in
+        m|M) days=$((num * 30)); unit_label="mois" ;;
+        j|J|d|D) days=$num; unit_label="jour(s)" ;;
+        *) die "Unité inconnue: $unit (utiliser m=mois, j/d=jours)" ;;
+    esac
+
+    # Comptes inactifs OU anciens jamais connectés
+    local where_clause="(created_at IS NULL AND (lastConnection IS NULL OR lastConnection = '')) OR (lastConnection < date('now', '-$days days') AND lastConnection != '')"
+    local description="Comptes inactifs depuis $num $unit_label OU anciens jamais connectés"
 
     # Lister les comptes concernés
     echo "=== $description ==="
@@ -218,7 +213,7 @@ Exemples:
   $0 list
   $0 add "PlayerName" "76561198012345678"
   $0 remove "PlayerName"
-  $0 purge                    # Anciens comptes jamais connectés
+  $0 purge                    # Inactifs depuis ${WHITELIST_PURGE_DAYS}j (défaut)
   $0 purge 3m                 # Inactifs depuis 3 mois
   $0 purge 3m --delete        # Supprime après confirmation
 
@@ -227,6 +222,7 @@ Notes:
   - Trouver sur le profil Steam ou via https://steamid.xyz/
   - Maximum 2 comptes autorisés par Steam ID
   - Chaque username doit être unique
+  - Délai purge par défaut: WHITELIST_PURGE_DAYS dans .env
   - Délai purge: Xm (mois) ou Xj (jours)
 HELPEOF
 }
