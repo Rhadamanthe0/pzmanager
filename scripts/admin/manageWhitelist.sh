@@ -162,9 +162,9 @@ purge_whitelist() {
         *) die "Unité inconnue: $unit (utiliser m=mois, j/d=jours)" ;;
     esac
 
-    # Comptes inactifs OU anciens jamais connectés
-    local where_clause="(created_at IS NULL AND (lastConnection IS NULL OR lastConnection = '')) OR (lastConnection < date('now', '-$days days') AND lastConnection != '')"
-    local description="Comptes inactifs depuis $num $unit_label OU anciens jamais connectés"
+    # Comptes inactifs: jamais connectés (créés il y a +X jours) OU dernière connexion > X jours
+    local where_clause="((lastConnection IS NULL OR lastConnection = '') AND (created_at IS NULL OR created_at < date('now', '-$days days'))) OR (lastConnection < date('now', '-$days days') AND lastConnection != '')"
+    local description="Comptes inactifs depuis $num $unit_label"
 
     # Lister les comptes concernés
     echo "=== $description ==="
