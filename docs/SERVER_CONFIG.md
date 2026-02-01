@@ -72,12 +72,14 @@ pzm whitelist add "PlayerName" "76561198012345678"
 
 **Remove player**:
 ```bash
-pzm whitelist remove "76561198012345678"
+pzm whitelist remove "PlayerName"
 ```
 
 **Notes**:
-- Required Steam ID: **Steam ID 64** (17 digits, starts with `7656119...`)
-- Find on Steam profile or via [steamid.xyz](https://steamid.xyz/)
+- Steam ID 64 required for add: 17 digits, starts with `7656119...`
+- Find Steam ID via [steamid.xyz](https://steamid.xyz/)
+- Each username must be unique
+- Max 2 accounts per Steam ID
 - Changes applied immediately (no restart needed)
 
 ### Mods

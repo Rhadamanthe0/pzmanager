@@ -36,13 +36,13 @@ pzm backup restore data/dataBackups/backup_2026-01-12_14h14m00s
 ```bash
 pzm whitelist list                              # List users
 pzm whitelist add "Name" "76561198012345678"    # Add (Steam ID 64)
-pzm whitelist remove "76561198012345678"        # Remove
+pzm whitelist remove "Name"                     # Remove by username
 ```
 
-**Steam ID 64**: 17 digits starting with `7656119...`
-Find via [steamid.xyz](https://steamid.xyz/)
-
-**Limit**: Max 2 accounts per Steam ID
+**Notes**:
+- Steam ID 64: 17 digits starting with `7656119...` ([steamid.xyz](https://steamid.xyz/))
+- Each username must be unique
+- Max 2 accounts per Steam ID
 
 ## Administration
 

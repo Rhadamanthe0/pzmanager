@@ -7,12 +7,12 @@
 # Commandes:
 #   list                        - Afficher tous les utilisateurs whitelistés
 #   add <username> <steam64>    - Ajouter un utilisateur (Steam ID 64)
-#   remove <steam64>            - Retirer un utilisateur
+#   remove <username>           - Retirer un utilisateur par son nom
 #
 # Exemples:
 #   ./manageWhitelist.sh list
 #   ./manageWhitelist.sh add "PlayerName" "76561198012345678"
-#   ./manageWhitelist.sh remove "76561198012345678"
+#   ./manageWhitelist.sh remove "PlayerName"
 #
 # Note: Utiliser Steam ID 64 (17 chiffres, commence par 7656119...)
 #       Trouver sur le profil Steam ou via https://steamid.xyz/
@@ -37,11 +37,13 @@ check_database() {
     [[ -f "$DB_PATH" ]] || die "Base de données introuvable: $DB_PATH"
 }
 
+readonly WHITELIST_COLUMNS="id, username, lastConnection, steamid, accesslevel, displayName"
+
 list_whitelist() {
     echo "=== Whitelist du serveur ==="
     echo ""
 
-    if ! sqlite3 -header -column "$DB_PATH" "SELECT * FROM whitelist ORDER BY lastConnection DESC" 2>/dev/null; then
+    if ! sqlite3 -header -column "$DB_PATH" "SELECT $WHITELIST_COLUMNS FROM whitelist ORDER BY lastConnection DESC" 2>/dev/null; then
         die "Impossible de lire la whitelist. La table existe-t-elle ?"
     fi
 
@@ -75,11 +77,11 @@ Exemple: $0 add \"PlayerName\" \"76561198012345678\""
     local existing_steamid=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE steamid = '$steamid'" 2>/dev/null || echo "0")
     if [[ "$existing_steamid" -ge 2 ]]; then
         echo "⚠️  Steam ID a déjà 2 comptes (limite atteinte): $steamid"
-        sqlite3 -header -column "$DB_PATH" "SELECT * FROM whitelist WHERE steamid = '$steamid'"
+        sqlite3 -header -column "$DB_PATH" "SELECT $WHITELIST_COLUMNS FROM whitelist WHERE steamid = '$steamid'"
         exit 1
     elif [[ "$existing_steamid" -eq 1 ]]; then
         echo "ℹ️  Steam ID a déjà 1 compte, ajout du 2ème:"
-        sqlite3 -header -column "$DB_PATH" "SELECT * FROM whitelist WHERE steamid = '$steamid'"
+        sqlite3 -header -column "$DB_PATH" "SELECT $WHITELIST_COLUMNS FROM whitelist WHERE steamid = '$steamid'"
         echo ""
     fi
 
@@ -87,7 +89,7 @@ Exemple: $0 add \"PlayerName\" \"76561198012345678\""
     local existing_username=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE username = '$username'" 2>/dev/null || echo "0")
     if [[ "$existing_username" -gt 0 ]]; then
         echo "⚠️  Username déjà whitelisté: $username"
-        sqlite3 -header -column "$DB_PATH" "SELECT * FROM whitelist WHERE username = '$username'"
+        sqlite3 -header -column "$DB_PATH" "SELECT $WHITELIST_COLUMNS FROM whitelist WHERE username = '$username'"
         exit 1
     fi
 
@@ -101,29 +103,26 @@ Exemple: $0 add \"PlayerName\" \"76561198012345678\""
 }
 
 remove_from_whitelist() {
-    local steamid="${1:-}"
+    local username="${1:-}"
 
-    [[ -n "$steamid" ]] || die "Usage: $0 remove <steam64>"
-
-    validate_steamid "$steamid"
+    [[ -n "$username" ]] || die "Usage: $0 remove <username>"
 
     # Vérifier si existe
-    local existing=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE steamid = '$steamid'" 2>/dev/null || echo "0")
+    local existing=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE username = '$username'" 2>/dev/null || echo "0")
 
     if [[ "$existing" -eq 0 ]]; then
-        die "Aucun utilisateur trouvé avec Steam ID: $steamid"
+        die "Aucun utilisateur trouvé: $username"
     fi
 
     # Afficher avant suppression
     echo "Utilisateur à retirer:"
-    sqlite3 -header -column "$DB_PATH" "SELECT * FROM whitelist WHERE steamid = '$steamid'"
+    sqlite3 -header -column "$DB_PATH" "SELECT $WHITELIST_COLUMNS FROM whitelist WHERE username = '$username'"
     echo ""
 
     # Supprimer
-    sqlite3 "$DB_PATH" "DELETE FROM whitelist WHERE steamid = '$steamid';" || \
+    sqlite3 "$DB_PATH" "DELETE FROM whitelist WHERE username = '$username';" || \
         die "Échec de la suppression de la whitelist"
-
-    echo "✓ Utilisateur retiré de la whitelist"
+    echo "✓ Utilisateur '$username' retiré de la whitelist"
 }
 
 show_help() {
@@ -135,17 +134,18 @@ Usage: $0 <commande> [arguments]
 Commandes:
   list                        Afficher tous les utilisateurs whitelistés
   add <username> <steam64>    Ajouter un utilisateur
-  remove <steam64>            Retirer un utilisateur
+  remove <username>           Retirer un utilisateur par son nom
 
 Exemples:
   $0 list
   $0 add "PlayerName" "76561198012345678"
-  $0 remove "76561198012345678"
+  $0 remove "PlayerName"
 
 Notes:
   - Steam ID requis: Steam ID 64 (17 chiffres, ex: 76561198012345678)
   - Trouver sur le profil Steam ou via https://steamid.xyz/
   - Maximum 2 comptes autorisés par Steam ID
+  - Chaque username doit être unique
 HELPEOF
 }
 
@@ -163,7 +163,7 @@ main() {
             ;;
         remove)
             check_database
-            remove_from_whitelist "${2:-}"
+            remove_from_whitelist "${*:2}"
             ;;
         help|--help|-h|"")
             show_help
