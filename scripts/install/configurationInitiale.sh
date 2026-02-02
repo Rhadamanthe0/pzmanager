@@ -13,6 +13,7 @@
 #
 # Nécessite: root
 # Note: Pour setup système, utilisez setupSystem.sh
+# Note: Crée automatiquement un utilisateur 'admin' avec mot de passe aléatoire
 # ------------------------------------------------------------------------------
 
 set -euo pipefail
@@ -264,6 +265,38 @@ enable_zomboid_service() {
     sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user enable --now pz-creation-date-init.timer || true
 }
 
+create_admin_user() {
+    local db_path="$ZOMBOID_DIR/db/servertest.db"
+
+    # Attendre que la DB existe (créée au premier démarrage du serveur)
+    if [[ ! -f "$db_path" ]]; then
+        echo "  [SKIP] Base de données non trouvée (créée au premier démarrage)"
+        return 0
+    fi
+
+    # Vérifier si admin existe déjà
+    local exists=$(sqlite3 "$db_path" "SELECT COUNT(*) FROM whitelist WHERE username = 'admin'" 2>/dev/null || echo "0")
+    if [[ "$exists" -gt 0 ]]; then
+        echo "  [SKIP] Utilisateur 'admin' existe déjà"
+        return 0
+    fi
+
+    # Générer mot de passe et hash bcrypt
+    local password=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 24)
+    local hash=$(mkpasswd -m bcrypt-a -R 12 "$password")
+
+    # Créer l'utilisateur admin
+    sqlite3 "$db_path" "INSERT INTO whitelist (username, password, accesslevel, encryptedPwd, pwdEncryptType, created_at) VALUES ('admin', '$hash', 'admin', 1, 1, datetime('now'));"
+
+    echo ""
+    echo "  ╔════════════════════════════════════════════════════════╗"
+    echo "  ║  Utilisateur admin créé                                ║"
+    echo "  ║  Mot de passe: $password  ║"
+    echo "  ║  NOTEZ-LE, il ne sera plus affiché !                   ║"
+    echo "  ╚════════════════════════════════════════════════════════╝"
+    echo ""
+}
+
 install_zomboid() {
     echo "=== Installation serveur Project Zomboid ==="
 
@@ -303,6 +336,7 @@ install_zomboid() {
     configure_user_environment
     install_systemd_services
     enable_zomboid_service
+    create_admin_user
 
     echo ""
     echo "=== Installation terminée ==="

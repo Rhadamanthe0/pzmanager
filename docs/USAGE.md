@@ -37,7 +37,7 @@ pzm backup restore data/dataBackups/backup_2026-01-12_14h14m00s
 pzm whitelist list                              # List users
 pzm whitelist add "Name" "76561198012345678"    # Add (Steam ID 64)
 pzm whitelist remove "Name"                     # Remove by username
-pzm whitelist purge                             # List old accounts (no creation date)
+pzm whitelist purge                             # List inactive (default: WHITELIST_PURGE_DAYS)
 pzm whitelist purge 3m                          # List inactive 3+ months
 pzm whitelist purge 3m --delete                 # Delete after confirmation
 ```
@@ -46,7 +46,8 @@ pzm whitelist purge 3m --delete                 # Delete after confirmation
 - Steam ID 64: 17 digits starting with `7656119...` ([steamid.xyz](https://steamid.xyz/))
 - Each username must be unique
 - Max 2 accounts per Steam ID
-- Purge delay: Xm (months) or Xd (days)
+- Purge: Xm (months) or Xd (days), default in .env
+- Purge exclut toujours l'utilisateur `admin`
 
 ## Administration
 

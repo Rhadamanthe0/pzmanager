@@ -163,7 +163,8 @@ purge_whitelist() {
     esac
 
     # Comptes inactifs: jamais connectés (créés il y a +X jours) OU dernière connexion > X jours
-    local where_clause="((lastConnection IS NULL OR lastConnection = '') AND (created_at IS NULL OR created_at < date('now', '-$days days'))) OR (lastConnection < date('now', '-$days days') AND lastConnection != '')"
+    # Exclut toujours l'utilisateur 'admin'
+    local where_clause="(((lastConnection IS NULL OR lastConnection = '') AND (created_at IS NULL OR created_at < date('now', '-$days days'))) OR (lastConnection < date('now', '-$days days') AND lastConnection != '')) AND username != 'admin'"
     local description="Comptes inactifs depuis $num $unit_label"
 
     # Lister les comptes concernés
@@ -224,6 +225,7 @@ Notes:
   - Chaque username doit être unique
   - Délai purge par défaut: WHITELIST_PURGE_DAYS dans .env
   - Délai purge: Xm (mois) ou Xj (jours)
+  - Purge exclut toujours l'utilisateur 'admin'
 HELPEOF
 }
 

@@ -207,6 +207,14 @@ Zomboid/
 
 **Typical size**: 500MB - 5GB (depending on usage)
 
+### Admin User
+
+An `admin` user is automatically created during installation with a random 24-character password. This password is displayed once during installation - **save it immediately**.
+
+- Username: `admin`
+- Access level: admin
+- Excluded from `pzm whitelist purge` (never deleted)
+
 ---
 
 ## Systemd Services

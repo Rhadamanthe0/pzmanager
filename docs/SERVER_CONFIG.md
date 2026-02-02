@@ -60,6 +60,8 @@ SaveWorldEveryMinutes=30     # Auto-save frequency
 
 Manage users authorized to connect to the server.
 
+**Admin user**: Created automatically during installation with a random password. Never deleted by purge.
+
 **View whitelist**:
 ```bash
 pzm whitelist list
@@ -77,7 +79,7 @@ pzm whitelist remove "PlayerName"
 
 **Purge inactive accounts**:
 ```bash
-pzm whitelist purge              # List old accounts (unknown creation date)
+pzm whitelist purge              # Default: WHITELIST_PURGE_DAYS (60j)
 pzm whitelist purge 3m           # List inactive 3+ months
 pzm whitelist purge 3m --delete  # Delete after confirmation
 ```
@@ -87,7 +89,8 @@ pzm whitelist purge 3m --delete  # Delete after confirmation
 - Find Steam ID via [steamid.xyz](https://steamid.xyz/)
 - Each username must be unique
 - Max 2 accounts per Steam ID
-- Purge delay format: Xm (months) or Xd (days)
+- Purge delay: Xm (months) or Xd (days), default in .env
+- Purge exclut toujours l'utilisateur `admin`
 - Changes applied immediately (no restart needed)
 
 ### Mods

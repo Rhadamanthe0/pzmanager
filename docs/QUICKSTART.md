@@ -23,6 +23,7 @@ The installer will:
 3. Install SteamCMD, Java 25, dependencies
 4. Download Project Zomboid server
 5. Set up systemd services and timers
+6. Create `admin` user with random password (save it!)
 
 <details>
 <summary>Manual installation (advanced)</summary>
