@@ -60,27 +60,60 @@ backup_current() {
 initial_setup() {
     echo ""
     echo "=== 3. Configuration initiale du nouveau serveur ==="
-    echo ""
-    echo "INSTRUCTIONS:"
-    echo "  1. Le serveur va démarrer en mode configuration"
-    echo "  2. Entrez le mot de passe admin DEUX FOIS quand demandé"
-    echo "  3. Quand vous voyez 'If the server hangs here, set UPnP=false':"
-    echo "     → Appuyez sur Ctrl+C pour arrêter"
-    echo ""
-    echo -n "Appuyez sur ENTRÉE pour continuer..."
-    read -r
 
     mkdir -p "${PZ_SOURCE_DIR}"
 
-    echo ""
-    echo "Démarrage configuration initiale..."
-    echo "──────────────────────────────────────────────────────────────"
+    # Démarrer le serveur via systemd pour générer la DB
+    echo "Démarrage du serveur pour génération du monde..."
+    systemctl --user start "${PZ_SERVICE_NAME}"
 
-    "${PZ_INSTALL_DIR}/start-server.sh" || true
+    # Attendre que la DB soit créée (premier démarrage)
+    local db_path="${PZ_SOURCE_DIR}/db/servertest.db"
+    local max_wait=120
+    local waited=0
+    while [[ ! -f "$db_path" ]] && [[ $waited -lt $max_wait ]]; do
+        sleep 2
+        waited=$((waited + 2))
+        echo -ne "\r  Attente génération monde... ${waited}s/${max_wait}s"
+    done
+    echo ""
+
+    if [[ ! -f "$db_path" ]]; then
+        die "Timeout: la base de données n'a pas été créée après ${max_wait}s"
+    fi
+
+    # Arrêter le serveur après génération
+    systemctl --user stop "${PZ_SERVICE_NAME}"
+    echo "✓ Monde généré"
+
+    # Créer l'utilisateur admin automatiquement
+    create_admin_user "$db_path"
+}
+
+create_admin_user() {
+    local db_path="$1"
+
+    # Vérifier si admin existe déjà
+    local exists=$(sqlite3 "$db_path" "SELECT COUNT(*) FROM whitelist WHERE username = 'admin'" 2>/dev/null || echo "0")
+    if [[ "$exists" -gt 0 ]]; then
+        echo "  [SKIP] Utilisateur 'admin' existe déjà"
+        return 0
+    fi
+
+    # Générer mot de passe et hash bcrypt
+    local password=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 24)
+    local hash=$(mkpasswd -m bcrypt-a -R 12 "$password")
+
+    # Créer l'utilisateur admin
+    sqlite3 "$db_path" "INSERT INTO whitelist (username, password, accesslevel, encryptedPwd, pwdEncryptType) VALUES ('admin', '$hash', 'admin', 1, 1);"
 
     echo ""
-    echo "──────────────────────────────────────────────────────────────"
-    echo "✓ Configuration initiale terminée"
+    echo "  ╔════════════════════════════════════════════════════════╗"
+    echo "  ║  Utilisateur admin créé                                ║"
+    echo "  ║  Mot de passe: $password  ║"
+    echo "  ║  NOTEZ-LE, il ne sera plus affiché !                   ║"
+    echo "  ╚════════════════════════════════════════════════════════╝"
+    echo ""
 }
 
 restore_whitelist() {

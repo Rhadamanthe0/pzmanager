@@ -343,7 +343,7 @@ RestartSec=5
 - Triggers `performFullMaintenance.sh` (5m delay) if updates found
 - Sends Discord notifications
 
-**Lock**: Partage `/tmp/pzmanager-maintenance.lock` avec `pz.sh` et `performFullMaintenance.sh`. Skip silencieux si lock détenu.
+**Lock**: Partage `/tmp/pzmanager-maintenance-<user>.lock` avec `pz.sh` et `performFullMaintenance.sh`. Skip silencieux si lock détenu.
 
 **Logs**: `scripts/logs/mod_checks/mod_checks_YYYY-MM-DD.log` (7-day retention)
 

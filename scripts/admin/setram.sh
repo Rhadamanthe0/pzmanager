@@ -51,7 +51,7 @@ set_ram() {
     sed -i "s/\"-Xmx[0-9]\+g\"/\"-Xmx${ram}\"/" "$JSON_FILE"
 
     echo "✓ RAM modifiée: $current → $ram"
-    echo "⚠️  Redémarrer le serveur pour appliquer: pzm server restart"2m
+    echo "⚠️ Redémarrer le serveur pour appliquer: pzm server restart 2m"
 }
 
 main() {

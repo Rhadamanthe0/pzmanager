@@ -285,7 +285,7 @@ create_admin_user() {
     local hash=$(mkpasswd -m bcrypt-a -R 12 "$password")
 
     # Créer l'utilisateur admin
-    sqlite3 "$db_path" "INSERT INTO whitelist (username, password, accesslevel, encryptedPwd, pwdEncryptType, created_at) VALUES ('admin', '$hash', 'admin', 1, 1, datetime('now'));"
+    sqlite3 "$db_path" "INSERT INTO whitelist (username, password, accesslevel, encryptedPwd, pwdEncryptType) VALUES ('admin', '$hash', 'admin', 1, 1);"
 
     echo ""
     echo "  ╔════════════════════════════════════════════════════════╗"

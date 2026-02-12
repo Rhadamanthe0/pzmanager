@@ -47,7 +47,7 @@ ensure_directory() {
 # Acquire maintenance lock (non-blocking, shared between pz.sh/modcheck/maintenance)
 # Usage: try_acquire_maintenance_lock [lock_file] [max_age_seconds]
 # Returns: 0 if acquired, 1 if already held
-readonly MAINTENANCE_LOCK_FILE="/tmp/pzmanager-maintenance.lock"
+readonly MAINTENANCE_LOCK_FILE="/tmp/pzmanager-maintenance-$(id -un).lock"
 readonly LOCK_MAX_AGE=3600
 
 try_acquire_maintenance_lock() {
