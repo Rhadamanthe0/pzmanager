@@ -4,9 +4,9 @@ PartOf=zomboid.service
 Before=zomboid.service
 
 [Socket]
-ListenFIFO=/home/pzuser/pzmanager/data/pzserver/zomboid.control
+ListenFIFO=%h/pzmanager/data/pzserver/zomboid.control
 FileDescriptorName=control
 SocketMode=0660
-SocketUser=pzuser
-ExecStartPre=/bin/rm -f /home/pzuser/pzmanager/data/pzserver/zomboid.control
+SocketUser=%u
+ExecStartPre=/bin/rm -f %h/pzmanager/data/pzserver/zomboid.control
 RemoveOnStop=true

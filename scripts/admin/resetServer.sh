@@ -8,7 +8,7 @@
 # Option --keep-whitelist: Restaure whitelist et configs depuis ancien serveur.
 #
 # ATTENTION: Supprime toutes les données du serveur actuel !
-# Un backup est créé dans /home/pzuser/OLD/ avant suppression.
+# Un backup est créé dans $PZ_HOME/OLD/ avant suppression.
 # ------------------------------------------------------------------------------
 
 set -euo pipefail
@@ -138,7 +138,7 @@ Usage: $0 [--keep-whitelist]
 Options:
   --keep-whitelist    Restaurer whitelist et configs depuis backup
 
-ATTENTION: Supprime toutes les données ! Backup créé dans /home/pzuser/OLD/
+ATTENTION: Supprime toutes les données ! Backup créé dans ${PZ_HOME}/OLD/
 
 Exemples:
   $0                  # Reset complet, serveur vierge

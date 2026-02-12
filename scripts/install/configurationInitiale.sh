@@ -14,6 +14,7 @@
 # Nécessite: root
 # Note: Pour setup système, utilisez setupSystem.sh
 # Note: Crée automatiquement un utilisateur 'admin' avec mot de passe aléatoire
+# Note: PZ_USER et tous les chemins sont lus depuis scripts/.env
 # ------------------------------------------------------------------------------
 
 set -euo pipefail
@@ -22,11 +23,9 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
 source_env "${SCRIPT_DIR}/.."
 
-readonly BACKUPS_PATH="/home/pzuser/pzmanager/data/fullBackups"
-readonly PZ_USER="pzuser"
-readonly PZ_HOME="/home/$PZ_USER"
-readonly INSTALL_DIR="/home/pzuser/pzmanager/data/pzserver"
-readonly ZOMBOID_DIR="$PZ_HOME/pzmanager/Zomboid"
+# Toutes ces variables viennent de .env (source_env)
+# PZ_USER, PZ_HOME, PZ_MANAGER_DIR, PZ_INSTALL_DIR, PZ_SOURCE_DIR,
+# STEAM_BETA_BRANCH, JAVA_PACKAGE, BACKUP_DIR, SYNC_BACKUPS_DIR
 
 FORCE_MODE=false
 SKIPPED_STEPS=()
@@ -90,9 +89,9 @@ restore_sudoers() {
         done
     fi
 
-    if [[ -f "$backup_path$PZ_HOME/sudoers-pzuser" ]]; then
-        cp "$backup_path$PZ_HOME/sudoers-pzuser" "$PZ_HOME/sudoers-pzuser"
-        chown "$PZ_USER:$PZ_USER" "$PZ_HOME/sudoers-pzuser"
+    if [[ -f "$backup_path$PZ_HOME/sudoers-${PZ_USER}" ]]; then
+        cp "$backup_path$PZ_HOME/sudoers-${PZ_USER}" "$PZ_HOME/sudoers-${PZ_USER}"
+        chown "$PZ_USER:$PZ_USER" "$PZ_HOME/sudoers-${PZ_USER}"
     fi
 }
 
@@ -102,10 +101,10 @@ restore_zomboid_data() {
 
     [[ -f "$zip_file" ]] || return 0
 
-    if [[ -d "$ZOMBOID_DIR" ]]; then
+    if [[ -d "$PZ_SOURCE_DIR" ]]; then
         echo ""
         echo "⚠️  ATTENTION: Le dossier de données Zomboid existe déjà"
-        echo "   Chemin: $ZOMBOID_DIR"
+        echo "   Chemin: $PZ_SOURCE_DIR"
         if ! confirm_action "Voulez-vous le remplacer ?"; then
             skip_step "Restauration données Zomboid"
             return 0
@@ -113,26 +112,26 @@ restore_zomboid_data() {
     fi
 
     echo "Restauration des données Zomboid..."
-    mkdir -p "$PZ_HOME/pzmanager/data/dataBackups"
-    unzip -o -q "$zip_file" -d "$PZ_HOME/pzmanager/data/dataBackups/"
+    mkdir -p "$BACKUP_DIR"
+    unzip -o -q "$zip_file" -d "$BACKUP_DIR/"
 
-    if [[ -d "$PZ_HOME/pzmanager/data/dataBackups/latest" ]]; then
-        mkdir -p "$ZOMBOID_DIR"
-        rsync -a "$PZ_HOME/pzmanager/data/dataBackups/latest/" "$ZOMBOID_DIR/"
-        echo "Données Zomboid restaurées vers $ZOMBOID_DIR"
+    if [[ -d "$BACKUP_DIR/latest" ]]; then
+        mkdir -p "$PZ_SOURCE_DIR"
+        rsync -a "$BACKUP_DIR/latest/" "$PZ_SOURCE_DIR/"
+        echo "Données Zomboid restaurées vers $PZ_SOURCE_DIR"
     fi
 
-    chown -R "$PZ_USER:$PZ_USER" "$PZ_HOME/pzmanager/data/dataBackups"
-    chown -R "$PZ_USER:$PZ_USER" "$ZOMBOID_DIR"
+    chown -R "$PZ_USER:$PZ_USER" "$BACKUP_DIR"
+    chown -R "$PZ_USER:$PZ_USER" "$PZ_SOURCE_DIR"
 }
 
 restore_backup() {
     local backup_path="${1:-}"
 
     if [[ ! -d "$backup_path" ]]; then
-        echo "Usage: $0 restore ${BACKUPS_PATH}/YYYY-MM-DD_HH-MM [--force]"
+        echo "Usage: $0 restore ${SYNC_BACKUPS_DIR}/YYYY-MM-DD_HH-MM [--force]"
         echo -e "\nSauvegardes disponibles :"
-        ls -1t "$BACKUPS_PATH" 2>/dev/null || echo "Aucune"
+        ls -1t "$SYNC_BACKUPS_DIR" 2>/dev/null || echo "Aucune"
         exit 1
     fi
 
@@ -187,8 +186,8 @@ install_zomboid_dependencies() {
 
 download_zomboid_server() {
     echo "Téléchargement du serveur via SteamCMD..."
-    mkdir -p "$INSTALL_DIR"
-    chown "$PZ_USER:$PZ_USER" "$INSTALL_DIR"
+    mkdir -p "$PZ_INSTALL_DIR"
+    chown "$PZ_USER:$PZ_USER" "$PZ_INSTALL_DIR"
 
     local beta_args=""
     if [[ -n "${STEAM_BETA_BRANCH:-}" ]]; then
@@ -196,15 +195,15 @@ download_zomboid_server() {
         beta_args="-beta $STEAM_BETA_BRANCH"
     fi
 
-    sudo -u "$PZ_USER" /usr/games/steamcmd +force_install_dir "$INSTALL_DIR" +login anonymous +app_update 380870 $beta_args validate +quit
+    sudo -u "$PZ_USER" /usr/games/steamcmd +force_install_dir "$PZ_INSTALL_DIR" +login anonymous +app_update 380870 $beta_args validate +quit
 }
 
 configure_zomboid_jvm() {
-    [[ -f "$INSTALL_DIR/ProjectZomboid64.json" ]] || return 0
-    grep -q "UseZGC" "$INSTALL_DIR/ProjectZomboid64.json" && return 0
+    [[ -f "$PZ_INSTALL_DIR/ProjectZomboid64.json" ]] || return 0
+    grep -q "UseZGC" "$PZ_INSTALL_DIR/ProjectZomboid64.json" && return 0
 
     echo "Configuration JVM (UseZGC)..."
-    sed -i 's/"-XX:-OmitStackTraceInFastThrow"/"-XX:+UseZGC",\n\t\t"-XX:-OmitStackTraceInFastThrow"/' "$INSTALL_DIR/ProjectZomboid64.json"
+    sed -i 's/"-XX:-OmitStackTraceInFastThrow"/"-XX:+UseZGC",\n\t\t"-XX:-OmitStackTraceInFastThrow"/' "$PZ_INSTALL_DIR/ProjectZomboid64.json"
 }
 
 configure_user_environment() {
@@ -216,7 +215,7 @@ configure_user_environment() {
 
 install_systemd_services() {
     local systemd_dir="$PZ_HOME/.config/systemd/user"
-    local templates_dir="$PZ_HOME/pzmanager/data/setupTemplates"
+    local templates_dir="$PZ_MANAGER_DIR/data/setupTemplates"
 
     echo "Installation des services systemd..."
     mkdir -p "$systemd_dir"
@@ -266,7 +265,7 @@ enable_zomboid_service() {
 }
 
 create_admin_user() {
-    local db_path="$ZOMBOID_DIR/db/servertest.db"
+    local db_path="$PZ_SOURCE_DIR/db/servertest.db"
 
     # Attendre que la DB existe (créée au premier démarrage du serveur)
     if [[ ! -f "$db_path" ]]; then
@@ -298,15 +297,15 @@ create_admin_user() {
 }
 
 install_zomboid() {
-    echo "=== Installation serveur Project Zomboid ==="
+    echo "=== Installation serveur Project Zomboid (utilisateur: $PZ_USER) ==="
 
     local do_server_install=true
     local do_zomboid_init=true
 
     # Check existing server installation
-    if [[ -d "$INSTALL_DIR" ]] && [[ -f "$INSTALL_DIR/ProjectZomboid64" ]]; then
+    if [[ -d "$PZ_INSTALL_DIR" ]] && [[ -f "$PZ_INSTALL_DIR/ProjectZomboid64" ]]; then
         echo ""
-        echo "ℹ️  Serveur déjà installé dans $INSTALL_DIR"
+        echo "ℹ️  Serveur déjà installé dans $PZ_INSTALL_DIR"
         if ! confirm_action "Voulez-vous réinstaller/mettre à jour ?"; then
             skip_step "Installation serveur PZ"
             do_server_install=false
@@ -314,10 +313,10 @@ install_zomboid() {
     fi
 
     # Check existing Zomboid data
-    if [[ -d "$ZOMBOID_DIR" ]]; then
+    if [[ -d "$PZ_SOURCE_DIR" ]]; then
         echo ""
         echo "⚠️  ATTENTION: Le dossier de données Zomboid existe déjà"
-        echo "   Chemin: $ZOMBOID_DIR"
+        echo "   Chemin: $PZ_SOURCE_DIR"
         if ! confirm_action "Voulez-vous l'écraser ?"; then
             skip_step "Initialisation données Zomboid"
             do_zomboid_init=false
@@ -345,7 +344,7 @@ install_zomboid() {
     echo ""
     echo "Prochaines étapes :"
     echo "  1. Démarrer le serveur : sudo -u $PZ_USER pzm server start"
-    echo "  2. Configurer le serveur : $ZOMBOID_DIR/Server/servertest.ini"
+    echo "  2. Configurer le serveur : $PZ_SOURCE_DIR/Server/servertest.ini"
 }
 
 show_help() {
@@ -359,7 +358,8 @@ Commandes :
 Options :
   --force       Ne pas demander de confirmation avant écrasement
 
-Pour configuration système initiale, utilisez: ./setupSystem.sh
+Note: PZ_USER et chemins lus depuis scripts/.env
+Pour configuration système initiale, utilisez: ./setupSystem.sh [nom_utilisateur]
 HELPEOF
 }
 

@@ -21,8 +21,9 @@ Guide to resolving common issues with pzmanager.
 ### Check Service Status
 
 ```bash
-sudo -u pzuser systemctl --user status zomboid.service
-sudo -u pzuser journalctl --user -u zomboid.service -n 100
+# En tant que l'utilisateur du serveur (pzuser par défaut)
+systemctl --user status zomboid.service
+journalctl --user -u zomboid.service -n 100
 ```
 
 ### Common Causes
@@ -30,20 +31,20 @@ sudo -u pzuser journalctl --user -u zomboid.service -n 100
 **Java not found**
 ```bash
 # Check Java symlink
-ls -la /home/pzuser/pzmanager/data/pzserver/jre64
+ls -la ~/pzmanager/data/pzserver/jre64
 
 # If missing or broken, recreate
-sudo rm -rf /home/pzuser/pzmanager/data/pzserver/jre64
-sudo ln -s /usr/lib/jvm/java-25-openjdk-amd64 /home/pzuser/pzmanager/data/pzserver/jre64
+sudo rm -rf ~/pzmanager/data/pzserver/jre64
+sudo ln -s /usr/lib/jvm/java-25-openjdk-amd64 ~/pzmanager/data/pzserver/jre64
 ```
 
 **Permission denied**
 ```bash
 # Check permissions
-ls -la /home/pzuser/pzmanager/data/pzserver/
+ls -la ~/pzmanager/data/pzserver/
 
 # Fix if necessary
-sudo chown -R pzuser:pzuser /home/pzuser/pzmanager
+sudo chown -R $USER:$USER ~/pzmanager
 ```
 
 **Port already in use**
@@ -168,7 +169,7 @@ New world but preserves:
 ### Automatic Process
 
 1. **Confirmation**: Type `RESET` in uppercase
-2. **Backup**: Saved to `/home/pzuser/OLD/Zomboid_OLD_TIMESTAMP/`
+2. **Backup**: Saved to `~/OLD/Zomboid_OLD_TIMESTAMP/`
 3. **Initial setup**:
    - Enter admin password (twice)
    - When "If the server hangs here, set UPnP=false" → **Ctrl+C**
@@ -206,13 +207,13 @@ journalctl --user -u pz-backup.service -n 20
 pzm backup create
 
 # Check result
-ls -la /home/pzuser/pzmanager/data/dataBackups/
+ls -la ~/pzmanager/data/dataBackups/
 ```
 
 ### Disk Space
 
 ```bash
-du -sh /home/pzuser/pzmanager/data/dataBackups/*
+du -sh ~/pzmanager/data/dataBackups/*
 ```
 
 If too large, reduce BACKUP_RETENTION_DAYS in .env.
@@ -250,10 +251,10 @@ pzm server restart 2m
 
 ```bash
 # List complete backups
-ls -lt /home/pzuser/pzmanager/data/fullBackups/
+ls -lt ~/pzmanager/data/fullBackups/
 
 # Restore everything
-sudo ./scripts/install/configurationInitiale.sh restore /home/pzuser/pzmanager/data/fullBackups/2026-01-11_04-30
+sudo ./scripts/install/configurationInitiale.sh restore ~/pzmanager/data/fullBackups/2026-01-11_04-30
 ```
 
 **Restores**: Sudoers, SSH, systemd services/timers, scripts, .env, Zomboid data.
@@ -296,25 +297,23 @@ cat scripts/.env | grep DISCORD_WEBHOOK
 
 ```bash
 # Entire project
-sudo chown -R pzuser:pzuser /home/pzuser/pzmanager
+sudo chown -R $USER:$USER ~/pzmanager
 
 # Executable scripts
-chmod +x /home/pzuser/pzmanager/scripts/*.sh
+chmod +x ~/pzmanager/scripts/*.sh
 
 # SSH (if configured)
-chmod 700 /home/pzuser/.ssh
-chmod 600 /home/pzuser/.ssh/* 2>/dev/null
+chmod 700 ~/.ssh
+chmod 600 ~/.ssh/* 2>/dev/null
 ```
 
 ### Invalid Sudoers
 
 ```bash
 # Check file
-sudo visudo -cf /home/pzuser/pzmanager/data/setupTemplates/pzuser-sudoers
-
-# Reinstall if OK
-sudo cp /home/pzuser/pzmanager/data/setupTemplates/pzuser-sudoers /etc/sudoers.d/pzuser
-sudo chmod 440 /etc/sudoers.d/pzuser
+# Le sudoers est maintenant installé automatiquement par setupSystem.sh
+# Pour réinstaller manuellement :
+sudo ~/pzmanager/scripts/install/setupSystem.sh $USER
 ```
 
 ## Insufficient Disk Space
@@ -322,16 +321,16 @@ sudo chmod 440 /etc/sudoers.d/pzuser
 ### Identify Usage
 
 ```bash
-du -sh /home/pzuser/pzmanager/*
-du -sh /home/pzuser/pzmanager/data/*
+du -sh ~/pzmanager/*
+du -sh ~/pzmanager/data/*
 ```
 
 ### Clean Backups
 
 ```bash
 # Manually delete old backups
-rm -rf /home/pzuser/pzmanager/data/dataBackups/backup_YYYY-MM-DD*
-rm -rf /home/pzuser/pzmanager/data/fullBackups/YYYY-MM-DD*
+rm -rf ~/pzmanager/data/dataBackups/backup_YYYY-MM-DD*
+rm -rf ~/pzmanager/data/fullBackups/YYYY-MM-DD*
 
 # Or reduce retention
 nano scripts/.env
@@ -342,7 +341,7 @@ nano scripts/.env
 
 ```bash
 # Delete old logs
-find /home/pzuser/pzmanager/scripts/logs -type f -mtime +7 -delete
+find ~/pzmanager/scripts/logs -type f -mtime +7 -delete
 ```
 
 ### Purge APT

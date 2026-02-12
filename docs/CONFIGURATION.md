@@ -18,14 +18,14 @@ For advanced settings, see [ADVANCED.md](ADVANCED.md).
 
 The .env file is automatically created from .env.example on first run.
 
-**Edit**: `nano /home/pzuser/pzmanager/scripts/.env`
+**Edit**: `nano ~/pzmanager/scripts/.env`
 
 ### Main Paths
 
-⚠️ Only modify for custom installation
+`PZ_USER` determines all other paths. Change it for multiple servers on the same machine.
 
 ```bash
-export PZ_USER="pzuser"
+export PZ_USER="pzuser"              # Default user
 export PZ_HOME="/home/${PZ_USER}"
 export PZ_MANAGER_DIR="${PZ_HOME}/pzmanager"
 export PZ_SCRIPTS_DIR="${PZ_MANAGER_DIR}/scripts"
@@ -42,6 +42,18 @@ export PZ_SERVICE_NAME="zomboid.service"
 export PZ_SOURCE_DIR="${PZ_MANAGER_DIR}/Zomboid"
 ```
 
+### Network Ports
+
+Change ports when running multiple servers on the same machine.
+These ports must match the values in `servertest.ini`.
+
+```bash
+export PZ_PORT_GAME=16261             # DefaultPort in servertest.ini
+export PZ_PORT_GAME2=16262            # UDPPort in servertest.ini
+export PZ_PORT_RCON=8766              # RCON
+export PZ_PORT_STEAM=27015            # Steam query
+```
+
 ### SteamCMD
 
 ```bash
@@ -51,8 +63,8 @@ export STEAM_BETA_BRANCH="legacy_41_78_7"
 ```
 
 **Available branches**:
-- `legacy_41_78_7`: Build 41.78.7 (stable, recommended)
-- `public`: Latest stable version
+- `legacy_41_78_7`: Build 41.78.7 (stable)
+- *(empty)*: Build 42 (latest public release)
 - See [SteamDB](https://steamdb.info/app/380870/depots/) for other branches
 
 ### Java Runtime
@@ -119,7 +131,7 @@ Leave empty to disable. See [Discord Integration](#discord-integration).
 - `Zomboid/db/` - Server database
 - `Zomboid/Server/` - Server configuration
 
-**Location**: `/home/pzuser/pzmanager/data/dataBackups/backup_YYYY-MM-DD_HHhMMmSSs/`
+**Location**: `~/pzmanager/data/dataBackups/backup_YYYY-MM-DD_HHhMMmSSs/`
 
 ### Complete Backups
 
@@ -134,7 +146,7 @@ Leave empty to disable. See [Discord Integration](#discord-integration).
 - All scripts
 - ZIP archive of latest Zomboid backup
 
-**Location**: `/home/pzuser/pzmanager/data/fullBackups/YYYY-MM-DD_HH-MM/`
+**Location**: `~/pzmanager/data/fullBackups/YYYY-MM-DD_HH-MM/`
 
 ### Manual Backup
 
@@ -149,13 +161,13 @@ sudo ./scripts/backup/fullBackup.sh
 ### Restore from Backup
 
 ```bash
-sudo ./scripts/install/configurationInitiale.sh restore /home/pzuser/pzmanager/data/fullBackups/2026-01-10_04-30
+sudo ./scripts/install/configurationInitiale.sh restore ~/pzmanager/data/fullBackups/2026-01-10_04-30
 ```
 
 ### Adjust Retention
 
 ```bash
-nano /home/pzuser/pzmanager/scripts/.env
+nano ~/pzmanager/scripts/.env
 
 # Modify
 export BACKUP_RETENTION_DAYS=14    # 14 days instead of 30
@@ -184,7 +196,7 @@ Optional notifications for server events.
 
 **2. Configure .env**
 ```bash
-nano /home/pzuser/pzmanager/scripts/.env
+nano ~/pzmanager/scripts/.env
 
 # Paste URL
 export DISCORD_WEBHOOK="https://discord.com/api/webhooks/1234567890/abcdefghijklmnopqrstuvwxyz"
@@ -245,13 +257,13 @@ cat scripts/logs/maintenance/maintenance_YYYY-MM-DD_HHhMMmSS.log
 ### Check .env Syntax
 
 ```bash
-bash -n /home/pzuser/pzmanager/scripts/.env
+bash -n ~/pzmanager/scripts/.env
 ```
 
 ### Check sudoers
 
 ```bash
-sudo visudo -cf /home/pzuser/pzmanager/data/setupTemplates/pzuser-sudoers
+sudo visudo -cf ~/pzmanager/data/setupTemplates/pzuser-sudoers
 ```
 
 ### Check timers
@@ -264,7 +276,7 @@ systemctl --user list-timers
 
 ```bash
 pzm backup create
-ls -la /home/pzuser/pzmanager/data/dataBackups/
+ls -la ~/pzmanager/data/dataBackups/
 ```
 
 ### Test Discord

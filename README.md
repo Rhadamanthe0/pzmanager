@@ -19,7 +19,12 @@
 **Requirements**: Debian 12 / Ubuntu 22.04+, 4GB+ RAM, root access
 
 ```bash
-curl -fsSL curl -fsSL https://raw.githubusercontent.com/Rhadamanthe0/pzmanager/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Rhadamanthe0/pzmanager/main/install.sh | sudo bash
+```
+
+Custom username (for multiple servers on the same machine):
+```bash
+curl -fsSL https://raw.githubusercontent.com/Rhadamanthe0/pzmanager/main/install.sh | sudo PZ_USER=pzuser42 bash
 ```
 
 That's it. Server ready in ~10 minutes.
@@ -27,7 +32,7 @@ That's it. Server ready in ~10 minutes.
 ## Usage
 
 ```bash
-su - pzuser                    # Switch to pzuser
+su - pzuser                    # Switch to server user (pzuser by default)
 pzm server start               # Start server
 pzm server stop 5m             # Stop with 5-min warning
 pzm server status              # Check status

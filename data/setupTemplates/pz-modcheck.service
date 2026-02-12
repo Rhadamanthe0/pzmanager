@@ -4,6 +4,6 @@ After=zomboid.service
 
 [Service]
 Type=oneshot
-ExecStart=/home/pzuser/pzmanager/scripts/admin/triggerMaintenanceOnModUpdate.sh
+ExecStart=%h/pzmanager/scripts/admin/triggerMaintenanceOnModUpdate.sh
 StandardOutput=journal
 StandardError=journal

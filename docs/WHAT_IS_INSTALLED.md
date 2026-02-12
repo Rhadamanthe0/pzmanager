@@ -64,18 +64,18 @@ This document details **everything** modified on your system to ensure transpare
 
 ## User and Permissions
 
-### pzuser User
+### Dedicated User
 
-**Created by**: `setupSystem.sh`
+**Created by**: `setupSystem.sh [username]` (default: `pzuser`)
 
 **Properties**:
-- Home: `/home/pzuser/`
+- Home: `/home/<PZ_USER>/`
 - Shell: `/bin/bash`
-- Groups: `pzuser` (primary group)
+- Groups: `<PZ_USER>` (primary group)
 
 ### sudo Permissions
 
-**File**: `/etc/sudoers.d/pzuser`
+**File**: `/etc/sudoers.d/<PZ_USER>` (generated from template with actual username and paths)
 
 **Allowed commands** (NOPASSWD):
 
@@ -239,10 +239,10 @@ Wants=zomboid_logger.service
 [Service]
 Type=simple
 PrivateTmp=true
-WorkingDirectory=/home/pzuser/pzmanager/data/pzserver/
-ExecStart=/bin/sh -c "exec /home/pzuser/pzmanager/data/pzserver/start-server.sh -cachedir=/home/pzuser/pzmanager/Zomboid <> /home/pzuser/pzmanager/data/pzserver/zomboid.control"
-ExecStartPost=-/bin/sh -c "/home/pzuser/pzmanager/scripts/internal/notifyServerReady.sh &"
-ExecStop=/bin/sh -c "echo 'quit' > /home/pzuser/pzmanager/data/pzserver/zomboid.control"
+WorkingDirectory=%h/pzmanager/data/pzserver/
+ExecStart=/bin/sh -c "exec %h/pzmanager/data/pzserver/start-server.sh -cachedir=%h/pzmanager/Zomboid <> %h/pzmanager/data/pzserver/zomboid.control"
+ExecStartPost=-/bin/sh -c "%h/pzmanager/scripts/internal/notifyServerReady.sh &"
+ExecStop=/bin/sh -c "echo 'quit' > %h/pzmanager/data/pzserver/zomboid.control"
 KillSignal=SIGCONT
 TimeoutStopSec=30
 
@@ -280,11 +280,11 @@ PartOf=zomboid.service
 Before=zomboid.service
 
 [Socket]
-ListenFIFO=/home/pzuser/pzmanager/data/pzserver/zomboid.control
+ListenFIFO=%h/pzmanager/data/pzserver/zomboid.control
 FileDescriptorName=control
 SocketMode=0660
-SocketUser=pzuser
-ExecStartPre=/bin/rm -f /home/pzuser/pzmanager/data/pzserver/zomboid.control
+SocketUser=%u
+ExecStartPre=/bin/rm -f %h/pzmanager/data/pzserver/zomboid.control
 RemoveOnStop=true
 ```
 
@@ -306,7 +306,7 @@ After=zomboid.service
 
 [Service]
 Type=simple
-ExecStart=/home/pzuser/pzmanager/scripts/internal/captureLogs.sh
+ExecStart=%h/pzmanager/scripts/internal/captureLogs.sh
 Restart=always
 RestartSec=5
 ```

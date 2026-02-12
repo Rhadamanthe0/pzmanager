@@ -3,6 +3,7 @@
 # pzmanager - One-line installer
 # ------------------------------------------------------------------------------
 # Usage: curl -fsSL https://raw.githubusercontent.com/Rhadamanthe0/pzmanager/main/install.sh | sudo bash
+# Usage: curl -fsSL ... | sudo PZ_USER=pzuser42 bash
 #
 # Requirements: Debian/Ubuntu, root access, git, curl
 # ------------------------------------------------------------------------------
@@ -10,7 +11,9 @@
 set -euo pipefail
 
 readonly REPO_URL="https://github.com/Rhadamanthe0/pzmanager.git"
-readonly INSTALL_DIR="/home/pzuser/pzmanager"
+readonly PZ_USER="${PZ_USER:-pzuser}"
+readonly PZ_HOME="/home/${PZ_USER}"
+readonly INSTALL_DIR="${PZ_HOME}/pzmanager"
 readonly TMP_DIR="/tmp/pzmanager-install"
 
 # Colors
@@ -50,19 +53,17 @@ clone_repo() {
 }
 
 run_setup() {
-    log "Running system setup..."
-    bash "${TMP_DIR}/scripts/install/setupSystem.sh"
+    log "Running system setup for user: ${PZ_USER}..."
+    bash "${TMP_DIR}/scripts/install/setupSystem.sh" "${PZ_USER}"
 }
 
-install_sudoers() {
-    log "Installing sudoers configuration..."
-    local sudoers_file="${TMP_DIR}/data/setupTemplates/pzuser-sudoers"
+configure_env() {
+    log "Configuring .env for user: ${PZ_USER}..."
+    local env_file="${TMP_DIR}/scripts/.env"
+    local env_example="${TMP_DIR}/data/setupTemplates/.env.example"
 
-    if visudo -cf "${sudoers_file}"; then
-        cp "${sudoers_file}" /etc/sudoers.d/pzuser
-        chmod 440 /etc/sudoers.d/pzuser
-    else
-        error "Invalid sudoers file"
+    if [[ -f "$env_example" ]]; then
+        sed "s|pzuser|${PZ_USER}|g" "$env_example" > "$env_file"
     fi
 }
 
@@ -75,7 +76,7 @@ move_to_home() {
     fi
 
     mv "${TMP_DIR}" "${INSTALL_DIR}"
-    chown -R pzuser:pzuser "${INSTALL_DIR}"
+    chown -R "${PZ_USER}:${PZ_USER}" "${INSTALL_DIR}"
 }
 
 run_initial_config() {
@@ -90,8 +91,8 @@ print_success() {
     log "=========================================="
     echo ""
     echo "Next steps:"
-    echo "  1. Switch to pzuser:  su - pzuser"
-    echo "  2. Go to pzmanager:   cd /home/pzuser/pzmanager"
+    echo "  1. Switch to ${PZ_USER}:  su - ${PZ_USER}"
+    echo "  2. Go to pzmanager:   cd ${INSTALL_DIR}"
     echo "  3. Start server:      pzm server start"
     echo ""
     echo "Documentation: ${INSTALL_DIR}/docs/"
@@ -107,7 +108,7 @@ main() {
     echo " |_|   /____|_| |_| |_|\__,_|_| |_|\__,_|\__, |\___|_|   "
     echo "                                         |___/           "
     echo ""
-    echo " Project Zomboid Server Manager - Installer"
+    echo " Project Zomboid Server Manager - Installer (user: ${PZ_USER})"
     echo ""
 
     check_root
@@ -115,7 +116,7 @@ main() {
     check_dependencies
     clone_repo
     run_setup
-    install_sudoers
+    configure_env
     move_to_home
     run_initial_config
     print_success

@@ -7,10 +7,10 @@ Wants=zomboid_logger.service
 [Service]
 Type=simple
 PrivateTmp=true
-WorkingDirectory=/home/pzuser/pzmanager/data/pzserver/
-ExecStart=/bin/sh -c "exec /home/pzuser/pzmanager/data/pzserver/start-server.sh -cachedir=/home/pzuser/pzmanager/Zomboid <> /home/pzuser/pzmanager/data/pzserver/zomboid.control"
-ExecStartPost=-/bin/sh -c "/home/pzuser/pzmanager/scripts/internal/notifyServerReady.sh &"
-ExecStop=/bin/sh -c "echo 'quit' > /home/pzuser/pzmanager/data/pzserver/zomboid.control"
+WorkingDirectory=%h/pzmanager/data/pzserver/
+ExecStart=/bin/sh -c "exec %h/pzmanager/data/pzserver/start-server.sh -cachedir=%h/pzmanager/Zomboid <> %h/pzmanager/data/pzserver/zomboid.control"
+ExecStartPost=-/bin/sh -c "%h/pzmanager/scripts/internal/notifyServerReady.sh &"
+ExecStop=/bin/sh -c "echo 'quit' > %h/pzmanager/data/pzserver/zomboid.control"
 KillSignal=SIGCONT
 TimeoutStopSec=30
 

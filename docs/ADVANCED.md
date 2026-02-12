@@ -43,7 +43,7 @@ pzm admin reset --keep-whitelist
 
 Process:
 1. Type `RESET` to confirm
-2. Backup created in `/home/pzuser/OLD/`
+2. Backup created in `~/OLD/`
 3. Enter admin password (twice)
 4. When "UPnP" message appears → **Ctrl+C**
 5. Server ready

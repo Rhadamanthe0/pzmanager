@@ -18,12 +18,17 @@ curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/pzmanager/main/instal
 **Duration**: 10-30 minutes
 
 The installer will:
-1. Create `pzuser` account
-2. Configure firewall (ports 16261, 16262, 8766, 27015)
+1. Create a dedicated user account (`pzuser` by default)
+2. Configure firewall (ports configurable via `PZ_PORT_*` in `.env`)
 3. Install SteamCMD, Java 25, dependencies
 4. Download Project Zomboid server
 5. Set up systemd services and timers
 6. Create `admin` user with random password (save it!)
+
+For multiple servers, use a custom username:
+```bash
+curl -fsSL ... | sudo PZ_USER=pzuser42 bash
+```
 
 <details>
 <summary>Manual installation (advanced)</summary>
@@ -37,18 +42,17 @@ apt install -y git
 git clone https://github.com/YOUR_USERNAME/pzmanager.git /opt/pzmanager
 cd /opt/pzmanager
 
-# System setup
+# System setup (username as argument, default: pzuser)
 ./scripts/install/setupSystem.sh
-
-# Sudo permissions
-visudo -cf data/setupTemplates/pzuser-sudoers && \
-cp data/setupTemplates/pzuser-sudoers /etc/sudoers.d/pzuser
 
 # Move to home
 mv /opt/pzmanager /home/pzuser/
 chown -R pzuser:pzuser /home/pzuser/pzmanager
 
-# Install server
+# Configure .env (edit PZ_USER, ports, STEAM_BETA_BRANCH as needed)
+nano /home/pzuser/pzmanager/scripts/.env
+
+# Install server (reads PZ_USER and paths from .env)
 /home/pzuser/pzmanager/scripts/install/configurationInitiale.sh zomboid
 ```
 
@@ -127,6 +131,7 @@ sudo ./scripts/install/configurationInitiale.sh restore /path/to/fullBackup
 ## Uninstallation
 
 ```bash
+# Replace "pzuser" with your username if different
 su - pzuser
 pzm server stop now
 systemctl --user disable zomboid.service pz-backup.timer pz-modcheck.timer pz-maintenance.timer pz-creation-date-init.timer

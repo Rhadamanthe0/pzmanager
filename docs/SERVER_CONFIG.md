@@ -25,7 +25,7 @@ For complete Project Zomboid server configuration:
 
 ### Configuration Files
 
-**Location**: `/home/pzuser/pzmanager/Zomboid/Server/`
+**Location**: `~/pzmanager/Zomboid/Server/`
 
 Main files:
 - `servertest.ini` - Server configuration (name, ports, players, etc.)
