@@ -7,7 +7,7 @@ set -euo pipefail
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 readonly LOG_DIR="${SCRIPT_DIR}/../logs/zomboid"
 readonly SILENT_FLAG="${SCRIPT_DIR}/../../.silent_next_start"
-readonly NOTIFY_LOCK="/tmp/pzmanager-notify-ready.lock"
+readonly NOTIFY_LOCK="/tmp/pzmanager-notify-ready-$(id -un).lock"
 readonly TIMEOUT=300
 
 # Check and consume silent flag
