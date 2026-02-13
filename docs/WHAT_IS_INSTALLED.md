@@ -366,9 +366,9 @@ RestartSec=5
 3. System update (`apt upgrade`)
 4. Java update
 5. PZ server update (SteamCMD)
-6. Java symlink restoration
+6. JRE symlink restoration (if `REPLACE_JRE=true`)
 7. External complete backup
-8. System reboot
+8. Machine reboot (if `REBOOT_ON_MAINTENANCE=true`) or service restart
 
 **Logs**: `/home/pzuser/pzmanager/scripts/logs/maintenance/`
 
@@ -548,6 +548,12 @@ LOG_RETENTION_DAYS="30"
 #### Service
 ```bash
 PZ_SERVICE_NAME="zomboid.service"
+```
+
+#### Maintenance
+```bash
+REBOOT_ON_MAINTENANCE=true   # true = reboot machine, false = restart service only
+REPLACE_JRE=true             # true = replace embedded JRE with system JRE (false for B42+)
 ```
 
 #### Discord (optional)

@@ -264,34 +264,20 @@ enable_zomboid_service() {
     sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user enable --now pz-creation-date-init.timer || true
 }
 
-create_admin_user() {
-    local db_path="$PZ_SOURCE_DIR/db/servertest.db"
+generate_admin_password() {
+    local password_file="$PZ_MANAGER_DIR/.admin_password"
 
-    # Attendre que la DB existe (créée au premier démarrage du serveur)
-    if [[ ! -f "$db_path" ]]; then
-        echo "  [SKIP] Base de données non trouvée (créée au premier démarrage)"
-        return 0
-    fi
-
-    # Vérifier si admin existe déjà
-    local exists=$(sqlite3 "$db_path" "SELECT COUNT(*) FROM whitelist WHERE username = 'admin'" 2>/dev/null || echo "0")
-    if [[ "$exists" -gt 0 ]]; then
-        echo "  [SKIP] Utilisateur 'admin' existe déjà"
-        return 0
-    fi
-
-    # Générer mot de passe et hash bcrypt
+    # Générer un mot de passe admin pour le premier démarrage
     local password=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 24)
-    local hash=$(mkpasswd -m bcrypt-a -R 12 "$password")
-
-    # Créer l'utilisateur admin
-    sqlite3 "$db_path" "INSERT INTO whitelist (username, password, accesslevel, encryptedPwd, pwdEncryptType) VALUES ('admin', '$hash', 'admin', 1, 1);"
+    echo "$password" > "$password_file"
+    chmod 600 "$password_file"
 
     echo ""
     echo "  ╔════════════════════════════════════════════════════════╗"
-    echo "  ║  Utilisateur admin créé                                ║"
+    echo "  ║  Mot de passe admin généré pour le premier démarrage   ║"
     echo "  ║  Mot de passe: $password  ║"
     echo "  ║  NOTEZ-LE, il ne sera plus affiché !                   ║"
+    echo "  ║  Fichier: $password_file          ║"
     echo "  ╚════════════════════════════════════════════════════════╝"
     echo ""
 }
@@ -335,7 +321,7 @@ install_zomboid() {
     configure_user_environment
     install_systemd_services
     enable_zomboid_service
-    create_admin_user
+    generate_admin_password
 
     echo ""
     echo "=== Installation terminée ==="

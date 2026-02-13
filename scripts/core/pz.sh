@@ -28,7 +28,7 @@ send_discord() {
 }
 
 send_msg() {
-    "${SCRIPT_DIR}/../internal/sendCommand.sh" "servermsg \"$1\"" --no-output
+    "${SCRIPT_DIR}/../internal/sendCommand.sh" servermsg "$1" --no-output
     send_discord "$1"
 }
 
@@ -51,7 +51,7 @@ warn_players() {
         local label="${entry%%:*}" secs="${entry##*:}"
         local msg="ATTENTION : ${action_type} DU SERVEUR DANS ${label//_/ } !"
         if $first; then
-            "${SCRIPT_DIR}/../internal/sendCommand.sh" "servermsg \"$msg\"" --no-output
+            "${SCRIPT_DIR}/../internal/sendCommand.sh" servermsg "$msg" --no-output
             send_discord "@here $msg"
             first=false
         else

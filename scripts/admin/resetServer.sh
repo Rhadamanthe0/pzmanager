@@ -63,49 +63,45 @@ initial_setup() {
 
     mkdir -p "${PZ_SOURCE_DIR}"
 
-    # Démarrer le serveur via systemd pour générer la DB
-    echo "Démarrage du serveur pour génération du monde..."
-    systemctl --user start "${PZ_SERVICE_NAME}"
+    # Générer un mot de passe admin aléatoire
+    local password=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 24)
 
-    # Attendre que la DB soit créée (premier démarrage)
-    local db_path="${PZ_SOURCE_DIR}/db/servertest.db"
+    echo "Démarrage du serveur pour génération du monde..."
+
+    # Lancer le serveur directement avec -adminpassword pour éviter le prompt interactif
+    "${PZ_INSTALL_DIR}/start-server.sh" \
+        -cachedir="${PZ_SOURCE_DIR}" \
+        -adminpassword "$password" &
+    local server_pid=$!
+
+    # Attendre que le serveur soit prêt (SERVER STARTED dans les logs)
     local max_wait=120
     local waited=0
-    while [[ ! -f "$db_path" ]] && [[ $waited -lt $max_wait ]]; do
+    while [[ $waited -lt $max_wait ]]; do
+        # Vérifier que le processus tourne encore
+        if ! kill -0 "$server_pid" 2>/dev/null; then
+            die "Le serveur s'est arrêté de manière inattendue"
+        fi
+        # Vérifier si le serveur est prêt
+        if [[ -f "${PZ_SOURCE_DIR}/db/servertest.db" ]]; then
+            sleep 5  # Laisser le temps au serveur de finir l'init
+            break
+        fi
         sleep 2
         waited=$((waited + 2))
         echo -ne "\r  Attente génération monde... ${waited}s/${max_wait}s"
     done
     echo ""
 
-    if [[ ! -f "$db_path" ]]; then
+    if [[ $waited -ge $max_wait ]]; then
+        kill "$server_pid" 2>/dev/null
         die "Timeout: la base de données n'a pas été créée après ${max_wait}s"
     fi
 
-    # Arrêter le serveur après génération
-    systemctl --user stop "${PZ_SERVICE_NAME}"
+    # Arrêter le serveur proprement
+    kill "$server_pid" 2>/dev/null
+    wait "$server_pid" 2>/dev/null
     echo "✓ Monde généré"
-
-    # Créer l'utilisateur admin automatiquement
-    create_admin_user "$db_path"
-}
-
-create_admin_user() {
-    local db_path="$1"
-
-    # Vérifier si admin existe déjà
-    local exists=$(sqlite3 "$db_path" "SELECT COUNT(*) FROM whitelist WHERE username = 'admin'" 2>/dev/null || echo "0")
-    if [[ "$exists" -gt 0 ]]; then
-        echo "  [SKIP] Utilisateur 'admin' existe déjà"
-        return 0
-    fi
-
-    # Générer mot de passe et hash bcrypt
-    local password=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 24)
-    local hash=$(mkpasswd -m bcrypt-a -R 12 "$password")
-
-    # Créer l'utilisateur admin
-    sqlite3 "$db_path" "INSERT INTO whitelist (username, password, accesslevel, encryptedPwd, pwdEncryptType) VALUES ('admin', '$hash', 'admin', 1, 1);"
 
     echo ""
     echo "  ╔════════════════════════════════════════════════════════╗"

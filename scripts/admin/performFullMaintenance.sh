@@ -56,10 +56,14 @@ update_system() {
 
 update_game_server() {
     log "Mise à jour SteamCMD..."
-    sudo rm -rf "${PZ_JRE_LINK}"
+    if [[ "${REPLACE_JRE:-true}" == true ]]; then
+        sudo rm -rf "${PZ_JRE_LINK}"
+    fi
     "${STEAMCMD_PATH}" +login anonymous +force_install_dir "${PZ_INSTALL_DIR}" \
         +app_update "${STEAM_APP_ID}" -beta "${STEAM_BETA_BRANCH}" validate +quit
-    sudo ln -s "${JAVA_PATH}" "${PZ_JRE_LINK}"
+    if [[ "${REPLACE_JRE:-true}" == true ]]; then
+        sudo ln -s "${JAVA_PATH}" "${PZ_JRE_LINK}"
+    fi
 }
 
 sync_external() {
@@ -79,8 +83,13 @@ main() {
 
     [[ "$SILENT_MODE" == true ]] && touch "${SILENT_FLAG_FILE}"
 
-    log "Maintenance terminée, redémarrage..."
-    sudo /sbin/reboot
+    if [[ "${REBOOT_ON_MAINTENANCE:-true}" == true ]]; then
+        log "Maintenance terminée, redémarrage machine..."
+        sudo /sbin/reboot
+    else
+        log "Maintenance terminée, redémarrage du service..."
+        "${SCRIPT_DIR}/../core/pz.sh" start
+    fi
 }
 
 main
