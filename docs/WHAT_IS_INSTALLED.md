@@ -212,8 +212,28 @@ Zomboid/
 An `admin` user is automatically created during installation with a random 24-character password. This password is displayed once during installation - **save it immediately**.
 
 - Username: `admin`
-- Access level: admin
+- Access level: admin (B41) / role 7 (B42)
 - Excluded from `pzm whitelist purge` (never deleted)
+
+### Whitelist Schema (B41 vs B42)
+
+The whitelist database schema differs between B41 and B42. pzmanager handles both transparently.
+
+**B41** uses `accesslevel` (text): `admin`, `moderator`, `gm`, `observer`, *(empty for user)*
+
+**B42** uses `role` (integer) and requires `world='servertest'`:
+
+| Role | Name | Description |
+|------|------|-------------|
+| 1 | banned | Cannot login |
+| 2 | user | Standard player |
+| 3 | priority | Login priority |
+| 4 | observer | Spectator mode |
+| 5 | gm | Game master |
+| 6 | moderator | Moderator |
+| 7 | admin | Full access |
+
+**Important**: In B42, role 1 is **banned** (not user!). New users must be added with role 2.
 
 ---
 
