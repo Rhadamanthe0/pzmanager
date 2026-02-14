@@ -29,7 +29,9 @@ Commandes disponibles:
   whitelist <action> [arguments]
     list               Lister utilisateurs whitelistés
     add <nom> <id64>   Ajouter (Steam ID 64: 76561198XXXXXXXXX, max 2/ID)
-    remove <id64>      Retirer utilisateur
+    remove <nom>       Retirer utilisateur par nom
+    purge [durée]      Lister inactifs (3m, 60d... défaut: .env)
+    purge <durée> --delete  Supprimer inactifs après confirmation
 
   admin <action> [arguments]
     reset              Reset serveur complet (nouveau monde)
@@ -55,6 +57,7 @@ Exemples:
   pzm admin reset --keep-whitelist
   pzm config ram 8g
   pzm rcon save
+  pzm rcon servermsg "Message aux joueurs"
   pzm rcon setaccesslevel "Marc Rivière" admin
 
 Documentation: docs/QUICKSTART.md

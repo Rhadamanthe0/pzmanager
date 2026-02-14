@@ -17,6 +17,11 @@ pzm server status             # Status + logs
 
 **Delays**: `30m`, `15m`, `5m`, `2m`, `30s`, `now`
 
+**Send a message to connected players**:
+```bash
+pzm rcon servermsg "Message to players"
+```
+
 ## Backups
 
 ```bash
@@ -39,7 +44,7 @@ pzm whitelist add "Name" "76561198012345678"    # Add (Steam ID 64)
 pzm whitelist remove "Name"                     # Remove by username
 pzm whitelist purge                             # List inactive (default: WHITELIST_PURGE_DAYS)
 pzm whitelist purge 3m                          # List inactive 3+ months
-pzm whitelist purge 3m --delete                 # Delete after confirmation
+pzm whitelist purge 3m --delete                 # Delete inactive after confirmation
 ```
 
 **Notes**:
@@ -73,10 +78,11 @@ pzm rcon "command"            # Send RCON command
 
 Common commands:
 ```bash
-pzm rcon "save"                        # Force save
-pzm rcon "servermsg 'Message'"         # Broadcast
-pzm rcon "players"                     # List players
-pzm rcon "checkModsNeedUpdate"         # Check mod updates
+pzm rcon save                           # Force save
+pzm rcon servermsg "Message"            # Broadcast message to players
+pzm rcon players                        # List connected players
+pzm rcon checkModsNeedUpdate            # Check mod updates
+pzm rcon setaccesslevel "Name" admin    # Set player access level
 ```
 
 ## Discord
@@ -98,7 +104,7 @@ systemctl --user list-timers
 |-------|----------|----------|
 | pz-backup | Hourly :14 | Incremental backup |
 | pz-modcheck | Every 5 min | Check mod updates |
-| pz-maintenance | Daily 4:30 | Full maintenance + reboot |
+| pz-maintenance | Daily 4:30 | Full maintenance (reboot or restart selon .env) |
 | pz-creation-date-init | Daily 00:00 | Init whitelist creation dates |
 
 ## Quick Reference
@@ -110,7 +116,7 @@ systemctl --user list-timers
 | Check status | `pzm server status` |
 | Add player | `pzm whitelist add "Name" "SteamID64"` |
 | Manual backup | `pzm backup create` |
-| Send message | `pzm rcon "servermsg 'Text'"` |
+| Send message | `pzm rcon servermsg "Text"` |
 | Increase RAM | `pzm config ram 16g` |
 
 ## Help
