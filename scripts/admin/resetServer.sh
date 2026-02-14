@@ -122,13 +122,50 @@ restore_whitelist() {
     [[ -f "$old_db" ]] || die "Base de données backup introuvable: $old_db"
     [[ -f "$new_db" ]] || die "Base de données nouveau serveur introuvable: $new_db"
 
-    # Restaurer whitelist
+    # Détecter le schéma de la nouvelle DB
+    local new_columns
+    new_columns=$(sqlite3 "$new_db" "PRAGMA table_info(whitelist)" 2>/dev/null)
+    local has_role=false has_accesslevel=false
+    echo "$new_columns" | grep -q '|role|' && has_role=true
+    echo "$new_columns" | grep -q '|accesslevel|' && has_accesslevel=true
+
     echo "Restauration whitelist..."
-    sqlite3 "$new_db" \
-        "ATTACH '$old_db' AS old_db;
-         INSERT OR IGNORE INTO main.whitelist (username, password, encryptedPwd, pwdEncryptType, steamid, accesslevel, transactionID, displayName)
-         SELECT username, password, encryptedPwd, pwdEncryptType, steamid, accesslevel, transactionID, displayName
-         FROM old_db.whitelist WHERE username != 'admin';"
+    if [[ "$has_role" == true ]]; then
+        # B42: colonnes world, username, password, steamid, role, displayName
+        # role=2 (user), role=7 (admin) — role=1 est "banned" !
+        # Restauration depuis une ancienne B42 (même schéma)
+        local old_has_role=false
+        sqlite3 "$old_db" "PRAGMA table_info(whitelist)" 2>/dev/null | grep -q '|role|' && old_has_role=true
+
+        if [[ "$old_has_role" == true ]]; then
+            # B42 → B42: copie directe
+            sqlite3 "$new_db" \
+                "ATTACH '$old_db' AS old_db;
+                 INSERT OR IGNORE INTO main.whitelist (world, username, password, steamid, role, displayName)
+                 SELECT world, username, password, steamid, role, displayName
+                 FROM old_db.whitelist WHERE username != 'admin';"
+        else
+            # B41 → B42: mapper accesslevel vers role
+            sqlite3 "$new_db" \
+                "ATTACH '$old_db' AS old_db;
+                 INSERT OR IGNORE INTO main.whitelist (world, username, password, steamid, role, displayName)
+                 SELECT 'servertest', username, password, steamid,
+                     CASE WHEN accesslevel = 'admin' THEN 7
+                          WHEN accesslevel = 'moderator' THEN 6
+                          WHEN accesslevel = 'gm' THEN 5
+                          WHEN accesslevel = 'observer' THEN 4
+                          ELSE 2 END,
+                     displayName
+                 FROM old_db.whitelist WHERE username != 'admin';"
+        fi
+    else
+        # B41: colonnes username, password, encryptedPwd, pwdEncryptType, steamid, accesslevel, transactionID, displayName
+        sqlite3 "$new_db" \
+            "ATTACH '$old_db' AS old_db;
+             INSERT OR IGNORE INTO main.whitelist (username, password, encryptedPwd, pwdEncryptType, steamid, accesslevel, transactionID, displayName)
+             SELECT username, password, encryptedPwd, pwdEncryptType, steamid, accesslevel, transactionID, displayName
+             FROM old_db.whitelist WHERE username != 'admin';"
+    fi
 
     local count=$(sqlite3 "$new_db" "SELECT COUNT(*) FROM whitelist WHERE username != 'admin'")
     echo "✓ $count utilisateur(s) restauré(s)"

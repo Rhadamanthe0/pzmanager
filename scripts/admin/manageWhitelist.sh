@@ -133,8 +133,10 @@ Exemple: $0 add \"PlayerName\" \"76561198012345678\""
     fi
 
     # Ajouter l'utilisateur
+    # B42: role=2 (user), world='servertest' obligatoires
+    # B41: created_at si disponible
     if [[ "$HAS_ROLE" == true ]]; then
-        sqlite3 "$DB_PATH" "INSERT INTO whitelist (username, steamid, role) VALUES ('$username', '$steamid', 1);" || \
+        sqlite3 "$DB_PATH" "INSERT INTO whitelist (world, username, steamid, role) VALUES ('servertest', '$username', '$steamid', 2);" || \
             die "Échec de l'ajout à la whitelist"
     elif [[ "$HAS_CREATED_AT" == true ]]; then
         sqlite3 "$DB_PATH" "INSERT INTO whitelist (username, steamid, created_at) VALUES ('$username', '$steamid', datetime('now'));" || \
