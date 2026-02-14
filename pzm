@@ -103,10 +103,18 @@ cmd_backup() {
             ;;
         list)
             echo "=== Backups incrémentiaux (30j rétention) ==="
-            ls -lth "${SCRIPT_DIR}/data/dataBackups/" 2>/dev/null | head -20 || echo "Aucun backup trouvé"
+            if [[ -d "${SCRIPT_DIR}/data/dataBackups" ]]; then
+                ls -1td "${SCRIPT_DIR}/data/dataBackups/backup_"* 2>/dev/null | head -20 || echo "Aucun backup trouvé"
+            else
+                echo "Aucun backup trouvé"
+            fi
             echo ""
             echo "=== Backups complets ==="
-            ls -lth "${SCRIPT_DIR}/data/fullBackups/" 2>/dev/null | head -10 || echo "Aucun backup trouvé"
+            if [[ -d "${SCRIPT_DIR}/data/fullBackups" ]]; then
+                ls -1td "${SCRIPT_DIR}/data/fullBackups/"* 2>/dev/null | head -10 || echo "Aucun backup trouvé"
+            else
+                echo "Aucun backup trouvé"
+            fi
             ;;
         *)
             echo "Erreur: Action backup invalide: $action"
