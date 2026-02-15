@@ -65,7 +65,7 @@ cleanup_old_backups() {
 
     [[ -d "${SYNC_BACKUPS_DIR}" ]] || return 0
 
-    find "${SYNC_BACKUPS_DIR}" -mindepth 1 -maxdepth 1 -type d -mtime "+${BACKUP_RETENTION_DAYS}" -print -exec rm -rf {} +
+    find "${SYNC_BACKUPS_DIR}" -mindepth 1 -maxdepth 1 -type d -name "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9]-[0-9][0-9]" -mtime "+${BACKUP_RETENTION_DAYS}" -print -exec rm -rf {} +
 }
 
 sync_files
