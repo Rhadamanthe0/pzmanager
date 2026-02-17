@@ -46,11 +46,12 @@ rotate_backups() {
 
 update_system() {
     log "Mise à jour système..."
-    sudo /usr/bin/apt-get update -qq
-    sudo /usr/bin/apt-get upgrade -y -qq
-    sudo /usr/bin/apt-get install -y -qq "${JAVA_PACKAGE}"
-    sudo /usr/bin/apt-get autoremove -y -qq
-    sudo /usr/bin/apt-get autoclean -qq
+    local apt_lock_timeout="-o DPkg::Lock::Timeout=300"
+    sudo /usr/bin/apt-get update -qq "$apt_lock_timeout"
+    sudo /usr/bin/apt-get upgrade -y -qq "$apt_lock_timeout"
+    sudo /usr/bin/apt-get install -y -qq "$apt_lock_timeout" "${JAVA_PACKAGE}"
+    sudo /usr/bin/apt-get autoremove -y -qq "$apt_lock_timeout"
+    sudo /usr/bin/apt-get autoclean -qq "$apt_lock_timeout"
     [[ -d "${JAVA_PATH}" ]] || die "Java non installé"
 }
 
