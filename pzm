@@ -30,6 +30,7 @@ Commandes disponibles:
     list               Lister utilisateurs whitelistés
     add <nom> <id64>   Ajouter (Steam ID 64: 76561198XXXXXXXXX, max 2/ID)
     remove <nom>       Retirer utilisateur par nom
+    resetpassword <nom>  Reset mot de passe (nouveau mdp à la prochaine co)
     purge [durée]      Lister inactifs (3m, 60d... défaut: .env)
     purge <durée> --delete  Supprimer inactifs après confirmation
 
@@ -130,12 +131,12 @@ cmd_whitelist() {
     shift || true
 
     case "$action" in
-        list|add|remove|purge)
+        list|add|remove|resetpassword|purge)
             exec "${SCRIPT_DIR}/scripts/admin/manageWhitelist.sh" "$action" "$@"
             ;;
         *)
             echo "Erreur: Action whitelist invalide: $action"
-            echo "Actions: list, add, remove, purge"
+            echo "Actions: list, add, remove, resetpassword, purge"
             exit 1
             ;;
     esac

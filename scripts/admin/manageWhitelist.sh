@@ -2,18 +2,20 @@
 # ------------------------------------------------------------------------------
 # manageWhitelist.sh - Gestion de la whitelist du serveur
 # ------------------------------------------------------------------------------
-# Usage: ./manageWhitelist.sh <list|add|remove> [arguments]
+# Usage: ./manageWhitelist.sh <list|add|remove|resetpassword|purge> [arguments]
 #
 # Commandes:
 #   list                        - Afficher tous les utilisateurs whitelistés
 #   add <username> <steam64>    - Ajouter un utilisateur (Steam ID 64)
 #   remove <username>           - Retirer un utilisateur par son nom
+#   resetpassword <username>    - Reset le mot de passe d'un joueur
 #   purge [delay] [--delete]    - Lister/supprimer les comptes inactifs
 #
 # Exemples:
 #   ./manageWhitelist.sh list
 #   ./manageWhitelist.sh add "PlayerName" "76561198012345678"
 #   ./manageWhitelist.sh remove "PlayerName"
+#   ./manageWhitelist.sh resetpassword "PlayerName"
 #   ./manageWhitelist.sh purge              # Inactifs depuis WHITELIST_PURGE_DAYS
 #   ./manageWhitelist.sh purge 3m           # Inactifs depuis 3 mois
 #   ./manageWhitelist.sh purge 3m --delete  # Supprime après confirmation
@@ -175,6 +177,30 @@ remove_from_whitelist() {
     echo "✓ Utilisateur '$username' retiré de la whitelist"
 }
 
+reset_password() {
+    local username="${1:-}"
+
+    [[ -n "$username" ]] || die "Usage: $0 resetpassword <username>"
+
+    # Vérifier si existe
+    local existing=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE username = '$username'" 2>/dev/null || echo "0")
+
+    if [[ "$existing" -eq 0 ]]; then
+        die "Aucun utilisateur trouvé: $username"
+    fi
+
+    # Afficher l'utilisateur
+    echo "Reset mot de passe pour:"
+    sqlite3 -header -column "$DB_PATH" "SELECT $WHITELIST_COLUMNS FROM whitelist WHERE username = '$username'"
+    echo ""
+
+    # Vider le mot de passe
+    sqlite3 "$DB_PATH" "UPDATE whitelist SET password = '' WHERE username = '$username';" || \
+        die "Échec du reset de mot de passe"
+    echo "✓ Mot de passe de '$username' réinitialisé"
+    echo "  Le joueur devra choisir un nouveau mot de passe à sa prochaine connexion."
+}
+
 purge_whitelist() {
     local delay="${1:-}"
     local do_delete="${2:-}"
@@ -250,12 +276,14 @@ Commandes:
   list                        Afficher tous les utilisateurs whitelistés
   add <username> <steam64>    Ajouter un utilisateur
   remove <username>           Retirer un utilisateur par son nom
+  resetpassword <username>    Reset le mot de passe d'un joueur
   purge [delay] [--delete]    Lister/supprimer les comptes inactifs
 
 Exemples:
   $0 list
   $0 add "PlayerName" "76561198012345678"
   $0 remove "PlayerName"
+  $0 resetpassword "PlayerName"
   $0 purge                    # Inactifs depuis ${WHITELIST_PURGE_DAYS}j (défaut)
   $0 purge 3m                 # Inactifs depuis 3 mois
   $0 purge 3m --delete        # Supprime après confirmation
@@ -289,6 +317,11 @@ main() {
             check_database
             detect_schema
             remove_from_whitelist "${*:2}"
+            ;;
+        resetpassword)
+            check_database
+            detect_schema
+            reset_password "${*:2}"
             ;;
         purge)
             check_database
