@@ -60,7 +60,7 @@ update_game_server() {
     if [[ "${REPLACE_JRE:-true}" == true ]]; then
         sudo rm -rf "${PZ_JRE_LINK}"
     fi
-    "${STEAMCMD_PATH}" +login anonymous +force_install_dir "${PZ_INSTALL_DIR}" \
+    "${STEAMCMD_PATH}" +force_install_dir "${PZ_INSTALL_DIR}" +login anonymous \
         +app_update "${STEAM_APP_ID}" -beta "${STEAM_BETA_BRANCH}" validate +quit
     if [[ "${REPLACE_JRE:-true}" == true ]]; then
         sudo ln -s "${JAVA_PATH}" "${PZ_JRE_LINK}"
