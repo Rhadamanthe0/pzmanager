@@ -44,32 +44,18 @@ check_database() {
 }
 
 detect_schema() {
-    # Détecter le schéma de la DB (B41 vs B42)
     local columns
     columns=$(sqlite3 "$DB_PATH" "PRAGMA table_info(whitelist)" 2>/dev/null)
 
-    HAS_ACCESSLEVEL=false
-    HAS_ROLE=false
     HAS_CREATED_AT=false
-
-    echo "$columns" | grep -q '|accesslevel|' && HAS_ACCESSLEVEL=true
-    echo "$columns" | grep -q '|role|' && HAS_ROLE=true
     echo "$columns" | grep -q '|created_at|' && HAS_CREATED_AT=true
-
-    # Construire les colonnes dynamiquement
-    local role_col=""
-    if [[ "$HAS_ACCESSLEVEL" == true ]]; then
-        role_col="accesslevel"
-    elif [[ "$HAS_ROLE" == true ]]; then
-        role_col="role"
-    fi
 
     local created_col=""
     if [[ "$HAS_CREATED_AT" == true ]]; then
         created_col="created_at, "
     fi
 
-    WHITELIST_COLUMNS="id, username, ${created_col}lastConnection, steamid, ${role_col:+$role_col, }displayName"
+    WHITELIST_COLUMNS="id, username, ${created_col}lastConnection, steamid, role, displayName"
 }
 
 ensure_created_at_column() {
@@ -134,19 +120,9 @@ Exemple: $0 add \"PlayerName\" \"76561198012345678\""
         exit 1
     fi
 
-    # Ajouter l'utilisateur
-    # B42: role=2 (user), world='servertest' obligatoires
-    # B41: created_at si disponible
-    if [[ "$HAS_ROLE" == true ]]; then
-        sqlite3 "$DB_PATH" "INSERT INTO whitelist (world, username, steamid, role) VALUES ('servertest', '$username', '$steamid', 2);" || \
-            die "Échec de l'ajout à la whitelist"
-    elif [[ "$HAS_CREATED_AT" == true ]]; then
-        sqlite3 "$DB_PATH" "INSERT INTO whitelist (username, steamid, created_at) VALUES ('$username', '$steamid', datetime('now'));" || \
-            die "Échec de l'ajout à la whitelist"
-    else
-        sqlite3 "$DB_PATH" "INSERT INTO whitelist (username, steamid) VALUES ('$username', '$steamid');" || \
-            die "Échec de l'ajout à la whitelist"
-    fi
+    # Ajouter l'utilisateur (role=2 = user, world='servertest' obligatoire)
+    sqlite3 "$DB_PATH" "INSERT INTO whitelist (world, username, steamid, role) VALUES ('servertest', '$username', '$steamid', 2);" || \
+        die "Échec de l'ajout à la whitelist"
 
     echo "✓ Utilisateur ajouté à la whitelist:"
     echo "  Nom: $username"

@@ -18,7 +18,7 @@ readonly DB_PATH="${PZ_SOURCE_DIR}/db/servertest.db"
 main() {
     [[ -f "$DB_PATH" ]] || { log "Base de donnees introuvable: $DB_PATH"; exit 0; }
 
-    # B42 n'a pas de colonne created_at, rien à faire
+    # Vérifier si la colonne created_at existe
     local columns
     columns=$(sqlite3 "$DB_PATH" "PRAGMA table_info(whitelist)" 2>/dev/null)
     if ! echo "$columns" | grep -q '|created_at|'; then

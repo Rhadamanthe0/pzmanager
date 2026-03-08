@@ -30,12 +30,9 @@ journalctl --user -u zomboid.service -n 100
 
 **Java not found**
 ```bash
-# Check Java symlink
-ls -la ~/pzmanager/data/pzserver/jre64
-
-# If missing or broken, recreate
-sudo rm -rf ~/pzmanager/data/pzserver/jre64
-sudo ln -s /usr/lib/jvm/java-25-openjdk-amd64 ~/pzmanager/data/pzserver/jre64
+# B42 uses its own embedded JRE in data/pzserver/jre64/
+# If missing, re-validate the server installation:
+pzm admin maintenance now
 ```
 
 **Permission denied**

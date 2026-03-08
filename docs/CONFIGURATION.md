@@ -37,7 +37,6 @@ export PZ_DATA_DIR="${PZ_MANAGER_DIR}/data"
 ```bash
 export PZ_INSTALL_DIR="${PZ_DATA_DIR}/pzserver"
 export PZ_CONTROL_PIPE="${PZ_INSTALL_DIR}/zomboid.control"
-export PZ_JRE_LINK="${PZ_INSTALL_DIR}/jre64"
 export PZ_SERVICE_NAME="zomboid.service"
 export PZ_SOURCE_DIR="${PZ_MANAGER_DIR}/Zomboid"
 ```
@@ -59,14 +58,11 @@ export PZ_PORT_STEAM=27015            # Steam query
 ```bash
 export STEAMCMD_PATH="/usr/games/steamcmd"
 export STEAM_APP_ID="380870"
-export STEAM_BETA_BRANCH="legacy_41_78_7"
+export STEAM_BETA_BRANCH="unstable"
 ```
 
 **Available branches**:
-- `legacy_41_78_7`: Build 41.78.7 (B41 stable)
-- `42.13.1`: Build 42.13.1 (B42 stable)
-- *(empty)*: Public branch (currently still B41)
-- `unstable`: Latest B42 (may be unstable)
+- `unstable`: Latest B42
 - See [SteamDB](https://steamdb.info/app/380870/depots/) for other branches
 
 ### Java Runtime
@@ -115,12 +111,9 @@ export LOG_RETENTION_DAYS=30
 
 ```bash
 export REBOOT_ON_MAINTENANCE=true   # true = reboot machine, false = restart service only
-export REPLACE_JRE=true             # true = replace embedded JRE with system JRE (false for B42+)
 ```
 
-**REBOOT_ON_MAINTENANCE**: After daily maintenance, reboot the machine (`true`) or just restart the PZ service (`false`). Set to `false` for B42 servers coexisting with B41 (B41 handles the reboot).
-
-**REPLACE_JRE**: Replace the PZ server's embedded JRE with the system-installed Java. Required for B41, but B42+ ships with its own compatible JRE and should use `false`.
+**REBOOT_ON_MAINTENANCE**: After daily maintenance, reboot the machine (`true`) or just restart the PZ service (`false`).
 
 ### Discord (Optional)
 

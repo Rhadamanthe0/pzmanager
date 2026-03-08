@@ -90,15 +90,6 @@ This document details **everything** modified on your system to ensure transpare
 /usr/bin/apt-get autoclean -qq
 ```
 
-**Java (symlink)** - exact paths only:
-```
-/bin/rm -f /home/pzuser/pzmanager/data/pzserver/jre64
-/bin/rm -rf /home/pzuser/pzmanager/data/pzserver/jre64
-/bin/ln -s /usr/lib/jvm/java-25-openjdk-amd64 /home/pzuser/pzmanager/data/pzserver/jre64
-/bin/ln -s /usr/lib/jvm/java-21-openjdk-amd64 /home/pzuser/pzmanager/data/pzserver/jre64
-/bin/ln -s /usr/lib/jvm/java-17-openjdk-amd64 /home/pzuser/pzmanager/data/pzserver/jre64
-```
-
 **Backups** - read-only access:
 ```
 /bin/cat /etc/sudoers.d/pzuser
@@ -141,13 +132,13 @@ This document details **everything** modified on your system to ensure transpare
 
 **Installed by**: `configurationInitiale.sh zomboid`
 
-**Version**: Build 41.78.7 (branch `legacy_41_78_7`)
+**Version**: Build 42 (branch `unstable`)
 
 **Installation method**:
 ```bash
-/usr/games/steamcmd +login anonymous \
-    +force_install_dir /home/pzuser/pzmanager/data/pzserver \
-    +app_update 380870 -beta legacy_41_78_7 validate \
+/usr/games/steamcmd +force_install_dir /home/pzuser/pzmanager/data/pzserver \
+    +login anonymous \
+    +app_update 380870 -beta unstable validate \
     +quit
 ```
 
@@ -212,16 +203,12 @@ Zomboid/
 An `admin` user is automatically created during installation with a random 24-character password. This password is displayed once during installation - **save it immediately**.
 
 - Username: `admin`
-- Access level: admin (B41) / role 7 (B42)
+- Role: 7 (admin)
 - Excluded from `pzm whitelist purge` (never deleted)
 
-### Whitelist Schema (B41 vs B42)
+### Whitelist Schema
 
-The whitelist database schema differs between B41 and B42. pzmanager handles both transparently.
-
-**B41** uses `accesslevel` (text): `admin`, `moderator`, `gm`, `observer`, *(empty for user)*
-
-**B42** uses `role` (integer) and requires `world='servertest'`:
+The whitelist uses `role` (integer) and requires `world='servertest'`:
 
 | Role | Name | Description |
 |------|------|-------------|
@@ -233,7 +220,7 @@ The whitelist database schema differs between B41 and B42. pzmanager handles bot
 | 6 | moderator | Moderator |
 | 7 | admin | Full access |
 
-**Important**: In B42, role 1 is **banned** (not user!). New users must be added with role 2.
+**Important**: Role 1 is **banned** (not user!). New users must be added with role 2.
 
 ---
 
@@ -386,9 +373,8 @@ RestartSec=5
 3. System update (`apt upgrade`)
 4. Java update
 5. PZ server update (SteamCMD)
-6. JRE symlink restoration (if `REPLACE_JRE=true`)
-7. External complete backup
-8. Machine reboot (if `REBOOT_ON_MAINTENANCE=true`) or service restart
+6. External complete backup
+7. Machine reboot (if `REBOOT_ON_MAINTENANCE=true`) or service restart
 
 **Logs**: `/home/pzuser/pzmanager/scripts/logs/maintenance/`
 
@@ -472,7 +458,7 @@ RestartSec=5
 │   │   ├── java/
 │   │   ├── linux64/
 │   │   ├── natives/
-│   │   └── jre64 -> /usr/lib/jvm/java-25-openjdk-amd64  (symlink)
+│   │   └── jre64/                     # Embedded JRE (managed by SteamCMD)
 │   │
 │   ├── dataBackups/                  # Hourly backups (14-day retention)
 │   │   ├── backup_2026-01-12_14h14m00s/
@@ -540,14 +526,13 @@ PZ_INSTALL_DIR="${PZ_HOME}/data/pzserver"
 JAVA_VERSION="25"
 JAVA_PACKAGE="openjdk-25-jre-headless"
 JAVA_PATH="/usr/lib/jvm/java-25-openjdk-amd64"
-PZ_JRE_LINK="${PZ_INSTALL_DIR}/jre64"
 ```
 
 #### SteamCMD
 ```bash
 STEAMCMD_PATH="/usr/games/steamcmd"
 STEAM_APP_ID="380870"
-STEAM_BETA_BRANCH="legacy_41_78_7"
+STEAM_BETA_BRANCH="unstable"
 ```
 
 #### Backups
@@ -573,7 +558,6 @@ PZ_SERVICE_NAME="zomboid.service"
 #### Maintenance
 ```bash
 REBOOT_ON_MAINTENANCE=true   # true = reboot machine, false = restart service only
-REPLACE_JRE=true             # true = replace embedded JRE with system JRE (false for B42+)
 ```
 
 #### Discord (optional)
