@@ -58,9 +58,6 @@ update_system() {
 update_game_server() {
     log "Mise à jour SteamCMD..."
 
-    # Toujours retirer le symlink JRE avant SteamCMD (évite "file locked" sur java)
-    sudo rm -rf "${PZ_JRE_LINK}"
-
     # Nettoyer un éventuel état SteamCMD corrompu (manifest, staging)
     local steamapps="${PZ_INSTALL_DIR}/steamapps"
     rm -rf "${steamapps}/downloading" "${steamapps}/temp"
@@ -76,11 +73,6 @@ update_game_server() {
 
     "${STEAMCMD_PATH}" +force_install_dir "${PZ_INSTALL_DIR}" +login anonymous \
         +app_update "${STEAM_APP_ID}" -beta "${STEAM_BETA_BRANCH}" validate +quit
-
-    # Restaurer le symlink JRE
-    if [[ "${REPLACE_JRE:-true}" == true ]]; then
-        sudo ln -s "${JAVA_PATH}" "${PZ_JRE_LINK}"
-    fi
 }
 
 sync_external() {
