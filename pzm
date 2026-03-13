@@ -35,7 +35,7 @@ Commandes disponibles:
     purge <durée> --delete  Supprimer inactifs après confirmation
 
   admin <action> [arguments]
-    reset              Reset serveur complet (nouveau monde)
+    reset              Wipe complet (backup → suppression pzserver+Zomboid → réinstall)
     reset --keep-whitelist  Reset avec conservation whitelist
     maintenance [délai]     Maintenance complète (défaut: 30m)
 
