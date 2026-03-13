@@ -61,7 +61,7 @@ initial_setup() {
     echo ""
     echo "=== 3. Configuration initiale du nouveau serveur ==="
 
-    mkdir -p "${PZ_SOURCE_DIR}"
+    mkdir -p "${PZ_SOURCE_DIR}/mods"
 
     # Générer un mot de passe admin aléatoire
     local password=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 24)
