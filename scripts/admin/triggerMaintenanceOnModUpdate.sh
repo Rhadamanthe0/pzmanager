@@ -39,19 +39,19 @@ check_mods() {
         return 1
     fi
 
-    # Filter out lines containing the command name to avoid false positives
-    # ("CheckModsNeedUpdate" itself matches "need.*update")
-    local filtered
-    filtered=$(echo "${output}" | grep -iv "CheckModsNeedUpdate" || true)
+    # Extract the status from "CheckModsNeedUpdate: <status>" lines
+    # Possible responses: "Mods updated" (up to date) or "Mods need update" (outdated)
+    local status
+    status=$(echo "${output}" | grep -i "CheckModsNeedUpdate:" | sed 's/.*CheckModsNeedUpdate: *//' || true)
 
-    if echo "${filtered}" | grep -iq "mods updated\|up.*to.*date"; then
-        log_event "OK - mods up to date"
-        return 1
+    if echo "${status}" | grep -iq "need.*update\|outdated"; then
+        log_event "MOD UPDATES DETECTED (status: ${status})"
+        return 0
     fi
 
-    if echo "${filtered}" | grep -iq "need.*update\|outdated"; then
-        log_event "MOD UPDATES DETECTED"
-        return 0
+    if echo "${status}" | grep -iq "mods updated\|up.*to.*date"; then
+        log_event "OK - mods up to date"
+        return 1
     fi
 
     log_event "OK - no updates (response: ${output:0:100})"
