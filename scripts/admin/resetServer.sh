@@ -99,24 +99,43 @@ restore_configs() {
     mkdir -p "${PZ_SOURCE_DIR}/Server" "${PZ_SOURCE_DIR}/mods"
 
     if [[ ! -d "$OLD_DIR/Server" ]]; then
-        echo "⚠ Pas de répertoire Server dans le backup, skip"
-        return 0
+        die "Pas de répertoire Server dans le backup: $OLD_DIR/Server"
     fi
 
-    local restored=0
+    # Vérifier que les fichiers critiques existent AVANT de copier
+    local missing=()
     for f in "${CONFIG_FILES[@]}"; do
-        if [[ -f "$OLD_DIR/Server/$f" ]]; then
-            cp "$OLD_DIR/Server/$f" "${PZ_SOURCE_DIR}/Server/"
-            echo "  ✓ $f"
-            (( restored++ ))
+        if [[ ! -f "$OLD_DIR/Server/$f" ]]; then
+            missing+=("$f")
         fi
     done
 
-    if [[ $restored -eq 0 ]]; then
-        echo "  ⚠ Aucun fichier de config trouvé dans le backup"
-    else
-        echo "✓ $restored fichier(s) restauré(s)"
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        echo "⚠ Fichiers manquants dans le backup $OLD_DIR/Server/ :"
+        for f in "${missing[@]}"; do
+            echo "  ✗ $f"
+        done
+        echo ""
+        echo "Le backup semble provenir d'un reset intermédiaire incomplet."
+        echo "Backups disponibles avec configs complètes :"
+        for d in "${PZ_HOME}"/OLD/Zomboid_OLD_*/Server; do
+            [[ -d "$d" ]] || continue
+            local count=0
+            for f in "${CONFIG_FILES[@]}"; do
+                [[ -f "$d/$f" ]] && (( count++ ))
+            done
+            if [[ $count -eq ${#CONFIG_FILES[@]} ]]; then
+                echo "  $(dirname "$d")"
+            fi
+        done
+        die "Annulé. Restaurez manuellement les fichiers manquants ou utilisez un backup complet."
     fi
+
+    for f in "${CONFIG_FILES[@]}"; do
+        cp "$OLD_DIR/Server/$f" "${PZ_SOURCE_DIR}/Server/"
+        echo "  ✓ $f"
+    done
+    echo "✓ ${#CONFIG_FILES[@]} fichier(s) restauré(s)"
 }
 
 generate_world() {
