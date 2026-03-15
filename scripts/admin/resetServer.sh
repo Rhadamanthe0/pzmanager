@@ -159,9 +159,10 @@ generate_world() {
 
     local max_wait=300
     local waited=0
+
+    # Phase 1: attendre que la DB soit créée
     while [[ $waited -lt $max_wait ]]; do
         if [[ -f "${cachedir}/db/servertest.db" ]]; then
-            sleep 5
             break
         fi
         if (( waited > 30 )) && ! pgrep -f "ProjectZomboid64.*-cachedir=${cachedir}" > /dev/null 2>&1; then
@@ -171,7 +172,6 @@ generate_world() {
         waited=$((waited + 5))
         echo -ne "\r  Attente génération monde... ${waited}s/${max_wait}s"
     done
-    echo ""
 
     if [[ $waited -ge $max_wait ]]; then
         pkill -f "ProjectZomboid64.*-cachedir=${cachedir}" 2>/dev/null
@@ -180,15 +180,33 @@ generate_world() {
         die "Timeout: monde non généré après ${max_wait}s"
     fi
 
+    # Phase 2: attendre que l'admin soit créé en DB (sinon le serveur demandera le mdp au prochain start)
+    local admin_wait=0
+    while [[ $admin_wait -lt 60 ]]; do
+        local admin_count
+        admin_count=$(sqlite3 "${cachedir}/db/servertest.db" "SELECT COUNT(*) FROM whitelist WHERE username = 'admin'" 2>/dev/null || echo "0")
+        if [[ "$admin_count" -ge 1 ]]; then
+            break
+        fi
+        sleep 2
+        admin_wait=$((admin_wait + 2))
+        echo -ne "\r  Attente création admin... ${admin_wait}s/60s"
+    done
+    echo ""
+
     pkill -f "ProjectZomboid64.*-cachedir=${cachedir}" 2>/dev/null
     sleep 2
     pkill -9 -f "ProjectZomboid64.*-cachedir=${cachedir}" 2>/dev/null
 
-    echo "✓ Monde généré"
-    echo ""
-    printf "  Mot de passe admin: %s\n" "$password"
-    echo "  NOTEZ-LE, il ne sera plus affiché !"
-    echo ""
+    if [[ $admin_wait -ge 60 ]]; then
+        echo "⚠ Admin non créé en DB (timeout). Le serveur demandera le mot de passe au démarrage."
+    else
+        echo "✓ Monde généré"
+        echo ""
+        printf "  Mot de passe admin: %s\n" "$password"
+        echo "  NOTEZ-LE, il ne sera plus affiché !"
+        echo ""
+    fi
 }
 
 restore_whitelist() {
@@ -201,15 +219,19 @@ restore_whitelist() {
     [[ -f "$old_db" ]] || { echo "⚠ Pas de base backup, skip whitelist"; return 0; }
     [[ -f "$new_db" ]] || { echo "⚠ Pas de base nouveau serveur, skip whitelist"; return 0; }
 
+    # Restaurer TOUS les utilisateurs y compris admin (pour garder le même mot de passe)
+    # On supprime d'abord l'admin généré pour éviter les doublons
+    sqlite3 "$new_db" "DELETE FROM whitelist WHERE username = 'admin';"
+
     sqlite3 "$new_db" \
         "ATTACH '$old_db' AS old_db;
          INSERT OR IGNORE INTO main.whitelist (world, username, password, steamid, role, displayName)
          SELECT world, username, password, steamid, role, displayName
-         FROM old_db.whitelist WHERE username <> 'admin';"
+         FROM old_db.whitelist;"
 
     local count
-    count=$(sqlite3 "$new_db" "SELECT COUNT(*) FROM whitelist WHERE username <> 'admin'")
-    echo "✓ $count utilisateur(s) restauré(s)"
+    count=$(sqlite3 "$new_db" "SELECT COUNT(*) FROM whitelist")
+    echo "✓ $count utilisateur(s) restauré(s) (admin inclus)"
 }
 
 finalize() {
