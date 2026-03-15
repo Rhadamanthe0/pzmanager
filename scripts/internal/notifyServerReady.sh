@@ -29,13 +29,13 @@ start_time=$(date +%s)
 elapsed=0
 
 while (( elapsed < TIMEOUT )); do
-    latest_log=$(find "$LOG_DIR" -name "zomboid_*.log" -newermt "@$start_time" 2>/dev/null | head -1)
-    if [[ -n "$latest_log" ]] && grep -q "RCON: listening on port" "$latest_log" 2>/dev/null; then
+    if journalctl --user -u zomboid.service --since "@$start_time" --no-pager 2>/dev/null \
+        | grep -q "SERVER STARTED"; then
         "${SCRIPT_DIR}/sendDiscord.sh" "Le serveur Project Zomboid est en ligne !"
         exit 0
     fi
-    sleep 2
-    (( elapsed += 2 ))
+    sleep 5
+    (( elapsed += 5 ))
 done
 
 exit 0
