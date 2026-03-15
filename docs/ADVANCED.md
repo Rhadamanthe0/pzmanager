@@ -36,17 +36,29 @@ Use when: corrupted world, major config change, fresh start.
 pzm admin reset
 ```
 
-**New world but keep whitelist and config**:
+**New world, keep configs and mods** (servertest.ini, SandboxVars, spawns):
+```bash
+pzm admin reset --keep-config
+```
+
+**New world, keep whitelist**:
 ```bash
 pzm admin reset --keep-whitelist
 ```
 
+**New world, keep everything** (configs + whitelist):
+```bash
+pzm admin reset --keep-config --keep-whitelist
+```
+
+Options are combinable. With `--keep-config`, configs are restored **before** world generation so Workshop mods are downloaded on first launch.
+
 Process:
 1. Type `RESET` to confirm
-2. Backup created in `~/OLD/`
-3. Enter admin password (twice)
-4. When "UPnP" message appears → **Ctrl+C**
-5. Server ready
+2. Backup created in `~/OLD/Zomboid_OLD_TIMESTAMP/`
+3. World generation (automatic, ~2 min)
+4. Admin password displayed (note it!)
+5. Server started
 
 ## Maintenance Scheduling
 

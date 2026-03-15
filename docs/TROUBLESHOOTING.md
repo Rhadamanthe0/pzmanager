@@ -147,35 +147,53 @@ Ultimate solution when:
 ### Complete Reset (new world)
 
 ```bash
-./scripts/admin/resetServer.sh
+pzm admin reset
 ```
 
 Creates completely clean server, new world.
 
-### Reset with Data Preservation
+### Reset with Config Preservation
 
 ```bash
-./scripts/admin/resetServer.sh --keep-whitelist
+pzm admin reset --keep-config
 ```
 
-New world but preserves:
-- Player whitelist (except admin)
-- Server configuration (servertest.ini)
-- Game rules (servertest_SandboxVars.lua)
+New world but preserves (restored before world generation):
+- Server configuration (servertest.ini) — mods, network settings
+- Game rules (servertest_SandboxVars.lua) — difficulty, loot, zombies
+- Spawn points (servertest_spawnpoints.lua)
+- Spawn regions (servertest_spawnregions.lua)
 
-### Automatic Process
+Workshop mods are downloaded automatically on first launch.
+
+### Reset with Whitelist Preservation
+
+```bash
+pzm admin reset --keep-whitelist
+```
+
+New world but preserves player whitelist (except admin account).
+
+### Reset Keeping Everything
+
+```bash
+pzm admin reset --keep-config --keep-whitelist
+```
+
+Options are combinable.
+
+### Process
 
 1. **Confirmation**: Type `RESET` in uppercase
 2. **Backup**: Saved to `~/OLD/Zomboid_OLD_TIMESTAMP/`
-3. **Initial setup**:
-   - Enter admin password (twice)
-   - When "If the server hangs here, set UPnP=false" → **Ctrl+C**
-4. **Restoration** (if --keep-whitelist): Whitelist and configs
-5. **Startup**: New server ready
+3. **Config restore** (if --keep-config): Configs copied before generation
+4. **World generation**: Automatic (~2 min), admin password displayed
+5. **Whitelist restore** (if --keep-whitelist): Players restored from backup
+6. **Startup**: New server ready
 
 **⚠️ Warning**: Deletes all current data! Automatic backup created.
 
-Complete documentation: [ADVANCED.md - Complete Server Reset](ADVANCED.md#reset-complet-serveur)
+Complete documentation: [ADVANCED.md - Complete Server Reset](ADVANCED.md#complete-server-reset)
 
 ## Backups Not Working
 

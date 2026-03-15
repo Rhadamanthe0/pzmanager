@@ -57,9 +57,11 @@ pzm whitelist purge 3m --delete                 # Delete inactive after confirma
 ## Administration
 
 ```bash
-pzm admin reset                    # Full reset (new world)
-pzm admin reset --keep-whitelist   # Reset, keep whitelist + config
-pzm admin maintenance [delay]      # Manual maintenance (default: 30m)
+pzm admin reset                                    # Full reset (new world)
+pzm admin reset --keep-config                      # Reset, keep configs/mods
+pzm admin reset --keep-whitelist                   # Reset, keep whitelist
+pzm admin reset --keep-config --keep-whitelist     # Reset, keep everything
+pzm admin maintenance [delay]                      # Manual maintenance (default: 30m)
 ```
 
 ## Configuration

@@ -35,8 +35,9 @@ Commandes disponibles:
     purge <durée> --delete  Supprimer inactifs après confirmation
 
   admin <action> [arguments]
-    reset              Wipe complet (backup → suppression pzserver+Zomboid → réinstall)
-    reset --keep-whitelist  Reset avec conservation whitelist
+    reset [options]    Wipe complet (backup → suppression → nouveau monde)
+      --keep-config       Restaurer configs (servertest.ini, SandboxVars, spawns)
+      --keep-whitelist    Restaurer whitelist
     maintenance [délai]     Maintenance complète (défaut: 30m)
 
   config <paramètre> <valeur>
@@ -55,7 +56,7 @@ Exemples:
   pzm server restart 5m
   pzm backup restore data/dataBackups/backup_2026-01-11_14h30m00s
   pzm whitelist add "PlayerName" "76561198012345678"
-  pzm admin reset --keep-whitelist
+  pzm admin reset --keep-config --keep-whitelist
   pzm config ram 8g
   pzm rcon save
   pzm rcon servermsg "Message aux joueurs"
