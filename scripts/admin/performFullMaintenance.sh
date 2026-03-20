@@ -77,7 +77,9 @@ update_game_server() {
 
 sync_external() {
     log "Synchronisation externe..."
-    [[ -x "${SCRIPT_DIR}/../backup/fullBackup.sh" ]] && "${SCRIPT_DIR}/../backup/fullBackup.sh"
+    if [[ -x "${SCRIPT_DIR}/../backup/fullBackup.sh" ]]; then
+        "${SCRIPT_DIR}/../backup/fullBackup.sh" || log "WARNING: Synchronisation externe échouée (non bloquant)"
+    fi
 }
 
 main() {

@@ -20,8 +20,11 @@ ensure_directory "${BACKUP_DIR}"
 
 # Trigger in-game save if server is running
 if [[ -p "${PZ_CONTROL_PIPE}" ]]; then
-    echo "save" > "${PZ_CONTROL_PIPE}"
-    sleep 60
+    if timeout 10 bash -c "echo 'save' > '${PZ_CONTROL_PIPE}'" 2>/dev/null; then
+        sleep 60
+    else
+        echo "Warning: Could not send save command (pipe timeout or server not responding)"
+    fi
 fi
 
 readonly TIMESTAMP=$(date +"%Y-%m-%d_%Hh%Mm%Ss")
@@ -33,7 +36,19 @@ rsync_opts=(-a --delete)
 [[ -d "${BACKUP_LATEST_LINK}" ]] && rsync_opts+=(--link-dest="${BACKUP_LATEST_LINK}")
 
 cd "${PZ_SOURCE_DIR}"
-rsync "${rsync_opts[@]}" --relative Saves db Server "${BACKUP_PATH}"
+
+# Build list of directories to backup (skip missing ones)
+backup_dirs=()
+for dir in Saves db Server; do
+    [[ -d "$dir" ]] && backup_dirs+=("$dir")
+done
+
+if [[ ${#backup_dirs[@]} -eq 0 ]]; then
+    echo "Error: No directories to backup in ${PZ_SOURCE_DIR}"
+    exit 1
+fi
+
+rsync "${rsync_opts[@]}" --relative "${backup_dirs[@]}" "${BACKUP_PATH}"
 
 rm -rf "${BACKUP_LATEST_LINK}"
 ln -s "${BACKUP_PATH}" "${BACKUP_LATEST_LINK}"

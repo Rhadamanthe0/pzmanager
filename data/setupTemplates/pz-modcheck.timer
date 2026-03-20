@@ -1,5 +1,5 @@
 [Unit]
-Description=Project Zomboid - Mod Update Check Timer
+Description=Project Zomboid - Mod & Server Update Check Timer
 
 [Timer]
 OnBootSec=5min

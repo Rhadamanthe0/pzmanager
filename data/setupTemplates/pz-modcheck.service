@@ -1,5 +1,5 @@
 [Unit]
-Description=Project Zomboid - Check for Mod Updates
+Description=Project Zomboid - Check for Mod & Server Updates
 After=zomboid.service
 
 [Service]

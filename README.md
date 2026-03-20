@@ -2,13 +2,14 @@
 
 [![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-sa/4.0/)
 [![Platform](https://img.shields.io/badge/platform-Debian%2012%20%7C%20Ubuntu%2022.04%2B-blue.svg)](https://www.debian.org/)
+[![Build 42](https://img.shields.io/badge/Project%20Zomboid-Build%2042-green.svg)](https://projectzomboid.com/)
 
-**Zero-config** Project Zomboid dedicated server manager. Install in one command, everything works out of the box.
+**Zero-config** Project Zomboid **Build 42** dedicated server manager. Install in one command, everything works out of the box.
 
 ## Features
 
 - **Simple CLI** - `pzm server start`, `pzm server stop`, `pzm backup create`...
-- **Auto-updates** - Detects mod updates every 5 min, triggers maintenance automatically
+- **Auto-updates** - Detects mod and server updates every 5 min, triggers maintenance automatically
 - **Auto-backups** - Hourly incremental backups, 14-day retention
 - **Auto-maintenance** - Daily system/server updates at 4:30 AM
 - **Discord notifications** - Server status, mod updates, maintenance alerts

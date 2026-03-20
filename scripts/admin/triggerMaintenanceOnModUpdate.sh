@@ -1,5 +1,5 @@
 #!/bin/bash
-# triggerMaintenanceOnModUpdate.sh - Déclenche maintenance si mods mis à jour
+# triggerMaintenanceOnModUpdate.sh - Déclenche maintenance si mods ou serveur mis à jour
 # Timer systemd toutes les 5 min. Lock partagé avec pz.sh/performFullMaintenance.sh
 
 set -euo pipefail
@@ -58,9 +58,66 @@ check_mods() {
     return 1
 }
 
+# Returns: 0=server update available, 1=up to date or error
+check_server_update() {
+    local manifest="${PZ_INSTALL_DIR}/steamapps/appmanifest_${STEAM_APP_ID}.acf"
+
+    if [[ ! -f "$manifest" ]]; then
+        log_event "WARNING: App manifest not found, skipping server update check"
+        return 1
+    fi
+
+    # Get installed build ID from local manifest
+    local installed_buildid
+    installed_buildid=$(grep -oP '"buildid"\s*"\K[0-9]+' "$manifest" 2>/dev/null || echo "")
+
+    if [[ -z "$installed_buildid" ]]; then
+        log_event "WARNING: Could not read installed build ID"
+        return 1
+    fi
+
+    # Query SteamCMD for the latest build ID on the configured beta branch
+    local steam_output
+    steam_output=$(timeout 60 "${STEAMCMD_PATH}" +login anonymous \
+        +app_info_update 1 \
+        +app_info_print "${STEAM_APP_ID}" \
+        +quit 2>/dev/null) || {
+        log_event "WARNING: SteamCMD query failed"
+        return 1
+    }
+
+    # Parse the build ID for the configured beta branch (e.g. "unstable")
+    # The manifest structure has: "branches" { "<branch>" { "buildid" "<id>" } }
+    local remote_buildid
+    remote_buildid=$(echo "$steam_output" | awk -v branch="${STEAM_BETA_BRANCH}" '
+        /"branches"/ { in_branches=1 }
+        in_branches && $0 ~ "\"" branch "\"" { in_branch=1 }
+        in_branch && /"buildid"/ {
+            gsub(/[^0-9]/, "")
+            print
+            exit
+        }
+        in_branch && /^\t*\}/ { in_branch=0 }
+    ')
+
+    if [[ -z "$remote_buildid" ]]; then
+        log_event "WARNING: Could not read remote build ID for branch ${STEAM_BETA_BRANCH}"
+        return 1
+    fi
+
+    if [[ "$installed_buildid" != "$remote_buildid" ]]; then
+        log_event "SERVER UPDATE AVAILABLE (installed: ${installed_buildid}, remote: ${remote_buildid}, branch: ${STEAM_BETA_BRANCH})"
+        return 0
+    fi
+
+    log_event "OK - server up to date (buildid: ${installed_buildid}, branch: ${STEAM_BETA_BRANCH})"
+    return 1
+}
+
 trigger_maintenance() {
-    log_event "Triggering maintenance (5m delay)"
-    "${SCRIPT_DIR}/../internal/sendDiscord.sh" "Mods mis à jour" || true
+    local reason="$1"
+    log_event "Triggering maintenance (5m delay) - reason: ${reason}"
+    "${SCRIPT_DIR}/../internal/sendDiscord.sh" "${reason}" || true
     flock -u 200
     "${SCRIPT_DIR}/performFullMaintenance.sh" "5m"
     log_event "Maintenance completed"
@@ -75,7 +132,15 @@ main() {
         exit 0
     fi
 
-    check_mods && trigger_maintenance
+    if check_mods; then
+        trigger_maintenance "Mods mis à jour"
+        exit 0
+    fi
+
+    if check_server_update; then
+        trigger_maintenance "Mise à jour serveur disponible"
+        exit 0
+    fi
 }
 
 main

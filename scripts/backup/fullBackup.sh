@@ -51,7 +51,10 @@ backup_sudoers() {
 archive_game_data() {
     log "Creating Zomboid ZIP archive..."
 
-    [[ -L "${BACKUP_LATEST_LINK}" ]] || { echo "Erreur: Lien dernier backup introuvable: ${BACKUP_LATEST_LINK}"; exit 1; }
+    if [[ ! -L "${BACKUP_LATEST_LINK}" ]]; then
+        echo "Warning: Latest backup symlink not found (${BACKUP_LATEST_LINK}), skipping archive"
+        return 0
+    fi
 
     local archive_dest="${BACKUP_DEST}${PZ_HOME}/Zomboid_Latest_Full.zip"
     mkdir -p "$(dirname "$archive_dest")"
