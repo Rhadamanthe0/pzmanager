@@ -225,6 +225,8 @@ export DISCORD_WEBHOOK=""
 - Server startup
 - Server online (RCON ready)
 - Server shutdown (with delay)
+- Mod updates detected
+- Server update available (new build ID on SteamCMD)
 - Daily maintenance start
 - System reboot
 

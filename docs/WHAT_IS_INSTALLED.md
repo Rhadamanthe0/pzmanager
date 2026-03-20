@@ -341,13 +341,14 @@ RestartSec=5
 
 **Configured timers**:
 
-#### pz-modcheck.timer - Mod update check (every 5 minutes)
+#### pz-modcheck.timer - Mod & server update check (every 5 minutes)
 
 **Schedule**: Every 5 minutes after boot
 
 **Function**:
 - Checks Workshop mod updates via RCON `checkModsNeedUpdate`
-- Triggers `performFullMaintenance.sh` (5m delay) if updates found
+- Checks for server updates by comparing installed build ID with latest available on SteamCMD (branch `unstable`)
+- Triggers `performFullMaintenance.sh` (5m delay) if mod or server updates found
 - Sends Discord notifications
 
 **Lock**: Partage `/tmp/pzmanager-maintenance-<user>.lock` avec `pz.sh` et `performFullMaintenance.sh`. Skip silencieux si lock détenu.
@@ -419,7 +420,7 @@ RestartSec=5
 │   │   └── restoreZomboidData.sh     # Data-only restoration
 │   │
 │   ├── admin/
-│   │   ├── triggerMaintenanceOnModUpdate.sh  # Auto-maintenance if mods need update
+│   │   ├── triggerMaintenanceOnModUpdate.sh  # Auto-maintenance if mods or server need update
 │   │   ├── manageWhitelist.sh        # SQLite whitelist management
 │   │   ├── resetServer.sh            # Complete server reset
 │   │   ├── setram.sh                 # Server RAM configuration

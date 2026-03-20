@@ -111,7 +111,7 @@ DISCORD_WEBHOOK="https://discord.com/api/webhooks/..."
 
 | Task | Schedule | Description |
 |------|----------|-------------|
-| Mod check | Every 5 min | Auto-maintenance if updates detected |
+| Mod & server check | Every 5 min | Auto-maintenance if mod or server updates detected |
 | Backup | Hourly (:14) | Incremental, 14-day retention |
 | Maintenance | Daily 4:30 AM | Updates + full backup + reboot/restart |
 | Whitelist dates | Daily 00:00 | Init creation dates for purge |

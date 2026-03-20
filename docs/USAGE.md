@@ -105,7 +105,7 @@ systemctl --user list-timers
 | Timer | Schedule | Function |
 |-------|----------|----------|
 | pz-backup | Hourly :14 | Incremental backup |
-| pz-modcheck | Every 5 min | Check mod updates |
+| pz-modcheck | Every 5 min | Check mod & server updates |
 | pz-maintenance | Daily 4:30 | Full maintenance (reboot or restart selon .env) |
 | pz-creation-date-init | Daily 00:00 | Init whitelist creation dates |
 
