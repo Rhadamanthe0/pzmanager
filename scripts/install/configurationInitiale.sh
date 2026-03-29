@@ -199,11 +199,52 @@ download_zomboid_server() {
 }
 
 configure_zomboid_jvm() {
-    [[ -f "$PZ_INSTALL_DIR/ProjectZomboid64.json" ]] || return 0
-    grep -q "UseZGC" "$PZ_INSTALL_DIR/ProjectZomboid64.json" && return 0
+    local json_file="$PZ_INSTALL_DIR/ProjectZomboid64.json"
+    [[ -f "$json_file" ]] || return 0
 
-    echo "Configuration JVM (UseZGC)..."
-    sed -i 's/"-XX:-OmitStackTraceInFastThrow"/"-XX:+UseZGC",\n\t\t"-XX:-OmitStackTraceInFastThrow"/' "$PZ_INSTALL_DIR/ProjectZomboid64.json"
+    echo "Optimisation JVM..."
+    cp "$json_file" "${json_file}.bak"
+
+    python3 - "$json_file" << 'PYEOF'
+import json, sys
+
+f = sys.argv[1]
+with open(f) as fp:
+    data = json.load(fp)
+
+args = data['vmArgs']
+
+# Supprimer le flag de debug réseau
+args = [a for a in args if 'znetlog' not in a]
+
+# UseZGC
+if not any('UseZGC' in a for a in args):
+    args.append('-XX:+UseZGC')
+
+# -Xms identique à -Xmx (évite le redimensionnement dynamique du heap)
+if not any('-Xms' in a for a in args):
+    xmx = next((a for a in args if '-Xmx' in a), None)
+    if xmx:
+        ram = xmx.replace('-Xmx', '')
+        idx = args.index(xmx) + 1
+        args.insert(idx, f'-Xms{ram}')
+
+# Pré-toucher toutes les pages mémoire au démarrage
+if not any('AlwaysPreTouch' in a for a in args):
+    args.append('-XX:+AlwaysPreTouch')
+
+# Cycle ZGC périodique toutes les 5s
+if not any('ZCollectionInterval' in a for a in args):
+    args.append('-XX:ZCollectionInterval=5')
+
+data['vmArgs'] = args
+with open(f, 'w') as fp:
+    json.dump(data, fp, indent='\t')
+    fp.write('\n')
+
+for a in data['vmArgs']:
+    print(f'  {a}')
+PYEOF
 }
 
 configure_user_environment() {

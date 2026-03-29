@@ -13,6 +13,7 @@ ExecStartPost=-/bin/sh -c "%h/pzmanager/scripts/internal/notifyServerReady.sh &"
 ExecStop=/bin/sh -c "echo 'quit' > %h/pzmanager/data/pzserver/zomboid.control"
 KillSignal=SIGCONT
 TimeoutStopSec=30
+MemorySwapMax=0
 
 [Install]
 WantedBy=default.target
