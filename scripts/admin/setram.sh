@@ -40,18 +40,26 @@ set_ram() {
     local current=$(get_current_ram)
 
     if [[ "$current" == "$ram" ]]; then
-        echo "✓ RAM déjà configurée à $ram"
+        echo "RAM deja configuree a $ram"
         return 0
     fi
 
     # Backup
     cp "$JSON_FILE" "${JSON_FILE}.bak"
 
-    # Modifier -Xmx
+    # Modifier -Xmx (max heap)
     sed -i "s/\"-Xmx[0-9]\+g\"/\"-Xmx${ram}\"/" "$JSON_FILE"
 
-    echo "✓ RAM modifiée: $current → $ram"
-    echo "⚠️ Redémarrer le serveur pour appliquer: pzm server restart 2m"
+    # Ajouter ou modifier -Xms (min heap) = même valeur
+    if grep -q '"-Xms' "$JSON_FILE"; then
+        sed -i "s/\"-Xms[0-9]\+g\"/\"-Xms${ram}\"/" "$JSON_FILE"
+    else
+        # Insérer -Xms juste après -Xmx
+        sed -i "/\"-Xmx${ram}\"/a\\\\t\\t\"-Xms${ram}\"," "$JSON_FILE"
+    fi
+
+    echo "RAM modifiee: $current -> $ram (-Xms${ram} / -Xmx${ram})"
+    echo "Redemarrer le serveur pour appliquer: pzm server restart 2m"
 }
 
 main() {
