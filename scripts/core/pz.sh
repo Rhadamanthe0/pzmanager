@@ -92,14 +92,28 @@ warn_players() {
     for entry in ${delays[$DELAY]}; do
         local label="${entry%%:*}" secs="${entry##*:}"
         local simple_msg="ATTENTION : ${action_type} DANS ${label//_/ } !"
-        if $first; then
-            # First warning: send both in-game and Discord with context on separate line
-            "${SCRIPT_DIR}/../internal/sendCommand.sh" servermsg "$simple_msg" --no-output
-            send_discord "@here $simple_msg"
-            if [[ -n "$REASON" ]] || [[ "$IS_AUTOMATIC" == true ]]; then
-                "${SCRIPT_DIR}/../internal/sendCommand.sh" servermsg "($context_msg)" --no-output
-                send_discord "($context_msg)"
+        local context_suffix=""
+
+        # Add context only to first message and only if reason/automatic
+        if $first && ([[ -n "$REASON" ]] || [[ "$IS_AUTOMATIC" == true ]]); then
+            # Extract context without the action type (already in message)
+            local reason_part="$REASON"
+            if [[ "$IS_AUTOMATIC" == true ]]; then
+                if [[ -z "$REASON" ]]; then
+                    reason_part="Lancé automatiquement"
+                else
+                    reason_part="Lancé automatiquement - $REASON"
+                fi
+            else
+                reason_part="Lancé manuellement - $REASON"
             fi
+            context_suffix=" ($reason_part)"
+        fi
+
+        if $first; then
+            # First warning with @here and context
+            "${SCRIPT_DIR}/../internal/sendCommand.sh" servermsg "$simple_msg$context_suffix" --no-output
+            send_discord "@here $simple_msg$context_suffix"
             first=false
         else
             # Subsequent warnings: simple message only
