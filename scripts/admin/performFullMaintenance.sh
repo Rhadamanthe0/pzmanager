@@ -63,7 +63,7 @@ stop_server() {
     [[ "$SILENT_MODE" == true ]] && silent_opt="--silent"
     [[ "$AUTOMATIC_MODE" == true ]] && automatic_opt="--automatic"
     log "Arrêt du serveur ($DELAY) pour maintenance..."
-    "${SCRIPT_DIR}/../core/pz.sh" stop "$DELAY" --reason "$MAINTENANCE_REASON" $automatic_opt $silent_opt
+    "${SCRIPT_DIR}/../core/pz.sh" stop "$DELAY" --maintenance --reason "$MAINTENANCE_REASON" $automatic_opt $silent_opt
 }
 
 rotate_backups() {

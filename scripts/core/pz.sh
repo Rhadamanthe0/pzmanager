@@ -15,6 +15,7 @@ DELAY="${2:-2m}"
 SILENT_MODE=false
 REASON=""
 IS_AUTOMATIC=false
+IS_MAINTENANCE=false
 
 # Validate delay
 [[ "$DELAY" =~ ^(30m|15m|5m|2m|30s|now)$ ]] || {
@@ -31,6 +32,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --automatic)
             IS_AUTOMATIC=true
+            shift
+            ;;
+        --maintenance)
+            IS_MAINTENANCE=true
             shift
             ;;
         --reason)
@@ -87,16 +92,21 @@ warn_players() {
     )
 
     echo "Envoi des avertissements ($DELAY)..."
-    local context_msg=$(format_context "$action_type")
+
+    # Determine display action type
+    local display_action="$action_type"
+    if [[ "$IS_MAINTENANCE" == true ]]; then
+        display_action="MAINTENANCE"
+    fi
+
     local first=true
     for entry in ${delays[$DELAY]}; do
         local label="${entry%%:*}" secs="${entry##*:}"
-        local simple_msg="ATTENTION : ${action_type} DANS ${label//_/ } !"
+        local simple_msg="ATTENTION : ${display_action} DANS ${label//_/ } !"
         local context_suffix=""
 
         # Add context only to first message and only if reason/automatic
         if $first && ([[ -n "$REASON" ]] || [[ "$IS_AUTOMATIC" == true ]]); then
-            # Extract context without the action type (already in message)
             local reason_part="$REASON"
             if [[ "$IS_AUTOMATIC" == true ]]; then
                 if [[ -z "$REASON" ]]; then
@@ -121,8 +131,15 @@ warn_players() {
         fi
         sleep "$secs"
     done
-    # Final message: action with context
-    send_msg "$context_msg"
+
+    # Final message: depends on action type
+    if [[ "$IS_MAINTENANCE" == true ]]; then
+        send_msg "MAINTENANCE TERMINÉE"
+        send_msg "REDÉMARRAGE SERVEUR"
+    else
+        local context_msg=$(format_context "$display_action")
+        send_msg "$context_msg"
+    fi
     sleep 5
 }
 

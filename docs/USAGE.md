@@ -69,24 +69,32 @@ pzm admin maintenance 2m --reason "RAM upgrade"    # Maintenance with reason
 - `[delay]`: `30m`, `15m`, `5m`, `2m`, `30s`, `now` (default: 30m)
 - `--reason TEXT`: Add reason to messages (optional)
 
-**Messages examples**:
+**Message formats by action type**:
 
 *Manual maintenance* (`pzm admin maintenance 2m --reason "RAM upgrade"`):
 ```
-@here ATTENTION : ARRÊT DANS 2 MINUTES ! (Lancé manuellement - RAM upgrade)
-ATTENTION : ARRÊT DANS 30 SECONDES !
-ARRÊT (Lancé manuellement - RAM upgrade)
+@here ATTENTION : MAINTENANCE DANS 2 MINUTES ! (Lancé manuellement - RAM upgrade)
+ATTENTION : MAINTENANCE DANS 30 SECONDES !
+MAINTENANCE TERMINÉE
+REDÉMARRAGE SERVEUR
 ```
 
-*Automatic - mods detected*:
+*Automatic maintenance - mods detected*:
 ```
-Maintenance automatique - Mods mis à jour
-@here ATTENTION : ARRÊT DANS 5 MINUTES ! (Lancé automatiquement - Mods)
-ATTENTION : ARRÊT DANS 30 SECONDES !
-ARRÊT (Lancé automatiquement - Mods)
+@here ATTENTION : MAINTENANCE DANS 5 MINUTES ! (Lancé automatiquement - Mods mis à jour)
+ATTENTION : MAINTENANCE DANS 30 SECONDES !
+MAINTENANCE TERMINÉE
+REDÉMARRAGE SERVEUR
 ```
 
-*Simple restart without reason*:
+*Simple stop* (`pzm server stop 2m`):
+```
+@here ATTENTION : ARRÊT DANS 2 MINUTES !
+ATTENTION : ARRÊT DANS 30 SECONDES !
+ARRÊT
+```
+
+*Simple restart* (`pzm server restart 2m`):
 ```
 @here ATTENTION : REDÉMARRAGE DANS 2 MINUTES !
 ATTENTION : REDÉMARRAGE DANS 30 SECONDES !
