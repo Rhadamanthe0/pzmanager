@@ -84,7 +84,8 @@ pzm admin maintenance 2m --reason "Augmentation de la RAM"
 **Delays**: `30m`, `15m`, `5m`, `2m`, `30s`, `now`
 
 **Maintenance option**: `--reason TEXT` adds context to Discord/in-game messages
-- Example: `--reason "RAM upgrade"` → "ARRÊT (automatique - RAM upgrade)"`
+- Example: `--reason "RAM upgrade"` → Messages show "MAINTENANCE (Lancé manuellement - RAM upgrade)"`
+- Then: "MAINTENANCE TERMINÉE" and "REDÉMARRAGE SERVEUR"
 
 ## Server Configuration
 

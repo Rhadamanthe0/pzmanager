@@ -1,7 +1,7 @@
 #!/bin/bash
 # pz.sh - Gestion du serveur Project Zomboid
 # Usage: ./pz.sh <start|stop|restart|status> [délai] [options]
-# Options: --reason=TEXT, --automatic, --silent
+# Options: --reason TEXT, --maintenance, --automatic, --silent
 # Lock partagé avec modcheck/maintenance pour éviter les conflits
 
 set -euo pipefail
