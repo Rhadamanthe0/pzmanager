@@ -62,12 +62,17 @@ pzm admin reset --keep-config                      # Reset, keep configs/mods
 pzm admin reset --keep-whitelist                   # Reset, keep whitelist
 pzm admin reset --keep-config --keep-whitelist     # Reset, keep everything
 pzm admin maintenance [delay]                      # Manual maintenance (default: 30m)
-pzm admin maintenance 2m --reason "RAM upgrade"    # Maintenance with context
+pzm admin maintenance 2m --reason "RAM upgrade"    # Maintenance with reason
 ```
 
 **Maintenance options**:
 - `[delay]`: `30m`, `15m`, `5m`, `2m`, `30s`, `now` (default: 30m)
-- `--reason TEXT`: Add context to Discord/in-game messages (optional)
+- `--reason TEXT`: Add context to messages (e.g., "ARRÊT (manuel - RAM upgrade)")
+
+**Messages examples**:
+- Manual: `ARRÊT (manuel - RAM upgrade)` → `Serveur démarré (manuel - RAM upgrade)`
+- Automatic (timer): `ARRÊT (automatique - Maintenance)` → `Serveur démarré (automatique - Maintenance)`
+- Auto-detected mods: `Maintenance automatique - Mods mis à jour` then `ARRÊT (automatique - Mods)`
 
 ## Configuration
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 # performFullMaintenance.sh - Maintenance quotidienne (apt, steamcmd, reboot)
 # Usage: ./performFullMaintenance.sh [délai] [options]
-# Options: --reason=TEXT (pour personnaliser le message), --silent
+# Options: --reason TEXT (raison de maintenance), --automatic (flag si auto), --silent
 # Lock partagé avec pz.sh/triggerMaintenanceOnModUpdate.sh
 
 set -euo pipefail
@@ -21,11 +21,16 @@ fi
 # Parse arguments
 DELAY="30m"
 SILENT_MODE=false
+AUTOMATIC_MODE=false
 MAINTENANCE_REASON="Maintenance"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --silent)
             SILENT_MODE=true
+            shift
+            ;;
+        --automatic)
+            AUTOMATIC_MODE=true
             shift
             ;;
         --reason)
@@ -54,9 +59,11 @@ exec > >(tee -a "${MAINT_LOG}") 2>&1
 
 stop_server() {
     local silent_opt=""
+    local automatic_opt=""
     [[ "$SILENT_MODE" == true ]] && silent_opt="--silent"
+    [[ "$AUTOMATIC_MODE" == true ]] && automatic_opt="--automatic"
     log "Arrêt du serveur ($DELAY) pour maintenance..."
-    "${SCRIPT_DIR}/../core/pz.sh" stop "$DELAY" --reason "$MAINTENANCE_REASON" --automatic $silent_opt
+    "${SCRIPT_DIR}/../core/pz.sh" stop "$DELAY" --reason "$MAINTENANCE_REASON" $automatic_opt $silent_opt
 }
 
 rotate_backups() {
@@ -121,7 +128,9 @@ main() {
         sudo /sbin/reboot
     else
         log "Maintenance terminée, redémarrage du service..."
-        "${SCRIPT_DIR}/../core/pz.sh" start --reason "$MAINTENANCE_REASON" --automatic
+        local automatic_opt=""
+        [[ "$AUTOMATIC_MODE" == true ]] && automatic_opt="--automatic"
+        "${SCRIPT_DIR}/../core/pz.sh" start --reason "$MAINTENANCE_REASON" $automatic_opt
     fi
 }
 

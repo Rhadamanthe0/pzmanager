@@ -120,7 +120,7 @@ trigger_maintenance() {
     log_event "Triggering maintenance (5m delay) - reason: ${reason}"
     "${SCRIPT_DIR}/../internal/sendDiscord.sh" "Maintenance automatique - ${reason}" || true
     flock -u 200
-    "${SCRIPT_DIR}/performFullMaintenance.sh" "5m" --reason "$reason_slug"
+    "${SCRIPT_DIR}/performFullMaintenance.sh" "5m" --reason "$reason_slug" --automatic
     log_event "Maintenance completed"
 }
 
