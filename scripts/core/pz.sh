@@ -63,12 +63,12 @@ format_context() {
 
     if [[ -n "$REASON" ]]; then
         if [[ "$IS_AUTOMATIC" == true ]]; then
-            msg="$msg (automatique - $REASON)"
+            msg="$msg (Lancé automatiquement - $REASON)"
         else
-            msg="$msg (manuel - $REASON)"
+            msg="$msg (Lancé manuellement - $REASON)"
         fi
     elif [[ "$IS_AUTOMATIC" == true ]]; then
-        msg="$msg (automatique)"
+        msg="$msg (Lancé automatiquement)"
     fi
     echo "$msg"
 }
@@ -91,16 +91,23 @@ warn_players() {
     local first=true
     for entry in ${delays[$DELAY]}; do
         local label="${entry%%:*}" secs="${entry##*:}"
-        local msg="ATTENTION : ${context_msg} DANS ${label//_/ } !"
+        local simple_msg="ATTENTION : ${action_type} DANS ${label//_/ } !"
         if $first; then
-            "${SCRIPT_DIR}/../internal/sendCommand.sh" servermsg "$msg" --no-output
-            send_discord "@here $msg"
+            # First warning: send both in-game and Discord with context on separate line
+            "${SCRIPT_DIR}/../internal/sendCommand.sh" servermsg "$simple_msg" --no-output
+            send_discord "@here $simple_msg"
+            if [[ -n "$REASON" ]] || [[ "$IS_AUTOMATIC" == true ]]; then
+                "${SCRIPT_DIR}/../internal/sendCommand.sh" servermsg "($context_msg)" --no-output
+                send_discord "($context_msg)"
+            fi
             first=false
         else
-            send_msg "$msg"
+            # Subsequent warnings: simple message only
+            send_msg "$simple_msg"
         fi
         sleep "$secs"
     done
+    # Final message: action with context
     send_msg "$context_msg"
     sleep 5
 }

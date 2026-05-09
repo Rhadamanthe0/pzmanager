@@ -67,12 +67,30 @@ pzm admin maintenance 2m --reason "RAM upgrade"    # Maintenance with reason
 
 **Maintenance options**:
 - `[delay]`: `30m`, `15m`, `5m`, `2m`, `30s`, `now` (default: 30m)
-- `--reason TEXT`: Add context to messages (e.g., "ARRÊT (manuel - RAM upgrade)")
+- `--reason TEXT`: Add context to messages (optional)
 
 **Messages examples**:
-- Manual: `ARRÊT (manuel - RAM upgrade)` → `Serveur démarré (manuel - RAM upgrade)`
-- Automatic (timer): `ARRÊT (automatique - Maintenance)` → `Serveur démarré (automatique - Maintenance)`
-- Auto-detected mods: `Maintenance automatique - Mods mis à jour` then `ARRÊT (automatique - Mods)`
+
+*Manual maintenance* (`pzm admin maintenance 2m --reason "RAM upgrade"`):
+```
+@here ATTENTION : ARRÊT DANS 2 MINUTES !
+(ARRÊT (Lancé manuellement - RAM upgrade))
+
+ATTENTION : ARRÊT DANS 30 SECONDES !
+
+ARRÊT (Lancé manuellement - RAM upgrade)
+```
+
+*Automatic - mods detected*:
+```
+Maintenance automatique - Mods mis à jour
+@here ATTENTION : ARRÊT DANS 5 MINUTES !
+(ARRÊT (Lancé automatiquement - Mods))
+
+ATTENTION : ARRÊT DANS 30 SECONDES !
+
+ARRÊT (Lancé automatiquement - Mods)
+```
 
 ## Configuration
 
