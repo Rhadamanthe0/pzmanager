@@ -76,9 +76,15 @@ pzm server stop 5m         # Stop with 5-min warning
 pzm server restart 2m      # Restart with 2-min warning
 pzm server status          # Check status
 pzm backup create          # Manual backup
+
+# Maintenance with context (optional)
+pzm admin maintenance 2m --reason "Augmentation de la RAM"
 ```
 
 **Delays**: `30m`, `15m`, `5m`, `2m`, `30s`, `now`
+
+**Maintenance option**: `--reason TEXT` adds context to Discord/in-game messages
+- Example: `--reason "RAM upgrade"` → "ARRÊT (automatique - RAM upgrade)"`
 
 ## Server Configuration
 

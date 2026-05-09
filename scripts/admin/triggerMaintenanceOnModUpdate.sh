@@ -116,10 +116,11 @@ check_server_update() {
 
 trigger_maintenance() {
     local reason="$1"
+    local reason_slug="$2"
     log_event "Triggering maintenance (5m delay) - reason: ${reason}"
-    "${SCRIPT_DIR}/../internal/sendDiscord.sh" "${reason}" || true
+    "${SCRIPT_DIR}/../internal/sendDiscord.sh" "Maintenance automatique - ${reason}" || true
     flock -u 200
-    "${SCRIPT_DIR}/performFullMaintenance.sh" "5m"
+    "${SCRIPT_DIR}/performFullMaintenance.sh" "5m" --reason "$reason_slug"
     log_event "Maintenance completed"
 }
 
@@ -133,12 +134,12 @@ main() {
     fi
 
     if check_mods; then
-        trigger_maintenance "Mods mis à jour"
+        trigger_maintenance "Mods mis à jour" "Mods"
         exit 0
     fi
 
     if check_server_update; then
-        trigger_maintenance "Mise à jour serveur disponible"
+        trigger_maintenance "Mise à jour serveur disponible" "Serveur"
         exit 0
     fi
 }

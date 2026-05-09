@@ -62,7 +62,12 @@ pzm admin reset --keep-config                      # Reset, keep configs/mods
 pzm admin reset --keep-whitelist                   # Reset, keep whitelist
 pzm admin reset --keep-config --keep-whitelist     # Reset, keep everything
 pzm admin maintenance [delay]                      # Manual maintenance (default: 30m)
+pzm admin maintenance 2m --reason "RAM upgrade"    # Maintenance with context
 ```
+
+**Maintenance options**:
+- `[delay]`: `30m`, `15m`, `5m`, `2m`, `30s`, `now` (default: 30m)
+- `--reason TEXT`: Add context to Discord/in-game messages (optional)
 
 ## Configuration
 

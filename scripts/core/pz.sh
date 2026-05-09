@@ -1,6 +1,7 @@
 #!/bin/bash
 # pz.sh - Gestion du serveur Project Zomboid
-# Usage: ./pz.sh <start|stop|restart|status> [délai] [--silent]
+# Usage: ./pz.sh <start|stop|restart|status> [délai] [options]
+# Options: --reason=TEXT, --automatic, --silent
 # Lock partagé avec modcheck/maintenance pour éviter les conflits
 
 set -euo pipefail
@@ -12,6 +13,8 @@ source_env "${SCRIPT_DIR}/.."
 readonly ACTION="${1:-}"
 DELAY="${2:-2m}"
 SILENT_MODE=false
+REASON=""
+IS_AUTOMATIC=false
 
 # Validate delay
 [[ "$DELAY" =~ ^(30m|15m|5m|2m|30s|now)$ ]] || {
@@ -19,8 +22,30 @@ SILENT_MODE=false
     exit 1
 }
 
-# Parse --silent
-for arg in "$@"; do [[ "$arg" == "--silent" ]] && SILENT_MODE=true; done
+# Parse named arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --silent)
+            SILENT_MODE=true
+            shift
+            ;;
+        --automatic)
+            IS_AUTOMATIC=true
+            shift
+            ;;
+        --reason)
+            REASON="$2"
+            shift 2
+            ;;
+        --reason=*)
+            REASON="${1#--reason=}"
+            shift
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
 
 send_discord() {
     [[ "$SILENT_MODE" == true ]] && return 0
@@ -30,6 +55,22 @@ send_discord() {
 send_msg() {
     "${SCRIPT_DIR}/../internal/sendCommand.sh" servermsg "$1" --no-output
     send_discord "$1"
+}
+
+format_context() {
+    local action="$1"
+    local msg="$action"
+
+    if [[ -n "$REASON" ]]; then
+        if [[ "$IS_AUTOMATIC" == true ]]; then
+            msg="$msg (automatique - $REASON)"
+        else
+            msg="$msg (manuel - $REASON)"
+        fi
+    elif [[ "$IS_AUTOMATIC" == true ]]; then
+        msg="$msg (automatique)"
+    fi
+    echo "$msg"
 }
 
 warn_players() {
@@ -46,10 +87,11 @@ warn_players() {
     )
 
     echo "Envoi des avertissements ($DELAY)..."
+    local context_msg=$(format_context "$action_type")
     local first=true
     for entry in ${delays[$DELAY]}; do
         local label="${entry%%:*}" secs="${entry##*:}"
-        local msg="ATTENTION : ${action_type} DU SERVEUR DANS ${label//_/ } !"
+        local msg="ATTENTION : ${context_msg} DANS ${label//_/ } !"
         if $first; then
             "${SCRIPT_DIR}/../internal/sendCommand.sh" servermsg "$msg" --no-output
             send_discord "@here $msg"
@@ -59,7 +101,7 @@ warn_players() {
         fi
         sleep "$secs"
     done
-    send_msg "${action_type} DU SERVEUR"
+    send_msg "$context_msg"
     sleep 5
 }
 
@@ -68,7 +110,8 @@ shutdown_server() {
     try_acquire_maintenance_lock || true
 
     if [[ "$DELAY" == "now" ]]; then
-        send_discord "@here ${action} IMMÉDIAT DU SERVEUR"
+        local context_msg=$(format_context "$action IMMÉDIAT")
+        send_discord "@here $context_msg"
     else
         warn_players "$action"
     fi
@@ -86,6 +129,10 @@ shutdown_server() {
 do_start() {
     echo "Démarrage du service..."
     systemctl --user start "${PZ_SERVICE_NAME}"
+    if [[ -n "$REASON" ]]; then
+        local context_msg=$(format_context "Serveur démarré")
+        send_discord "$context_msg"
+    fi
     echo "Terminé."
 }
 
@@ -128,8 +175,12 @@ case "$ACTION" in
     restart) do_restart ;;
     status)  do_status ;;
     *)
-        echo "Usage: $0 <start|stop|restart|status> [délai]"
+        echo "Usage: $0 <start|stop|restart|status> [délai] [options]"
         echo "Délais: 30m|15m|5m|2m|30s|now (défaut: 2m)"
+        echo "Options:"
+        echo "  --reason=TEXT   Raison de l'action (ex: 'Maintenance', 'Mods')"
+        echo "  --automatic     Marquer l'action comme automatique"
+        echo "  --silent        Supprimer les messages Discord"
         exit 1
         ;;
 esac

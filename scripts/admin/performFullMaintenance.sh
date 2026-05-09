@@ -1,6 +1,7 @@
 #!/bin/bash
 # performFullMaintenance.sh - Maintenance quotidienne (apt, steamcmd, reboot)
-# Usage: ./performFullMaintenance.sh [délai] [--silent]
+# Usage: ./performFullMaintenance.sh [délai] [options]
+# Options: --reason=TEXT (pour personnaliser le message), --silent
 # Lock partagé avec pz.sh/triggerMaintenanceOnModUpdate.sh
 
 set -euo pipefail
@@ -20,9 +21,29 @@ fi
 # Parse arguments
 DELAY="30m"
 SILENT_MODE=false
-for arg in "$@"; do
-    [[ "$arg" == "--silent" ]] && SILENT_MODE=true
-    [[ "$arg" =~ ^(30m|15m|5m|2m|30s|now)$ ]] && DELAY="$arg"
+MAINTENANCE_REASON="Maintenance"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --silent)
+            SILENT_MODE=true
+            shift
+            ;;
+        --reason)
+            MAINTENANCE_REASON="$2"
+            shift 2
+            ;;
+        --reason=*)
+            MAINTENANCE_REASON="${1#--reason=}"
+            shift
+            ;;
+        30m|15m|5m|2m|30s|now)
+            DELAY="$1"
+            shift
+            ;;
+        *)
+            shift
+            ;;
+    esac
 done
 
 cd "${PZ_HOME}"
@@ -34,8 +55,8 @@ exec > >(tee -a "${MAINT_LOG}") 2>&1
 stop_server() {
     local silent_opt=""
     [[ "$SILENT_MODE" == true ]] && silent_opt="--silent"
-    log "Arrêt du serveur ($DELAY)..."
-    "${SCRIPT_DIR}/../core/pz.sh" stop "$DELAY" $silent_opt
+    log "Arrêt du serveur ($DELAY) pour maintenance..."
+    "${SCRIPT_DIR}/../core/pz.sh" stop "$DELAY" --reason "$MAINTENANCE_REASON" --automatic $silent_opt
 }
 
 rotate_backups() {
@@ -96,10 +117,11 @@ main() {
 
     if [[ "${REBOOT_ON_MAINTENANCE:-true}" == true ]]; then
         log "Maintenance terminée, redémarrage machine..."
+        "${SCRIPT_DIR}/../internal/sendDiscord.sh" "Maintenance terminée - Redémarrage machine" || true
         sudo /sbin/reboot
     else
         log "Maintenance terminée, redémarrage du service..."
-        "${SCRIPT_DIR}/../core/pz.sh" start
+        "${SCRIPT_DIR}/../core/pz.sh" start --reason "$MAINTENANCE_REASON" --automatic
     fi
 }
 
