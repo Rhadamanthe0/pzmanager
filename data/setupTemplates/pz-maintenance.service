@@ -3,6 +3,6 @@ Description=Project Zomboid - Daily Maintenance
 
 [Service]
 Type=oneshot
-ExecStart=%h/pzmanager/scripts/admin/performFullMaintenance.sh --silent
+ExecStart=%h/pzmanager/scripts/admin/performFullMaintenance.sh --silent --automatic --reason "Maintenance quotidienne"
 StandardOutput=journal
 StandardError=journal

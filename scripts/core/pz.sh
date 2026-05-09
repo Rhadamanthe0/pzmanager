@@ -167,7 +167,9 @@ shutdown_server() {
 do_start() {
     echo "Démarrage du service..."
     systemctl --user start "${PZ_SERVICE_NAME}"
-    if [[ -n "$REASON" ]]; then
+    # Only send message if started with reason but NOT a maintenance
+    # (maintenance already sends MAINTENANCE TERMINÉE + REDÉMARRAGE SERVEUR)
+    if [[ -n "$REASON" ]] && [[ "$IS_MAINTENANCE" != true ]]; then
         local context_msg=$(format_context "Serveur démarré")
         send_discord "$context_msg"
     fi
