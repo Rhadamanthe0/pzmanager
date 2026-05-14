@@ -124,7 +124,7 @@ main() {
 
     if [[ "${REBOOT_ON_MAINTENANCE:-true}" == true ]]; then
         log "Maintenance terminée, redémarrage machine..."
-        "${SCRIPT_DIR}/../internal/sendDiscord.sh" "Maintenance terminée - Redémarrage machine" || true
+        [[ "$SILENT_MODE" != true ]] && "${SCRIPT_DIR}/../internal/sendDiscord.sh" "Maintenance terminée - Redémarrage machine" || true
         sudo /sbin/reboot
     else
         log "Maintenance terminée, redémarrage du service..."
