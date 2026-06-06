@@ -134,8 +134,7 @@ warn_players() {
 
     # Final message: depends on action type
     if [[ "$IS_MAINTENANCE" == true ]]; then
-        send_msg "MAINTENANCE TERMINÉE"
-        send_msg "REDÉMARRAGE SERVEUR"
+        send_msg "DÉBUT MAINTENANCE"
     else
         local context_msg=$(format_context "$display_action")
         send_msg "$context_msg"
@@ -168,7 +167,7 @@ do_start() {
     echo "Démarrage du service..."
     systemctl --user start "${PZ_SERVICE_NAME}"
     # Only send message if started with reason but NOT a maintenance
-    # (maintenance already sends MAINTENANCE TERMINÉE + REDÉMARRAGE SERVEUR)
+    # (maintenance already sends DÉBUT MAINTENANCE before shutdown)
     if [[ -n "$REASON" ]] && [[ "$IS_MAINTENANCE" != true ]]; then
         local context_msg=$(format_context "Serveur démarré")
         send_discord "$context_msg"

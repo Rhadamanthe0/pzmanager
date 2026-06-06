@@ -8,12 +8,14 @@ Wants=zomboid_logger.service
 Type=simple
 PrivateTmp=true
 WorkingDirectory=%h/pzmanager/data/pzserver/
+ExecStartPre=/bin/sh -c ": > %h/pzmanager/data/pzserver/zomboid.control"
 ExecStart=/bin/sh -c "ADMIN_ARGS=''; PW_FILE='%h/pzmanager/.admin_password'; if [ -f \"$PW_FILE\" ]; then ADMIN_ARGS=\"-adminpassword $(cat $PW_FILE)\"; rm -f \"$PW_FILE\"; fi; exec %h/pzmanager/data/pzserver/start-server.sh -cachedir=%h/pzmanager/Zomboid $ADMIN_ARGS <> %h/pzmanager/data/pzserver/zomboid.control"
 ExecStartPost=-/bin/sh -c "%h/pzmanager/scripts/internal/notifyServerReady.sh &"
 ExecStop=/bin/sh -c "echo 'quit' > %h/pzmanager/data/pzserver/zomboid.control"
 KillSignal=SIGCONT
 TimeoutStopSec=30
-MemorySwapMax=0
+MemorySwapMax=2G
+MemoryMax=12288M
 
 [Install]
 WantedBy=default.target

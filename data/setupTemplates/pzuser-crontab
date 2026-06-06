@@ -2,7 +2,7 @@
 # Location: /etc/cron.d/__PZ_USER__
 
 # Daily maintenance at 4:30 AM
-30 4 * * *  __PZ_USER__  /bin/bash __PZ_HOME__/pzmanager/scripts/admin/performFullMaintenance.sh
+30 4 * * *  __PZ_USER__  /bin/bash __PZ_HOME__/pzmanager/scripts/admin/performFullMaintenance.sh --silent --automatic --reason "Maintenance quotidienne"
 
 # Auto-trigger maintenance if mod updates detected (every 5 minutes)
 */5 * * * *  __PZ_USER__  /bin/bash __PZ_HOME__/pzmanager/scripts/admin/triggerMaintenanceOnModUpdate.sh 2>&1
