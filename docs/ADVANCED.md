@@ -4,16 +4,24 @@ Performance tuning and server reset procedures.
 
 ## RAM Configuration
 
-**Default**: 8GB with ZGC garbage collector (automatically configured)
+RAM is configured **once at install time** and is intentionally not tunable
+afterwards (no `pzm config ram` command). The installer sets, in
+`ProjectZomboid64.json`:
 
-```bash
-pzm config ram 4g    # 4GB  - <10 players
-pzm config ram 8g    # 8GB  - <25 players (default)
-pzm config ram 16g   # 16GB - <60 players
-pzm config ram 32g   # 32GB - 60+ players
-```
+- `-Xms2g` — fixed heap floor (ZGC gives unused heap above this back to the OS).
+- `-Xmx<half of physical RAM>` — heap ceiling, e.g. 7g on a 14 GiB machine.
+  This is a real, survivable guardrail: it triggers a clean Java
+  `OutOfMemoryError` before the heap can crowd out PZ's native memory + the OS.
+- `-XX:+UseZGC -XX:+AlwaysPreTouch -XX:ZCollectionInterval=5` — GC tuning.
 
-Apply: `pzm server restart 5m`
+**No cgroup memory cap.** `MemoryMax`/`MemoryHigh` are deliberately *not* set:
+on a modest machine they sit at the level of physical RAM, and the kernel
+throttles/OOM-kills PZ the instant it touches the cap (this caused server
+crashes). The only cgroup limit is `MemorySwapMax=1G` in
+`data/setupTemplates/zomboid.service`, a small overflow buffer.
+
+To change `Xmx`, edit `ProjectZomboid64.json` directly (or re-run the
+installer's JVM step) and restart: `pzm server restart 5m`.
 
 ## RCON Commands
 

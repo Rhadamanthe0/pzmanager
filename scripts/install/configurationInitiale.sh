@@ -202,40 +202,42 @@ configure_zomboid_jvm() {
     local json_file="$PZ_INSTALL_DIR/ProjectZomboid64.json"
     [[ -f "$json_file" ]] || return 0
 
-    echo "Optimisation JVM..."
+    # Heap Java : Xms=2g fixe (plancher, give-back ZGC au-dessus), Xmx=moitié de
+    # la RAM physique (garde-fou réel laissant la place au natif PZ + l'OS).
+    # On ne pose AUCUN plafond cgroup (MemoryMax/MemoryHigh) : il throttle/OOM
+    # PZ dès qu'il est atteint. Voir aussi data/setupTemplates/zomboid.service.
+    # Plancher heap fixe (Xms) ; le plafond (Xmx) ne peut jamais passer en dessous.
+    local xms_gb=2
+    local mem_kb xmx_gb
+    mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+    xmx_gb=$(( mem_kb / 1024 / 1024 / 2 ))
+    (( xmx_gb < xms_gb )) && xmx_gb=$xms_gb
+
+    echo "Optimisation JVM (Xms ${xms_gb}g / Xmx ${xmx_gb}g = moitié RAM)..."
     cp "$json_file" "${json_file}.bak"
 
-    python3 - "$json_file" << 'PYEOF'
+    python3 - "$json_file" "$xms_gb" "$xmx_gb" << 'PYEOF'
 import json, sys
 
 f = sys.argv[1]
+xms_gb = sys.argv[2]
+xmx_gb = sys.argv[3]
 with open(f) as fp:
     data = json.load(fp)
 
-args = data['vmArgs']
+# Repartir des args sans aucun réglage mémoire/GC qu'on (re)pose nous-mêmes
+drop = ('znetlog', '-Xms', '-Xmx', 'UseZGC', 'AlwaysPreTouch',
+        'ZCollectionInterval', 'MaxRAMPercentage')
+args = [a for a in data['vmArgs'] if not any(d in a for d in drop)]
 
-# Supprimer le flag de debug réseau
-args = [a for a in args if 'znetlog' not in a]
+# Heap : plancher fixe Xms, plafond = moitié de la RAM (give-back ZGC entre les deux)
+args.append(f'-Xms{xms_gb}g')
+args.append(f'-Xmx{xmx_gb}g')
 
-# UseZGC
-if not any('UseZGC' in a for a in args):
-    args.append('-XX:+UseZGC')
-
-# -Xms identique à -Xmx (évite le redimensionnement dynamique du heap)
-if not any('-Xms' in a for a in args):
-    xmx = next((a for a in args if '-Xmx' in a), None)
-    if xmx:
-        ram = xmx.replace('-Xmx', '')
-        idx = args.index(xmx) + 1
-        args.insert(idx, f'-Xms{ram}')
-
-# Pré-toucher toutes les pages mémoire au démarrage
-if not any('AlwaysPreTouch' in a for a in args):
-    args.append('-XX:+AlwaysPreTouch')
-
-# Cycle ZGC périodique toutes les 5s
-if not any('ZCollectionInterval' in a for a in args):
-    args.append('-XX:ZCollectionInterval=5')
+# ZGC + pré-touche du heap initial + cycle périodique 5s
+args.append('-XX:+UseZGC')
+args.append('-XX:+AlwaysPreTouch')
+args.append('-XX:ZCollectionInterval=5')
 
 data['vmArgs'] = args
 with open(f, 'w') as fp:

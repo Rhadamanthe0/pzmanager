@@ -103,11 +103,8 @@ REDÉMARRAGE
 
 ## Configuration
 
-```bash
-pzm config ram <value>        # Set RAM: 4g, 8g, 16g, 32g
-```
-
-Apply: `pzm server restart 5m`
+RAM is set automatically at install time (`-Xms2g` / `-Xmx` = half of physical
+RAM) and is not tunable via a command. See [ADVANCED.md](ADVANCED.md#ram-configuration).
 
 ## RCON
 
@@ -156,7 +153,6 @@ systemctl --user list-timers
 | Add player | `pzm whitelist add "Name" "SteamID64"` |
 | Manual backup | `pzm backup create` |
 | Send message | `pzm rcon servermsg "Text"` |
-| Increase RAM | `pzm config ram 16g` |
 
 ## Help
 

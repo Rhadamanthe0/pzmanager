@@ -386,26 +386,28 @@ MaxPlayers=16  # Instead of 32
 PauseEmpty=true
 ```
 
-### Java Heap Too Small
+### Java Heap Too Small (OutOfMemoryError)
+
+JVM args live in `ProjectZomboid64.json` (the `vmArgs` array), not in the
+systemd service. Edit the `-Xmx` value there:
 
 ```bash
-# Edit service
-nano ~/.config/systemd/user/zomboid.service
-
-# Modify under [Service]:
-Environment="JAVA_OPTS=-Xms4g -Xmx8g -XX:+UseZGC"
-
-# Reload
-systemctl --user daemon-reload
-pzm server restart 5m
+nano ~/pzmanager/data/pzserver/ProjectZomboid64.json
 ```
 
-### Optimize Garbage Collector
-
-For servers > 16 players, use ZGC:
-```bash
-Environment="JAVA_OPTS=-Xms4g -Xmx8g -XX:+UseZGC -XX:ZCollectionInterval=30"
+```jsonc
+// In "vmArgs": raise the ceiling, keep the floor at 2g.
+"-Xms2g",
+"-Xmx7g",   // half of RAM by default; raise only if the machine has the RAM
 ```
+
+Then restart: `pzm server restart 5m`.
+
+> ⚠️ Keep `-Xmx` ≤ ~half of physical RAM. PZ B42 modded uses 6-9 GB of native
+> memory *on top of* the Java heap; an `Xmx` close to total RAM will exhaust the
+> machine and trigger a brutal Linux OOM-kill instead of a clean Java OOM.
+> Do **not** add a cgroup `MemoryMax`/`MemoryHigh` — it throttles/crashes PZ at
+> the cap.
 
 ## Getting Help
 

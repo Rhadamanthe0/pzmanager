@@ -156,24 +156,29 @@ This document details **everything** modified on your system to ensure transpare
 {
   "vmArgs": [
     "-Djava.awt.headless=true",
-    "-Xmx8g",
-    "-Dzomboid.steam=1",
-    "-Dzomboid.znetlog=1",
     "-Djava.library.path=linux64/:natives/",
     "-Djava.security.egd=file:/dev/urandom",
+    "-XX:-OmitStackTraceInFastThrow",
+    "-Xms2g",
+    "-Xmx7g",
     "-XX:+UseZGC",
-    "-XX:-OmitStackTraceInFastThrow"
+    "-XX:+AlwaysPreTouch",
+    "-XX:ZCollectionInterval=5"
   ]
 }
 ```
 
 **Optimizations**:
-- **RAM**: 8GB by default (`-Xmx8g`)
-- **ZGC**: Modern Garbage Collector (`-XX:+UseZGC`)
-- **Headless**: No GUI
-- **Steam**: Steam integration enabled
+- **Heap floor**: `-Xms2g` — ZGC returns unused heap above 2 GB to the OS.
+- **Heap ceiling**: `-Xmx` = **half of physical RAM** (computed at install;
+  e.g. 7g on a 14 GiB machine). Real guardrail: clean Java OOM before the heap
+  starves PZ's native memory + the OS.
+- **ZGC**: Modern Garbage Collector (`-XX:+UseZGC`), 5s periodic cycle.
+- **Headless**: No GUI / **Steam**: integration enabled.
 
-**Modify RAM**: `pzm config ram <value>`
+**Modify RAM**: edit `Xmx` in `ProjectZomboid64.json` and restart. RAM is set at
+install time only — there is no `pzm config ram` command (and no cgroup
+`MemoryMax`, which used to throttle/crash the server).
 
 ### Server Data
 
@@ -423,7 +428,6 @@ RestartSec=5
 │   │   ├── triggerMaintenanceOnModUpdate.sh  # Auto-maintenance if mods or server need update
 │   │   ├── manageWhitelist.sh        # SQLite whitelist management
 │   │   ├── resetServer.sh            # Complete server reset
-│   │   ├── setram.sh                 # Server RAM configuration
 │   │   └── performFullMaintenance.sh # Automatic maintenance
 │   │
 │   ├── install/
