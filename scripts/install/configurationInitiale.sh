@@ -206,12 +206,11 @@ configure_zomboid_jvm() {
     # la RAM physique (garde-fou réel laissant la place au natif PZ + l'OS).
     # On ne pose AUCUN plafond cgroup (MemoryMax/MemoryHigh) : il throttle/OOM
     # PZ dès qu'il est atteint. Voir aussi data/setupTemplates/zomboid.service.
-    # Plancher heap fixe (Xms) ; le plafond (Xmx) ne peut jamais passer en dessous.
     local xms_gb=2
     local mem_kb xmx_gb
     mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
     xmx_gb=$(( mem_kb / 1024 / 1024 / 2 ))
-    (( xmx_gb < xms_gb )) && xmx_gb=$xms_gb
+    (( xmx_gb < xms_gb )) && xmx_gb=$xms_gb  # Xmx jamais sous le plancher Xms
 
     echo "Optimisation JVM (Xms ${xms_gb}g / Xmx ${xmx_gb}g = moitié RAM)..."
     cp "$json_file" "${json_file}.bak"

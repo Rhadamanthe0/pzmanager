@@ -14,6 +14,8 @@ ExecStartPost=-/bin/sh -c "%h/pzmanager/scripts/internal/notifyServerReady.sh &"
 ExecStop=/bin/sh -c "echo 'quit' > %h/pzmanager/data/pzserver/zomboid.control"
 KillSignal=SIGCONT
 TimeoutStopSec=30
+# Pas de MemoryMax (il throttle/OOM PZ au plafond) ; juste un petit tampon de
+# débordement en swap. Heap borné côté JVM via Xmx, voir configurationInitiale.sh.
 MemorySwapMax=1G
 
 [Install]
