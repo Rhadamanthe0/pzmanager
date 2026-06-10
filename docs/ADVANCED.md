@@ -4,9 +4,11 @@ Performance tuning and server reset procedures.
 
 ## RAM Configuration
 
-RAM is configured **once at install time** and is intentionally not tunable
-afterwards (no `pzm config ram` command). The installer sets, in
-`ProjectZomboid64.json`:
+RAM is configured by `scripts/internal/configureJvm.sh`, run at install time
+**and re-applied after every SteamCMD update** (the nightly maintenance runs
+`app_update ... validate`, which restores the vanilla `ProjectZomboid64.json`).
+It is intentionally not tunable via a command (no `pzm config ram`). It sets,
+in `ProjectZomboid64.json`:
 
 - `-Xms2g` — fixed heap floor (ZGC gives unused heap above this back to the OS).
 - `-Xmx<half of physical RAM>` — heap ceiling, e.g. 7g on a 14 GiB machine.
@@ -20,8 +22,9 @@ throttles/OOM-kills PZ the instant it touches the cap (this caused server
 crashes). The only cgroup limit is `MemorySwapMax=1G` in
 `data/setupTemplates/zomboid.service`, a small overflow buffer.
 
-To change `Xmx`, edit `ProjectZomboid64.json` directly (or re-run the
-installer's JVM step) and restart: `pzm server restart 5m`.
+To change `Xmx` durably, edit `scripts/internal/configureJvm.sh` (a manual
+edit of `ProjectZomboid64.json` would be overwritten by the next nightly
+maintenance), run it, then restart: `pzm server restart 5m`.
 
 ## RCON Commands
 

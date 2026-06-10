@@ -103,8 +103,9 @@ REDÉMARRAGE
 
 ## Configuration
 
-RAM is set automatically at install time (`-Xms2g` / `-Xmx` = half of physical
-RAM) and is not tunable via a command. See [ADVANCED.md](ADVANCED.md#ram-configuration).
+RAM is set automatically (`-Xms2g` / `-Xmx` = half of physical RAM) at install
+time and re-applied after every server update; it is not tunable via a command.
+See [ADVANCED.md](ADVANCED.md#ram-configuration).
 
 ## RCON
 

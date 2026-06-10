@@ -176,9 +176,12 @@ This document details **everything** modified on your system to ensure transpare
 - **ZGC**: Modern Garbage Collector (`-XX:+UseZGC`), 5s periodic cycle.
 - **Headless**: No GUI / **Steam**: integration enabled.
 
-**Modify RAM**: edit `Xmx` in `ProjectZomboid64.json` and restart. RAM is set at
-install time only — there is no `pzm config ram` command (and no cgroup
-`MemoryMax`, which used to throttle/crash the server).
+**Modify RAM**: edit `Xmx` in `scripts/internal/configureJvm.sh`, run it, and
+restart. This script applies the tuning at install time and re-applies it after
+every SteamCMD update (which restores the vanilla JSON) — a manual edit of
+`ProjectZomboid64.json` would not survive the nightly maintenance. There is no
+`pzm config ram` command (and no cgroup `MemoryMax`, which used to
+throttle/crash the server).
 
 ### Server Data
 
@@ -438,6 +441,7 @@ RestartSec=5
 │   │   ├── sendCommand.sh            # RCON with output capture
 │   │   ├── sendDiscord.sh            # Discord notifications
 │   │   ├── captureLogs.sh            # Journald log capture
+│   │   ├── configureJvm.sh           # JVM tuning (install + after each update)
 │   │   └── notifyServerReady.sh      # Server startup notification
 │   │
 │   └── logs/

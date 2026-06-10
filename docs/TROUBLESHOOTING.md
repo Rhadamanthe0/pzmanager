@@ -389,19 +389,17 @@ PauseEmpty=true
 ### Java Heap Too Small (OutOfMemoryError)
 
 JVM args live in `ProjectZomboid64.json` (the `vmArgs` array), not in the
-systemd service. Edit the `-Xmx` value there:
+systemd service. They are written by `scripts/internal/configureJvm.sh`, which
+re-applies them after every SteamCMD update — edit the script, not the JSON
+(a manual JSON edit is overwritten by the nightly maintenance):
 
 ```bash
-nano ~/pzmanager/data/pzserver/ProjectZomboid64.json
+nano ~/pzmanager/scripts/internal/configureJvm.sh
+# Adjust xms_gb / the xmx_gb computation (half of RAM by default),
+# then apply and restart:
+~/pzmanager/scripts/internal/configureJvm.sh
+pzm server restart 5m
 ```
-
-```jsonc
-// In "vmArgs": raise the ceiling, keep the floor at 2g.
-"-Xms2g",
-"-Xmx7g",   // half of RAM by default; raise only if the machine has the RAM
-```
-
-Then restart: `pzm server restart 5m`.
 
 > ⚠️ Keep `-Xmx` ≤ ~half of physical RAM. PZ B42 modded uses 6-9 GB of native
 > memory *on top of* the Java heap; an `Xmx` close to total RAM will exhaust the

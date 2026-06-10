@@ -101,6 +101,9 @@ update_game_server() {
 
     "${STEAMCMD_PATH}" +force_install_dir "${PZ_INSTALL_DIR}" +login anonymous \
         +app_update "${STEAM_APP_ID}" -beta "${STEAM_BETA_BRANCH}" validate +quit
+
+    # Le validate restaure le ProjectZomboid64.json vanilla : réappliquer le tuning
+    "${SCRIPT_DIR}/../internal/configureJvm.sh"
 }
 
 sync_external() {
