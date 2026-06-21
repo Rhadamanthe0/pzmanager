@@ -14,6 +14,7 @@
 - **Auto-maintenance** - Daily system/server updates at 4:30 AM
 - **Discord notifications** - Server status, mod updates, maintenance alerts
 - **Player warnings** - In-game countdown messages before restarts
+- **SteamID whitelist** - B42 access control (`Open=false`); auto-removes access of long-inactive players (keeps their character)
 
 ## Installation
 
@@ -58,8 +59,10 @@ nano ~/pzmanager/scripts/.env
 | [USAGE](docs/USAGE.md) | All commands explained |
 | [CONFIGURATION](docs/CONFIGURATION.md) | Environment variables |
 | [SERVER_CONFIG](docs/SERVER_CONFIG.md) | PZ server settings |
+| [ADVANCED](docs/ADVANCED.md) | RAM/JVM tuning & server reset |
 | [TROUBLESHOOTING](docs/TROUBLESHOOTING.md) | Common issues |
 | [WHAT_IS_INSTALLED](docs/WHAT_IS_INSTALLED.md) | Full system details |
+| [PROCEDURE_JOUEURS](docs/PROCEDURE_JOUEURS.md) | Player connection guide (FR) |
 
 ## License
 

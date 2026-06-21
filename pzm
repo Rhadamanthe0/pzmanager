@@ -27,9 +27,9 @@ Commandes disponibles:
     list               Lister backups disponibles
 
   whitelist <action> [arguments]
-    list               Lister utilisateurs whitelistés
-    add <nom> <id64>   Ajouter (Steam ID 64: 76561198XXXXXXXXX, max 2/ID)
-    remove <nom>       Retirer utilisateur par nom
+    list               Liste blanche SteamID + comptes + bannis
+    add <id64> [nom]   Autoriser un SteamID (Open=false ; serveur démarré requis)
+    remove <id64|nom> [--ban]  Retirer un SteamID (--ban = bannir définitivement)
     resetpassword <nom>  Reset mot de passe (nouveau mdp à la prochaine co)
     purge [durée]      Lister inactifs (3m, 60d... défaut: .env)
     purge <durée> --delete  Supprimer inactifs après confirmation
@@ -53,7 +53,7 @@ Exemples:
   pzm server start
   pzm server restart 5m
   pzm backup restore data/dataBackups/backup_2026-01-11_14h30m00s
-  pzm whitelist add "PlayerName" "76561198012345678"
+  pzm whitelist add "76561198012345678" "PlayerName"
   pzm admin reset --keep-config --keep-whitelist
   pzm rcon save
   pzm rcon servermsg "Message aux joueurs"
@@ -129,12 +129,12 @@ cmd_whitelist() {
     shift || true
 
     case "$action" in
-        list|add|remove|resetpassword|purge)
+        list|add|remove|resetpassword|purge|help)
             exec "${SCRIPT_DIR}/scripts/admin/manageWhitelist.sh" "$action" "$@"
             ;;
         *)
             echo "Erreur: Action whitelist invalide: $action"
-            echo "Actions: list, add, remove, resetpassword, purge"
+            echo "Actions: list, add, remove, resetpassword, purge, help"
             exit 1
             ;;
     esac

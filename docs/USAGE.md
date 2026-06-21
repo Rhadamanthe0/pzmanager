@@ -38,21 +38,32 @@ pzm backup restore data/dataBackups/backup_2026-01-12_14h14m00s
 
 ## Whitelist
 
+Build 42 (≥ 42.13.2) gates access by **SteamID** (`Open=false`): only SteamIDs in
+the allow-list can connect, and players pick their own password on first login.
+`add`/`remove` drive the server console, so **the server must be running**.
+
 ```bash
-pzm whitelist list                              # List users
-pzm whitelist add "Name" "76561198012345678"    # Add (Steam ID 64)
-pzm whitelist remove "Name"                     # Remove by username
-pzm whitelist purge                             # List inactive (default: WHITELIST_PURGE_DAYS)
-pzm whitelist purge 3m                          # List inactive 3+ months
-pzm whitelist purge 3m --delete                 # Delete inactive after confirmation
+pzm whitelist list                                  # Allowed SteamIDs + accounts + bans
+pzm whitelist add "76561198012345678" "Name"        # Authorize a SteamID (name optional)
+pzm whitelist remove "Name"                         # Remove access (by name or SteamID)
+pzm whitelist remove "76561198012345678" --ban      # Remove + permanent ban
+pzm whitelist resetpassword "Name"                  # Reset a player's password
+pzm whitelist purge                                 # List inactive (default: WHITELIST_PURGE_DAYS)
+pzm whitelist purge 3m                              # List inactive 3+ months
+pzm whitelist purge 3m --delete                     # Delete inactive after confirmation
 ```
+
+**Player onboarding**: see [PROCEDURE_JOUEURS](PROCEDURE_JOUEURS.md) (French) — the
+player sends their SteamID64, you authorize it, they connect and set their own password.
 
 **Notes**:
 - Steam ID 64: 17 digits starting with `7656119...` ([steamid.xyz](https://steamid.xyz/))
-- Each username must be unique
-- Max 2 accounts per Steam ID
+- `--ban` adds a permanent `banid` — the player can't return even renamed.
+- Access of accounts inactive ≥ `WHITELIST_PURGE_DAYS` (default 90) is **auto-removed**
+  nightly during maintenance (whitelist + SteamID); the **character is kept**, and the
+  built-in `admin` account is always spared.
+- `purge` here is the manual, interactive variant (lists/deletes `whitelist` rows only).
 - Purge: Xm (months) or Xd (days), default in .env
-- Purge exclut toujours l'utilisateur `admin`
 
 ## Administration
 

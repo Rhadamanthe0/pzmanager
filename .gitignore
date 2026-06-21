@@ -20,6 +20,7 @@ temp/
 .vscode/
 .vs/
 .claude/
+CLAUDE.md
 
 # OS files
 .DS_Store
