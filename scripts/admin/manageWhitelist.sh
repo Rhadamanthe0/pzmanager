@@ -1,28 +1,33 @@
 #!/bin/bash
 # ------------------------------------------------------------------------------
-# manageWhitelist.sh - Gestion de la whitelist du serveur
+# manageWhitelist.sh - Gestion de la whitelist du serveur (B42 par SteamID)
 # ------------------------------------------------------------------------------
 # Usage: ./manageWhitelist.sh <list|add|remove|resetpassword|purge> [arguments]
 #
+# Modèle B42 (>= 42.13.2) : le serveur tourne en Open=false et autorise les
+# joueurs via une LISTE BLANCHE DE STEAMID (table `allowedsteamid`). Le joueur
+# se connecte ensuite avec son pseudo et CHOISIT lui-même son mot de passe
+# (hashé en bcrypt par le serveur). On ne touche donc plus au mot de passe en
+# base : add/remove pilotent la console du serveur (addsteamid/removesteamid/
+# banid) via sendCommand.sh. Le serveur DOIT être démarré pour add/remove.
+#
 # Commandes:
-#   list                        - Afficher tous les utilisateurs whitelistés
-#   add <username> <steam64>    - Ajouter un utilisateur (Steam ID 64)
-#   remove <username>           - Retirer un utilisateur par son nom
-#   resetpassword <username>    - Reset le mot de passe d'un joueur
-#   purge [delay] [--delete]    - Lister/supprimer les comptes inactifs
+#   list                          - Afficher la liste blanche SteamID + comptes
+#   add <steamID64> [pseudo]      - Autoriser un SteamID (pseudo = info facultatif)
+#   remove <steamID64|pseudo> [--ban]  - Retirer un SteamID (--ban = bannir aussi)
+#   resetpassword <username>      - Reset le mot de passe d'un joueur
+#   purge [delay] [--delete]      - Lister/supprimer les comptes inactifs
 #
 # Exemples:
 #   ./manageWhitelist.sh list
-#   ./manageWhitelist.sh add "PlayerName" "76561198012345678"
+#   ./manageWhitelist.sh add "76561198012345678" "PlayerName"
 #   ./manageWhitelist.sh remove "PlayerName"
+#   ./manageWhitelist.sh remove "76561198012345678" --ban
 #   ./manageWhitelist.sh resetpassword "PlayerName"
-#   ./manageWhitelist.sh purge              # Inactifs depuis WHITELIST_PURGE_DAYS
-#   ./manageWhitelist.sh purge 3m           # Inactifs depuis 3 mois
-#   ./manageWhitelist.sh purge 3m --delete  # Supprime après confirmation
+#   ./manageWhitelist.sh purge 3m --delete
 #
 # Note: Utiliser Steam ID 64 (17 chiffres, commence par 7656119...)
 #       Trouver sur le profil Steam ou via https://steamid.xyz/
-#       Maximum 2 comptes autorisés par Steam ID
 # ------------------------------------------------------------------------------
 
 set -euo pipefail
@@ -33,6 +38,7 @@ source "${SCRIPT_DIR}/../lib/common.sh"
 source_env "${SCRIPT_DIR}/.."
 
 readonly DB_PATH="${PZ_SOURCE_DIR}/db/servertest.db"
+readonly SEND_COMMAND="${SCRIPT_DIR}/../internal/sendCommand.sh"
 readonly ACTION="${1:-}"
 
 check_sqlite() {
@@ -41,6 +47,28 @@ check_sqlite() {
 
 check_database() {
     [[ -f "$DB_PATH" ]] || die "Base de données introuvable: $DB_PATH"
+}
+
+# add/remove passent par la console : le serveur doit tourner (FIFO présente).
+require_server_running() {
+    [[ -p "${PZ_CONTROL_PIPE}" ]] || die "Le serveur doit être démarré pour gérer la whitelist SteamID.
+Pipe de contrôle absente: ${PZ_CONTROL_PIPE}
+Lancer le serveur: pzm server start"
+}
+
+run_console() {
+    "${SEND_COMMAND}" "$@"
+}
+
+validate_steamid() {
+    local steamid="$1"
+
+    # Steam ID 64 format: 17 chiffres commençant par 7656119
+    if [[ ! "$steamid" =~ ^7656119[0-9]{10}$ ]]; then
+        die "Steam ID invalide: $steamid
+Format attendu: Steam ID 64 (17 chiffres, ex: 76561198012345678)
+Trouver sur le profil Steam ou via https://steamid.xyz/"
+    fi
 }
 
 detect_schema() {
@@ -67,90 +95,120 @@ ensure_created_at_column() {
 }
 
 list_whitelist() {
-    echo "=== Whitelist du serveur ==="
+    echo "=== Liste blanche SteamID (autorisations d'accès) ==="
     echo ""
-
-    if ! sqlite3 -header -column "$DB_PATH" "SELECT $WHITELIST_COLUMNS FROM whitelist ORDER BY lastConnection DESC" 2>/dev/null; then
-        die "Impossible de lire la whitelist. La table existe-t-elle ?"
+    # `allowedsteamid` est la vraie barrière en Open=false. On joint la table
+    # whitelist pour afficher le pseudo/role si le joueur s'est déjà connecté.
+    if ! sqlite3 -header -column "$DB_PATH" \
+        "SELECT a.steamid AS steamid,
+                COALESCE(w.username, '(jamais connecté)') AS username,
+                w.role AS role,
+                w.lastConnection AS lastConnection
+         FROM allowedsteamid a
+         LEFT JOIN whitelist w ON w.steamid = a.steamid
+         ORDER BY w.lastConnection DESC" 2>/dev/null; then
+        echo "(table allowedsteamid illisible)"
     fi
+    local allowed_count
+    allowed_count=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM allowedsteamid" 2>/dev/null || echo "0")
+    echo ""
+    echo "Total: $allowed_count SteamID autorisé(s)"
 
     echo ""
-    local count=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist" 2>/dev/null || echo "0")
-    echo "Total: $count utilisateur(s) whitelisté(s)"
-}
+    echo "=== Comptes enregistrés (table whitelist) ==="
+    echo ""
+    sqlite3 -header -column "$DB_PATH" "SELECT $WHITELIST_COLUMNS FROM whitelist ORDER BY lastConnection DESC" 2>/dev/null || true
+    local count
+    count=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist" 2>/dev/null || echo "0")
+    echo ""
+    echo "Total: $count compte(s)"
 
-validate_steamid() {
-    local steamid="$1"
-
-    # Steam ID 64 format: 17 chiffres commençant par 7656119
-    if [[ ! "$steamid" =~ ^7656119[0-9]{10}$ ]]; then
-        die "Steam ID invalide: $steamid
-Format attendu: Steam ID 64 (17 chiffres, ex: 76561198012345678)
-Trouver sur le profil Steam ou via https://steamid.xyz/"
+    local banned_count
+    banned_count=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM bannedid" 2>/dev/null || echo "0")
+    if [[ "$banned_count" -gt 0 ]]; then
+        echo ""
+        echo "=== SteamID bannis ($banned_count) ==="
+        echo ""
+        sqlite3 -header -column "$DB_PATH" "SELECT steamid, reason FROM bannedid" 2>/dev/null || true
     fi
 }
 
 add_to_whitelist() {
-    local username="${1:-}"
-    local steamid="${2:-}"
+    # Arguments dans n'importe quel ordre : un SteamID64 (requis) + un pseudo
+    # (optionnel, purement informatif/loggé).
+    local steamid="" label="" a
+    for a in "$@"; do
+        if [[ "$a" =~ ^7656119[0-9]{10}$ ]]; then
+            steamid="$a"
+        elif [[ -n "$a" ]]; then
+            label="$a"
+        fi
+    done
 
-    [[ -n "$username" ]] || die "Usage: $0 add <username> <steam64>
-Exemple: $0 add \"PlayerName\" \"76561198012345678\""
-    [[ -n "$steamid" ]] || die "Usage: $0 add <username> <steam64>"
-
+    [[ -n "$steamid" ]] || die "Usage: $0 add <steamID64> [pseudo]
+Exemple: $0 add \"76561198012345678\" \"PlayerName\"
+Le SteamID64 fait 17 chiffres et commence par 7656119 (https://steamid.xyz/)."
     validate_steamid "$steamid"
 
-    # Vérifier limite de 2 comptes par steamid
-    local existing_steamid=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE steamid = '$steamid'" 2>/dev/null || echo "0")
-    if [[ "$existing_steamid" -ge 2 ]]; then
-        echo "⚠️  Steam ID a déjà 2 comptes (limite atteinte): $steamid"
-        sqlite3 -header -column "$DB_PATH" "SELECT $WHITELIST_COLUMNS FROM whitelist WHERE steamid = '$steamid'"
-        exit 1
-    elif [[ "$existing_steamid" -eq 1 ]]; then
-        echo "ℹ️  Steam ID a déjà 1 compte, ajout du 2ème:"
-        sqlite3 -header -column "$DB_PATH" "SELECT $WHITELIST_COLUMNS FROM whitelist WHERE steamid = '$steamid'"
-        echo ""
+    require_server_running
+
+    # Déjà autorisé ?
+    local already
+    already=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM allowedsteamid WHERE steamid = '$steamid'" 2>/dev/null || echo "0")
+    if [[ "$already" -ge 1 ]]; then
+        echo "ℹ️  SteamID déjà autorisé: $steamid"
+        exit 0
     fi
 
-    # Vérifier doublon sur username
-    local existing_username=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE username = '$username'" 2>/dev/null || echo "0")
-    if [[ "$existing_username" -gt 0 ]]; then
-        echo "⚠️  Username déjà whitelisté: $username"
-        sqlite3 -header -column "$DB_PATH" "SELECT $WHITELIST_COLUMNS FROM whitelist WHERE username = '$username'"
-        exit 1
-    fi
+    echo "Autorisation du SteamID sur le serveur..."
+    run_console addsteamid "$steamid"
 
-    # Ajouter l'utilisateur (role=2 = user, world='servertest' obligatoire)
-    sqlite3 "$DB_PATH" "INSERT INTO whitelist (world, username, steamid, role) VALUES ('servertest', '$username', '$steamid', 2);" || \
-        die "Échec de l'ajout à la whitelist"
-
-    echo "✓ Utilisateur ajouté à la whitelist:"
-    echo "  Nom: $username"
-    echo "  Steam ID 64: $steamid"
-    echo "  Créé le: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo ""
+    echo "✓ SteamID autorisé: $steamid${label:+  (joueur: $label)}"
+    echo "  Le joueur peut se connecter avec son pseudo et choisir SON mot de passe."
 }
 
 remove_from_whitelist() {
-    local username="${1:-}"
+    local do_ban=false identifier="" a
+    for a in "$@"; do
+        if [[ "$a" == "--ban" ]]; then
+            do_ban=true
+        elif [[ -n "$a" ]]; then
+            identifier="$a"
+        fi
+    done
 
-    [[ -n "$username" ]] || die "Usage: $0 remove <username>"
+    [[ -n "$identifier" ]] || die "Usage: $0 remove <steamID64|pseudo> [--ban]
+Exemple: $0 remove \"76561198012345678\" --ban"
 
-    # Vérifier si existe
-    local existing=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE username = '$username'" 2>/dev/null || echo "0")
+    require_server_running
 
-    if [[ "$existing" -eq 0 ]]; then
-        die "Aucun utilisateur trouvé: $username"
+    # Résoudre l'identifiant vers un SteamID (et un pseudo si connu).
+    local steamid="" username=""
+    if [[ "$identifier" =~ ^7656119[0-9]{10}$ ]]; then
+        steamid="$identifier"
+        username=$(sqlite3 "$DB_PATH" "SELECT username FROM whitelist WHERE steamid = '$steamid' LIMIT 1" 2>/dev/null || true)
+    else
+        username="$identifier"
+        steamid=$(sqlite3 "$DB_PATH" "SELECT steamid FROM whitelist WHERE username = '$username' LIMIT 1" 2>/dev/null || true)
+        [[ -n "$steamid" ]] || die "Aucun SteamID connu pour '$username' en base.
+Passe directement le SteamID64: $0 remove <steamID64> [--ban]"
+    fi
+    validate_steamid "$steamid"
+
+    echo "Retrait de l'autorisation du SteamID: $steamid${username:+  (joueur: $username)}"
+    run_console removesteamid "$steamid"
+
+    if [[ "$do_ban" == true ]]; then
+        echo ""
+        echo "Bannissement définitif du SteamID..."
+        run_console banid "$steamid"
+        echo "✓ SteamID banni: il ne pourra plus revenir, même renommé."
     fi
 
-    # Afficher avant suppression
-    echo "Utilisateur à retirer:"
-    sqlite3 -header -column "$DB_PATH" "SELECT $WHITELIST_COLUMNS FROM whitelist WHERE username = '$username'"
     echo ""
-
-    # Supprimer
-    sqlite3 "$DB_PATH" "DELETE FROM whitelist WHERE username = '$username';" || \
-        die "Échec de la suppression de la whitelist"
-    echo "✓ Utilisateur '$username' retiré de la whitelist"
+    echo "✓ SteamID retiré de la liste blanche: $steamid"
+    [[ "$do_ban" == false ]] && echo "  (Pour un bannissement définitif, relance avec --ban.)"
 }
 
 reset_password() {
@@ -159,7 +217,8 @@ reset_password() {
     [[ -n "$username" ]] || die "Usage: $0 resetpassword <username>"
 
     # Vérifier si existe
-    local existing=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE username = '$username'" 2>/dev/null || echo "0")
+    local existing
+    existing=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE username = '$username'" 2>/dev/null || echo "0")
 
     if [[ "$existing" -eq 0 ]]; then
         die "Aucun utilisateur trouvé: $username"
@@ -170,7 +229,7 @@ reset_password() {
     sqlite3 -header -column "$DB_PATH" "SELECT $WHITELIST_COLUMNS FROM whitelist WHERE username = '$username'"
     echo ""
 
-    # Vider le mot de passe
+    # Vider le mot de passe : le joueur en choisira un nouveau à la prochaine connexion.
     sqlite3 "$DB_PATH" "UPDATE whitelist SET password = '' WHERE username = '$username';" || \
         die "Échec du reset de mot de passe"
     echo "✓ Mot de passe de '$username' réinitialisé"
@@ -236,6 +295,8 @@ purge_whitelist() {
             sqlite3 "$DB_PATH" "DELETE FROM whitelist WHERE $where_clause;" || \
                 die "Échec de la suppression"
             echo "✓ $count compte(s) supprimé(s)"
+            echo "Note: cela supprime le compte, pas l'autorisation SteamID."
+            echo "      Pour bloquer le retour, utilise: $0 remove <steamID64> --ban"
         else
             echo "Suppression annulée."
         fi
@@ -244,34 +305,33 @@ purge_whitelist() {
 
 show_help() {
     cat <<HELPEOF
-Gestion de la whitelist du serveur Project Zomboid
+Gestion de la whitelist du serveur Project Zomboid (B42, par SteamID)
 
 Usage: $0 <commande> [arguments]
 
 Commandes:
-  list                        Afficher tous les utilisateurs whitelistés
-  add <username> <steam64>    Ajouter un utilisateur
-  remove <username>           Retirer un utilisateur par son nom
-  resetpassword <username>    Reset le mot de passe d'un joueur
-  purge [delay] [--delete]    Lister/supprimer les comptes inactifs
+  list                              Liste blanche SteamID + comptes + bannis
+  add <steamID64> [pseudo]          Autoriser un SteamID (serveur démarré requis)
+  remove <steamID64|pseudo> [--ban] Retirer un SteamID (--ban = bannir aussi)
+  resetpassword <username>          Reset le mot de passe d'un joueur
+  purge [delay] [--delete]          Lister/supprimer les comptes inactifs
 
 Exemples:
   $0 list
-  $0 add "PlayerName" "76561198012345678"
+  $0 add "76561198012345678" "PlayerName"
   $0 remove "PlayerName"
+  $0 remove "76561198012345678" --ban
   $0 resetpassword "PlayerName"
-  $0 purge                    # Inactifs depuis ${WHITELIST_PURGE_DAYS}j (défaut)
-  $0 purge 3m                 # Inactifs depuis 3 mois
-  $0 purge 3m --delete        # Supprime après confirmation
+  $0 purge                          # Inactifs depuis ${WHITELIST_PURGE_DAYS}j (défaut)
+  $0 purge 3m --delete              # Supprime après confirmation
 
 Notes:
-  - Steam ID requis: Steam ID 64 (17 chiffres, ex: 76561198012345678)
-  - Trouver sur le profil Steam ou via https://steamid.xyz/
-  - Maximum 2 comptes autorisés par Steam ID
-  - Chaque username doit être unique
-  - Délai purge par défaut: WHITELIST_PURGE_DAYS dans .env
-  - Délai purge: Xm (mois) ou Xj (jours)
-  - Purge exclut toujours l'utilisateur 'admin'
+  - Serveur en Open=false : seuls les SteamID autorisés peuvent se connecter.
+  - Le joueur choisit lui-même son mot de passe à la première connexion.
+  - add/remove pilotent la console du serveur -> le serveur doit être démarré.
+  - Steam ID 64 (17 chiffres, ex: 76561198012345678) via https://steamid.xyz/
+  - --ban ajoute un bannissement définitif (banid) : retour impossible même renommé.
+  - Délai purge: Xm (mois) ou Xj (jours) ; purge exclut toujours 'admin'.
 HELPEOF
 }
 
@@ -286,13 +346,11 @@ main() {
             ;;
         add)
             check_database
-            detect_schema
-            add_to_whitelist "${2:-}" "${3:-}"
+            add_to_whitelist "${@:2}"
             ;;
         remove)
             check_database
-            detect_schema
-            remove_from_whitelist "${*:2}"
+            remove_from_whitelist "${@:2}"
             ;;
         resetpassword)
             check_database
