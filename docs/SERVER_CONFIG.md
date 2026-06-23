@@ -79,7 +79,7 @@ pzm whitelist remove "PlayerName"
 
 **Purge inactive accounts**:
 ```bash
-pzm whitelist purge              # Default: WHITELIST_PURGE_DAYS (60j)
+pzm whitelist purge              # Default: WHITELIST_PURGE_DAYS (180j)
 pzm whitelist purge 3m           # List inactive 3+ months
 pzm whitelist purge 3m --delete  # Delete after confirmation
 ```
