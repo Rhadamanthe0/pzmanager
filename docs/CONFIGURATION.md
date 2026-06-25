@@ -85,10 +85,10 @@ export JAVA_PATH="/usr/lib/jvm/java-${JAVA_VERSION}-openjdk-amd64"
 ```bash
 export BACKUP_DIR="${PZ_DATA_DIR}/dataBackups"
 export BACKUP_LATEST_LINK="${BACKUP_DIR}/latest"
-export BACKUP_RETENTION_DAYS=30
+export BACKUP_RETENTION_DAYS=14
 ```
 
-**BACKUP_RETENTION_DAYS**: Number of days to keep (default: 30)
+**BACKUP_RETENTION_DAYS**: Number of days to keep (default: 14)
 
 ### External Synchronization
 
@@ -176,7 +176,7 @@ sudo ./scripts/install/configurationInitiale.sh restore ~/pzmanager/data/fullBac
 nano ~/pzmanager/scripts/.env
 
 # Modify
-export BACKUP_RETENTION_DAYS=14    # 14 days instead of 30
+export BACKUP_RETENTION_DAYS=7     # 7 days instead of the default 14
 export LOG_RETENTION_DAYS=14        # Logs 14 days
 ```
 
