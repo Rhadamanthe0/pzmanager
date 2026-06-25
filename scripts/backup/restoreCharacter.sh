@@ -3,21 +3,22 @@
 # restoreCharacter.sh - Restaurer LE PERSONNAGE d'un joueur depuis un backup
 # ------------------------------------------------------------------------------
 # Ré-injecte la ligne `networkPlayers` (le personnage multijoueur) d'un joueur
-# depuis un backup vers la base live `players.db`. Utile quand un perso a été
-# perdu/corrompu (ex: échec de chargement après un changement de mod) alors que
-# l'accès (whitelist) est intact.
+# depuis un backup DONNÉ vers la base live `players.db`. Utile quand un perso a
+# été perdu/corrompu (ex: échec de chargement après un changement de mod) alors
+# que l'accès (whitelist) est intact.
 #
 # Écrit dans players.db -> le serveur DOIT être arrêté (sinon la sauvegarde
 # auto du serveur écrase la modif et risque de corrompre la base).
 #
-# Par sécurité : un snapshot de la base live est fait avant toute écriture, et
-# on REFUSE d'écraser un perso déjà présent en live sauf --overwrite explicite.
+# Comportement : ÉCRASE toujours le perso live existant du joueur par celui du
+# backup. Pas de sauvegarde de sécurité ici : `pzm server stop` fait déjà une
+# sauvegarde complète juste avant l'arrêt (et le serveur doit être arrêté).
 #
-# Usage: ./restoreCharacter.sh <pseudo> [chemin_backup] [--overwrite] [--dry-run]
-#   <pseudo>        Username du joueur (table networkPlayers)
-#   [chemin_backup] Dossier backup (défaut: le plus récent data/dataBackups/backup_*)
-#   --overwrite     Remplacer le perso live existant (sinon refus si déjà présent)
-#   --dry-run       Montre ce qui serait fait sans rien modifier
+# Usage: ./restoreCharacter.sh <pseudo> <backup> [--dry-run]
+#   <pseudo>   Username du joueur (table networkPlayers)
+#   <backup>   Dossier de sauvegarde OBLIGATOIRE : nom (ex: backup_2026-06-23_23h15m29s)
+#              résolu sous ${BACKUP_DIR}, ou chemin complet
+#   --dry-run  Montre ce qui serait fait sans rien modifier
 # ------------------------------------------------------------------------------
 
 set -euo pipefail
@@ -30,38 +31,38 @@ command -v sqlite3 &>/dev/null || die "sqlite3 non installé."
 
 # --- Parsing des arguments --------------------------------------------------
 USERNAME=""
-BACKUP_PATH=""
-OVERWRITE=false
+BACKUP_ARG=""
 DRY_RUN=false
 for arg in "$@"; do
     case "$arg" in
-        --overwrite) OVERWRITE=true ;;
-        --dry-run)   DRY_RUN=true ;;
-        --*)         die "Option inconnue: $arg" ;;
+        --dry-run) DRY_RUN=true ;;
+        --*)       die "Option inconnue: $arg" ;;
         *)
             if [[ -z "$USERNAME" ]]; then USERNAME="$arg"
-            elif [[ -z "$BACKUP_PATH" ]]; then BACKUP_PATH="$arg"
+            elif [[ -z "$BACKUP_ARG" ]]; then BACKUP_ARG="$arg"
             else die "Argument en trop: $arg"
             fi
             ;;
     esac
 done
 
-[[ -n "$USERNAME" ]] || die "Usage: $0 <pseudo> [chemin_backup] [--overwrite] [--dry-run]"
+[[ -n "$USERNAME" && -n "$BACKUP_ARG" ]] || die "Usage: $0 <pseudo> <backup> [--dry-run]
+Le backup est OBLIGATOIRE : nom du dossier (ex: backup_2026-06-23_23h15m29s) ou chemin complet."
+
+# --- Résoudre le backup : nom sous ${BACKUP_DIR} OU chemin -------------------
+if [[ -d "$BACKUP_ARG" ]]; then
+    BACKUP_PATH="$BACKUP_ARG"
+elif [[ -d "${BACKUP_DIR}/${BACKUP_ARG}" ]]; then
+    BACKUP_PATH="${BACKUP_DIR}/${BACKUP_ARG}"
+else
+    die "Backup introuvable: '${BACKUP_ARG}' (ni un dossier, ni un nom sous ${BACKUP_DIR})."
+fi
 
 # --- Serveur arrêté obligatoire ---------------------------------------------
 if server_is_active; then
     die "Le serveur est actif : la restauration écrit dans players.db et doit se faire serveur arrêté.
 Arrête-le d'abord :  pzm server stop 2m --reason \"Restauration personnage\""
 fi
-
-# --- Résoudre le backup -----------------------------------------------------
-if [[ -z "$BACKUP_PATH" ]]; then
-    BACKUP_PATH=$(ls -1td "${BACKUP_DIR}/backup_"* 2>/dev/null | head -1)
-    [[ -n "$BACKUP_PATH" ]] || die "Aucun backup trouvé dans ${BACKUP_DIR}"
-    log "Backup utilisé (le plus récent) : $(basename "$BACKUP_PATH")"
-fi
-[[ -d "$BACKUP_PATH" ]] || die "Dossier backup introuvable: $BACKUP_PATH"
 
 # --- Localiser players.db (live + backup) -----------------------------------
 LIVE_DB=$(find "${PZ_SOURCE_DIR}/Saves/Multiplayer" -name 'players.db' 2>/dev/null | head -1)
@@ -90,34 +91,18 @@ log "=== Restauration du personnage '${USERNAME}' ==="
 log "Source : $(basename "$BACKUP_PATH")  (${in_backup} ligne(s))"
 show_char "$BK_DB"
 
-# --- Conflit avec un perso live existant ? ----------------------------------
-in_live=$(sqlite3 "$LIVE_DB" "SELECT COUNT(*) FROM networkPlayers WHERE username='${ESC_USER}';" 2>/dev/null || echo "0")
-if [[ "$in_live" -gt 0 && "$OVERWRITE" != true ]]; then
-    die "Un personnage '${USERNAME}' existe déjà en live (${in_live} ligne(s)).
-Pour le REMPLACER (écrase la progression actuelle), relance avec --overwrite."
-fi
-
 if [[ "$DRY_RUN" == true ]]; then
-    log "[dry-run] Live actuel: ${in_live} ligne(s). Aucune modification effectuée."
+    in_live=$(sqlite3 "$LIVE_DB" "SELECT COUNT(*) FROM networkPlayers WHERE username='${ESC_USER}';" 2>/dev/null || echo "0")
+    log "[dry-run] Remplacerait ${in_live} perso(s) live de '${USERNAME}' par celui du backup. Rien modifié."
     exit 0
 fi
 
-# --- Snapshot de sécurité de la base live -----------------------------------
-SNAP_DIR="${BACKUP_DIR}/character-restores"
-ensure_directory "$SNAP_DIR"
-SNAP="${SNAP_DIR}/players_$(date +'%Y-%m-%d_%Hh%Mm%S')_pre-${USERNAME//[^A-Za-z0-9]/_}.db"
-cp -f "$LIVE_DB" "$SNAP" && log "Snapshot live -> $SNAP"
-
-# --- Écriture : (optionnel) suppression puis ré-insertion -------------------
+# --- Écriture : on écrase le perso live existant puis on ré-insère ----------
 # On copie toutes les colonnes SAUF id (PK auto-assignée pour éviter les
 # collisions) : le jeu identifie le perso par username/steamid, pas par cet id.
-DELETE_SQL=""
-if [[ "$OVERWRITE" == true ]]; then
-    DELETE_SQL="DELETE FROM networkPlayers WHERE username='${ESC_USER}';"
-fi
 sqlite3 "$LIVE_DB" <<SQL
 ATTACH DATABASE '$(sql_escape "$BK_DB")' AS bk;
-${DELETE_SQL}
+DELETE FROM networkPlayers WHERE username='${ESC_USER}';
 INSERT INTO networkPlayers (world,username,playerIndex,name,steamid,x,y,z,worldversion,data,isDead)
 SELECT world,username,playerIndex,name,steamid,x,y,z,worldversion,data,isDead
 FROM bk.networkPlayers WHERE username='${ESC_USER}';

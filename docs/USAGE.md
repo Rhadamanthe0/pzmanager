@@ -28,13 +28,27 @@ pzm rcon servermsg "Message to players"
 pzm backup create             # Incremental backup
 pzm backup full               # Complete backup
 pzm backup list               # List backups
-pzm backup restore <path>     # Restore from backup
+pzm backup restore <path>     # Restore ALL data from a backup
+pzm backup restore-character <name> <backup>   # Restore ONE player's character (overwrites existing)
 ```
 
 Example:
 ```bash
 pzm backup restore data/dataBackups/backup_2026-01-12_14h14m00s
 ```
+
+**Restore a single character** (e.g. a player lost their character after a mod
+change while their whitelist access is intact — no full-world rollback needed):
+```bash
+pzm server stop 2m --reason "Restauration perso"   # server MUST be stopped (the stop already makes a backup)
+pzm backup restore-character Snardat backup_2026-06-23_23h15m29s
+pzm server start
+```
+- `<name>`: the player's username (case-sensitive).
+- `<backup>`: **required** — the backup folder name (resolved under `data/dataBackups/`)
+  or a full path. Use a specific backup from **before** the incident.
+- The player's current character is **overwritten** by the one from the backup. No extra
+  snapshot is taken — `pzm server stop` already backs up before stopping.
 
 ## Whitelist
 

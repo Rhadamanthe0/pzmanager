@@ -195,6 +195,26 @@ Options are combinable.
 
 Complete documentation: [ADVANCED.md - Complete Server Reset](ADVANCED.md#complete-server-reset)
 
+## Player Character Won't Load
+
+Symptom: a player connects and is told *"the server cannot load player data"* / asked
+to **recreate** a character. This is usually a **load** failure (the character is still
+in `players.db`), most often after a mod that adds character data was removed — see the
+mod gotcha in [CLAUDE.md](../CLAUDE.md). First, restore the missing mod and restart.
+
+If the character row was actually lost/overwritten, restore just that one character
+from a backup (no full-world rollback):
+
+```bash
+pzm server stop 2m --reason "Restauration perso"   # server MUST be stopped
+pzm backup restore-character <name> backup_YYYY-MM-DD_HHhMMmSSs
+pzm server start
+```
+
+`<backup>` is required (the folder name under `data/dataBackups/`, or a full path). The
+player's current character is **overwritten** by the backup's; the stop already makes a
+backup, so you can roll back if needed. See [USAGE.md](USAGE.md#backups).
+
 ## Backups Not Working
 
 ### Check Timers
