@@ -43,11 +43,9 @@ done
 command -v sqlite3 &>/dev/null || die "sqlite3 non installé."
 [[ -f "$DB_PATH" ]] || { log "Base introuvable: $DB_PATH (purge ignorée)"; exit 0; }
 
-# Échappe une chaîne pour une string SQL (double les apostrophes)
-sql_escape() { printf "%s" "${1//\'/\'\'}"; }
-
 # Refuser si le serveur tourne (écriture DB live dangereuse), sauf --force.
-if [[ "$FORCE" != true ]] && systemctl --user is-active --quiet "${PZ_SERVICE_NAME}" 2>/dev/null; then
+# (sql_escape et server_is_active viennent de lib/common.sh)
+if [[ "$FORCE" != true ]] && server_is_active; then
     die "Le serveur est actif : la purge écrit dans servertest.db et doit se faire serveur arrêté.
 Lance-la pendant la maintenance, ou utilise --force en connaissance de cause."
 fi

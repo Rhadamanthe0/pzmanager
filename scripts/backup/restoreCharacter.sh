@@ -50,32 +50,34 @@ done
 [[ -n "$USERNAME" ]] || die "Usage: $0 <pseudo> [chemin_backup] [--overwrite] [--dry-run]"
 
 # --- Serveur arrêté obligatoire ---------------------------------------------
-if systemctl --user is-active --quiet "${PZ_SERVICE_NAME}" 2>/dev/null; then
+if server_is_active; then
     die "Le serveur est actif : la restauration écrit dans players.db et doit se faire serveur arrêté.
 Arrête-le d'abord :  pzm server stop 2m --reason \"Restauration personnage\""
 fi
 
 # --- Résoudre le backup -----------------------------------------------------
 if [[ -z "$BACKUP_PATH" ]]; then
-    BACKUP_PATH=$(ls -1td "${BACKUP_DIR}/backup_"* 2>/dev/null | head -1) \
-        || die "Aucun backup trouvé dans ${BACKUP_DIR}"
+    BACKUP_PATH=$(ls -1td "${BACKUP_DIR}/backup_"* 2>/dev/null | head -1)
     [[ -n "$BACKUP_PATH" ]] || die "Aucun backup trouvé dans ${BACKUP_DIR}"
     log "Backup utilisé (le plus récent) : $(basename "$BACKUP_PATH")"
 fi
 [[ -d "$BACKUP_PATH" ]] || die "Dossier backup introuvable: $BACKUP_PATH"
 
 # --- Localiser players.db (live + backup) -----------------------------------
-LIVE_DB=$(find "${PZ_SOURCE_DIR}/Saves/Multiplayer" -name 'players.db' 2>/dev/null | head -1) \
-    || true
-[[ -n "$LIVE_DB" && -f "$LIVE_DB" ]] || die "players.db live introuvable sous ${PZ_SOURCE_DIR}/Saves/Multiplayer"
+LIVE_DB=$(find "${PZ_SOURCE_DIR}/Saves/Multiplayer" -name 'players.db' 2>/dev/null | head -1)
+[[ -f "$LIVE_DB" ]] || die "players.db live introuvable sous ${PZ_SOURCE_DIR}/Saves/Multiplayer"
 
-BK_DB=$(find "${BACKUP_PATH}/Saves/Multiplayer" -name 'players.db' 2>/dev/null | head -1) \
-    || true
-[[ -n "$BK_DB" && -f "$BK_DB" ]] || die "players.db introuvable dans le backup: ${BACKUP_PATH}/Saves/Multiplayer"
+BK_DB=$(find "${BACKUP_PATH}/Saves/Multiplayer" -name 'players.db' 2>/dev/null | head -1)
+[[ -f "$BK_DB" ]] || die "players.db introuvable dans le backup: ${BACKUP_PATH}/Saves/Multiplayer"
 
-# Échappe une chaîne pour une string SQL (double les apostrophes)
-sql_escape() { printf "%s" "${1//\'/\'\'}"; }
+# sql_escape vient de lib/common.sh
 ESC_USER="$(sql_escape "$USERNAME")"
+
+# Affiche le(s) perso(s) du joueur (table networkPlayers) dans la base donnée.
+show_char() {
+    sqlite3 -header -column "$1" \
+        "SELECT id, username, name, steamid, isDead, length(data) AS datalen FROM networkPlayers WHERE username='${ESC_USER}';" 2>/dev/null || true
+}
 
 # --- Le perso existe-t-il dans le backup ? ----------------------------------
 in_backup=$(sqlite3 "$BK_DB" "SELECT COUNT(*) FROM networkPlayers WHERE username='${ESC_USER}';" 2>/dev/null || echo "0")
@@ -86,8 +88,7 @@ fi
 
 log "=== Restauration du personnage '${USERNAME}' ==="
 log "Source : $(basename "$BACKUP_PATH")  (${in_backup} ligne(s))"
-sqlite3 -header -column "$BK_DB" \
-    "SELECT id, username, name, steamid, isDead, length(data) AS datalen FROM networkPlayers WHERE username='${ESC_USER}';" 2>/dev/null || true
+show_char "$BK_DB"
 
 # --- Conflit avec un perso live existant ? ----------------------------------
 in_live=$(sqlite3 "$LIVE_DB" "SELECT COUNT(*) FROM networkPlayers WHERE username='${ESC_USER}';" 2>/dev/null || echo "0")
@@ -110,9 +111,13 @@ cp -f "$LIVE_DB" "$SNAP" && log "Snapshot live -> $SNAP"
 # --- Écriture : (optionnel) suppression puis ré-insertion -------------------
 # On copie toutes les colonnes SAUF id (PK auto-assignée pour éviter les
 # collisions) : le jeu identifie le perso par username/steamid, pas par cet id.
+DELETE_SQL=""
+if [[ "$OVERWRITE" == true ]]; then
+    DELETE_SQL="DELETE FROM networkPlayers WHERE username='${ESC_USER}';"
+fi
 sqlite3 "$LIVE_DB" <<SQL
 ATTACH DATABASE '$(sql_escape "$BK_DB")' AS bk;
-$( [[ "$OVERWRITE" == true ]] && echo "DELETE FROM networkPlayers WHERE username='${ESC_USER}';" )
+${DELETE_SQL}
 INSERT INTO networkPlayers (world,username,playerIndex,name,steamid,x,y,z,worldversion,data,isDead)
 SELECT world,username,playerIndex,name,steamid,x,y,z,worldversion,data,isDead
 FROM bk.networkPlayers WHERE username='${ESC_USER}';
@@ -121,13 +126,6 @@ SQL
 
 # --- Vérification -----------------------------------------------------------
 log "=== Personnage restauré (état live) ==="
-sqlite3 -header -column "$LIVE_DB" \
-    "SELECT id, username, name, steamid, isDead, length(data) AS datalen FROM networkPlayers WHERE username='${ESC_USER}';"
+show_char "$LIVE_DB"
 
 log "OK. Redémarre le serveur : pzm server start"
-
-# Notification Discord (non bloquant)
-if [[ -x "${SCRIPT_DIR}/../internal/sendDiscord.sh" ]]; then
-    "${SCRIPT_DIR}/../internal/sendDiscord.sh" \
-        "♻️ Personnage restauré : ${USERNAME} (depuis $(basename "$BACKUP_PATH"))." || true
-fi

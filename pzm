@@ -101,7 +101,7 @@ cmd_backup() {
             fi
             exec "${SCRIPT_DIR}/scripts/backup/restoreZomboidData.sh" "$@"
             ;;
-        restore-character|restorecharacter|restore-char)
+        restore-character)
             if [[ $# -eq 0 ]]; then
                 echo "Erreur: pseudo requis"
                 echo "Usage: pzm backup restore-character <pseudo> [chemin_backup] [--overwrite]"
