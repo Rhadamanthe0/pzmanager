@@ -43,11 +43,9 @@ done
 command -v sqlite3 &>/dev/null || die "sqlite3 non installé."
 [[ -f "$DB_PATH" ]] || { log "Base introuvable: $DB_PATH (purge ignorée)"; exit 0; }
 
-# Échappe une chaîne pour une string SQL (double les apostrophes)
-sql_escape() { printf "%s" "${1//\'/\'\'}"; }
-
 # Refuser si le serveur tourne (écriture DB live dangereuse), sauf --force.
-if [[ "$FORCE" != true ]] && systemctl --user is-active --quiet "${PZ_SERVICE_NAME}" 2>/dev/null; then
+# (sql_escape et server_is_active viennent de lib/common.sh)
+if [[ "$FORCE" != true ]] && server_is_active; then
     die "Le serveur est actif : la purge écrit dans servertest.db et doit se faire serveur arrêté.
 Lance-la pendant la maintenance, ou utilise --force en connaissance de cause."
 fi
@@ -56,7 +54,7 @@ fi
 HAS_CREATED_AT=false
 sqlite3 "$DB_PATH" "PRAGMA table_info(whitelist)" 2>/dev/null | grep -q '|created_at|' && HAS_CREATED_AT=true
 
-readonly DAYS="${WHITELIST_PURGE_DAYS:-180}"
+readonly DAYS="${WHITELIST_PURGE_DAYS:-90}"
 
 # Comptes inactifs : jamais connectés (et créés il y a > DAYS) OU dernière
 # connexion > DAYS. Le compte 'admin' interne est toujours exclu.

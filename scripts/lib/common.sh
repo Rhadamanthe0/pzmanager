@@ -44,6 +44,15 @@ ensure_directory() {
     [[ -d "$dir" ]] || mkdir -p "$dir" || die "Impossible de créer le répertoire: $dir"
 }
 
+# Échappe une chaîne pour une string SQL sqlite3 (double les apostrophes)
+sql_escape() { printf "%s" "${1//\'/\'\'}"; }
+
+# Vrai (code 0) si le service serveur Zomboid tourne actuellement.
+# Requiert que source_env ait été appelé (PZ_SERVICE_NAME).
+server_is_active() {
+    systemctl --user is-active --quiet "${PZ_SERVICE_NAME}" 2>/dev/null
+}
+
 # Acquire maintenance lock (non-blocking, shared between pz.sh/modcheck/maintenance)
 # Usage: try_acquire_maintenance_lock [lock_file] [max_age_seconds]
 # Returns: 0 if acquired, 1 if already held

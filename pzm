@@ -24,6 +24,7 @@ Commandes disponibles:
     create             Backup incrémental horaire
     full               Backup complet avec sync
     restore <chemin>   Restaurer données Zomboid
+    restore-character <pseudo> <backup>   Restaurer le perso d'un joueur (serveur arrêté ; écrase l'existant)
     list               Lister backups disponibles
 
   whitelist <action> [arguments]
@@ -100,6 +101,14 @@ cmd_backup() {
             fi
             exec "${SCRIPT_DIR}/scripts/backup/restoreZomboidData.sh" "$@"
             ;;
+        restore-character)
+            if [[ $# -lt 2 ]]; then
+                echo "Erreur: pseudo et backup requis"
+                echo "Usage: pzm backup restore-character <pseudo> <backup>"
+                exit 1
+            fi
+            exec "${SCRIPT_DIR}/scripts/backup/restoreCharacter.sh" "$@"
+            ;;
         list)
             echo "=== Backups incrémentiaux (30j rétention) ==="
             if [[ -d "${SCRIPT_DIR}/data/dataBackups" ]]; then
@@ -117,7 +126,7 @@ cmd_backup() {
             ;;
         *)
             echo "Erreur: Action backup invalide: $action"
-            echo "Actions: create, full, restore, list"
+            echo "Actions: create, full, restore, restore-character, list"
             exit 1
             ;;
     esac

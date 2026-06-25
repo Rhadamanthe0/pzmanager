@@ -548,7 +548,7 @@ STEAM_BETA_BRANCH="unstable"
 ```bash
 BACKUP_DIR="${PZ_HOME}/data/dataBackups"
 BACKUP_LATEST_LINK="${BACKUP_DIR}/latest"
-BACKUP_RETENTION_DAYS="30"
+BACKUP_RETENTION_DAYS="14"
 FULL_BACKUP_DIR="${PZ_HOME}/data/fullBackups"
 ```
 
