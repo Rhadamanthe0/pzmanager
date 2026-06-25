@@ -97,16 +97,19 @@ ensure_created_at_column() {
 list_whitelist() {
     echo "=== Liste blanche SteamID (autorisations d'accès) ==="
     echo ""
-    # `allowedsteamid` est la vraie barrière en Open=false. On joint la table
-    # whitelist pour afficher le pseudo/role si le joueur s'est déjà connecté.
+    # `allowedsteamid` est la vraie barrière en Open=false : UNE ligne par SteamID
+    # autorisé. Un même SteamID peut porter plusieurs comptes (B42 autorise 2
+    # comptes/SteamID) -> on REGROUPE par SteamID (GROUP BY) et on concatène les
+    # pseudos, sinon le LEFT JOIN démultiplie les lignes et le nombre affiché ne
+    # correspond plus au total d'autorisations.
     if ! sqlite3 -header -column "$DB_PATH" \
         "SELECT a.steamid AS steamid,
-                COALESCE(w.username, '(jamais connecté)') AS username,
-                w.role AS role,
-                w.lastConnection AS lastConnection
+                COALESCE(GROUP_CONCAT(w.username, ', '), '(jamais connecté)') AS comptes,
+                MAX(w.lastConnection) AS derniere_connexion
          FROM allowedsteamid a
          LEFT JOIN whitelist w ON w.steamid = a.steamid
-         ORDER BY w.lastConnection DESC" 2>/dev/null; then
+         GROUP BY a.steamid
+         ORDER BY derniere_connexion DESC" 2>/dev/null; then
         echo "(table allowedsteamid illisible)"
     fi
     local allowed_count
