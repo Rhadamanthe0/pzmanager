@@ -56,7 +56,7 @@ fi
 HAS_CREATED_AT=false
 sqlite3 "$DB_PATH" "PRAGMA table_info(whitelist)" 2>/dev/null | grep -q '|created_at|' && HAS_CREATED_AT=true
 
-readonly DAYS="${WHITELIST_PURGE_DAYS:-180}"
+readonly DAYS="${WHITELIST_PURGE_DAYS:-90}"
 
 # Comptes inactifs : jamais connectés (et créés il y a > DAYS) OU dernière
 # connexion > DAYS. Le compte 'admin' interne est toujours exclu.

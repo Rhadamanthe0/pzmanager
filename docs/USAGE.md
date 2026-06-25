@@ -59,7 +59,7 @@ player sends their SteamID64, you authorize it, they connect and set their own p
 **Notes**:
 - Steam ID 64: 17 digits starting with `7656119...` ([steamid.xyz](https://steamid.xyz/))
 - `--ban` adds a permanent `banid` — the player can't return even renamed.
-- Access of accounts inactive ≥ `WHITELIST_PURGE_DAYS` (default 180) is **auto-removed**
+- Access of accounts inactive ≥ `WHITELIST_PURGE_DAYS` (default 90) is **auto-removed**
   nightly during maintenance (whitelist + SteamID); the **character is kept**, and the
   built-in `admin` account is always spared.
 - `purge` here is the manual, interactive variant (lists/deletes `whitelist` rows only).
