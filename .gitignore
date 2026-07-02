@@ -4,6 +4,10 @@
 # Operational logs (757 files)
 scripts/logs/
 
+# Discord bot Python venv (local, volumineux)
+scripts/discord/.venv/
+scripts/discord/__pycache__/
+
 # Backup directories (very large)
 data/dataBackups/
 data/fullBackups/

@@ -123,6 +123,20 @@ export DISCORD_WEBHOOK=""
 
 Leave empty to disable. See [Discord Integration](#discord-integration).
 
+### Discord Command Bot (Optional)
+
+```bash
+export DISCORD_BOT_TOKEN=""            # bot token (secret)
+export DISCORD_BOT_GUILD_ID=""         # server ID (instant command sync)
+export DISCORD_BOT_CHANNEL_ID=""       # allowed channel ID(s), comma-separated
+export DISCORD_BOT_ADMIN_ROLE_ID=""    # role allowed to run commands
+export DISCORD_BOT_CMD_TIMEOUT=2400    # per-command timeout (seconds)
+```
+
+Runs `pzm` commands from Discord via `/pzm …` slash commands. Leave
+`DISCORD_BOT_TOKEN` empty to keep it disabled. Install with `pzm install discord`.
+Full guide: [DISCORD_BOT.md](DISCORD_BOT.md).
+
 ## Backups Configuration
 
 ### Hourly Backups

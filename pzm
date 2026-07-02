@@ -45,10 +45,12 @@ Commandes disponibles:
   install <action>
     system             Configuration système initiale
     zomboid            Installer serveur Project Zomboid
+    discord            Installer/activer le bot Discord (slash /pzm)
 
   rcon <cmd> [args]    Envoyer commande RCON au serveur
 
-  discord <message>    Envoyer message sur Discord
+  discord <message>    Envoyer message sur Discord (webhook)
+                       Bot de commandes /pzm : voir 'pzm install discord'
 
 Exemples:
   pzm server start
@@ -181,9 +183,12 @@ cmd_install() {
         zomboid)
             exec sudo "${SCRIPT_DIR}/scripts/install/configurationInitiale.sh" zomboid
             ;;
+        discord)
+            exec "${SCRIPT_DIR}/scripts/install/setupDiscordBot.sh"
+            ;;
         *)
             echo "Erreur: Action install invalide: $action"
-            echo "Actions: system, zomboid"
+            echo "Actions: system, zomboid, discord"
             exit 1
             ;;
     esac
