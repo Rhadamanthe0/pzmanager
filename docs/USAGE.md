@@ -150,10 +150,20 @@ pzm rcon setaccesslevel "Name" admin    # Set player access level
 ## Discord
 
 ```bash
-pzm discord "message"         # Send Discord notification
+pzm discord "message"         # Send Discord notification (outbound webhook)
 ```
 
 Requires `DISCORD_WEBHOOK` in `scripts/.env`
+
+### Command bot (run pzm from Discord)
+
+```bash
+pzm install discord           # install/enable the /pzm slash-command bot
+```
+
+Lets authorized users run `pzm` from Discord via `/pzm server …`, `/pzm backup …`,
+`/pzm rcon …`, etc. Requires the `DISCORD_BOT_*` variables in `scripts/.env`.
+See [DISCORD_BOT.md](DISCORD_BOT.md).
 
 ## Automations
 

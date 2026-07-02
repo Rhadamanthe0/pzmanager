@@ -51,6 +51,9 @@ nano ~/pzmanager/scripts/.env
 # Add: DISCORD_WEBHOOK="https://discord.com/api/webhooks/..."
 ```
 
+Want to run `pzm` **from** Discord (`/pzm server …`, `/pzm rcon …`)? Set up the
+command bot: [docs/DISCORD_BOT.md](docs/DISCORD_BOT.md).
+
 ## Documentation
 
 | Guide | Description |
@@ -58,6 +61,7 @@ nano ~/pzmanager/scripts/.env
 | [QUICKSTART](docs/QUICKSTART.md) | 10-minute setup guide |
 | [USAGE](docs/USAGE.md) | All commands explained |
 | [CONFIGURATION](docs/CONFIGURATION.md) | Environment variables |
+| [DISCORD_BOT](docs/DISCORD_BOT.md) | Run pzm from Discord (/pzm bot) |
 | [SERVER_CONFIG](docs/SERVER_CONFIG.md) | PZ server settings |
 | [ADVANCED](docs/ADVANCED.md) | RAM/JVM tuning & server reset |
 | [TROUBLESHOOTING](docs/TROUBLESHOOTING.md) | Common issues |

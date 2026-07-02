@@ -1,0 +1,16 @@
+[Unit]
+Description=Project Zomboid - Discord Bot (pzm)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/pzmanager
+ExecStart=%h/pzmanager/scripts/discord/run-bot.sh
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
