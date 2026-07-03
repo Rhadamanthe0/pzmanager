@@ -160,7 +160,8 @@ async def execute(interaction: discord.Interaction, args: list[str]):
 # Un message dont CHAQUE ligne utile est `pzm <commande> …` est exécuté ligne par
 # ligne (séquentiel, même lock que les slash commands), le message source est
 # supprimé, et un unique récap est posté. Un seul `pzm …` non reconnu -> tout le
-# lot est annulé (rien n'est exécuté ni supprimé) pour éviter les mauvaises surprises.
+# lot est rejeté (rien n'est exécuté) : le message source est supprimé et le bot
+# poste la/les ligne(s) fautive(s) avec `pzm help` en pièce jointe.
 
 def parse_pzm_line(line: str) -> Optional[list[str]]:
     """argv (sans le préfixe) si la ligne est `pzm|/pzm <commande connue> …`,
@@ -177,11 +178,11 @@ def parse_pzm_line(line: str) -> Optional[list[str]]:
     return rest
 
 
-def parse_batch(text: str) -> tuple[Optional[list[list[str]]], Optional[str]]:
+def parse_batch(text: str) -> tuple[Optional[list[list[str]]], Optional[list[tuple[int, str]]]]:
     """Analyse un message collé et retourne :
-      (batch, None)         si TOUTES les lignes utiles sont des commandes pzm ;
-      (None, avertissement) si certaines seulement le sont (typo -> on annule) ;
-      (None, None)          si aucune (bavardage normal -> on ignore).
+      (batch, None)  si TOUTES les lignes utiles sont des commandes pzm ;
+      (None, bad)    si certaines seulement le sont (typo -> [(num, texte), …]) ;
+      (None, None)   si aucune (bavardage normal -> on ignore).
     Les lignes vides et celles commençant par '#' sont ignorées."""
     content = [s for raw in text.splitlines()
                if (s := raw.strip()) and not s.startswith("#")]
@@ -190,13 +191,38 @@ def parse_batch(text: str) -> tuple[Optional[list[list[str]]], Optional[str]]:
     parsed = [parse_pzm_line(l) for l in content]
     if all(p is None for p in parsed):
         return None, None
-    bad = [i for i, p in enumerate(parsed, 1) if p is None]
+    bad = [(i, content[i - 1]) for i, p in enumerate(parsed, 1) if p is None]
     if bad:
-        nums = ", ".join(map(str, bad))
-        return None, (f"⚠️ Lot ignoré : ligne(s) {nums} non reconnue(s) "
-                      f"(attendu `pzm <commande> …`). Rien n'a été exécuté "
-                      f"ni supprimé — corrige puis renvoie.")
+        return None, bad
     return parsed, None
+
+
+async def reject_batch(message: discord.Message, bad: list[tuple[int, str]]):
+    """Commande(s) collée(s) non reconnue(s) : supprime le message source, indique
+    la/les ligne(s) fautive(s) et joint `pzm help` en pièce jointe. Rien n'est exécuté."""
+    channel = message.channel
+    author = message.author
+    log.info("REJET batch user=%s channel=%s bad=%r",
+             author, channel.id, [n for n, _ in bad])
+
+    note = ""
+    try:
+        await message.delete()
+    except discord.Forbidden:
+        note = " (⚠️ permission « Gérer les messages » manquante : message non supprimé)"
+    except discord.NotFound:
+        pass
+
+    detail = "\n".join(f"{n}. {txt}" for n, txt in bad)
+    header = (f"⛔ Commande non reconnue ({author.mention}){note} — rien n'a été exécuté.\n"
+              f"Ligne(s) invalide(s) (attendu `pzm <commande> …`) :\n```\n{detail}\n```\n"
+              f"Voir l'aide `pzm help` en pièce jointe.")
+    if len(header) > DISCORD_MAX:
+        header = header[:DISCORD_MAX - 1] + "…"
+    _, help_out = await run_pzm(["help"])
+    file = discord.File(io.BytesIO((help_out.rstrip() or "(aucune sortie)").encode("utf-8")),
+                        filename="pzm-help.txt")
+    await channel.send(header, file=file)
 
 
 async def run_batch(message: discord.Message, batch: list[list[str]]):
@@ -479,15 +505,15 @@ async def on_message(message: discord.Message):
         return
     if message.channel.id not in ALLOWED_CHANNELS:
         return
-    batch, warn = parse_batch(message.content)
-    if batch is None and warn is None:
+    batch, bad = parse_batch(message.content)
+    if batch is None and bad is None:
         return  # bavardage normal -> on ne touche à rien
     if not has_admin_role(message.author):
         log.info("REFUSÉ batch user=%s channel=%s (rôle manquant)",
                  message.author, message.channel.id)
         return
-    if warn:
-        await message.reply(warn)
+    if bad:
+        await reject_batch(message, bad)
         return
     await run_batch(message, batch)
 
