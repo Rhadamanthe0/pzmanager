@@ -225,13 +225,13 @@ async def reject_batch(message: discord.Message, bad: list[tuple[int, str]]):
     await channel.send(header, file=file)
 
 
-async def run_batch(message: discord.Message, batch: list[list[str]]):
-    """Exécute séquentiellement chaque commande, supprime le message source et
-    poste un récap unique (inline, ou en pièce jointe si trop long)."""
+async def _dispatch_pasted(message: discord.Message, label: str, work):
+    """Scaffold commun aux messages collés : supprime la source, affiche un statut
+    (file d'attente FIFO puis « en cours »), sérialise sur run_lock, puis appelle
+    `work(channel, author)` (qui lance pzm ET poste le résultat) une fois le verrou
+    acquis. Retire le statut à la fin, quoi qu'il arrive."""
     channel = message.channel
     author = message.author
-    n = len(batch)
-    log.info("EXEC BATCH user=%s channel=%s n=%d", author, channel.id, n)
 
     note = ""
     try:
@@ -243,45 +243,72 @@ async def run_batch(message: discord.Message, batch: list[list[str]]):
 
     # Si un pzm tourne déjà, on met en file d'attente (lock FIFO) au lieu de refuser :
     # le statut l'indique puis bascule sur « en cours… » quand c'est son tour.
-    running = f"▶️ Lot de {n} commande(s) en cours… (demandé par {author.mention}){note}"
+    running = f"▶️ {label} en cours… (demandé par {author.mention}){note}"
     queued = run_lock.locked()
     status = await channel.send(
-        f"⏳ Lot de {n} commande(s) en file d'attente… (demandé par {author.mention}){note}"
+        f"⏳ {label} en file d'attente… (demandé par {author.mention}){note}"
         if queued else running)
-
-    results = []
-    async with run_lock:
-        if queued:
-            try:
-                await status.edit(content=running)
-            except discord.HTTPException:
-                pass
-        for argv in batch:
-            code, output = await run_pzm(argv)
-            results.append((argv, code, output))
-            log.info("BATCH item cmd=%r exit=%s", argv, code)
-
-    ok = sum(1 for _, code, _ in results if code == 0)
-    lines = []
-    for argv, code, output in results:
-        label = pzm_label(argv)
-        if code == 0:
-            lines.append(f"✅ {label}")
-        else:
-            lines.append(f"❌ {label} (exit={code})")
-            out = output.strip()
-            if out:
-                lines.append("   " + out.replace("\n", "\n   "))
-    header = (f"✅ Lot pzm : {ok}/{n} OK" if ok == n
-              else f"⚠️ Lot pzm : {ok}/{n} OK, {n - ok} échec(s)")
-    header += f" · {author.mention}"
     try:
-        await deliver(channel.send, header, "\n".join(lines))
+        async with run_lock:
+            if queued:
+                try:
+                    await status.edit(content=running)
+                except discord.HTTPException:
+                    pass
+            await work(channel, author)
     finally:
         try:
             await status.delete()
         except discord.HTTPException:
             pass
+
+
+async def run_single(message: discord.Message, argv: list[str]):
+    """Un message collé ne contenant qu'UNE commande : traité comme une commande
+    normale (sortie complète + logs), pas comme un lot. Supprime la source."""
+    label = pzm_label(argv)
+
+    async def work(channel, author):
+        log.info("EXEC user=%s channel=%s cmd=%r (message collé)", author, channel.id, argv)
+        code, output = await run_pzm(argv)
+        log.info("DONE cmd=%r exit=%s", argv, code)
+        header = (f"✅ `{label}` · {author.mention}" if code == 0
+                  else f"❌ `{label}` (exit={code}) · {author.mention}")
+        await deliver(channel.send, header, output)
+
+    await _dispatch_pasted(message, f"`{label}`", work)
+
+
+async def run_batch(message: discord.Message, batch: list[list[str]]):
+    """Exécute séquentiellement chaque commande, supprime le message source et
+    poste un récap unique (inline, ou en pièce jointe si trop long)."""
+    n = len(batch)
+
+    async def work(channel, author):
+        log.info("EXEC BATCH user=%s channel=%s n=%d", author, channel.id, n)
+        results = []
+        for argv in batch:
+            code, output = await run_pzm(argv)
+            results.append((argv, code, output))
+            log.info("BATCH item cmd=%r exit=%s", argv, code)
+
+        ok = sum(1 for _, code, _ in results if code == 0)
+        lines = []
+        for argv, code, output in results:
+            label = pzm_label(argv)
+            if code == 0:
+                lines.append(f"✅ {label}")
+            else:
+                lines.append(f"❌ {label} (exit={code})")
+                out = output.strip()
+                if out:
+                    lines.append("   " + out.replace("\n", "\n   "))
+        header = (f"✅ Lot pzm : {ok}/{n} OK" if ok == n
+                  else f"⚠️ Lot pzm : {ok}/{n} OK, {n - ok} échec(s)")
+        header += f" · {author.mention}"
+        await deliver(channel.send, header, "\n".join(lines))
+
+    await _dispatch_pasted(message, f"Lot de {n} commande(s)", work)
 
 
 # --- Commandes ---------------------------------------------------------------
@@ -514,6 +541,9 @@ async def on_message(message: discord.Message):
         return
     if bad:
         await reject_batch(message, bad)
+        return
+    if len(batch) == 1:
+        await run_single(message, batch[0])  # une seule commande -> sortie complète
         return
     await run_batch(message, batch)
 
