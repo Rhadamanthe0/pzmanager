@@ -8,7 +8,11 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 readonly LOG_DIR="${SCRIPT_DIR}/../logs/zomboid"
 readonly SILENT_FLAG="${SCRIPT_DIR}/../../.silent_next_start"
 readonly NOTIFY_LOCK="/tmp/pzmanager-notify-ready-$(id -un).lock"
-readonly TIMEOUT=300
+readonly TIMEOUT=600
+# Marqueur de fin de boot. B42 n'imprime plus "*** SERVER STARTED ****"
+# (disparu vers la 42.x de juin 2026) ; "LuaNet: Initialization [DONE]" est la
+# dernière étape d'init émise à chaque démarrage (1 fois par boot).
+readonly READY_MARKER="LuaNet: Initialization [DONE]"
 
 # Check and consume silent flag
 if [[ -f "$SILENT_FLAG" ]]; then
@@ -30,7 +34,7 @@ elapsed=0
 
 while (( elapsed < TIMEOUT )); do
     if journalctl --user -u zomboid.service --since "@$start_time" --no-pager 2>/dev/null \
-        | grep -q "SERVER STARTED"; then
+        | grep -qF "$READY_MARKER"; then
         "${SCRIPT_DIR}/sendDiscord.sh" "Le serveur Project Zomboid est en ligne !"
         exit 0
     fi
