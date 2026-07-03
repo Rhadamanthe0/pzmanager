@@ -138,8 +138,9 @@ Rules:
 - **Blank lines** and lines starting with `#` are ignored (use `#` for comments).
 - **All-or-nothing detection**: a message is treated as a batch only if *every*
   content line is a valid `pzm …` command. If one line is a typo (or normal
-  chat is mixed in), the **whole batch is cancelled** — nothing runs, nothing is
-  deleted, and the bot replies telling you which line to fix.
+  chat is mixed in), the **whole batch is rejected** — nothing runs, the source
+  message is **deleted**, and the bot posts which line(s) it did not recognise
+  with **`pzm help` attached** as `pzm-help.txt`.
 - Messages that contain no `pzm` line at all are ignored (normal chat is
   untouched).
 
