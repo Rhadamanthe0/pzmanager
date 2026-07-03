@@ -98,17 +98,34 @@ def pzm_label(argv: list[str]) -> str:
     return "pzm " + " ".join(shlex.quote(a) for a in argv)
 
 
-async def deliver(send, header: str, output: str):
+async def _send_chunked(send, header: str, output: str):
+    """Repli quand la pièce jointe est refusée (permission « Joindre des fichiers »
+    absente) : poste l'en-tête puis la sortie en blocs de code < 2000 caractères.
+    Ne requiert que « Envoyer des messages »."""
+    await send(header)
+    budget = DISCORD_MAX - len("```\n\n```") - 1
+    for i in range(0, len(output), budget):
+        await send(f"```\n{output[i:i + budget]}\n```")
+
+
+async def deliver(send, header: str, output: str, *, filename: str = "pzm-output.txt"):
     """Envoie statut + sortie en UN SEUL message via le callable `send`.
-    Si tout tient dans un bloc de code -> inline ; sinon -> pièce jointe
-    pzm-output.txt (Discord ne fait pas ce repli automatiquement via l'API)."""
+    Si tout tient dans un bloc de code -> inline ; sinon -> pièce jointe (Discord
+    ne fait pas ce repli automatiquement via l'API). Si l'envoi du fichier est
+    refusé (permission « Joindre des fichiers » manquante), repli en messages
+    découpés plutôt que de planter sans rien répondre."""
     output = output.rstrip() or "(aucune sortie)"
     inline_limit = DISCORD_MAX - len(header) - len("\n```\n\n```") - 1
     if len(output) <= inline_limit:
         await send(f"{header}\n```\n{output}\n```")
-    else:
-        file = discord.File(io.BytesIO(output.encode("utf-8")), filename="pzm-output.txt")
+        return
+    file = discord.File(io.BytesIO(output.encode("utf-8")), filename=filename)
+    try:
         await send(header, file=file)
+    except discord.Forbidden:
+        log.warning("Envoi en pièce jointe refusé (permission « Joindre des fichiers » "
+                    "manquante) -> repli en messages découpés")
+        await _send_chunked(send, header, output)
 
 
 async def run_pzm(args: list[str]) -> tuple[int, str]:
@@ -220,9 +237,9 @@ async def reject_batch(message: discord.Message, bad: list[tuple[int, str]]):
     if len(header) > DISCORD_MAX:
         header = header[:DISCORD_MAX - 1] + "…"
     _, help_out = await run_pzm(["help"])
-    file = discord.File(io.BytesIO((help_out.rstrip() or "(aucune sortie)").encode("utf-8")),
-                        filename="pzm-help.txt")
-    await channel.send(header, file=file)
+    # deliver() gère la pièce jointe (ou le repli en messages découpés si la
+    # permission « Joindre des fichiers » manque).
+    await deliver(channel.send, header, help_out, filename="pzm-help.txt")
 
 
 async def _dispatch_pasted(message: discord.Message, label: str, work):

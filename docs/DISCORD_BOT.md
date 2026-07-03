@@ -45,11 +45,13 @@ notifications: a small Python bot (discord.py) connects to Discord's Gateway
    **OFF** — the bot does not need it. Under 100 servers this toggle needs no
    verification.
 4. Invite the bot with both the `bot` and `applications.commands` scopes and the
-   *View Channels* + *Send Messages* + *Manage Messages* permissions (*Manage
-   Messages* lets it delete the source message after running a batch). Quick link
-   (replace `CLIENT_ID` with your Application ID):
+   *View Channels* + *Send Messages* + *Attach Files* + *Manage Messages*
+   permissions (*Attach Files* lets it post long command output as a
+   `pzm-output.txt` attachment; *Manage Messages* lets it delete the source
+   message after running a batch). Quick link (replace `CLIENT_ID` with your
+   Application ID):
    ```
-   https://discord.com/oauth2/authorize?client_id=CLIENT_ID&scope=bot%20applications.commands&permissions=11264
+   https://discord.com/oauth2/authorize?client_id=CLIENT_ID&scope=bot%20applications.commands&permissions=44032
    ```
 
 > **Upgrading an existing bot** to the batch feature: enable the **Message
@@ -181,9 +183,14 @@ journalctl --user -u pz-discord-bot.service -f      # live logs
   `PrivilegedIntentsRequired` because the **Message Content** intent is not
   enabled in the Developer Portal (see [Setup](#setup) step 3) — check
   `journalctl --user -u pz-discord-bot.service`.
+- **Long output missing / `pzm help` posts nothing**: the bot lacks the *Attach
+  Files* permission, so it cannot post the `pzm-output.txt` attachment. It now
+  falls back to splitting the output across several code-block messages, but for
+  the cleaner single-file behaviour grant *Attach Files* (channel permissions, or
+  re-run the invite link with `permissions=44032`).
 - **Batch not running / message not deleted**: confirm the bot has the *Manage
   Messages* permission in the channel (re-run the invite link with
-  `permissions=11264`); a missing permission is reported in the recap.
+  `permissions=44032`); a missing permission is reported in the recap.
 - **Commands rejected**: confirm you are in `DISCORD_BOT_CHANNEL_ID` and hold
   `DISCORD_BOT_ADMIN_ROLE_ID`; both are logged on refusal.
 - **`python3-venv missing`** at install: `sudo apt install python3-venv` (root).
