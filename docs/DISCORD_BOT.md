@@ -131,6 +131,11 @@ The bot:
 3. Posts **one recap** — `✅ Lot pzm : 3/3 OK`, or the per-line ✅/❌ with the
    output of any failing line (as a `pzm-output.txt` attachment if it is long).
 
+If the pasted message holds a **single** `pzm …` line, it is treated like a
+normal command instead of a batch: the source message is still deleted, but the
+bot posts the command's **full output** (same rendering as the slash commands),
+not the `1/1 OK` recap.
+
 Rules:
 
 - The `/pzm` and `pzm` prefixes are both accepted; a bare `rcon …` is **not** —
