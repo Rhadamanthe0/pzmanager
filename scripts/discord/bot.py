@@ -93,6 +93,11 @@ def authz_error(interaction: discord.Interaction) -> str | None:
     return None
 
 
+def pzm_label(argv: list[str]) -> str:
+    """Représentation lisible et sûre d'une commande pzm, pour l'affichage."""
+    return "pzm " + " ".join(shlex.quote(a) for a in argv)
+
+
 async def deliver(send, header: str, output: str):
     """Envoie statut + sortie en UN SEUL message via le callable `send`.
     Si tout tient dans un bloc de code -> inline ; sinon -> pièce jointe
@@ -133,16 +138,13 @@ async def execute(interaction: discord.Interaction, args: list[str]):
         log.info("REFUSÉ user=%s channel=%s cmd=%r (%s)",
                  interaction.user, interaction.channel_id, args, err)
         return
+    await interaction.response.defer()  # « réfléchit… » : tient pendant l'attente en file
+    label = pzm_label(args)
     if run_lock.locked():
-        await interaction.response.send_message(
-            "⏳ Une commande pzm est déjà en cours, réessaie dans un instant.",
-            ephemeral=True)
-        return
-
-    await interaction.response.defer()
-    label = "pzm " + " ".join(shlex.quote(a) for a in args)
+        log.info("QUEUE user=%s cmd=%r (une commande est déjà en cours)",
+                 interaction.user, args)
     log.info("EXEC user=%s channel=%s cmd=%r", interaction.user, interaction.channel_id, args)
-    async with run_lock:
+    async with run_lock:  # lock FIFO : attend son tour au lieu de refuser
         code, output = await run_pzm(args)
     log.info("DONE cmd=%r exit=%s", args, code)
 
@@ -202,10 +204,6 @@ async def run_batch(message: discord.Message, batch: list[list[str]]):
     poste un récap unique (inline, ou en pièce jointe si trop long)."""
     channel = message.channel
     author = message.author
-    if run_lock.locked():
-        await message.reply("⏳ Une commande pzm est déjà en cours, réessaie dans un instant.")
-        return
-
     n = len(batch)
     log.info("EXEC BATCH user=%s channel=%s n=%d", author, channel.id, n)
 
@@ -217,11 +215,21 @@ async def run_batch(message: discord.Message, batch: list[list[str]]):
     except discord.NotFound:
         pass
 
+    # Si un pzm tourne déjà, on met en file d'attente (lock FIFO) au lieu de refuser :
+    # le statut l'indique puis bascule sur « en cours… » quand c'est son tour.
+    running = f"▶️ Lot de {n} commande(s) en cours… (demandé par {author.mention}){note}"
+    queued = run_lock.locked()
     status = await channel.send(
-        f"▶️ Lot de {n} commande(s) en cours… (demandé par {author.mention}){note}")
+        f"⏳ Lot de {n} commande(s) en file d'attente… (demandé par {author.mention}){note}"
+        if queued else running)
 
     results = []
     async with run_lock:
+        if queued:
+            try:
+                await status.edit(content=running)
+            except discord.HTTPException:
+                pass
         for argv in batch:
             code, output = await run_pzm(argv)
             results.append((argv, code, output))
@@ -230,7 +238,7 @@ async def run_batch(message: discord.Message, batch: list[list[str]]):
     ok = sum(1 for _, code, _ in results if code == 0)
     lines = []
     for argv, code, output in results:
-        label = "pzm " + " ".join(shlex.quote(a) for a in argv)
+        label = pzm_label(argv)
         if code == 0:
             lines.append(f"✅ {label}")
         else:
