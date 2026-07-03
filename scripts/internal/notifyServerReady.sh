@@ -8,7 +8,7 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 readonly LOG_DIR="${SCRIPT_DIR}/../logs/zomboid"
 readonly SILENT_FLAG="${SCRIPT_DIR}/../../.silent_next_start"
 readonly NOTIFY_LOCK="/tmp/pzmanager-notify-ready-$(id -un).lock"
-readonly TIMEOUT=600
+readonly TIMEOUT=300
 # Marqueur de fin de boot. B42 n'imprime plus "*** SERVER STARTED ****"
 # (disparu vers la 42.x de juin 2026) ; "LuaNet: Initialization [DONE]" est la
 # dernière étape d'init émise à chaque démarrage (1 fois par boot).
