@@ -306,6 +306,180 @@ purge_whitelist() {
     fi
 }
 
+# --- Helpers pour remove-account / rename (écriture DB, serveur arrêté) -------
+
+# Refuse d'écrire si le serveur tourne (la sauvegarde auto écraserait la modif).
+require_server_stopped() {
+    if server_is_active; then
+        die "Le serveur est actif : cette opération écrit dans la base et doit se faire SERVEUR ARRÊTÉ.
+Arrête-le d'abord :  pzm server stop 2m --reason \"Nettoyage whitelist\""
+    fi
+}
+
+# Localise le players.db live (perso multijoueur, table networkPlayers).
+locate_players_db() {
+    PLAYERS_DB="$(find "${PZ_SOURCE_DIR}/Saves/Multiplayer" -name 'players.db' 2>/dev/null | head -1)"
+}
+
+# Snapshot de sécurité des bases avant toute écriture.
+snapshot_dbs() {
+    local snap_dir="${PZ_SOURCE_DIR}/db/whitelist-snapshots"
+    ensure_directory "$snap_dir"
+    local ts; ts="$(date +'%Y-%m-%d_%Hh%Mm%S')"
+    cp -f "$DB_PATH" "${snap_dir}/servertest_${ts}.db" && log "Snapshot: ${snap_dir}/servertest_${ts}.db"
+    if [[ -n "${PLAYERS_DB:-}" && -f "${PLAYERS_DB:-}" ]]; then
+        cp -f "$PLAYERS_DB" "${snap_dir}/players_${ts}.db" && log "Snapshot: ${snap_dir}/players_${ts}.db"
+    fi
+}
+
+# remove-account <pseudo|steamID64>... [--dry-run]
+# Supprime des COMPTES précis (par pseudo) ou tous les comptes d'un SteamID.
+# Retire l'autorisation `allowedsteamid` uniquement si plus aucun compte restant
+# ne partage ce SteamID. Le PERSONNAGE (networkPlayers) est CONSERVÉ.
+remove_accounts() {
+    local dry_run=false a
+    local -a targets=()
+    for a in "$@"; do
+        case "$a" in
+            --dry-run) dry_run=true ;;
+            *) [[ -n "$a" ]] && targets+=("$a") ;;
+        esac
+    done
+    [[ "${#targets[@]}" -gt 0 ]] || die "Usage: $0 remove-account <pseudo|steamID64> [...] [--dry-run]"
+
+    detect_schema
+
+    # Construire la liste des id de comptes à supprimer + SteamID orphelins.
+    local -a del_ids=() del_sids=() plan=()
+    local t
+    for t in "${targets[@]}"; do
+        if [[ "$t" =~ ^7656119[0-9]{10}$ ]]; then
+            local esc_sid; esc_sid="$(sql_escape "$t")"
+            local -a rows=()
+            mapfile -t rows < <(sqlite3 -separator '|' "$DB_PATH" "SELECT id, username FROM whitelist WHERE steamid='${esc_sid}'" 2>/dev/null)
+            if [[ "${#rows[@]}" -eq 0 ]]; then
+                local exists; exists=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM allowedsteamid WHERE steamid='${esc_sid}'" 2>/dev/null || echo 0)
+                if [[ "$exists" -ge 1 ]]; then
+                    del_sids+=("$t"); plan+=("SteamID ${t} (aucun compte) -> autorisation retirée")
+                else
+                    plan+=("SteamID ${t} : introuvable, ignoré")
+                fi
+            else
+                local r rid runame
+                for r in "${rows[@]}"; do
+                    IFS='|' read -r rid runame <<< "$r"
+                    [[ "$runame" == "admin" ]] && { plan+=("compte 'admin' : protégé, ignoré"); continue; }
+                    del_ids+=("$rid"); plan+=("compte '${runame}' (id ${rid}, steamid ${t}) -> supprimé")
+                done
+            fi
+        else
+            [[ "$t" == "admin" ]] && { plan+=("compte 'admin' : protégé, ignoré"); continue; }
+            local esc_u; esc_u="$(sql_escape "$t")"
+            local -a rows=()
+            mapfile -t rows < <(sqlite3 -separator '|' "$DB_PATH" "SELECT id, COALESCE(steamid,'') FROM whitelist WHERE username='${esc_u}'" 2>/dev/null)
+            if [[ "${#rows[@]}" -eq 0 ]]; then
+                plan+=("compte '${t}' : introuvable, ignoré"); continue
+            fi
+            local r rid rsid
+            for r in "${rows[@]}"; do
+                IFS='|' read -r rid rsid <<< "$r"
+                del_ids+=("$rid"); plan+=("compte '${t}' (id ${rid}, steamid ${rsid:-aucun}) -> supprimé")
+            done
+        fi
+    done
+
+    echo "=== remove-account : plan ==="
+    local line; for line in "${plan[@]}"; do echo "  - $line"; done
+    echo ""
+
+    if [[ "${#del_ids[@]}" -eq 0 && "${#del_sids[@]}" -eq 0 ]]; then
+        echo "Rien à supprimer."; return 0
+    fi
+
+    if [[ "$dry_run" == true ]]; then
+        echo "[dry-run] Aucune modification effectuée."; return 0
+    fi
+
+    require_server_stopped
+    snapshot_dbs
+
+    # 1) Supprimer les comptes whitelist ciblés
+    local id
+    for id in "${del_ids[@]}"; do
+        sqlite3 "$DB_PATH" "DELETE FROM whitelist WHERE id = ${id};" || log "WARNING: échec suppression compte id=$id"
+    done
+
+    # 2) Retirer allowedsteamid des SteamID explicitement ciblés (sans compte)
+    local sid esc
+    for sid in "${del_sids[@]}"; do
+        esc="$(sql_escape "$sid")"
+        sqlite3 "$DB_PATH" "DELETE FROM allowedsteamid WHERE steamid='${esc}';" || log "WARNING: échec suppression steamid $sid"
+    done
+
+    # 3) Retirer allowedsteamid des SteamID qui n'ont plus aucun compte associé
+    #    (nettoyage des autorisations devenues orphelines après les suppressions).
+    sqlite3 "$DB_PATH" \
+        "DELETE FROM allowedsteamid WHERE steamid NOT IN (SELECT steamid FROM whitelist WHERE steamid IS NOT NULL AND steamid <> '');" \
+        || log "WARNING: échec nettoyage allowedsteamid orphelins"
+
+    echo ""
+    echo "✓ Suppression effectuée. Personnages (networkPlayers) conservés."
+    echo "  (Les SteamID encore partagés par un compte gardé restent autorisés.)"
+}
+
+# rename <ancien_pseudo> <nouveau_pseudo> [--dry-run]
+# Renomme le LOGIN d'un compte dans whitelist ET dans players.db (networkPlayers)
+# pour garder le personnage attaché. Le mot de passe est conservé.
+rename_account() {
+    local dry_run=false a
+    local -a pos=()
+    for a in "$@"; do
+        case "$a" in
+            --dry-run) dry_run=true ;;
+            *) pos+=("$a") ;;
+        esac
+    done
+    local old="${pos[0]:-}" new="${pos[1]:-}"
+    [[ -n "$old" && -n "$new" ]] || die "Usage: $0 rename <ancien_pseudo> <nouveau_pseudo> [--dry-run]"
+    [[ "$old" != "admin" ]] || die "Le compte 'admin' ne peut pas être renommé."
+
+    local esc_old esc_new
+    esc_old="$(sql_escape "$old")"; esc_new="$(sql_escape "$new")"
+
+    local exists; exists=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE username='${esc_old}'" 2>/dev/null || echo 0)
+    [[ "$exists" -ge 1 ]] || die "Aucun compte '${old}' dans la whitelist."
+    local clash; clash=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE username='${esc_new}'" 2>/dev/null || echo 0)
+    [[ "$clash" -eq 0 ]] || die "Un compte '${new}' existe déjà : renommage refusé (collision)."
+
+    locate_players_db
+    local char_count=0
+    if [[ -n "${PLAYERS_DB:-}" && -f "${PLAYERS_DB:-}" ]]; then
+        char_count=$(sqlite3 "$PLAYERS_DB" "SELECT COUNT(*) FROM networkPlayers WHERE username='${esc_old}'" 2>/dev/null || echo 0)
+    fi
+
+    echo "=== rename : '${old}' -> '${new}' ==="
+    echo "  whitelist : ${exists} compte(s) à renommer (mot de passe conservé)"
+    echo "  players.db: ${char_count} personnage(s) networkPlayers à réattacher"
+    echo "  ⚠ Le joueur devra désormais se connecter avec le login '${new}'."
+    echo ""
+
+    if [[ "$dry_run" == true ]]; then
+        echo "[dry-run] Aucune modification effectuée."; return 0
+    fi
+
+    require_server_stopped
+    snapshot_dbs
+
+    sqlite3 "$DB_PATH" "UPDATE whitelist SET username='${esc_new}' WHERE username='${esc_old}';" \
+        || die "Échec du renommage dans whitelist"
+    if [[ "$char_count" -gt 0 ]]; then
+        sqlite3 "$PLAYERS_DB" "UPDATE networkPlayers SET username='${esc_new}' WHERE username='${esc_old}';" \
+            || die "Échec du renommage dans networkPlayers (players.db)"
+    fi
+
+    echo "✓ '${old}' renommé en '${new}' (whitelist + personnage)."
+}
+
 show_help() {
     cat <<HELPEOF
 Gestion de la whitelist du serveur Project Zomboid (B42, par SteamID)
@@ -354,6 +528,14 @@ main() {
         remove)
             check_database
             remove_from_whitelist "${@:2}"
+            ;;
+        remove-account)
+            check_database
+            remove_accounts "${@:2}"
+            ;;
+        rename)
+            check_database
+            rename_account "${@:2}"
             ;;
         resetpassword)
             check_database

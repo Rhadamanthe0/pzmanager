@@ -140,12 +140,12 @@ cmd_whitelist() {
     shift || true
 
     case "$action" in
-        list|add|remove|resetpassword|purge|help)
+        list|add|remove|remove-account|rename|resetpassword|purge|help)
             exec "${SCRIPT_DIR}/scripts/admin/manageWhitelist.sh" "$action" "$@"
             ;;
         *)
             echo "Erreur: Action whitelist invalide: $action"
-            echo "Actions: list, add, remove, resetpassword, purge, help"
+            echo "Actions: list, add, remove, remove-account, rename, resetpassword, purge, help"
             exit 1
             ;;
     esac

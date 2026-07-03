@@ -174,9 +174,9 @@ generate_world() {
     done
 
     if [[ $waited -ge $max_wait ]]; then
-        pkill -f "ProjectZomboid64.*-cachedir=${cachedir}" 2>/dev/null
+        pkill -f "ProjectZomboid64.*-cachedir=${cachedir}" 2>/dev/null || true
         sleep 2
-        pkill -9 -f "ProjectZomboid64.*-cachedir=${cachedir}" 2>/dev/null
+        pkill -9 -f "ProjectZomboid64.*-cachedir=${cachedir}" 2>/dev/null || true
         die "Timeout: monde non généré après ${max_wait}s"
     fi
 
@@ -194,9 +194,9 @@ generate_world() {
     done
     echo ""
 
-    pkill -f "ProjectZomboid64.*-cachedir=${cachedir}" 2>/dev/null
+    pkill -f "ProjectZomboid64.*-cachedir=${cachedir}" 2>/dev/null || true
     sleep 2
-    pkill -9 -f "ProjectZomboid64.*-cachedir=${cachedir}" 2>/dev/null
+    pkill -9 -f "ProjectZomboid64.*-cachedir=${cachedir}" 2>/dev/null || true
 
     if [[ $admin_wait -ge 60 ]]; then
         echo "⚠ Admin non créé en DB (timeout). Le serveur demandera le mot de passe au démarrage."
@@ -229,9 +229,20 @@ restore_whitelist() {
          SELECT world, username, password, steamid, role, displayName
          FROM old_db.whitelist;"
 
-    local count
+    # Autorisations d'accès (allowedsteamid) : EN B42 Open=false, c'est LA barrière
+    # d'accès. Sans ça, tous les joueurs sont bloqués malgré les comptes restaurés.
+    # On NE restaure PAS bannedid : on préfère retirer via `pzm whitelist remove`.
+    if ! sqlite3 "$new_db" \
+        "ATTACH '$old_db' AS old_db;
+         INSERT OR IGNORE INTO main.allowedsteamid SELECT * FROM old_db.allowedsteamid;
+         DETACH old_db;" 2>/dev/null; then
+        echo "⚠ Échec restauration allowedsteamid — ré-autorise les SteamID à la main (pzm whitelist add)."
+    fi
+
+    local count allowed
     count=$(sqlite3 "$new_db" "SELECT COUNT(*) FROM whitelist")
-    echo "✓ $count utilisateur(s) restauré(s) (admin inclus)"
+    allowed=$(sqlite3 "$new_db" "SELECT COUNT(*) FROM allowedsteamid" 2>/dev/null || echo "0")
+    echo "✓ $count compte(s) + $allowed SteamID autorisé(s) restauré(s) (admin inclus)"
 }
 
 finalize() {
