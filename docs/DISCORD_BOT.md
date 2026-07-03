@@ -10,6 +10,7 @@ notifications: a small Python bot (discord.py) connects to Discord's Gateway
 - [How it works](#how-it-works)
 - [Setup](#setup)
 - [Commands](#commands)
+- [Batch: run several commands at once](#batch-run-several-commands-at-once)
 - [Security](#security)
 - [Managing the service](#managing-the-service)
 - [Troubleshooting](#troubleshooting)
@@ -27,6 +28,9 @@ notifications: a small Python bot (discord.py) connects to Discord's Gateway
 - The bot waits for each command to finish (rcon included) and returns the
   output as **one message** — inline in a code block, or as a
   `pzm-output.txt` attachment when it is too long for one message.
+- **Batch**: paste several `pzm …` lines in one message and the bot runs them
+  one after another, deletes your message, and posts a single recap — see
+  [Batch](#batch-run-several-commands-at-once).
 
 ## Setup
 
@@ -35,14 +39,23 @@ notifications: a small Python bot (discord.py) connects to Discord's Gateway
 1. Go to <https://discord.com/developers/applications> → **New Application**.
 2. **Bot** tab → **Reset Token** → copy the token (shown once). This is your
    `DISCORD_BOT_TOKEN`.
-3. Still on the **Bot** tab, leave **Message Content** and **Server Members**
-   *Privileged Intents* **OFF** — the bot does not need them.
-4. Invite the bot with both the `bot` and `applications.commands` scopes and
-   the *View Channels* + *Send Messages* permissions. Quick link (replace
-   `CLIENT_ID` with your Application ID):
+3. Still on the **Bot** tab, enable the **Message Content** *Privileged Intent*
+   (**required** — it lets the bot read the multi-line command blocks you paste,
+   see [Batch](#batch-run-several-commands-at-once)). Leave **Server Members**
+   **OFF** — the bot does not need it. Under 100 servers this toggle needs no
+   verification.
+4. Invite the bot with both the `bot` and `applications.commands` scopes and the
+   *View Channels* + *Send Messages* + *Manage Messages* permissions (*Manage
+   Messages* lets it delete the source message after running a batch). Quick link
+   (replace `CLIENT_ID` with your Application ID):
    ```
-   https://discord.com/oauth2/authorize?client_id=CLIENT_ID&scope=bot%20applications.commands&permissions=3072
+   https://discord.com/oauth2/authorize?client_id=CLIENT_ID&scope=bot%20applications.commands&permissions=11264
    ```
+
+> **Upgrading an existing bot** to the batch feature: enable the **Message
+> Content** intent (step 3) **before** restarting the service, or it will crash
+> on boot with `PrivilegedIntentsRequired`. Re-run the invite link above to grant
+> *Manage Messages* (needed to delete the source message).
 
 ### 2. Collect the IDs
 
@@ -97,11 +110,43 @@ Guild-scoped, so they appear almost instantly:
 - Flags (`ban`, `delete`, `keep_config`, `keep_whitelist`) are `True`/`False`
   options.
 
+## Batch: run several commands at once
+
+Slash commands are one-at-a-time. To run **many** commands, just **paste a plain
+message** (no slash) in the allowed channel, one `pzm …` per line:
+
+```
+pzm rcon additem "Marc Riviere" "Base.Hat_GasMask" 1
+pzm rcon additem "Marc Riviere" "Base.AssaultRifle" 1
+pzm rcon additem "Marc Riviere" "Base.556Box" 1
+```
+
+The bot:
+
+1. Runs each line **in order** (same lock as the slash commands — they never
+   interleave), continuing even if one line fails.
+2. **Deletes your source message** to keep the channel clean.
+3. Posts **one recap** — `✅ Lot pzm : 3/3 OK`, or the per-line ✅/❌ with the
+   output of any failing line (as a `pzm-output.txt` attachment if it is long).
+
+Rules:
+
+- The `/pzm` and `pzm` prefixes are both accepted; a bare `rcon …` is **not** —
+  every line must start with `pzm`/`/pzm` followed by a known command.
+- **Blank lines** and lines starting with `#` are ignored (use `#` for comments).
+- **All-or-nothing detection**: a message is treated as a batch only if *every*
+  content line is a valid `pzm …` command. If one line is a typo (or normal
+  chat is mixed in), the **whole batch is cancelled** — nothing runs, nothing is
+  deleted, and the bot replies telling you which line to fix.
+- Messages that contain no `pzm` line at all are ignored (normal chat is
+  untouched).
+
 ## Security
 
-- **Two gates, both required**: the bot only obeys messages **in an allowed
-  channel** *and* **from a member holding the admin role**. Everything else
-  gets an ephemeral "not authorized" reply and nothing runs.
+- **Two gates, both required**: the bot only obeys commands **in an allowed
+  channel** *and* **from a member holding the admin role**. This applies to
+  slash commands *and* pasted batches — a non-admin's pasted `pzm …` lines are
+  silently ignored (logged, never run or deleted).
 - **Every** `pzm` command is reachable, including `admin reset` (world wipe).
   The only protection is the channel + role gate — **keep that role tight**.
 - No shell is ever spawned; arguments are passed as an argv list, so text like
@@ -124,8 +169,13 @@ journalctl --user -u pz-discord-bot.service -f      # live logs
 - **`/pzm` doesn't appear**: refresh Discord (Ctrl+R) or restart the client;
   check the bot is a member of the server (invited with the `bot` scope) and
   can post in the channel.
-- **Service keeps restarting**: usually an empty/invalid `DISCORD_BOT_TOKEN` —
-  check `journalctl --user -u pz-discord-bot.service`.
+- **Service keeps restarting**: usually an empty/invalid `DISCORD_BOT_TOKEN`, or
+  `PrivilegedIntentsRequired` because the **Message Content** intent is not
+  enabled in the Developer Portal (see [Setup](#setup) step 3) — check
+  `journalctl --user -u pz-discord-bot.service`.
+- **Batch not running / message not deleted**: confirm the bot has the *Manage
+  Messages* permission in the channel (re-run the invite link with
+  `permissions=11264`); a missing permission is reported in the recap.
 - **Commands rejected**: confirm you are in `DISCORD_BOT_CHANNEL_ID` and hold
   `DISCORD_BOT_ADMIN_ROLE_ID`; both are logged on refusal.
 - **`python3-venv missing`** at install: `sudo apt install python3-venv` (root).
