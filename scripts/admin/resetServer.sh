@@ -55,16 +55,16 @@ readonly CONFIG_FILES=(
     "servertest_spawnregions.lua"
 )
 
-confirm_reset() {
+# Bannière d'annonce. PAS de confirmation interactive : le reset est exécutable
+# directement (y compris via le bot Discord, dont le stdin est fermé). La seule
+# barrière restante est l'accès à `pzm` / au salon+rôle admin du bot.
+announce_reset() {
     echo "⚠️  RESET SERVEUR - SUPPRESSION COMPLÈTE DES DONNÉES ⚠️"
     echo ""
     echo "Actions: Arrêt → Backup → Suppression → Nouveau monde"
     $OPT_KEEP_CONFIG && echo "       → Restauration configs (servertest.ini, SandboxVars, spawns)"
     $OPT_KEEP_WHITELIST && echo "       → Restauration whitelist"
     echo ""
-    echo -n "Tapez 'RESET' en majuscules pour confirmer: "
-    read -r confirmation
-    [[ "$confirmation" == "RESET" ]] || die "Annulé"
 }
 
 stop_server() {
@@ -284,7 +284,7 @@ HELPEOF
 }
 
 main() {
-    confirm_reset
+    announce_reset
     stop_server
     backup_current
 
