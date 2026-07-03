@@ -56,17 +56,30 @@ logging.basicConfig(
 )
 log = logging.getLogger("pzm-discord-bot")
 
-# `guilds` (non privilégié) suffit : fiabilise la résolution salon/rôle et évite un
-# warning discord.py. Aucun intent privilégié (Message Content / Members) requis.
-intents = discord.Intents(guilds=True)
+# guilds : résolution salon/rôle. guild_messages + message_content : lire les
+# messages "batch" collés dans le salon (plusieurs `pzm …` d'un coup). ATTENTION :
+# message_content est un intent PRIVILÉGIÉ — il faut l'activer dans le Developer
+# Portal (onglet Bot) sinon le bot refuse de démarrer. Members n'est PAS requis :
+# les rôles de l'auteur arrivent déjà dans l'événement message d'une guilde.
+intents = discord.Intents(guilds=True, guild_messages=True, message_content=True)
 bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
+
+# Commandes pzm reconnues en tête de ligne d'un batch (évite de réagir au bavardage).
+KNOWN_CMDS = {"server", "backup", "whitelist", "admin", "install",
+              "rcon", "discord", "help", "--help", "-h"}
 
 # Un seul pzm à la fois (un `server stop 2m` tient le process plusieurs minutes).
 run_lock = asyncio.Lock()
 
 
 # --- Helpers -----------------------------------------------------------------
+
+def has_admin_role(user) -> bool:
+    """True si l'utilisateur (Member) possède le rôle admin configuré."""
+    roles = getattr(user, "roles", None)
+    return ROLE_ID is not None and bool(roles) and any(r.id == ROLE_ID for r in roles)
+
 
 def authz_error(interaction: discord.Interaction) -> str | None:
     """Retourne un message d'erreur si l'appelant n'est pas autorisé, sinon None."""
@@ -75,9 +88,7 @@ def authz_error(interaction: discord.Interaction) -> str | None:
                 "`DISCORD_BOT_ADMIN_ROLE_ID` dans `scripts/.env`.")
     if interaction.channel_id not in ALLOWED_CHANNELS:
         return "⛔ Commande non autorisée dans ce salon."
-    member = interaction.user
-    roles = getattr(member, "roles", None)
-    if roles is None or not any(r.id == ROLE_ID for r in roles):
+    if not has_admin_role(interaction.user):
         return "⛔ Tu n'as pas le rôle requis pour piloter le serveur."
     return None
 
@@ -141,6 +152,102 @@ async def execute(interaction: discord.Interaction, args: list[str]):
     except discord.HTTPException:
         # Token d'interaction expiré (commande > 15 min) -> repli sur le salon
         await deliver(interaction.channel.send, header, output)
+
+
+# --- Batch : plusieurs commandes collées dans le salon -----------------------
+# Un message dont CHAQUE ligne utile est `pzm <commande> …` est exécuté ligne par
+# ligne (séquentiel, même lock que les slash commands), le message source est
+# supprimé, et un unique récap est posté. Un seul `pzm …` non reconnu -> tout le
+# lot est annulé (rien n'est exécuté ni supprimé) pour éviter les mauvaises surprises.
+
+def parse_pzm_line(line: str) -> Optional[list[str]]:
+    """argv (sans le préfixe) si la ligne est `pzm|/pzm <commande connue> …`,
+    sinon None (ligne non reconnue ou guillemets invalides)."""
+    try:
+        toks = shlex.split(line)
+    except ValueError:
+        return None
+    if not toks or toks[0] not in ("pzm", "/pzm"):
+        return None
+    rest = toks[1:]
+    if not rest or rest[0] not in KNOWN_CMDS:
+        return None
+    return rest
+
+
+def parse_batch(text: str) -> tuple[Optional[list[list[str]]], Optional[str]]:
+    """Analyse un message collé et retourne :
+      (batch, None)         si TOUTES les lignes utiles sont des commandes pzm ;
+      (None, avertissement) si certaines seulement le sont (typo -> on annule) ;
+      (None, None)          si aucune (bavardage normal -> on ignore).
+    Les lignes vides et celles commençant par '#' sont ignorées."""
+    content = [s for raw in text.splitlines()
+               if (s := raw.strip()) and not s.startswith("#")]
+    if not content:
+        return None, None
+    parsed = [parse_pzm_line(l) for l in content]
+    if all(p is None for p in parsed):
+        return None, None
+    bad = [i for i, p in enumerate(parsed, 1) if p is None]
+    if bad:
+        nums = ", ".join(map(str, bad))
+        return None, (f"⚠️ Lot ignoré : ligne(s) {nums} non reconnue(s) "
+                      f"(attendu `pzm <commande> …`). Rien n'a été exécuté "
+                      f"ni supprimé — corrige puis renvoie.")
+    return parsed, None
+
+
+async def run_batch(message: discord.Message, batch: list[list[str]]):
+    """Exécute séquentiellement chaque commande, supprime le message source et
+    poste un récap unique (inline, ou en pièce jointe si trop long)."""
+    channel = message.channel
+    author = message.author
+    if run_lock.locked():
+        await message.reply("⏳ Une commande pzm est déjà en cours, réessaie dans un instant.")
+        return
+
+    n = len(batch)
+    log.info("EXEC BATCH user=%s channel=%s n=%d", author, channel.id, n)
+
+    note = ""
+    try:
+        await message.delete()
+    except discord.Forbidden:
+        note = " (⚠️ permission « Gérer les messages » manquante : message non supprimé)"
+    except discord.NotFound:
+        pass
+
+    status = await channel.send(
+        f"▶️ Lot de {n} commande(s) en cours… (demandé par {author.mention}){note}")
+
+    results = []
+    async with run_lock:
+        for argv in batch:
+            code, output = await run_pzm(argv)
+            results.append((argv, code, output))
+            log.info("BATCH item cmd=%r exit=%s", argv, code)
+
+    ok = sum(1 for _, code, _ in results if code == 0)
+    lines = []
+    for argv, code, output in results:
+        label = "pzm " + " ".join(shlex.quote(a) for a in argv)
+        if code == 0:
+            lines.append(f"✅ {label}")
+        else:
+            lines.append(f"❌ {label} (exit={code})")
+            out = output.strip()
+            if out:
+                lines.append("   " + out.replace("\n", "\n   "))
+    header = (f"✅ Lot pzm : {ok}/{n} OK" if ok == n
+              else f"⚠️ Lot pzm : {ok}/{n} OK, {n - ok} échec(s)")
+    header += f" · {author.mention}"
+    try:
+        await deliver(channel.send, header, "\n".join(lines))
+    finally:
+        try:
+            await status.delete()
+        except discord.HTTPException:
+            pass
 
 
 # --- Commandes ---------------------------------------------------------------
@@ -353,6 +460,28 @@ async def setup_hook():
 async def on_ready():
     log.info("Connecté en tant que %s | salons=%s role=%s",
              bot.user, ALLOWED_CHANNELS or "AUCUN", ROLE_ID or "AUCUN")
+
+
+@bot.event
+async def on_message(message: discord.Message):
+    """Batch : un membre admin colle plusieurs `pzm …` dans un salon autorisé."""
+    if message.author.bot or message.guild is None:
+        return
+    if not ALLOWED_CHANNELS or ROLE_ID is None:
+        return
+    if message.channel.id not in ALLOWED_CHANNELS:
+        return
+    batch, warn = parse_batch(message.content)
+    if batch is None and warn is None:
+        return  # bavardage normal -> on ne touche à rien
+    if not has_admin_role(message.author):
+        log.info("REFUSÉ batch user=%s channel=%s (rôle manquant)",
+                 message.author, message.channel.id)
+        return
+    if warn:
+        await message.reply(warn)
+        return
+    await run_batch(message, batch)
 
 
 def main():
