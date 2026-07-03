@@ -98,6 +98,14 @@ def pzm_label(argv: list[str]) -> str:
     return "pzm " + " ".join(shlex.quote(a) for a in argv)
 
 
+def _result_header(label: str, code: int, mention: str | None = None) -> str:
+    """En-tête ✅/❌ d'un résultat pzm (label entre backticks, code retour si échec ;
+    mention optionnelle en suffixe)."""
+    tail = f" · {mention}" if mention else ""
+    return (f"✅ `{label}`{tail}" if code == 0
+            else f"❌ `{label}` (exit={code}){tail}")
+
+
 async def _send_chunked(send, header: str, output: str):
     """Repli quand la pièce jointe est refusée (permission « Joindre des fichiers »
     absente) : poste l'en-tête puis la sortie en blocs de code < 2000 caractères.
@@ -165,7 +173,7 @@ async def execute(interaction: discord.Interaction, args: list[str]):
         code, output = await run_pzm(args)
     log.info("DONE cmd=%r exit=%s", args, code)
 
-    header = f"✅ `{label}`" if code == 0 else f"❌ `{label}` (exit={code})"
+    header = _result_header(label, code)
     try:
         await deliver(interaction.followup.send, header, output)
     except discord.HTTPException:
@@ -214,6 +222,18 @@ def parse_batch(text: str) -> tuple[Optional[list[list[str]]], Optional[list[tup
     return parsed, None
 
 
+async def _delete_source(message: discord.Message) -> str:
+    """Supprime le message source d'un batch. Retourne une note d'avertissement à
+    accoler au statut si la permission « Gérer les messages » manque, sinon ""."""
+    try:
+        await message.delete()
+    except discord.Forbidden:
+        return " (⚠️ permission « Gérer les messages » manquante : message non supprimé)"
+    except discord.NotFound:
+        pass
+    return ""
+
+
 async def reject_batch(message: discord.Message, bad: list[tuple[int, str]]):
     """Commande(s) collée(s) non reconnue(s) : supprime le message source, indique
     la/les ligne(s) fautive(s) et joint `pzm help` en pièce jointe. Rien n'est exécuté."""
@@ -222,14 +242,7 @@ async def reject_batch(message: discord.Message, bad: list[tuple[int, str]]):
     log.info("REJET batch user=%s channel=%s bad=%r",
              author, channel.id, [n for n, _ in bad])
 
-    note = ""
-    try:
-        await message.delete()
-    except discord.Forbidden:
-        note = " (⚠️ permission « Gérer les messages » manquante : message non supprimé)"
-    except discord.NotFound:
-        pass
-
+    note = await _delete_source(message)
     detail = "\n".join(f"{n}. {txt}" for n, txt in bad)
     header = (f"⛔ Commande non reconnue ({author.mention}){note} — rien n'a été exécuté.\n"
               f"Ligne(s) invalide(s) (attendu `pzm <commande> …`) :\n```\n{detail}\n```\n"
@@ -244,19 +257,13 @@ async def reject_batch(message: discord.Message, bad: list[tuple[int, str]]):
 
 async def _dispatch_pasted(message: discord.Message, label: str, work):
     """Scaffold commun aux messages collés : supprime la source, affiche un statut
-    (file d'attente FIFO puis « en cours »), sérialise sur run_lock, puis appelle
-    `work(channel, author)` (qui lance pzm ET poste le résultat) une fois le verrou
-    acquis. Retire le statut à la fin, quoi qu'il arrive."""
+    (file d'attente FIFO puis « en cours »), sérialise `work(channel, author)` sur
+    run_lock, puis poste le `(header, output)` qu'il renvoie — hors du verrou, pour
+    ne pas bloquer la commande suivante pendant l'envoi Discord. Retire le statut
+    à la fin, quoi qu'il arrive."""
     channel = message.channel
     author = message.author
-
-    note = ""
-    try:
-        await message.delete()
-    except discord.Forbidden:
-        note = " (⚠️ permission « Gérer les messages » manquante : message non supprimé)"
-    except discord.NotFound:
-        pass
+    note = await _delete_source(message)
 
     # Si un pzm tourne déjà, on met en file d'attente (lock FIFO) au lieu de refuser :
     # le statut l'indique puis bascule sur « en cours… » quand c'est son tour.
@@ -272,7 +279,8 @@ async def _dispatch_pasted(message: discord.Message, label: str, work):
                     await status.edit(content=running)
                 except discord.HTTPException:
                     pass
-            await work(channel, author)
+            header, output = await work(channel, author)
+        await deliver(channel.send, header, output)
     finally:
         try:
             await status.delete()
@@ -289,9 +297,7 @@ async def run_single(message: discord.Message, argv: list[str]):
         log.info("EXEC user=%s channel=%s cmd=%r (message collé)", author, channel.id, argv)
         code, output = await run_pzm(argv)
         log.info("DONE cmd=%r exit=%s", argv, code)
-        header = (f"✅ `{label}` · {author.mention}" if code == 0
-                  else f"❌ `{label}` (exit={code}) · {author.mention}")
-        await deliver(channel.send, header, output)
+        return _result_header(label, code, author.mention), output
 
     await _dispatch_pasted(message, f"`{label}`", work)
 
@@ -323,7 +329,7 @@ async def run_batch(message: discord.Message, batch: list[list[str]]):
         header = (f"✅ Lot pzm : {ok}/{n} OK" if ok == n
                   else f"⚠️ Lot pzm : {ok}/{n} OK, {n - ok} échec(s)")
         header += f" · {author.mention}"
-        await deliver(channel.send, header, "\n".join(lines))
+        return header, "\n".join(lines)
 
     await _dispatch_pasted(message, f"Lot de {n} commande(s)", work)
 
