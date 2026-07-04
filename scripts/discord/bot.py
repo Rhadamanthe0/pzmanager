@@ -563,15 +563,47 @@ def _newest_user_log() -> Optional[str]:
         return None
 
 
-def _death_embed(name: str, x: str, y: str, z: str, pvp: str) -> discord.Embed:
-    """Embed d'une mort avec le maximum de contexte tiré du log (pas de cause :
-    non journalisée par le serveur vanilla)."""
+# La ligne « died at » ne porte QUE le nom du personnage + coordonnées. Le username
+# du compte n'apparaît QUE sur les lignes connect/disconnect (avec le SteamID), jamais
+# sur la même ligne qu'une mort. On suit donc l'ensemble des comptes connectés pour
+# pouvoir rattacher une mort à son compte.
+CONNECT_RE = re.compile(
+    r'(?P<sid>\d{17}) "(?P<user>.+?)" fully connected \((?P<x>-?\d+),(?P<y>-?\d+)')
+DISCONNECT_RE = re.compile(
+    r'(?P<sid>\d{17}) "(?P<user>.+?)" disconnected player \(')
+
+
+def _resolve_account(online: dict, dx: int, dy: int) -> Optional[str]:
+    """Username du compte à qui attribuer une mort survenue en (dx,dy) :
+    - 1 seul joueur connecté  -> certain ;
+    - plusieurs               -> le plus proche par dernière position connue, mais
+      SEULEMENT s'il est nettement le plus proche (2e au moins 2× plus loin) ;
+      sinon None (on n'invente pas de compte). Les positions viennent des lignes
+      connect (donc possiblement datées) -> en cas de doute on n'affiche rien."""
+    accts = list(online.values())
+    if not accts:
+        return None
+    if len(accts) == 1:
+        return accts[0]["user"]
+    accts.sort(key=lambda a: (a["x"] - dx) ** 2 + (a["y"] - dy) ** 2)
+    d0 = (accts[0]["x"] - dx) ** 2 + (accts[0]["y"] - dy) ** 2
+    d1 = (accts[1]["x"] - dx) ** 2 + (accts[1]["y"] - dy) ** 2
+    return accts[0]["user"] if d1 >= d0 * 4 else None
+
+
+def _death_embed(name: str, account: Optional[str], x: str, y: str, z: str,
+                 pvp: str) -> discord.Embed:
+    """Embed d'une mort avec le maximum de contexte tiré du log : nom du personnage,
+    username du compte entre parenthèses (si identifiable), coordonnées, PvP/Non-PvP."""
+    who = f"**{discord.utils.escape_markdown(name)}**"
+    if account and account != name:
+        who += f" ({discord.utils.escape_markdown(account)})"
     pos = f"x={x}, y={y}"
     if z not in ("0", "-0"):
         pos += f" · étage {z}"
     embed = discord.Embed(
         title="☠️ Mort d'un joueur",
-        description=f"**{discord.utils.escape_markdown(name)}** est mort.",
+        description=f"{who} est mort.",
         color=0xB03030,
         timestamp=datetime.now(timezone.utc),
     )
@@ -580,13 +612,25 @@ def _death_embed(name: str, x: str, y: str, z: str, pvp: str) -> discord.Embed:
         name="Contexte",
         value="⚔️ PvP" if pvp == "pvp" else "🧟 Non-PvP (zombie / environnement)",
         inline=True)
-    embed.set_footer(text="Cause exacte non journalisée par le serveur vanilla")
     return embed
 
 
-async def _handle_death_line(channel, line: str, last_death: dict[str, float]):
-    """Poste une notif si la ligne est une mort, en dédupliquant par joueur sur une
-    courte fenêtre (le moteur logge parfois plusieurs lignes pour une même mort)."""
+async def _process_line(channel, line: str, online: dict,
+                        last_death: dict[str, float], emit: bool):
+    """Met à jour l'ensemble des comptes connectés (connect/disconnect) et, si `emit`,
+    poste une notif quand la ligne est une mort (dédupliquée par personnage sur une
+    courte fenêtre — le moteur logge parfois plusieurs lignes pour une même mort)."""
+    m = CONNECT_RE.search(line)
+    if m:
+        online[m.group("sid")] = {"user": m.group("user").strip(),
+                                  "x": int(m.group("x")), "y": int(m.group("y"))}
+        return
+    m = DISCONNECT_RE.search(line)
+    if m:
+        online.pop(m.group("sid"), None)
+        return
+    if not emit:
+        return
     m = DEATH_LINE_RE.search(line)
     if not m:
         return
@@ -597,11 +641,12 @@ async def _handle_death_line(channel, line: str, last_death: dict[str, float]):
     last_death[name] = now
     for stale in [k for k, t in last_death.items() if now - t > DEATH_DEDUP_SECONDS * 4]:
         del last_death[stale]
+    x, y, z = m.group("x"), m.group("y"), m.group("z")
+    account = _resolve_account(online, int(x), int(y))
     try:
-        await channel.send(embed=_death_embed(
-            name, m.group("x"), m.group("y"), m.group("z"), m.group("pvp")))
-        log.info("MORT notifiée : %s (%s,%s,%s) %s", name,
-                 m.group("x"), m.group("y"), m.group("z"), m.group("pvp"))
+        await channel.send(embed=_death_embed(name, account, x, y, z, m.group("pvp")))
+        log.info("MORT notifiée : %s (compte=%s) (%s,%s,%s) %s",
+                 name, account or "?", x, y, z, m.group("pvp"))
     except discord.HTTPException as e:
         log.warning("Échec envoi notif mort pour %s : %s", name, e)
 
@@ -627,6 +672,7 @@ async def death_watcher():
     offset = 0
     buffer = b""
     started = False
+    online: dict[str, dict] = {}
     last_death: dict[str, float] = {}
 
     while not bot.is_closed():
@@ -635,22 +681,32 @@ async def death_watcher():
             await asyncio.sleep(DEATH_POLL_SECONDS)
             continue
         if newest != current:
-            current, buffer = newest, b""
+            # Nouveau fichier (démarrage ou rotation de session) : on relit TOUT le
+            # fichier pour reconstruire l'ensemble des comptes connectés (sinon on ne
+            # saurait pas qui est en ligne au moment d'une mort), mais on n'ÉMET les
+            # morts que si ce n'est pas le tout premier fichier — au boot on saute
+            # l'historique (notifs « live » uniquement).
+            current, online = newest, {}
             try:
-                size = os.path.getsize(newest)
+                with open(current, "rb") as f:
+                    buffer = f.read()
             except OSError:
-                size = 0
-            # 1er fichier vu au démarrage -> on saute l'historique (live only) ;
-            # tout NOUVEAU fichier ensuite (redémarrage serveur) -> lu depuis 0.
-            offset = size if not started else 0
+                buffer = b""
+            offset = len(buffer)
+            *lines, buffer = buffer.split(b"\n")   # garde le reliquat incomplet
+            for raw in lines:
+                await _process_line(channel, raw.decode("utf-8", "replace"),
+                                    online, last_death, emit=started)
             started = True
+            await asyncio.sleep(DEATH_POLL_SECONDS)
+            continue
         try:
             fsize = os.path.getsize(current)
         except OSError:
             await asyncio.sleep(DEATH_POLL_SECONDS)
             continue
         if fsize < offset:            # fichier tronqué/remplacé en place
-            offset, buffer = 0, b""
+            offset, buffer, online = 0, b"", {}
         if fsize > offset:
             try:
                 with open(current, "rb") as f:
@@ -663,7 +719,8 @@ async def death_watcher():
             buffer += data
             *lines, buffer = buffer.split(b"\n")   # garde le reliquat incomplet
             for raw in lines:
-                await _handle_death_line(channel, raw.decode("utf-8", "replace"), last_death)
+                await _process_line(channel, raw.decode("utf-8", "replace"),
+                                    online, last_death, emit=True)
         await asyncio.sleep(DEATH_POLL_SECONDS)
 
 
