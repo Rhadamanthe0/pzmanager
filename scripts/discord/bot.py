@@ -13,7 +13,9 @@ Configuration lue depuis l'environnement (exporté par run-bot.sh via .env) :
   DISCORD_BOT_CHANNEL_ID     ID(s) du/des salon(s) autorisé(s) (séparés par virgule)
   DISCORD_BOT_ADMIN_ROLE_ID  ID du rôle autorisé à lancer des commandes
   DISCORD_BOT_CMD_TIMEOUT    Timeout d'exécution d'une commande, secondes (défaut 2400)
+  DISCORD_BOT_DEATH_CHANNEL_ID  Salon où notifier les morts de joueurs (optionnel)
   PZ_MANAGER_DIR             Racine pzmanager (contient le dispatcher `pzm`)
+  PZ_SOURCE_DIR              Racine Zomboid (contient Logs/ pour les morts)
 
 Sécurité : chaque sous-commande construit un argv fixe passé à `pzm` via
 create_subprocess_exec (jamais shell=True). Aucune injection shell possible ;
@@ -22,10 +24,14 @@ seul `pzm` peut être invoqué.
 
 import asyncio
 import functools
+import glob
 import io
 import logging
 import os
+import re
 import shlex
+import time
+from datetime import datetime, timezone
 from typing import Literal, Optional
 
 import discord
@@ -49,6 +55,24 @@ ROLE_ID = int(ADMIN_ROLE_ID) if ADMIN_ROLE_ID.isdigit() else None
 # Limite d'un message Discord. Dès que la sortie ne tient pas dans un seul bloc
 # de code, on la joint en fichier plutôt que d'empiler plusieurs messages.
 DISCORD_MAX = 2000
+
+# --- Notification des morts de joueurs ---------------------------------------
+# PZ écrit chaque mort dans Zomboid/Logs/<session>_user.txt (fichier TOURNANT,
+# recréé à chaque session ; absent de journald). Format d'une ligne de mort :
+#   [dd-mm-yy HH:MM:SS.mmm] user <NOM> died at (x,y,z) (non pvp).
+# La cause de la mort n'est PAS journalisée par le serveur vanilla : on remonte
+# donc le maximum de contexte disponible — pseudo, coordonnées (x,y,étage),
+# PvP/Non-PvP, heure. Désactivé si DISCORD_BOT_DEATH_CHANNEL_ID est vide.
+_DEATH_CHANNEL_RAW = os.environ.get("DISCORD_BOT_DEATH_CHANNEL_ID", "").strip()
+DEATH_CHANNEL_ID = int(_DEATH_CHANNEL_RAW) if _DEATH_CHANNEL_RAW.isdigit() else None
+PZ_SOURCE_DIR = os.environ.get("PZ_SOURCE_DIR", "").rstrip("/")
+DEATH_LOG_DIR = f"{PZ_SOURCE_DIR}/Logs" if PZ_SOURCE_DIR else ""
+DEATH_POLL_SECONDS = 4       # fréquence de lecture du log
+DEATH_DEDUP_SECONDS = 15     # même joueur = 1 notif (le moteur logge parfois
+                             # plusieurs lignes en < 1 s pour une même mort)
+DEATH_LINE_RE = re.compile(
+    r"user (?P<name>.+?) died at \((?P<x>-?\d+),(?P<y>-?\d+),(?P<z>-?\d+)\) "
+    r"\((?P<pvp>non pvp|pvp)\)")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -528,6 +552,121 @@ async def pzm_help(interaction: discord.Interaction):
 tree.add_command(pzm_group)
 
 
+# --- Death-watcher : notification des morts de joueurs -----------------------
+
+def _newest_user_log() -> Optional[str]:
+    """Chemin du <session>_user.txt le plus récent (session active), ou None."""
+    try:
+        files = glob.glob(os.path.join(DEATH_LOG_DIR, "*_user.txt"))
+        return max(files, key=os.path.getmtime) if files else None
+    except OSError:
+        return None
+
+
+def _death_embed(name: str, x: str, y: str, z: str, pvp: str) -> discord.Embed:
+    """Embed d'une mort avec le maximum de contexte tiré du log (pas de cause :
+    non journalisée par le serveur vanilla)."""
+    pos = f"x={x}, y={y}"
+    if z not in ("0", "-0"):
+        pos += f" · étage {z}"
+    embed = discord.Embed(
+        title="☠️ Mort d'un joueur",
+        description=f"**{discord.utils.escape_markdown(name)}** est mort.",
+        color=0xB03030,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Position", value=pos, inline=True)
+    embed.add_field(
+        name="Contexte",
+        value="⚔️ PvP" if pvp == "pvp" else "🧟 Non-PvP (zombie / environnement)",
+        inline=True)
+    embed.set_footer(text="Cause exacte non journalisée par le serveur vanilla")
+    return embed
+
+
+async def _handle_death_line(channel, line: str, last_death: dict[str, float]):
+    """Poste une notif si la ligne est une mort, en dédupliquant par joueur sur une
+    courte fenêtre (le moteur logge parfois plusieurs lignes pour une même mort)."""
+    m = DEATH_LINE_RE.search(line)
+    if not m:
+        return
+    name = m.group("name").strip()
+    now = time.monotonic()
+    if now - last_death.get(name, float("-inf")) < DEATH_DEDUP_SECONDS:
+        return
+    last_death[name] = now
+    for stale in [k for k, t in last_death.items() if now - t > DEATH_DEDUP_SECONDS * 4]:
+        del last_death[stale]
+    try:
+        await channel.send(embed=_death_embed(
+            name, m.group("x"), m.group("y"), m.group("z"), m.group("pvp")))
+        log.info("MORT notifiée : %s (%s,%s,%s) %s", name,
+                 m.group("x"), m.group("y"), m.group("z"), m.group("pvp"))
+    except discord.HTTPException as e:
+        log.warning("Échec envoi notif mort pour %s : %s", name, e)
+
+
+async def death_watcher():
+    """Tâche de fond : suit le log user.txt et poste chaque mort dans le salon
+    dédié. Gère la rotation du fichier (nouvelle session serveur) et ignore
+    l'historique déjà présent au démarrage (notifs « live » uniquement)."""
+    await bot.wait_until_ready()
+    if DEATH_CHANNEL_ID is None or not DEATH_LOG_DIR:
+        return
+    channel = bot.get_channel(DEATH_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(DEATH_CHANNEL_ID)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
+            log.warning("Salon des morts %s inaccessible (%s) — notif désactivée",
+                        DEATH_CHANNEL_ID, e)
+            return
+    log.info("Death-watcher actif : salon=%s dir=%s", DEATH_CHANNEL_ID, DEATH_LOG_DIR)
+
+    current: Optional[str] = None
+    offset = 0
+    buffer = b""
+    started = False
+    last_death: dict[str, float] = {}
+
+    while not bot.is_closed():
+        newest = _newest_user_log()
+        if newest is None:
+            await asyncio.sleep(DEATH_POLL_SECONDS)
+            continue
+        if newest != current:
+            current, buffer = newest, b""
+            try:
+                size = os.path.getsize(newest)
+            except OSError:
+                size = 0
+            # 1er fichier vu au démarrage -> on saute l'historique (live only) ;
+            # tout NOUVEAU fichier ensuite (redémarrage serveur) -> lu depuis 0.
+            offset = size if not started else 0
+            started = True
+        try:
+            fsize = os.path.getsize(current)
+        except OSError:
+            await asyncio.sleep(DEATH_POLL_SECONDS)
+            continue
+        if fsize < offset:            # fichier tronqué/remplacé en place
+            offset, buffer = 0, b""
+        if fsize > offset:
+            try:
+                with open(current, "rb") as f:
+                    f.seek(offset)
+                    data = f.read()
+            except OSError:
+                await asyncio.sleep(DEATH_POLL_SECONDS)
+                continue
+            offset += len(data)
+            buffer += data
+            *lines, buffer = buffer.split(b"\n")   # garde le reliquat incomplet
+            for raw in lines:
+                await _handle_death_line(channel, raw.decode("utf-8", "replace"), last_death)
+        await asyncio.sleep(DEATH_POLL_SECONDS)
+
+
 @bot.event
 async def setup_hook():
     if GUILD_ID.isdigit():
@@ -538,6 +677,10 @@ async def setup_hook():
     else:
         await tree.sync()
         log.info("Slash commands synchronisées globalement (propagation ~1h)")
+    if DEATH_CHANNEL_ID is not None:
+        bot.loop.create_task(death_watcher())
+    else:
+        log.info("Notification des morts désactivée (DISCORD_BOT_DEATH_CHANNEL_ID vide)")
 
 
 @bot.event
