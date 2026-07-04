@@ -49,9 +49,9 @@ Commandes disponibles:
     discord            Installer/activer le bot Discord (slash /pzm)
 
   map <action> [arguments]
-    wipe <x> <y> [--apply]              Regenerer le chunk d'une tuile
-    wipe <x1> <y1> <x2> <y2> [--apply]  Regenerer un rectangle de tuiles
-      (serveur arrete ; DRY-RUN par defaut, --apply pour supprimer ;
+    wipe <x> <y>                Regenerer le chunk d'une tuile
+    wipe <x1> <y1> <x2> <y2>    Regenerer un rectangle de tuiles
+      (serveur arrete ; suppression immediate + snapshot auto ;
        --cell pour effacer aussi la pop/metadata de la/les cellule(s) 300x300)
 
   rcon <cmd> [args]    Envoyer commande RCON au serveur

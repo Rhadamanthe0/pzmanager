@@ -12,7 +12,6 @@
 #   wipeMapTile.sh <x1> <y1> <x2> <y2> [options]    # rectangle de tuiles
 #
 # Options:
-#   --apply        Effectuer reellement la suppression (defaut: DRY-RUN)
 #   --cell         Effacer AUSSI les fichiers niveau cellule (300x300) : pop
 #                  zombies/animaux + metadonnees. ATTENTION : porte sur toute la
 #                  cellule, pas seulement la zone demandee.
@@ -28,8 +27,9 @@
 #   metagrid/metacell_<Cx>_<Cy>.bin        metagrid,  par CELLULE
 #   ou  cx = tuileX / 10   et   Cx = tuileX / 300
 #
-# Securite : refuse de tourner si le serveur est actif ; snapshot de chaque
-# fichier supprime dans ${BACKUP_DIR}/tile-wipe-snapshots/ avant suppression.
+# Suppression IMMEDIATE (pas de dry-run). Securite : refuse de tourner si le
+# serveur est actif ; snapshot de chaque fichier supprime dans
+# ${BACKUP_DIR}/tile-wipe-snapshots/ avant suppression.
 # ------------------------------------------------------------------------------
 
 set -euo pipefail
@@ -42,19 +42,17 @@ readonly CHUNK_SIZE=10
 readonly CELL_SIZE=300
 
 usage() {
-    sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+    awk 'NR==1{next} /^# ---/{c++; if(c==2) exit} c>=1{sub(/^# ?/,""); print}' "$0"
     exit "${1:-0}"
 }
 
 # --- Parse des arguments -----------------------------------------------------
-APPLY=false
 WIPE_CELL=false
 SAVE_NAME=""
 COORDS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --apply)  APPLY=true; shift ;;
         --cell)   WIPE_CELL=true; shift ;;
         --save)   SAVE_NAME="${2:-}"; shift 2 ;;
         -h|--help) usage 0 ;;
@@ -139,12 +137,6 @@ printf '  %s\n' "${targets[@]:0:20}"
 
 if (( ${#targets[@]} == 0 )); then
     echo "Rien a supprimer (zone non encore generee sur la sauvegarde -> la maj du mod s'appliquera d'elle-meme)."
-    exit 0
-fi
-
-if ! $APPLY; then
-    echo
-    echo "DRY-RUN : aucune suppression effectuee. Relancez avec --apply pour supprimer."
     exit 0
 fi
 
