@@ -554,23 +554,84 @@ tree.add_command(pzm_group)
 
 # --- Death-watcher : notification des morts de joueurs -----------------------
 
-def _newest_user_log() -> Optional[str]:
-    """Chemin du <session>_user.txt le plus récent (session active), ou None."""
-    try:
-        files = glob.glob(os.path.join(DEATH_LOG_DIR, "*_user.txt"))
-        return max(files, key=os.path.getmtime) if files else None
-    except OSError:
-        return None
+PVP_DEDUP_SECONDS = 45   # même victime PvP = 1 notif (une bagarre logge plusieurs
+                         # « Kill » rapprochés, surtout avec un mod de réanimation)
 
-
-# La ligne « died at » ne porte QUE le nom du personnage + coordonnées. Le username
-# du compte n'apparaît QUE sur les lignes connect/disconnect (avec le SteamID), jamais
-# sur la même ligne qu'une mort. On suit donc l'ensemble des comptes connectés pour
-# pouvoir rattacher une mort à son compte.
+# La ligne « died at » (user.txt) ne porte QUE le nom du personnage + coordonnées, et
+# son flag « (non pvp) » est TOUJOURS « non pvp » (jamais fiable). Le username du compte
+# n'apparaît QUE sur les lignes connect/disconnect (avec le SteamID). On suit donc les
+# comptes connectés pour rattacher une mort à son compte.
 CONNECT_RE = re.compile(
     r'(?P<sid>\d{17}) "(?P<user>.+?)" fully connected \((?P<x>-?\d+),(?P<y>-?\d+)')
 DISCONNECT_RE = re.compile(
     r'(?P<sid>\d{17}) "(?P<user>.+?)" disconnected player \(')
+
+# Le vrai PvP est dans pvp.txt (usernames de compte, pas noms de perso) :
+#   Combat: "Tueur" (...) hit "Victime" (...) weapon="Arme" damage=...
+#   Kill:   "Tueur" (...) killed "Victime" (x,y,z).
+KILL_RE = re.compile(
+    r'Kill: "(?P<killer>.+?)" \([^)]*\) killed "(?P<victim>.+?)" '
+    r'\((?P<x>-?\d+),(?P<y>-?\d+),(?P<z>-?\d+)\)')
+COMBAT_RE = re.compile(
+    r'Combat: "(?P<attacker>.+?)" \([^)]*\) hit "(?P<victim>.+?)" \([^)]*\) '
+    r'weapon="(?P<weapon>[^"]*)"')
+
+
+class _Tail:
+    """Suit un fichier de log tournant (glob), en gérant rotation de session,
+    troncature et reliquat de ligne partielle. read() renvoie (lignes_complètes,
+    emit) : emit vaut False uniquement pour le backfill du tout premier fichier vu
+    (au boot on saute l'historique), True ensuite. L'appelant met TOUJOURS à jour
+    son état à partir des lignes, mais n'ÉMET de notif que si emit."""
+
+    def __init__(self, pattern: str):
+        self._pattern = pattern
+        self._path: Optional[str] = None
+        self._offset = 0
+        self._buffer = b""
+        self._started = False
+
+    def _newest(self) -> Optional[str]:
+        try:
+            files = glob.glob(self._pattern)
+            return max(files, key=os.path.getmtime) if files else None
+        except OSError:
+            return None
+
+    def _decode(self, data: bytes) -> list[str]:
+        *lines, self._buffer = (self._buffer + data).split(b"\n")
+        return [ln.decode("utf-8", "replace") for ln in lines]
+
+    def read(self) -> tuple[list[str], bool]:
+        newest = self._newest()
+        if newest is None:
+            return [], True
+        if newest != self._path:               # boot ou rotation -> relire tout
+            self._path, self._buffer = newest, b""
+            try:
+                with open(newest, "rb") as f:
+                    data = f.read()
+            except OSError:
+                data = b""
+            self._offset = len(data)
+            emit, self._started = self._started, True
+            return self._decode(data), emit
+        try:
+            fsize = os.path.getsize(self._path)
+        except OSError:
+            return [], True
+        if fsize < self._offset:               # tronqué/remplacé en place
+            self._offset, self._buffer = 0, b""
+        if fsize <= self._offset:
+            return [], True
+        try:
+            with open(self._path, "rb") as f:
+                f.seek(self._offset)
+                data = f.read()
+        except OSError:
+            return [], True
+        self._offset += len(data)
+        return self._decode(data), True
 
 
 def _resolve_account(online: dict, dx: int, dy: int) -> Optional[str]:
@@ -591,35 +652,61 @@ def _resolve_account(online: dict, dx: int, dy: int) -> Optional[str]:
     return accts[0]["user"] if d1 >= d0 * 4 else None
 
 
-def _death_embed(name: str, account: Optional[str], x: str, y: str, z: str,
-                 pvp: str) -> discord.Embed:
-    """Embed d'une mort avec le maximum de contexte tiré du log : nom du personnage,
-    username du compte entre parenthèses (si identifiable), coordonnées, PvP/Non-PvP."""
+def _position(x: str, y: str, z: str) -> str:
+    pos = f"x={x}, y={y}"
+    return pos + (f" · étage {z}" if z not in ("0", "-0") else "")
+
+
+def _death_embed(name: str, account: Optional[str], x: str, y: str, z: str) -> discord.Embed:
+    """Mort NON-PvP (zombie / environnement / hémorragie…) issue de user.txt : nom du
+    personnage + username du compte entre parenthèses (si identifiable) + position.
+    On n'affiche PAS de flag PvP ici : le log user.txt marque toujours « non pvp »
+    (le vrai PvP arrive par pvp.txt, notifié séparément)."""
     who = f"**{discord.utils.escape_markdown(name)}**"
     if account and account != name:
         who += f" ({discord.utils.escape_markdown(account)})"
-    pos = f"x={x}, y={y}"
-    if z not in ("0", "-0"):
-        pos += f" · étage {z}"
     embed = discord.Embed(
         title="☠️ Mort d'un joueur",
         description=f"{who} est mort.",
         color=0xB03030,
         timestamp=datetime.now(timezone.utc),
     )
-    embed.add_field(name="Position", value=pos, inline=True)
-    embed.add_field(
-        name="Contexte",
-        value="⚔️ PvP" if pvp == "pvp" else "🧟 Non-PvP (zombie / environnement)",
-        inline=True)
+    embed.add_field(name="Position", value=_position(x, y, z), inline=True)
     return embed
 
 
-async def _process_line(channel, line: str, online: dict,
-                        last_death: dict[str, float], emit: bool):
-    """Met à jour l'ensemble des comptes connectés (connect/disconnect) et, si `emit`,
-    poste une notif quand la ligne est une mort (dédupliquée par personnage sur une
-    courte fenêtre — le moteur logge parfois plusieurs lignes pour une même mort)."""
+def _pvp_embed(victim: str, killer: str, weapon: Optional[str],
+               x: str, y: str, z: str) -> discord.Embed:
+    """Mort PvP issue de pvp.txt : victime et tueur (usernames de compte) + arme si
+    connue (dernier coup avant le kill) + position."""
+    embed = discord.Embed(
+        title="⚔️ Mort PvP",
+        description=(f"**{discord.utils.escape_markdown(victim)}** a été tué par "
+                     f"**{discord.utils.escape_markdown(killer)}**."),
+        color=0x8B0000,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Position", value=_position(x, y, z), inline=True)
+    if weapon:
+        embed.add_field(name="Arme", value=discord.utils.escape_markdown(weapon), inline=True)
+    return embed
+
+
+def _dedup(seen: dict[str, float], key: str, now: float, window: float) -> bool:
+    """True s'il faut IGNORER (même clé revue dans la fenêtre). Marque et purge sinon."""
+    if now - seen.get(key, float("-inf")) < window:
+        return True
+    seen[key] = now
+    for stale in [k for k, t in seen.items() if now - t > window * 4]:
+        del seen[stale]
+    return False
+
+
+async def _process_user_line(channel, line: str, state: dict, emit: bool):
+    """user.txt : met à jour les comptes connectés et, si `emit`, notifie une mort
+    NON-PvP (les morts PvP sont couvertes par pvp.txt ; on saute donc une mort dont
+    un « Kill » PvP tout récent au même endroit a déjà été notifié)."""
+    online = state["online"]
     m = CONNECT_RE.search(line)
     if m:
         online[m.group("sid")] = {"user": m.group("user").strip(),
@@ -636,25 +723,52 @@ async def _process_line(channel, line: str, online: dict,
         return
     name = m.group("name").strip()
     now = time.monotonic()
-    if now - last_death.get(name, float("-inf")) < DEATH_DEDUP_SECONDS:
+    if _dedup(state["last_death"], name, now, DEATH_DEDUP_SECONDS):
         return
-    last_death[name] = now
-    for stale in [k for k, t in last_death.items() if now - t > DEATH_DEDUP_SECONDS * 4]:
-        del last_death[stale]
     x, y, z = m.group("x"), m.group("y"), m.group("z")
-    account = _resolve_account(online, int(x), int(y))
+    ix, iy = int(x), int(y)
+    if any(now - t < 12 and (kx - ix) ** 2 + (ky - iy) ** 2 <= 100
+           for t, kx, ky in state["recent_kills"]):
+        return  # déjà notifiée comme mort PvP
+    account = _resolve_account(online, ix, iy)
     try:
-        await channel.send(embed=_death_embed(name, account, x, y, z, m.group("pvp")))
-        log.info("MORT notifiée : %s (compte=%s) (%s,%s,%s) %s",
-                 name, account or "?", x, y, z, m.group("pvp"))
+        await channel.send(embed=_death_embed(name, account, x, y, z))
+        log.info("MORT notifiée : %s (compte=%s) (%s,%s,%s)", name, account or "?", x, y, z)
     except discord.HTTPException as e:
         log.warning("Échec envoi notif mort pour %s : %s", name, e)
 
 
+async def _process_pvp_line(channel, line: str, state: dict, emit: bool):
+    """pvp.txt : mémorise l'arme des coups (Combat) et, si `emit`, notifie chaque
+    Kill (victime tuée par tueur + arme), dédupliqué par victime."""
+    weapon = state["weapon"]
+    m = COMBAT_RE.search(line)
+    if m:
+        if len(weapon) > 200:
+            weapon.clear()
+        weapon[(m.group("attacker").strip(), m.group("victim").strip())] = m.group("weapon")
+        return
+    m = KILL_RE.search(line)
+    if not m or not emit:
+        return
+    killer, victim = m.group("killer").strip(), m.group("victim").strip()
+    now = time.monotonic()
+    if _dedup(state["last_pvp"], victim, now, PVP_DEDUP_SECONDS):
+        return
+    x, y, z = m.group("x"), m.group("y"), m.group("z")
+    state["recent_kills"].append((now, int(x), int(y)))
+    state["recent_kills"][:] = [k for k in state["recent_kills"] if now - k[0] < 60]
+    try:
+        await channel.send(embed=_pvp_embed(victim, killer, weapon.get((killer, victim)), x, y, z))
+        log.info("MORT PvP notifiée : %s tué par %s (%s,%s,%s)", victim, killer, x, y, z)
+    except discord.HTTPException as e:
+        log.warning("Échec envoi notif PvP pour %s : %s", victim, e)
+
+
 async def death_watcher():
-    """Tâche de fond : suit le log user.txt et poste chaque mort dans le salon
-    dédié. Gère la rotation du fichier (nouvelle session serveur) et ignore
-    l'historique déjà présent au démarrage (notifs « live » uniquement)."""
+    """Tâche de fond : suit user.txt (morts non-PvP) ET pvp.txt (morts PvP) et poste
+    dans le salon dédié. Gère la rotation de session et saute l'historique au démarrage
+    (notifs « live » uniquement)."""
     await bot.wait_until_ready()
     if DEATH_CHANNEL_ID is None or not DEATH_LOG_DIR:
         return
@@ -668,59 +782,23 @@ async def death_watcher():
             return
     log.info("Death-watcher actif : salon=%s dir=%s", DEATH_CHANNEL_ID, DEATH_LOG_DIR)
 
-    current: Optional[str] = None
-    offset = 0
-    buffer = b""
-    started = False
-    online: dict[str, dict] = {}
-    last_death: dict[str, float] = {}
+    state = {
+        "online": {},         # sid -> {user, x, y} : comptes connectés
+        "last_death": {},     # perso -> t : dédup des morts user.txt
+        "last_pvp": {},       # victime -> t : dédup des kills pvp.txt
+        "weapon": {},         # (tueur, victime) -> arme du dernier coup
+        "recent_kills": [],   # (t, x, y) : kills PvP récents (dédup croisée user.txt)
+    }
+    user_tail = _Tail(os.path.join(DEATH_LOG_DIR, "*_user.txt"))
+    pvp_tail = _Tail(os.path.join(DEATH_LOG_DIR, "*_pvp.txt"))
 
     while not bot.is_closed():
-        newest = _newest_user_log()
-        if newest is None:
-            await asyncio.sleep(DEATH_POLL_SECONDS)
-            continue
-        if newest != current:
-            # Nouveau fichier (démarrage ou rotation de session) : on relit TOUT le
-            # fichier pour reconstruire l'ensemble des comptes connectés (sinon on ne
-            # saurait pas qui est en ligne au moment d'une mort), mais on n'ÉMET les
-            # morts que si ce n'est pas le tout premier fichier — au boot on saute
-            # l'historique (notifs « live » uniquement).
-            current, online = newest, {}
-            try:
-                with open(current, "rb") as f:
-                    buffer = f.read()
-            except OSError:
-                buffer = b""
-            offset = len(buffer)
-            *lines, buffer = buffer.split(b"\n")   # garde le reliquat incomplet
-            for raw in lines:
-                await _process_line(channel, raw.decode("utf-8", "replace"),
-                                    online, last_death, emit=started)
-            started = True
-            await asyncio.sleep(DEATH_POLL_SECONDS)
-            continue
-        try:
-            fsize = os.path.getsize(current)
-        except OSError:
-            await asyncio.sleep(DEATH_POLL_SECONDS)
-            continue
-        if fsize < offset:            # fichier tronqué/remplacé en place
-            offset, buffer, online = 0, b"", {}
-        if fsize > offset:
-            try:
-                with open(current, "rb") as f:
-                    f.seek(offset)
-                    data = f.read()
-            except OSError:
-                await asyncio.sleep(DEATH_POLL_SECONDS)
-                continue
-            offset += len(data)
-            buffer += data
-            *lines, buffer = buffer.split(b"\n")   # garde le reliquat incomplet
-            for raw in lines:
-                await _process_line(channel, raw.decode("utf-8", "replace"),
-                                    online, last_death, emit=True)
+        lines, emit = user_tail.read()
+        for line in lines:
+            await _process_user_line(channel, line, state, emit)
+        lines, emit = pvp_tail.read()
+        for line in lines:
+            await _process_pvp_line(channel, line, state, emit)
         await asyncio.sleep(DEATH_POLL_SECONDS)
 
 
