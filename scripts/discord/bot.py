@@ -657,38 +657,44 @@ def _position(x: str, y: str, z: str) -> str:
     return pos + (f" · étage {z}" if z not in ("0", "-0") else "")
 
 
-def _death_embed(name: str, account: Optional[str], x: str, y: str, z: str) -> discord.Embed:
-    """Mort NON-PvP (zombie / environnement / hémorragie…) issue de user.txt : nom du
-    personnage + username du compte entre parenthèses (si identifiable) + position.
-    On n'affiche PAS de flag PvP ici : le log user.txt marque toujours « non pvp »
-    (le vrai PvP arrive par pvp.txt, notifié séparément)."""
+def _death_embed(name: str, account: Optional[str], x: str, y: str, z: str,
+                 cause: str) -> discord.Embed:
+    """Mort DÉFINITIVE issue de user.txt (le perso meurt pour de bon) : nom du perso
+    + username du compte entre parenthèses (si identifiable) + cause + position.
+    Cause : « ⚔️ Combat PvP » si un takedown PvP récent proche est connu (le joueur a
+    fini par succomber), sinon « 🧟 Environnement / zombie » (le flag « non pvp » de
+    user.txt étant toujours faux, on déduit la cause du contexte pvp.txt)."""
     who = f"**{discord.utils.escape_markdown(name)}**"
     if account and account != name:
         who += f" ({discord.utils.escape_markdown(account)})"
     embed = discord.Embed(
-        title="☠️ Mort d'un joueur",
-        description=f"{who} est mort.",
+        title="☠️ Mort définitive",
+        description=f"{who} est mort définitivement.",
         color=0xB03030,
         timestamp=datetime.now(timezone.utc),
     )
+    embed.add_field(name="Cause",
+                    value="⚔️ Combat PvP" if cause == "pvp" else "🧟 Environnement / zombie",
+                    inline=True)
     embed.add_field(name="Position", value=_position(x, y, z), inline=True)
     return embed
 
 
 def _pvp_embed(victim: str, killer: str, weapon: Optional[str],
                x: str, y: str, z: str) -> discord.Embed:
-    """Mort PvP issue de pvp.txt : victime et tueur (usernames de compte) + arme si
-    connue (dernier coup avant le kill) + position."""
+    """Incapacité PvP issue de pvp.txt : la victime est mise à terre par le tueur
+    (usernames de compte). Avec le mod de réanimation, c'est un KO réanimable — la mort
+    définitive, si elle suit, est notifiée séparément (☠️). Arme = dernier coup + position."""
     embed = discord.Embed(
-        title="⚔️ Mort PvP",
-        description=(f"**{discord.utils.escape_markdown(victim)}** a été tué par "
-                     f"**{discord.utils.escape_markdown(killer)}**."),
-        color=0x8B0000,
+        title="⚔️ Incapacité PvP",
+        description=(f"**{discord.utils.escape_markdown(victim)}** a été mis à terre par "
+                     f"**{discord.utils.escape_markdown(killer)}** (réanimable)."),
+        color=0xE67E22,
         timestamp=datetime.now(timezone.utc),
     )
-    embed.add_field(name="Position", value=_position(x, y, z), inline=True)
     if weapon:
         embed.add_field(name="Arme", value=discord.utils.escape_markdown(weapon), inline=True)
+    embed.add_field(name="Position", value=_position(x, y, z), inline=True)
     return embed
 
 
@@ -727,13 +733,15 @@ async def _process_user_line(channel, line: str, state: dict, emit: bool):
         return
     x, y, z = m.group("x"), m.group("y"), m.group("z")
     ix, iy = int(x), int(y)
-    if any(now - t < 12 and (kx - ix) ** 2 + (ky - iy) ** 2 <= 100
-           for t, kx, ky in state["recent_kills"]):
-        return  # déjà notifiée comme mort PvP
+    # Cause : un takedown PvP récent (≤ 5 min) et proche (≤ 50 tuiles) -> le joueur a
+    # succombé à ses blessures PvP ; sinon environnement / zombie.
+    cause = "pvp" if any(now - t < 300 and (kx - ix) ** 2 + (ky - iy) ** 2 <= 2500
+                         for t, kx, ky in state["recent_kills"]) else "env"
     account = _resolve_account(online, ix, iy)
     try:
-        await channel.send(embed=_death_embed(name, account, x, y, z))
-        log.info("MORT notifiée : %s (compte=%s) (%s,%s,%s)", name, account or "?", x, y, z)
+        await channel.send(embed=_death_embed(name, account, x, y, z, cause))
+        log.info("MORT DÉFINITIVE notifiée : %s (compte=%s) (%s,%s,%s) cause=%s",
+                 name, account or "?", x, y, z, cause)
     except discord.HTTPException as e:
         log.warning("Échec envoi notif mort pour %s : %s", name, e)
 
@@ -757,10 +765,11 @@ async def _process_pvp_line(channel, line: str, state: dict, emit: bool):
         return
     x, y, z = m.group("x"), m.group("y"), m.group("z")
     state["recent_kills"].append((now, int(x), int(y)))
-    state["recent_kills"][:] = [k for k in state["recent_kills"] if now - k[0] < 60]
+    state["recent_kills"][:] = [k for k in state["recent_kills"] if now - k[0] < 300]
     try:
         await channel.send(embed=_pvp_embed(victim, killer, weapon.get((killer, victim)), x, y, z))
-        log.info("MORT PvP notifiée : %s tué par %s (%s,%s,%s)", victim, killer, x, y, z)
+        log.info("INCAPACITÉ PvP notifiée : %s mis à terre par %s (%s,%s,%s)",
+                 victim, killer, x, y, z)
     except discord.HTTPException as e:
         log.warning("Échec envoi notif PvP pour %s : %s", victim, e)
 
