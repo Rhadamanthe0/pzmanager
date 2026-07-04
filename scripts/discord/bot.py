@@ -556,6 +556,12 @@ tree.add_command(pzm_group)
 
 PVP_DEDUP_SECONDS = 45   # même victime PvP = 1 notif (une bagarre logge plusieurs
                          # « Kill » rapprochés, surtout avec un mod de réanimation)
+# Délai max entre un KO PvP et la mort définitive qui peut s'ensuivre : JaxeRevival
+# IncapacitatedTime=5 heures IN-GAME, et une heure in-game ≈ 11 min réelles ici
+# (PerkLog « Hours Survived », DayLength=4) -> ~55 min réelles. On garde 75 min de
+# marge pour continuer d'étiqueter « Combat PvP » une mort qui suit une incapacité PvP.
+PVP_CAUSE_WINDOW = 75 * 60
+PVP_CAUSE_RADIUS2 = 30 ** 2   # un incapacité meurt là où il est tombé -> match spatial serré
 
 # La ligne « died at » (user.txt) ne porte QUE le nom du personnage + coordonnées, et
 # son flag « (non pvp) » est TOUJOURS « non pvp » (jamais fiable). Le username du compte
@@ -733,9 +739,10 @@ async def _process_user_line(channel, line: str, state: dict, emit: bool):
         return
     x, y, z = m.group("x"), m.group("y"), m.group("z")
     ix, iy = int(x), int(y)
-    # Cause : un takedown PvP récent (≤ 5 min) et proche (≤ 50 tuiles) -> le joueur a
+    # Cause : un takedown PvP récent (≤ fenêtre d'incapacité) et proche -> le joueur a
     # succombé à ses blessures PvP ; sinon environnement / zombie.
-    cause = "pvp" if any(now - t < 300 and (kx - ix) ** 2 + (ky - iy) ** 2 <= 2500
+    cause = "pvp" if any(now - t < PVP_CAUSE_WINDOW
+                         and (kx - ix) ** 2 + (ky - iy) ** 2 <= PVP_CAUSE_RADIUS2
                          for t, kx, ky in state["recent_kills"]) else "env"
     account = _resolve_account(online, ix, iy)
     try:
@@ -765,7 +772,7 @@ async def _process_pvp_line(channel, line: str, state: dict, emit: bool):
         return
     x, y, z = m.group("x"), m.group("y"), m.group("z")
     state["recent_kills"].append((now, int(x), int(y)))
-    state["recent_kills"][:] = [k for k in state["recent_kills"] if now - k[0] < 300]
+    state["recent_kills"][:] = [k for k in state["recent_kills"] if now - k[0] < PVP_CAUSE_WINDOW]
     try:
         await channel.send(embed=_pvp_embed(victim, killer, weapon.get((killer, victim)), x, y, z))
         log.info("INCAPACITÉ PvP notifiée : %s mis à terre par %s (%s,%s,%s)",
