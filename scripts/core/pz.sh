@@ -11,17 +11,20 @@ source "${SCRIPT_DIR}/../lib/common.sh"
 source_env "${SCRIPT_DIR}/.."
 
 readonly ACTION="${1:-}"
-DELAY="${2:-2m}"
 SILENT_MODE=false
 REASON=""
 IS_AUTOMATIC=false
 IS_MAINTENANCE=false
 
-# Validate delay
-[[ "$DELAY" =~ ^(30m|15m|5m|2m|30s|now)$ ]] || {
-    echo "Délais valides: 30m, 15m, 5m, 2m, 30s, now" >&2
-    exit 1
-}
+# Delay: use $2 only if it's an explicit delay token, otherwise "auto".
+# "auto" is resolved from the connected-player count at shutdown time
+# (>=2 joueurs -> 5m, 1 joueur -> 2m, 0 joueur -> now). This also lets
+# `restart --reason "..."` work without a leading delay token.
+if [[ -n "${2:-}" && "$2" =~ ^(30m|15m|5m|2m|30s|now|auto)$ ]]; then
+    DELAY="$2"
+else
+    DELAY="auto"
+fi
 
 # Parse named arguments
 while [[ $# -gt 0 ]]; do
@@ -55,6 +58,25 @@ done
 send_discord() {
     [[ "$SILENT_MODE" == true ]] && return 0
     "${SCRIPT_DIR}/../internal/sendDiscord.sh" "$1"
+}
+
+# Nombre de joueurs actuellement connectés (0 si serveur arrêté / indéterminé).
+count_connected_players() {
+    server_is_active || { echo 0; return; }
+    local out n
+    out="$("${SCRIPT_DIR}/../internal/sendCommand.sh" players 2>/dev/null || true)"
+    n="$(printf '%s\n' "$out" | grep -oE 'Players connected \([0-9]+\)' | grep -oE '[0-9]+' | head -1)"
+    [[ "$n" =~ ^[0-9]+$ ]] && echo "$n" || echo 0
+}
+
+# Mappe un nombre de joueurs vers un délai :
+#   >=2 -> 5m, 1 -> 2m, 0 -> now (aucun avertissement).
+delay_for_player_count() {
+    local n="$1"
+    if   (( n >= 2 )); then echo "5m"
+    elif (( n == 1 )); then echo "2m"
+    else                    echo "now"
+    fi
 }
 
 send_msg() {
@@ -146,6 +168,13 @@ shutdown_server() {
     local action="$1"
     try_acquire_maintenance_lock || true
 
+    # Délai automatique selon le nombre de joueurs connectés
+    if [[ "$DELAY" == "auto" ]]; then
+        local players; players="$(count_connected_players)"
+        DELAY="$(delay_for_player_count "$players")"
+        echo "Délai auto (${players} joueur(s) connecté(s)) → $DELAY"
+    fi
+
     if [[ "$DELAY" == "now" ]]; then
         local context_msg=$(format_context "$action IMMÉDIAT")
         send_discord "@here $context_msg"
@@ -215,7 +244,8 @@ case "$ACTION" in
     status)  do_status ;;
     *)
         echo "Usage: $0 <start|stop|restart|status> [délai] [options]"
-        echo "Délais: 30m|15m|5m|2m|30s|now (défaut: 2m)"
+        echo "Délais: 30m|15m|5m|2m|30s|now|auto (défaut: auto)"
+        echo "  auto = 5m si >=2 joueurs, 2m si 1 joueur, now si 0 joueur"
         echo "Options:"
         echo "  --reason=TEXT   Raison de l'action (ex: 'Maintenance', 'Mods')"
         echo "  --automatic     Marquer l'action comme automatique"

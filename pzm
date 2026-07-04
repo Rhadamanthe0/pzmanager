@@ -16,9 +16,10 @@ Commandes disponibles:
 
   server <action> [délai]
     start              Démarrer le serveur
-    stop [délai]       Arrêter (30m|15m|5m|2m|30s|now, défaut: 2m)
+    stop [délai]       Arrêter (30m|15m|5m|2m|30s|now|auto, défaut: auto)
     restart [délai]    Redémarrer
     status             Statut + logs récents
+                       délai auto = 5m si >=2 joueurs, 2m si 1, now si 0
 
   backup <action> [arguments]
     create             Backup incrémental horaire
@@ -46,6 +47,12 @@ Commandes disponibles:
     system             Configuration système initiale
     zomboid            Installer serveur Project Zomboid
     discord            Installer/activer le bot Discord (slash /pzm)
+
+  map <action> [arguments]
+    wipe <x> <y>                Regenerer le chunk d'une tuile
+    wipe <x1> <y1> <x2> <y2>    Regenerer un rectangle de tuiles
+      (serveur arrete ; suppression immediate + snapshot auto ;
+       --cell pour effacer aussi la pop/metadata de la/les cellule(s) 300x300)
 
   rcon <cmd> [args]    Envoyer commande RCON au serveur
 
@@ -194,6 +201,23 @@ cmd_install() {
     esac
 }
 
+# Routage commande map
+cmd_map() {
+    local action="${1:-}"
+    shift || true
+
+    case "$action" in
+        wipe)
+            exec "${SCRIPT_DIR}/scripts/admin/wipeMapTile.sh" "$@"
+            ;;
+        *)
+            echo "Erreur: Action map invalide: $action"
+            echo "Actions: wipe"
+            exit 1
+            ;;
+    esac
+}
+
 # Routage commande rcon
 cmd_rcon() {
     if [[ $# -eq 0 ]]; then
@@ -239,6 +263,9 @@ main() {
             ;;
         install)
             cmd_install "$@"
+            ;;
+        map)
+            cmd_map "$@"
             ;;
         rcon)
             cmd_rcon "$@"
