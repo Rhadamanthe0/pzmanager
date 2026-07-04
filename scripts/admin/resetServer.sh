@@ -223,10 +223,13 @@ restore_whitelist() {
     # On supprime d'abord l'admin généré pour éviter les doublons
     sqlite3 "$new_db" "DELETE FROM whitelist WHERE username = 'admin';"
 
+    # On restaure AUSSI lastConnection : sinon les comptes reviennent "jamais
+    # connectés" et la purge d'inactifs (purgeInactivePlayers.sh) les retire dès
+    # la maintenance suivante, avant même que les joueurs se reconnectent.
     sqlite3 "$new_db" \
         "ATTACH '$old_db' AS old_db;
-         INSERT OR IGNORE INTO main.whitelist (world, username, password, steamid, role, displayName)
-         SELECT world, username, password, steamid, role, displayName
+         INSERT OR IGNORE INTO main.whitelist (world, username, password, steamid, role, displayName, lastConnection)
+         SELECT world, username, password, steamid, role, displayName, lastConnection
          FROM old_db.whitelist;"
 
     # Autorisations d'accès (allowedsteamid) : EN B42 Open=false, c'est LA barrière
