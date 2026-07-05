@@ -1,0 +1,5 @@
+id=PZManagerIncapWatch
+name=PZManager Incap Watch (server-only)
+modversion=1.0.0
+require=JaxeRevival
+description=Utilitaire cote SERVEUR uniquement (aucun effet client). Detecte l'entree en etat d'incapacite des joueurs (mod REVIVAL by Jaxe) et l'ecrit dans les logs serveur pour que le bot Discord PZManager annonce les incapacites non-PvP (zombie / environnement). Contenu 100%% server-side : rien ne s'execute chez les joueurs.
