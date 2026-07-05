@@ -1,0 +1,12 @@
+version=1
+id=
+title=PZManager Incap Watch (server-only)
+description=Utilitaire cote SERVEUR uniquement, pour le serveur "Les Terres Grises".
+description=
+description=Detecte l'incapacite des joueurs (mod REVIVAL by Jaxe) et l'ecrit dans les logs serveur pour que le bot Discord annonce les mises a terre non-PvP (zombie / environnement).
+description=
+description=100%% server-side : ne s'execute PAS chez les joueurs, n'affiche rien, ne change rien au jeu. Il est publie uniquement parce que Project Zomboid exige que tout mod de la liste serveur soit present cote client.
+description=
+description=Dependance : REVIVAL by Jaxe (JaxeRevival).
+tags=Build 42
+visibility=public
