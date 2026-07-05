@@ -582,20 +582,30 @@ COMBAT_RE = re.compile(
     r'Combat: "(?P<attacker>.+?)" \([^)]*\) hit "(?P<victim>.+?)" \([^)]*\) '
     r'weapon="(?P<weapon>[^"]*)"')
 
+# Incapacité NON-PvP : écrite par notre mod server-only (media/lua/server) dans
+# <session>_pzmanager.txt. Un KO PvP est deja notifié via pvp.txt -> on dédup par
+# username (les deux logs utilisent l'username de compte).
+#   INCAPACITATED "<username>" @ x,y,z
+INCAP_RE = re.compile(
+    r'INCAPACITATED "(?P<user>.+?)" @ (?P<x>-?\d+),(?P<y>-?\d+),(?P<z>-?\d+)')
+INCAP_DEDUP_SECONDS = 60        # même joueur à terre = 1 notif
+INCAP_PVP_MATCH_SECONDS = 20    # KO déjà vu en PvP (pvp.txt) dans cette fenêtre -> pas de doublon
+
 
 class _Tail:
     """Suit un fichier de log tournant (glob), en gérant rotation de session,
     troncature et reliquat de ligne partielle. read() renvoie (lignes_complètes,
-    emit) : emit vaut False uniquement pour le backfill du tout premier fichier vu
-    (au boot on saute l'historique), True ensuite. L'appelant met TOUJOURS à jour
-    son état à partir des lignes, mais n'ÉMET de notif que si emit."""
+    emit) : emit vaut False uniquement pour l'historique du fichier DÉJÀ présent au
+    tout premier read (au boot on saute l'historique). Un fichier qui apparaît
+    ENSUITE (ex. pzmanager.txt créé à la 1re incapacité, ou rotation de session) est
+    du live -> emit True. L'appelant met TOUJOURS à jour son état, mais n'émet que si emit."""
 
     def __init__(self, pattern: str):
         self._pattern = pattern
         self._path: Optional[str] = None
         self._offset = 0
         self._buffer = b""
-        self._started = False
+        self._initialized = False
 
     def _newest(self) -> Optional[str]:
         try:
@@ -609,6 +619,8 @@ class _Tail:
         return [ln.decode("utf-8", "replace") for ln in lines]
 
     def read(self) -> tuple[list[str], bool]:
+        first_read = not self._initialized
+        self._initialized = True
         newest = self._newest()
         if newest is None:
             return [], True
@@ -620,7 +632,9 @@ class _Tail:
             except OSError:
                 data = b""
             self._offset = len(data)
-            emit, self._started = self._started, True
+            # Historique sauté seulement pour le fichier déjà là au 1er read (boot) ;
+            # un fichier apparu ensuite est du live.
+            emit = not first_read
             return self._decode(data), emit
         try:
             fsize = os.path.getsize(self._path)
@@ -704,6 +718,21 @@ def _pvp_embed(victim: str, killer: str, weapon: Optional[str],
     return embed
 
 
+def _incap_embed(account: str, x: str, y: str, z: str) -> discord.Embed:
+    """Incapacité NON-PvP issue du mod server-only (<session>_pzmanager.txt) : un
+    joueur est à terre suite à un zombie / l'environnement (les KO PvP arrivent par
+    pvp.txt et sont notifiés séparément)."""
+    embed = discord.Embed(
+        title="🧟 Incapacité",
+        description=(f"**{discord.utils.escape_markdown(account)}** est à terre "
+                     f"(zombie / environnement) — réanimable."),
+        color=0xC27C0E,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Position", value=_position(x, y, z), inline=True)
+    return embed
+
+
 def _dedup(seen: dict[str, float], key: str, now: float, window: float) -> bool:
     """True s'il faut IGNORER (même clé revue dans la fenêtre). Marque et purge sinon."""
     if now - seen.get(key, float("-inf")) < window:
@@ -743,7 +772,7 @@ async def _process_user_line(channel, line: str, state: dict, emit: bool):
     # succombé à ses blessures PvP ; sinon environnement / zombie.
     cause = "pvp" if any(now - t < PVP_CAUSE_WINDOW
                          and (kx - ix) ** 2 + (ky - iy) ** 2 <= PVP_CAUSE_RADIUS2
-                         for t, kx, ky in state["recent_kills"]) else "env"
+                         for t, kx, ky, _v in state["recent_kills"]) else "env"
     account = _resolve_account(online, ix, iy)
     try:
         await channel.send(embed=_death_embed(name, account, x, y, z, cause))
@@ -771,7 +800,7 @@ async def _process_pvp_line(channel, line: str, state: dict, emit: bool):
     if _dedup(state["last_pvp"], victim, now, PVP_DEDUP_SECONDS):
         return
     x, y, z = m.group("x"), m.group("y"), m.group("z")
-    state["recent_kills"].append((now, int(x), int(y)))
+    state["recent_kills"].append((now, int(x), int(y), victim))
     state["recent_kills"][:] = [k for k in state["recent_kills"] if now - k[0] < PVP_CAUSE_WINDOW]
     try:
         await channel.send(embed=_pvp_embed(victim, killer, weapon.get((killer, victim)), x, y, z))
@@ -779,6 +808,28 @@ async def _process_pvp_line(channel, line: str, state: dict, emit: bool):
                  victim, killer, x, y, z)
     except discord.HTTPException as e:
         log.warning("Échec envoi notif PvP pour %s : %s", victim, e)
+
+
+async def _process_pzm_line(channel, line: str, state: dict, emit: bool):
+    """pzmanager.txt (mod server-only) : notifie une incapacité NON-PvP. On saute
+    celles déjà couvertes par un « Kill » PvP tout récent pour le même username (les
+    deux logs utilisent l'username de compte -> match direct, pas de coords)."""
+    m = INCAP_RE.search(line)
+    if not m or not emit:
+        return
+    user = m.group("user").strip()
+    now = time.monotonic()
+    if any(now - t < INCAP_PVP_MATCH_SECONDS and victim == user
+           for t, _x, _y, victim in state["recent_kills"]):
+        return  # KO déjà annoncé comme incapacité PvP (pvp.txt)
+    if _dedup(state["last_incap"], user, now, INCAP_DEDUP_SECONDS):
+        return
+    x, y, z = m.group("x"), m.group("y"), m.group("z")
+    try:
+        await channel.send(embed=_incap_embed(user, x, y, z))
+        log.info("INCAPACITÉ (non-PvP) notifiée : %s (%s,%s,%s)", user, x, y, z)
+    except discord.HTTPException as e:
+        log.warning("Échec envoi notif incapacité pour %s : %s", user, e)
 
 
 async def death_watcher():
@@ -802,19 +853,24 @@ async def death_watcher():
         "online": {},         # sid -> {user, x, y} : comptes connectés
         "last_death": {},     # perso -> t : dédup des morts user.txt
         "last_pvp": {},       # victime -> t : dédup des kills pvp.txt
+        "last_incap": {},     # username -> t : dédup des incapacités non-PvP
         "weapon": {},         # (tueur, victime) -> arme du dernier coup
-        "recent_kills": [],   # (t, x, y) : kills PvP récents (dédup croisée user.txt)
+        "recent_kills": [],   # (t, x, y, victime) : kills PvP récents (dédup croisée)
     }
     user_tail = _Tail(os.path.join(DEATH_LOG_DIR, "*_user.txt"))
     pvp_tail = _Tail(os.path.join(DEATH_LOG_DIR, "*_pvp.txt"))
+    pzm_tail = _Tail(os.path.join(DEATH_LOG_DIR, "*_pzmanager.txt"))
 
     while not bot.is_closed():
         lines, emit = user_tail.read()
         for line in lines:
             await _process_user_line(channel, line, state, emit)
-        lines, emit = pvp_tail.read()
+        lines, emit = pvp_tail.read()   # traité AVANT pzm : recent_kills à jour pour la dédup
         for line in lines:
             await _process_pvp_line(channel, line, state, emit)
+        lines, emit = pzm_tail.read()
+        for line in lines:
+            await _process_pzm_line(channel, line, state, emit)
         await asyncio.sleep(DEATH_POLL_SECONDS)
 
 
