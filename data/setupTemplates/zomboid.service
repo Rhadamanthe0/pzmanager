@@ -8,7 +8,11 @@ Wants=zomboid_logger.service
 Type=simple
 PrivateTmp=true
 WorkingDirectory=%h/pzmanager/data/pzserver/
-ExecStartPre=/bin/sh -c ": > %h/pzmanager/data/pzserver/zomboid.control"
+# Purge tout octet résiduel (ex: "quit" bufferisé d'un stop précédent) resté dans
+# le FIFO de contrôle. Sinon la socket-activation relance le service qui relit ce
+# "quit" et remeurt à f:0 en boucle (flap). Lecture non-bloquante (iflag=nonblock):
+# vide instantanément si des octets traînent, retourne aussitôt si le FIFO est vide.
+ExecStartPre=/bin/sh -c "dd if=%h/pzmanager/data/pzserver/zomboid.control iflag=nonblock of=/dev/null 2>/dev/null; exit 0"
 ExecStart=/bin/sh -c "ADMIN_ARGS=''; PW_FILE='%h/pzmanager/.admin_password'; if [ -f \"$PW_FILE\" ]; then ADMIN_ARGS=\"-adminpassword $(cat $PW_FILE)\"; rm -f \"$PW_FILE\"; fi; exec %h/pzmanager/data/pzserver/start-server.sh -cachedir=%h/pzmanager/Zomboid $ADMIN_ARGS <> %h/pzmanager/data/pzserver/zomboid.control"
 ExecStartPost=-/bin/sh -c "%h/pzmanager/scripts/internal/notifyServerReady.sh &"
 ExecStop=/bin/sh -c "echo 'quit' > %h/pzmanager/data/pzserver/zomboid.control"
