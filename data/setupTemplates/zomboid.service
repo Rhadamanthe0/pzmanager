@@ -20,9 +20,11 @@ KillSignal=SIGCONT
 # Sauvegarde-à-l'extinction d'un gros monde B42 moddé dépasse souvent 30s ;
 # à 120s systemd laisse le "quit" finir proprement au lieu de SIGKILL (faux "timeout")
 TimeoutStopSec=120
-# Pas de MemoryMax (il throttle/OOM PZ au plafond) ; juste un petit tampon de
-# débordement en swap. Heap borné côté JVM via Xmx, voir configurationInitiale.sh.
-MemorySwapMax=1G
+# Pas de MemoryMax (il throttle/OOM PZ au plafond). Swap interdit au process
+# (MemorySwapMax=0) : le swap-in/out des pages du jeu provoque des micro-freezes
+# et aggrave la désync réseau. Heap borné côté JVM via Xmx (moitié RAM), ce qui
+# laisse la marge nécessaire pour tenir en RAM. Voir configurationInitiale.sh.
+MemorySwapMax=0
 
 [Install]
 WantedBy=default.target
