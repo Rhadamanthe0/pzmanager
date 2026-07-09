@@ -1,0 +1,12 @@
+[Unit]
+Description=Project Zomboid - Timer surveillance mémoire heap (~toutes les 3 min)
+
+[Timer]
+# Première vérif 5 min après le boot, puis 3 min APRÈS chaque fin d'exécution.
+# OnUnitInactiveSec (et non OnCalendar) garantit qu'aucune vérif ne se lance tant
+# que la précédente tourne encore — pendant un préavis de restart, pas d'empilement.
+OnBootSec=5min
+OnUnitInactiveSec=3min
+
+[Install]
+WantedBy=timers.target
