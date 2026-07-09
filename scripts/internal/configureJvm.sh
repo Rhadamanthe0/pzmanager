@@ -14,52 +14,58 @@ source_env "${SCRIPT_DIR}/.."
 json_file="${PZ_INSTALL_DIR}/ProjectZomboid64.json"
 [[ -f "$json_file" ]] || exit 0
 
-# Heap Java : Xms=2g fixe (plancher, give-back ZGC au-dessus), Xmx=moitié de
-# la RAM physique par défaut (garde-fou réel laissant la place au natif PZ + l'OS).
+# Heap Java : PAS de -Xms (retiré) — avec AlwaysPreTouch il était trompeur (le
+# vrai poste résident est le Xmx pré-touché, pas Xms) et le give-back ZGC ne se
+# déclenche jamais sur ce workload (le heap ne fait que croître de cellules
+# vivantes). Sans -Xms, l'init part du défaut ergonomique et croît à la demande.
+# Xmx = moitié de la RAM physique par défaut (garde-fou laissant la place au natif
+# PZ + l'OS), override via .env (PZ_XMX_GB, en Go).
 # On ne pose AUCUN plafond cgroup (MemoryMax/MemoryHigh) : il throttle/OOM
 # PZ dès qu'il est atteint. Voir aussi data/setupTemplates/zomboid.service.
-#
-# Override manuel via .env (PZ_XMX_GB) pour cette machine. ATTENTION: dépasser la
-# moitié de la RAM est RISQUÉ — avec AlwaysPreTouch, tout le Xmx est résident dès
-# le boot ; Xmx + ~5 Go de natif PZ peut dépasser la RAM totale → OOM-killer OS
-# (SIGKILL brutal, pas de restart gracieux). Ne relever qu'en connaissance de cause.
-xms_gb=2
+# ATTENTION PZ_XMX_GB: dépasser la moitié de la RAM est RISQUÉ — avec AlwaysPreTouch
+# tout le Xmx est résident dès le boot ; Xmx + ~5 Go de natif PZ peut dépasser la
+# RAM totale → OOM-killer OS (SIGKILL brutal). Ne relever qu'en connaissance de cause.
 mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
 default_xmx_gb=$(( mem_kb / 1024 / 1024 / 2 ))
 xmx_gb="${PZ_XMX_GB:-$default_xmx_gb}"
-(( xmx_gb < xms_gb )) && xmx_gb=$xms_gb  # Xmx jamais sous le plancher Xms
+(( xmx_gb < 2 )) && xmx_gb=2  # plancher de sécurité
 
 if [[ -n "${PZ_XMX_GB:-}" ]]; then
-    echo "Optimisation JVM (Xms ${xms_gb}g / Xmx ${xmx_gb}g = override PZ_XMX_GB ; moitié RAM = ${default_xmx_gb}g)..."
+    echo "Optimisation JVM (Xmx ${xmx_gb}g = override PZ_XMX_GB ; moitié RAM = ${default_xmx_gb}g ; pas de Xms)..."
 else
-    echo "Optimisation JVM (Xms ${xms_gb}g / Xmx ${xmx_gb}g = moitié RAM)..."
+    echo "Optimisation JVM (Xmx ${xmx_gb}g = moitié RAM ; pas de Xms)..."
 fi
 cp "$json_file" "${json_file}.bak"
 
-python3 - "$json_file" "$xms_gb" "$xmx_gb" "$LOG_ZOMBOID_DIR" << 'PYEOF'
+python3 - "$json_file" "$xmx_gb" "$LOG_ZOMBOID_DIR" << 'PYEOF'
 import json, sys
 
 f = sys.argv[1]
-xms_gb = sys.argv[2]
-xmx_gb = sys.argv[3]
-log_dir = sys.argv[4]
+xmx_gb = sys.argv[2]
+log_dir = sys.argv[3]
 with open(f) as fp:
     data = json.load(fp)
 
-# Repartir des args sans aucun réglage mémoire/GC/réseau/diag qu'on (re)pose nous-mêmes
+# Repartir des args sans aucun réglage mémoire/GC/réseau/diag qu'on (re)pose nous-mêmes.
+# '-Xms' reste dans la liste retirée -> on NE le repose PAS (défaut JVM = init à la demande).
 drop = ('znetlog', '-Xms', '-Xmx', 'UseZGC', 'AlwaysPreTouch',
         'ZCollectionInterval', 'MaxRAMPercentage', 'preferIPv4Stack',
+        'UseStringDeduplication',
         'HeapDumpOnOutOfMemoryError', 'HeapDumpPath', 'Xlog:gc')
 args = [a for a in data['vmArgs'] if not any(d in a for d in drop)]
 
-# Heap : plancher fixe Xms, plafond = moitié de la RAM (give-back ZGC entre les deux)
-args.append(f'-Xms{xms_gb}g')
+# Heap : plafond Xmx uniquement (pas de -Xms -> init ergonomique, croît à la demande)
 args.append(f'-Xmx{xmx_gb}g')
 
-# ZGC + pré-touche du heap initial + cycle périodique 5s
+# ZGC (générationnel par défaut en JDK 25) + pré-touche + cycle périodique 5s
 args.append('-XX:+UseZGC')
 args.append('-XX:+AlwaysPreTouch')
 args.append('-XX:ZCollectionInterval=5')
+
+# Déduplication des String : le heap est plein de cellules de map aux chaînes
+# répétées (noms de sprites/tiles) -> la dédup réduit la part String du live set
+# et retarde marginalement l'OOM. Coût = un thread de fond, négligeable.
+args.append('-XX:+UseStringDeduplication')
 
 # Stabilité réseau : forcer la pile IPv4 (évite le fallback IPv6 de RakNet/UdpEngine)
 args.append('-Djava.net.preferIPv4Stack=true')
