@@ -1,0 +1,11 @@
+[Unit]
+Description=Project Zomboid - Timer redémarrages planifiés (11h/17h/23h)
+
+[Timer]
+# Toutes les 6h avec la maintenance de 04:30 : 11:00, 17:00, 23:00.
+# Le warn de 15 min part à l'heure pile -> redémarrage effectif ~hh:15.
+OnCalendar=*-*-* 11,17,23:00:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target
