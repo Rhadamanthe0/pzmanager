@@ -15,15 +15,25 @@ json_file="${PZ_INSTALL_DIR}/ProjectZomboid64.json"
 [[ -f "$json_file" ]] || exit 0
 
 # Heap Java : Xms=2g fixe (plancher, give-back ZGC au-dessus), Xmx=moitié de
-# la RAM physique (garde-fou réel laissant la place au natif PZ + l'OS).
+# la RAM physique par défaut (garde-fou réel laissant la place au natif PZ + l'OS).
 # On ne pose AUCUN plafond cgroup (MemoryMax/MemoryHigh) : il throttle/OOM
 # PZ dès qu'il est atteint. Voir aussi data/setupTemplates/zomboid.service.
+#
+# Override manuel via .env (PZ_XMX_GB) pour cette machine. ATTENTION: dépasser la
+# moitié de la RAM est RISQUÉ — avec AlwaysPreTouch, tout le Xmx est résident dès
+# le boot ; Xmx + ~5 Go de natif PZ peut dépasser la RAM totale → OOM-killer OS
+# (SIGKILL brutal, pas de restart gracieux). Ne relever qu'en connaissance de cause.
 xms_gb=2
 mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
-xmx_gb=$(( mem_kb / 1024 / 1024 / 2 ))
+default_xmx_gb=$(( mem_kb / 1024 / 1024 / 2 ))
+xmx_gb="${PZ_XMX_GB:-$default_xmx_gb}"
 (( xmx_gb < xms_gb )) && xmx_gb=$xms_gb  # Xmx jamais sous le plancher Xms
 
-echo "Optimisation JVM (Xms ${xms_gb}g / Xmx ${xmx_gb}g = moitié RAM)..."
+if [[ -n "${PZ_XMX_GB:-}" ]]; then
+    echo "Optimisation JVM (Xms ${xms_gb}g / Xmx ${xmx_gb}g = override PZ_XMX_GB ; moitié RAM = ${default_xmx_gb}g)..."
+else
+    echo "Optimisation JVM (Xms ${xms_gb}g / Xmx ${xmx_gb}g = moitié RAM)..."
+fi
 cp "$json_file" "${json_file}.bak"
 
 python3 - "$json_file" "$xms_gb" "$xmx_gb" "$LOG_ZOMBOID_DIR" << 'PYEOF'
