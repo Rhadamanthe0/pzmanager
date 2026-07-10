@@ -50,6 +50,22 @@ sql_escape() { printf "%s" "${1//\'/\'\'}"; }
 # Vrai (code 0) si l'argument est un SteamID64 (17 chiffres commençant par 7656119).
 is_steamid64() { [[ "$1" =~ ^7656119[0-9]{10}$ ]]; }
 
+# Clause SQL WHERE identifiant les comptes `whitelist` inactifs depuis >= <days>
+# jours (jamais connectés & créés il y a plus de <days> jours, OU dernière
+# connexion antérieure à <days> jours), le compte interne 'admin' toujours exclu.
+# <has_created_at> ("true"/"false") = présence de la colonne created_at (ajoutée
+# par creationDateInit.sh). Partagée par la purge auto (purgeInactivePlayers.sh)
+# et la purge interactive (manageWhitelist.sh) pour qu'elles ciblent EXACTEMENT
+# les mêmes comptes — ce prédicat ne doit exister qu'à un seul endroit.
+inactive_where_clause() {
+    local days="$1" has_created_at="$2"
+    if [[ "$has_created_at" == true ]]; then
+        echo "(((lastConnection IS NULL OR lastConnection = '') AND (created_at IS NULL OR created_at < date('now', '-${days} days'))) OR (lastConnection < date('now', '-${days} days') AND lastConnection <> '')) AND username <> 'admin'"
+    else
+        echo "((lastConnection IS NULL OR lastConnection = '' OR (lastConnection < date('now', '-${days} days') AND lastConnection <> '')) AND username <> 'admin')"
+    fi
+}
+
 # Vrai (code 0) si le service serveur Zomboid tourne actuellement.
 # Requiert que source_env ait été appelé (PZ_SERVICE_NAME).
 server_is_active() {

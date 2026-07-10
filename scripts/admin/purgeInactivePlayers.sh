@@ -56,13 +56,8 @@ sqlite3 "$DB_PATH" "PRAGMA table_info(whitelist)" 2>/dev/null | grep -q '|create
 
 readonly DAYS="${WHITELIST_PURGE_DAYS:-90}"
 
-# Comptes inactifs : jamais connectés (et créés il y a > DAYS) OU dernière
-# connexion > DAYS. Le compte 'admin' interne est toujours exclu.
-if [[ "$HAS_CREATED_AT" == true ]]; then
-    WHERE="(((lastConnection IS NULL OR lastConnection = '') AND (created_at IS NULL OR created_at < date('now', '-${DAYS} days'))) OR (lastConnection < date('now', '-${DAYS} days') AND lastConnection <> '')) AND username <> 'admin'"
-else
-    WHERE="((lastConnection IS NULL OR lastConnection = '' OR (lastConnection < date('now', '-${DAYS} days') AND lastConnection <> '')) AND username <> 'admin')"
-fi
+# Comptes inactifs (prédicat partagé avec la purge interactive — cf. common.sh).
+WHERE="$(inactive_where_clause "$DAYS" "$HAS_CREATED_AT")"
 
 log "=== Purge des accès inactifs (>= ${DAYS} jours) ==="
 

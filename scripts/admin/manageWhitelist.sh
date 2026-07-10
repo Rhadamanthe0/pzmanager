@@ -255,14 +255,8 @@ purge_whitelist() {
         *) die "Unité inconnue: $unit (utiliser m=mois, j/d=jours)" ;;
     esac
 
-    # Comptes inactifs: jamais connectés (créés il y a +X jours) OU dernière connexion > X jours
-    # Exclut toujours l'utilisateur 'admin'
-    local where_clause
-    if [[ "$HAS_CREATED_AT" == true ]]; then
-        where_clause="(((lastConnection IS NULL OR lastConnection = '') AND (created_at IS NULL OR created_at < date('now', '-$days days'))) OR (lastConnection < date('now', '-$days days') AND lastConnection <> '')) AND username <> 'admin'"
-    else
-        where_clause="((lastConnection IS NULL OR lastConnection = '' OR (lastConnection < date('now', '-$days days') AND lastConnection <> '')) AND username <> 'admin')"
-    fi
+    # Comptes inactifs (prédicat partagé avec la purge auto — cf. common.sh).
+    local where_clause; where_clause="$(inactive_where_clause "$days" "$HAS_CREATED_AT")"
     local description="Comptes inactifs depuis $num $unit_label"
 
     # Lister les comptes concernés
