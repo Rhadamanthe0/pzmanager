@@ -5,7 +5,10 @@
 set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-readonly LOG_DIR="${SCRIPT_DIR}/../logs/zomboid"
+
+source "${SCRIPT_DIR}/../lib/common.sh"
+source_env "${SCRIPT_DIR}/.."
+
 readonly SILENT_FLAG="${SCRIPT_DIR}/../../.silent_next_start"
 readonly NOTIFY_LOCK="/tmp/pzmanager-notify-ready-$(id -un).lock"
 readonly TIMEOUT=300
@@ -33,7 +36,7 @@ start_time=$(date +%s)
 elapsed=0
 
 while (( elapsed < TIMEOUT )); do
-    if journalctl --user -u zomboid.service --since "@$start_time" --no-pager 2>/dev/null \
+    if journalctl --user -u "${PZ_SERVICE_NAME}" --since "@$start_time" --no-pager 2>/dev/null \
         | grep -qF "$READY_MARKER"; then
         "${SCRIPT_DIR}/sendDiscord.sh" "Le serveur Project Zomboid est en ligne !"
         exit 0

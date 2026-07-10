@@ -103,7 +103,7 @@ format_context() {
 warn_players() {
     local action_type="$1"
     [[ "$DELAY" == "now" ]] && return 0
-    systemctl --user is-active --quiet "${PZ_SERVICE_NAME}" || return 0
+    server_is_active || return 0
 
     local -A delays=(
         ["30m"]="30_MINUTES:900 15_MINUTES:600 5_MINUTES:180 2_MINUTES:90 30_SECONDES:30"
@@ -182,7 +182,7 @@ shutdown_server() {
         warn_players "$action"
     fi
 
-    if systemctl --user is-active --quiet "${PZ_SERVICE_NAME}"; then
+    if server_is_active; then
         echo "Arrêt du service..."
         systemctl --user stop "${PZ_SERVICE_NAME}"
         sleep 5
@@ -220,7 +220,7 @@ do_status() {
     echo "=== Project Zomboid Server Status ==="
     echo ""
 
-    if systemctl --user is-active --quiet "${PZ_SERVICE_NAME}"; then
+    if server_is_active; then
         echo "Status: RUNNING"
         echo "Active since: $(systemctl --user show "${PZ_SERVICE_NAME}" -p ActiveEnterTimestamp --value)"
         [[ -p "${PZ_CONTROL_PIPE}" ]] && echo "Control pipe: Available" || echo "Control pipe: Not available"

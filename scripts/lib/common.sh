@@ -47,6 +47,9 @@ ensure_directory() {
 # Échappe une chaîne pour une string SQL sqlite3 (double les apostrophes)
 sql_escape() { printf "%s" "${1//\'/\'\'}"; }
 
+# Vrai (code 0) si l'argument est un SteamID64 (17 chiffres commençant par 7656119).
+is_steamid64() { [[ "$1" =~ ^7656119[0-9]{10}$ ]]; }
+
 # Vrai (code 0) si le service serveur Zomboid tourne actuellement.
 # Requiert que source_env ait été appelé (PZ_SERVICE_NAME).
 server_is_active() {
