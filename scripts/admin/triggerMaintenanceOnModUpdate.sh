@@ -23,7 +23,7 @@ cleanup_old_logs() {
 }
 
 check_prerequisites() {
-    systemctl --user is-active --quiet "${PZ_SERVICE_NAME}" || exit 0
+    server_is_active || exit 0
     [[ -p "${PZ_CONTROL_PIPE}" ]] || { log_event "ERROR: Control pipe unavailable"; exit 1; }
     [[ -x "${SCRIPT_DIR}/performFullMaintenance.sh" ]] || { log_event "ERROR: Maintenance script not found"; exit 1; }
 }

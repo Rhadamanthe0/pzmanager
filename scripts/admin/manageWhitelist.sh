@@ -64,7 +64,7 @@ validate_steamid() {
     local steamid="$1"
 
     # Steam ID 64 format: 17 chiffres commençant par 7656119
-    if [[ ! "$steamid" =~ ^7656119[0-9]{10}$ ]]; then
+    if ! is_steamid64 "$steamid"; then
         die "Steam ID invalide: $steamid
 Format attendu: Steam ID 64 (17 chiffres, ex: 76561198012345678)
 Trouver sur le profil Steam ou via https://steamid.xyz/"
@@ -84,14 +84,6 @@ detect_schema() {
     fi
 
     WHITELIST_COLUMNS="id, username, ${created_col}lastConnection, steamid, role, displayName"
-}
-
-ensure_created_at_column() {
-    if [[ "$HAS_CREATED_AT" == false ]]; then
-        sqlite3 "$DB_PATH" "ALTER TABLE whitelist ADD COLUMN created_at TEXT DEFAULT NULL" 2>/dev/null || true
-        HAS_CREATED_AT=true
-        detect_schema
-    fi
 }
 
 list_whitelist() {
@@ -141,7 +133,7 @@ add_to_whitelist() {
     # (optionnel, purement informatif/loggé).
     local steamid="" label="" a
     for a in "$@"; do
-        if [[ "$a" =~ ^7656119[0-9]{10}$ ]]; then
+        if is_steamid64 "$a"; then
             steamid="$a"
         elif [[ -n "$a" ]]; then
             label="$a"
@@ -188,7 +180,7 @@ Exemple: $0 remove \"76561198012345678\" --ban"
 
     # Résoudre l'identifiant vers un SteamID (et un pseudo si connu).
     local steamid="" username=""
-    if [[ "$identifier" =~ ^7656119[0-9]{10}$ ]]; then
+    if is_steamid64 "$identifier"; then
         steamid="$identifier"
         username=$(sqlite3 "$DB_PATH" "SELECT username FROM whitelist WHERE steamid = '$steamid' LIMIT 1" 2>/dev/null || true)
     else
@@ -353,7 +345,7 @@ remove_accounts() {
     local -a del_ids=() del_sids=() plan=()
     local t
     for t in "${targets[@]}"; do
-        if [[ "$t" =~ ^7656119[0-9]{10}$ ]]; then
+        if is_steamid64 "$t"; then
             local esc_sid; esc_sid="$(sql_escape "$t")"
             local -a rows=()
             mapfile -t rows < <(sqlite3 -separator '|' "$DB_PATH" "SELECT id, username FROM whitelist WHERE steamid='${esc_sid}'" 2>/dev/null)

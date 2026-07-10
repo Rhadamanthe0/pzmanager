@@ -71,7 +71,7 @@ stop_server() {
     echo ""
     echo "=== 1. Arrêt du serveur ==="
 
-    if systemctl --user is-active --quiet "${PZ_SERVICE_NAME}"; then
+    if server_is_active; then
         systemctl --user stop "${PZ_SERVICE_NAME}"
         echo "✓ Serveur arrêté"
     else
