@@ -563,14 +563,14 @@ PVP_DEDUP_SECONDS = 45   # même victime PvP = 1 notif (une bagarre logge plusie
 PVP_CAUSE_WINDOW = 75 * 60
 PVP_CAUSE_RADIUS2 = 30 ** 2   # un incapacité meurt là où il est tombé -> match spatial serré
 
-# La ligne « died at » (user.txt) ne porte QUE le nom du personnage + coordonnées, et
-# son flag « (non pvp) » est TOUJOURS « non pvp » (jamais fiable). Le username du compte
-# n'apparaît QUE sur les lignes connect/disconnect (avec le SteamID). On suit donc les
-# comptes connectés pour rattacher une mort à son compte.
-CONNECT_RE = re.compile(
-    r'(?P<sid>\d{17}) "(?P<user>.+?)" fully connected \((?P<x>-?\d+),(?P<y>-?\d+)')
-DISCONNECT_RE = re.compile(
-    r'(?P<sid>\d{17}) "(?P<user>.+?)" disconnected player \(')
+# La ligne « died at » (user.txt) ne porte QUE le nom du PERSONNAGE (jamais l'username
+# de compte) + coordonnées, et son flag « (non pvp) » est TOUJOURS « non pvp » (inutile).
+# Les PNJ du mod (nommés « Bob » par défaut) écrivent EXACTEMENT la même ligne que les
+# joueurs. Le username de compte n'apparaît QUE sur les lignes connect (avec le SteamID).
+# On recense donc tous les comptes connectés de la session : une mort n'est notifiée que
+# si son nom figure dans cette liste (les PNJ ne se connectent jamais -> écartés ; et sur
+# ce serveur le nom de perso == l'username de compte, donc aucune vraie mort n'est perdue).
+CONNECT_RE = re.compile(r'(?P<sid>\d{17}) "(?P<user>.+?)" fully connected \(')
 
 # Le vrai PvP est dans pvp.txt (usernames de compte, pas noms de perso) :
 #   Combat: "Tueur" (...) hit "Victime" (...) weapon="Arme" damage=...
@@ -590,6 +590,17 @@ INCAP_RE = re.compile(
     r'INCAPACITATED "(?P<user>.+?)" @ (?P<x>-?\d+),(?P<y>-?\d+),(?P<z>-?\d+)')
 INCAP_DEDUP_SECONDS = 60        # même joueur à terre = 1 notif
 INCAP_PVP_MATCH_SECONDS = 20    # KO déjà vu en PvP (pvp.txt) dans cette fenêtre -> pas de doublon
+
+# Un téléport admin (admin.txt : « <compte> teleported to X,Y,Z. ») est parfois suivi,
+# à ~la même position et dans les minutes qui suivent, d'un « died at » FACTICE : le
+# joueur téléporté ne meurt pas vraiment (confirmé — il continue de jouer/téléporter
+# après). On mémorise donc les téléports pour écarter une mort survenue peu après un
+# téléport du MÊME compte tout près. Mesuré : morts factices <=15 tuiles du TP, vraies
+# morts proches d'un TP >=61 -> un rayon de 50 tuiles les sépare nettement.
+ADMIN_TP_RE = re.compile(
+    r'\] (?P<user>.+?) teleported to (?P<x>-?\d+),(?P<y>-?\d+),-?\d+\.')  # z ignoré (match x,y)
+TP_DEATH_WINDOW = 600           # 10 min : une mort dans cette fenêtre après un TP est suspecte
+TP_DEATH_RADIUS2 = 50 ** 2      # ... si elle est aussi à <=50 tuiles de la destination du TP
 
 
 class _Tail:
@@ -654,42 +665,20 @@ class _Tail:
         return self._decode(data), True
 
 
-def _resolve_account(online: dict, dx: int, dy: int) -> Optional[str]:
-    """Username du compte à qui attribuer une mort survenue en (dx,dy) :
-    - 1 seul joueur connecté  -> certain ;
-    - plusieurs               -> le plus proche par dernière position connue, mais
-      SEULEMENT s'il est nettement le plus proche (2e au moins 2× plus loin) ;
-      sinon None (on n'invente pas de compte). Les positions viennent des lignes
-      connect (donc possiblement datées) -> en cas de doute on n'affiche rien."""
-    accts = list(online.values())
-    if not accts:
-        return None
-    if len(accts) == 1:
-        return accts[0]["user"]
-    accts.sort(key=lambda a: (a["x"] - dx) ** 2 + (a["y"] - dy) ** 2)
-    d0 = (accts[0]["x"] - dx) ** 2 + (accts[0]["y"] - dy) ** 2
-    d1 = (accts[1]["x"] - dx) ** 2 + (accts[1]["y"] - dy) ** 2
-    return accts[0]["user"] if d1 >= d0 * 4 else None
-
-
 def _position(x: str, y: str, z: str) -> str:
     pos = f"x={x}, y={y}"
     return pos + (f" · étage {z}" if z not in ("0", "-0") else "")
 
 
-def _death_embed(name: str, account: Optional[str], x: str, y: str, z: str,
-                 cause: str) -> discord.Embed:
-    """Mort DÉFINITIVE issue de user.txt (le perso meurt pour de bon) : nom du perso
-    + username du compte entre parenthèses (si identifiable) + cause + position.
-    Cause : « ⚔️ Combat PvP » si un takedown PvP récent proche est connu (le joueur a
-    fini par succomber), sinon « 🧟 Environnement / zombie » (le flag « non pvp » de
-    user.txt étant toujours faux, on déduit la cause du contexte pvp.txt)."""
-    who = f"**{discord.utils.escape_markdown(name)}**"
-    if account and account != name:
-        who += f" ({discord.utils.escape_markdown(account)})"
+def _death_embed(name: str, x: str, y: str, z: str, cause: str) -> discord.Embed:
+    """Mort DÉFINITIVE issue de user.txt (le perso meurt pour de bon). Le nom est déjà
+    filtré en amont sur la liste des comptes connectés (perso == compte sur ce serveur),
+    d'où pas de parenthèse de compte. Cause : « ⚔️ Combat PvP » si un takedown PvP récent
+    proche est connu (le joueur a fini par succomber), sinon « 🧟 Environnement / zombie »
+    (le flag « non pvp » de user.txt étant toujours faux, on déduit la cause de pvp.txt)."""
     embed = discord.Embed(
         title="☠️ Mort définitive",
-        description=f"{who} est mort définitivement.",
+        description=f"**{discord.utils.escape_markdown(name)}** est mort définitivement.",
         color=0xB03030,
         timestamp=datetime.now(timezone.utc),
     )
@@ -743,19 +732,30 @@ def _dedup(seen: dict[str, float], key: str, now: float, window: float) -> bool:
     return False
 
 
+async def _process_admin_line(channel, line: str, state: dict, emit: bool):
+    """admin.txt : mémorise les téléports (compte + destination) pour écarter ensuite les
+    morts factices qu'ils déclenchent. On n'enregistre que le live (`emit`) -> tous les
+    horodatages restent en `time.monotonic()`, comparables à ceux des morts. `channel`
+    n'est pas utilisé (signature homogène avec les autres processeurs)."""
+    if not emit:
+        return
+    m = ADMIN_TP_RE.search(line)
+    if not m:
+        return
+    now = time.monotonic()
+    tps = state["recent_tps"]
+    tps.append((now, m.group("user").strip(), int(m.group("x")), int(m.group("y"))))
+    tps[:] = [k for k in tps if now - k[0] < TP_DEATH_WINDOW]
+
+
 async def _process_user_line(channel, line: str, state: dict, emit: bool):
     """user.txt : met à jour les comptes connectés et, si `emit`, notifie une mort
     NON-PvP (les morts PvP sont couvertes par pvp.txt ; on saute donc une mort dont
     un « Kill » PvP tout récent au même endroit a déjà été notifié)."""
-    online = state["online"]
+    accounts = state["accounts"]
     m = CONNECT_RE.search(line)
     if m:
-        online[m.group("sid")] = {"user": m.group("user").strip(),
-                                  "x": int(m.group("x")), "y": int(m.group("y"))}
-        return
-    m = DISCONNECT_RE.search(line)
-    if m:
-        online.pop(m.group("sid"), None)
+        accounts.add(m.group("user").strip())
         return
     if not emit:
         return
@@ -763,21 +763,28 @@ async def _process_user_line(channel, line: str, state: dict, emit: bool):
     if not m:
         return
     name = m.group("name").strip()
+    if name not in accounts:
+        return  # PNJ (« Bob » par défaut) ou perso non rattaché à un compte -> pas de notif
     now = time.monotonic()
-    if _dedup(state["last_death"], name, now, DEATH_DEDUP_SECONDS):
-        return
     x, y, z = m.group("x"), m.group("y"), m.group("z")
     ix, iy = int(x), int(y)
+    # Mort factice consécutive à un téléport admin du même compte tout près -> on ignore
+    # (avant le dédup, pour ne pas consommer sa fenêtre au détriment d'une vraie mort).
+    if any(now - t <= TP_DEATH_WINDOW and acct == name
+           and (tx - ix) ** 2 + (ty - iy) ** 2 <= TP_DEATH_RADIUS2
+           for t, acct, tx, ty in state["recent_tps"]):
+        log.info("Mort factice ignorée (téléport récent) : %s (%s,%s)", name, x, y)
+        return
+    if _dedup(state["last_death"], name, now, DEATH_DEDUP_SECONDS):
+        return
     # Cause : un takedown PvP récent (≤ fenêtre d'incapacité) et proche -> le joueur a
     # succombé à ses blessures PvP ; sinon environnement / zombie.
     cause = "pvp" if any(now - t < PVP_CAUSE_WINDOW
                          and (kx - ix) ** 2 + (ky - iy) ** 2 <= PVP_CAUSE_RADIUS2
                          for t, kx, ky, _v in state["recent_kills"]) else "env"
-    account = _resolve_account(online, ix, iy)
     try:
-        await channel.send(embed=_death_embed(name, account, x, y, z, cause))
-        log.info("MORT DÉFINITIVE notifiée : %s (compte=%s) (%s,%s,%s) cause=%s",
-                 name, account or "?", x, y, z, cause)
+        await channel.send(embed=_death_embed(name, x, y, z, cause))
+        log.info("MORT DÉFINITIVE notifiée : %s (%s,%s,%s) cause=%s", name, x, y, z, cause)
     except discord.HTTPException as e:
         log.warning("Échec envoi notif mort pour %s : %s", name, e)
 
@@ -850,18 +857,23 @@ async def death_watcher():
     log.info("Death-watcher actif : salon=%s dir=%s", DEATH_CHANNEL_ID, DEATH_LOG_DIR)
 
     state = {
-        "online": {},         # sid -> {user, x, y} : comptes connectés
+        "accounts": set(),    # usernames connectés cette session (allow-list anti-PNJ)
         "last_death": {},     # perso -> t : dédup des morts user.txt
         "last_pvp": {},       # victime -> t : dédup des kills pvp.txt
         "last_incap": {},     # username -> t : dédup des incapacités non-PvP
         "weapon": {},         # (tueur, victime) -> arme du dernier coup
         "recent_kills": [],   # (t, x, y, victime) : kills PvP récents (dédup croisée)
+        "recent_tps": [],     # (t, compte, x, y) : téléports admin récents (anti-mort factice)
     }
+    admin_tail = _Tail(os.path.join(DEATH_LOG_DIR, "*_admin.txt"))
     user_tail = _Tail(os.path.join(DEATH_LOG_DIR, "*_user.txt"))
     pvp_tail = _Tail(os.path.join(DEATH_LOG_DIR, "*_pvp.txt"))
     pzm_tail = _Tail(os.path.join(DEATH_LOG_DIR, "*_pzmanager.txt"))
 
     while not bot.is_closed():
+        lines, emit = admin_tail.read()   # traité AVANT user : recent_tps à jour pour écarter les morts factices
+        for line in lines:
+            await _process_admin_line(channel, line, state, emit)
         lines, emit = user_tail.read()
         for line in lines:
             await _process_user_line(channel, line, state, emit)
