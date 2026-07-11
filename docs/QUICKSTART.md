@@ -12,7 +12,7 @@ Get your Project Zomboid server running in 10 minutes.
 ## Installation
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/pzmanager/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Rhadamanthe0/pzmanager/main/install.sh | sudo bash
 ```
 
 **Duration**: 10-30 minutes
@@ -39,7 +39,7 @@ apt update && apt upgrade -y
 apt install -y git
 
 # Clone
-git clone https://github.com/YOUR_USERNAME/pzmanager.git /opt/pzmanager
+git clone https://github.com/Rhadamanthe0/pzmanager.git /opt/pzmanager
 cd /opt/pzmanager
 
 # System setup (username as argument, default: pzuser)
@@ -119,6 +119,7 @@ DISCORD_WEBHOOK="https://discord.com/api/webhooks/..."
 | Task | Schedule | Description |
 |------|----------|-------------|
 | Mod & server check | Every 5 min | Auto-maintenance if mod or server updates detected |
+| Heap check | Every ~3 min | Restart when the Java heap fills up (adaptive) |
 | Backup | Hourly (:14) | Incremental, 14-day retention |
 | Maintenance | Daily 4:30 AM | Updates + full backup + reboot/restart |
 | Whitelist dates | Daily 00:00 | Init creation dates for purge |
@@ -141,7 +142,7 @@ sudo ./scripts/install/configurationInitiale.sh restore /path/to/fullBackup
 # Replace "pzuser" with your username if different
 su - pzuser
 pzm server stop now
-systemctl --user disable zomboid.service pz-backup.timer pz-modcheck.timer pz-maintenance.timer pz-creation-date-init.timer
+systemctl --user disable zomboid.service pz-backup.timer pz-modcheck.timer pz-heapcheck.timer pz-maintenance.timer pz-creation-date-init.timer
 exit
 
 sudo rm /etc/sudoers.d/pzuser

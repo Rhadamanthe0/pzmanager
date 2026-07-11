@@ -159,29 +159,41 @@ This document details **everything** modified on your system to ensure transpare
     "-Djava.library.path=linux64/:natives/",
     "-Djava.security.egd=file:/dev/urandom",
     "-XX:-OmitStackTraceInFastThrow",
-    "-Xms2g",
     "-Xmx7g",
     "-XX:+UseZGC",
     "-XX:+AlwaysPreTouch",
-    "-XX:ZCollectionInterval=5"
+    "-XX:ZCollectionInterval=5",
+    "-XX:+UseStringDeduplication",
+    "-Djava.net.preferIPv4Stack=true",
+    "-XX:+HeapDumpOnOutOfMemoryError",
+    "-XX:HeapDumpPath=.../scripts/logs/zomboid",
+    "-Xlog:gc*:file=.../scripts/logs/zomboid/gc.log:...:filecount=5,filesize=20M"
   ]
 }
 ```
 
 **Optimizations**:
-- **Heap floor**: `-Xms2g` — ZGC returns unused heap above 2 GB to the OS.
-- **Heap ceiling**: `-Xmx` = **half of physical RAM** (computed at install;
-  e.g. 7g on a 14 GiB machine). Real guardrail: clean Java OOM before the heap
-  starves PZ's native memory + the OS.
-- **ZGC**: Modern Garbage Collector (`-XX:+UseZGC`), 5s periodic cycle.
+- **No `-Xms`**: removed — with `AlwaysPreTouch` the resident cost is the
+  pre-touched `-Xmx`, and ZGC give-back never fires on this ever-growing
+  workload. The heap starts at the ergonomic default and grows on demand.
+- **Heap ceiling**: `-Xmx` = **`PZ_XMX_GB` GB if set in `.env`, else half of
+  physical RAM** (computed at install; e.g. 7g on a 14 GiB machine). Real
+  guardrail: clean Java OOM before the heap starves PZ's native memory + the OS.
+- **Generational ZGC** (`-XX:+UseZGC`, generational by default on JDK 25) with
+  `AlwaysPreTouch` and a 5s periodic cycle — sub-millisecond GC pauses.
+- **String deduplication** (`-XX:+UseStringDeduplication`): the heap is full of
+  map cells with repeated sprite/tile strings; dedup trims the String live set.
+- **IPv4 stack** (`-Djava.net.preferIPv4Stack=true`): RakNet/UdpEngine stability.
+- **Diagnostics**: heap dump on OOM + rotating GC log to `scripts/logs/zomboid/`.
 - **Headless**: No GUI / **Steam**: integration enabled.
 
-**Modify RAM**: edit `Xmx` in `scripts/internal/configureJvm.sh`, run it, and
-restart. This script applies the tuning at install time and re-applies it after
-every SteamCMD update (which restores the vanilla JSON) — a manual edit of
-`ProjectZomboid64.json` would not survive the nightly maintenance. There is no
-`pzm config ram` command (and no cgroup `MemoryMax`, which used to
-throttle/crash the server).
+**Modify RAM**: set `PZ_XMX_GB` in `scripts/.env` (or edit `Xmx` in
+`scripts/internal/configureJvm.sh`), run the script, and restart. The script
+applies the tuning at install time and re-applies it after every SteamCMD update
+(which restores the vanilla JSON) — a manual edit of `ProjectZomboid64.json`
+would not survive the nightly maintenance. There is no `pzm config ram` command
+(and no cgroup `MemoryMax`, which used to throttle/crash the server). See
+[ADVANCED.md](ADVANCED.md#ram--jvm-configuration).
 
 ### Server Data
 
@@ -255,11 +267,15 @@ Wants=zomboid_logger.service
 Type=simple
 PrivateTmp=true
 WorkingDirectory=%h/pzmanager/data/pzserver/
-ExecStart=/bin/sh -c "exec %h/pzmanager/data/pzserver/start-server.sh -cachedir=%h/pzmanager/Zomboid <> %h/pzmanager/data/pzserver/zomboid.control"
+# Drains any stray "quit" left in the control FIFO (avoids a socket-activation flap)
+ExecStartPre=/bin/sh -c "dd if=%h/pzmanager/data/pzserver/zomboid.control iflag=nonblock of=/dev/null 2>/dev/null; exit 0"
+# Reads the one-shot admin password from ~/pzmanager/.admin_password and deletes it
+ExecStart=/bin/sh -c "... exec .../start-server.sh -cachedir=%h/pzmanager/Zomboid $ADMIN_ARGS <> .../zomboid.control"
 ExecStartPost=-/bin/sh -c "%h/pzmanager/scripts/internal/notifyServerReady.sh &"
 ExecStop=/bin/sh -c "echo 'quit' > %h/pzmanager/data/pzserver/zomboid.control"
 KillSignal=SIGCONT
-TimeoutStopSec=30
+TimeoutStopSec=120            # a large modded B42 save can take >30s to shut down cleanly
+MemorySwapMax=0              # swap forbidden to the process (prevents micro-freezes/desync)
 
 [Install]
 WantedBy=default.target
@@ -268,9 +284,11 @@ WantedBy=default.target
 **Features**:
 - Automatic startup at boot
 - Uses systemd socket for control pipe
+- Admin password passed once via `.admin_password` (read then deleted by ExecStart)
 - Discord notification at startup (via notifyServerReady.sh)
 - Dedicated logger (zomboid_logger.service)
-- Clean shutdown via 'quit' command
+- Clean shutdown via 'quit' command (up to 120s)
+- `MemorySwapMax=0`; **no** `MemoryMax`/`MemoryHigh` (a cgroup cap throttles/OOM-kills PZ)
 
 **Commands**:
 ```bash
@@ -372,6 +390,22 @@ RestartSec=5
 - Retention: 14 days (configurable via `.env`)
 - Destination: `/home/pzuser/pzmanager/data/dataBackups/`
 
+#### pz-heapcheck.timer - Adaptive memory restart (every ~3 min)
+
+**Schedule**: 5 min after boot, then 3 min after each run (`OnUnitInactiveSec`, so
+it never overlaps its own execution or a restart warning).
+
+**Function**:
+- Reads the post-major-GC heap occupancy from `scripts/logs/zomboid/gc.log`.
+- When it reaches `HEAP_RESTART_PERCENT` (`.env`, default 95), triggers
+  `pzm server restart HEAP_RESTART_DELAY` (default `5m`, with a player warning).
+- The heap fills with live map cells that nothing frees at runtime, so a restart
+  is the only reclaim. Quiet server = no needless restart. See
+  [ADVANCED.md](ADVANCED.md#memory-driven-restart-why-the-server-restarts-on-its-own).
+
+**Service**: `pz-heapcheck.service` (oneshot, `TimeoutStartSec=1500` to cover the
+warning countdown).
+
 #### pz-maintenance.timer - Daily maintenance (4:30 AM)
 
 **Schedule**: Daily at 04:30
@@ -442,7 +476,16 @@ RestartSec=5
 │   │   ├── sendDiscord.sh            # Discord notifications
 │   │   ├── captureLogs.sh            # Journald log capture
 │   │   ├── configureJvm.sh           # JVM tuning (install + after each update)
+│   │   ├── checkHeapAndRestart.sh    # Adaptive memory restart (pz-heapcheck)
 │   │   └── notifyServerReady.sh      # Server startup notification
+│   │
+│   ├── discord/                      # Inbound /pzm command bot (Python/discord.py)
+│   │   ├── bot.py
+│   │   ├── run-bot.sh
+│   │   └── requirements.txt
+│   │
+│   ├── lib/
+│   │   └── common.sh                 # Sourced by every script (env, logging, locks)
 │   │
 │   └── logs/
 │       ├── zomboid/                  # Captured server logs
@@ -457,8 +500,10 @@ RestartSec=5
 │   │   ├── zomboid_logger.service    # Systemd logger
 │   │   ├── pz-backup.service/timer   # Hourly backup automation
 │   │   ├── pz-modcheck.service/timer # Mod update check automation
+│   │   ├── pz-heapcheck.service/timer  # Adaptive memory-driven restart
 │   │   ├── pz-maintenance.service/timer  # Daily maintenance automation
 │   │   ├── pz-creation-date-init.service/timer  # Whitelist date init
+│   │   ├── pz-discord-bot.service    # Inbound /pzm command bot
 │   │   └── .env.example              # Environment variables template
 │   │
 │   ├── pzserver/                     # PZ server installation (~1-2GB)
@@ -486,7 +531,9 @@ RestartSec=5
 │   ├── CONFIGURATION.md
 │   ├── SERVER_CONFIG.md
 │   ├── ADVANCED.md
+│   ├── DISCORD_BOT.md
 │   ├── TROUBLESHOOTING.md
+│   ├── PROCEDURE_JOUEURS.md
 │   └── WHAT_IS_INSTALLED.md          # This file
 │
 ├── README.md
@@ -525,9 +572,11 @@ RestartSec=5
 #### User and Paths
 ```bash
 PZ_USER="pzuser"
-PZ_HOME="/home/pzuser/pzmanager"
-PZ_SOURCE_DIR="${PZ_HOME}/Zomboid"
-PZ_INSTALL_DIR="${PZ_HOME}/data/pzserver"
+PZ_HOME="/home/pzuser"
+PZ_MANAGER_DIR="${PZ_HOME}/pzmanager"
+PZ_DATA_DIR="${PZ_MANAGER_DIR}/data"
+PZ_SOURCE_DIR="${PZ_MANAGER_DIR}/Zomboid"
+PZ_INSTALL_DIR="${PZ_DATA_DIR}/pzserver"
 ```
 
 #### Java
@@ -546,10 +595,10 @@ STEAM_BETA_BRANCH="unstable"
 
 #### Backups
 ```bash
-BACKUP_DIR="${PZ_HOME}/data/dataBackups"
+BACKUP_DIR="${PZ_DATA_DIR}/dataBackups"
 BACKUP_LATEST_LINK="${BACKUP_DIR}/latest"
 BACKUP_RETENTION_DAYS="14"
-FULL_BACKUP_DIR="${PZ_HOME}/data/fullBackups"
+SYNC_BACKUPS_DIR="${PZ_DATA_DIR}/fullBackups"
 ```
 
 #### Logs
@@ -564,14 +613,28 @@ LOG_RETENTION_DAYS="30"
 PZ_SERVICE_NAME="zomboid.service"
 ```
 
+#### Whitelist
+```bash
+WHITELIST_PURGE_DAYS=90   # auto-remove access after this many inactive days (keeps character)
+```
+
 #### Maintenance
 ```bash
 REBOOT_ON_MAINTENANCE=true   # true = reboot machine, false = restart service only
 ```
 
+#### Memory / heap restart
+```bash
+HEAP_RESTART_PERCENT=95      # restart when post-GC heap reaches this % of -Xmx
+HEAP_RESTART_DELAY="5m"      # player warning before the restart
+#PZ_XMX_GB=8                 # override -Xmx (GB); empty = half of physical RAM
+```
+
 #### Discord (optional)
 ```bash
-DISCORD_WEBHOOK=""  # Empty = disabled
+DISCORD_WEBHOOK=""              # outbound webhook; empty = disabled
+DISCORD_BOT_TOKEN=""            # inbound /pzm command bot; empty = disabled
+DISCORD_BOT_DEATH_CHANNEL_ID="" # channel for death / PvP embeds; empty = off
 ```
 
 **Modify**: `nano /home/pzuser/pzmanager/scripts/.env`
@@ -657,8 +720,8 @@ To completely remove pzmanager:
 # As root
 
 # 1. Stop and disable services
-sudo -u pzuser systemctl --user stop zomboid.service pz-backup.timer pz-modcheck.timer pz-maintenance.timer pz-creation-date-init.timer
-sudo -u pzuser systemctl --user disable zomboid.service pz-backup.timer pz-modcheck.timer pz-maintenance.timer pz-creation-date-init.timer
+sudo -u pzuser systemctl --user stop zomboid.service pz-backup.timer pz-modcheck.timer pz-heapcheck.timer pz-maintenance.timer pz-creation-date-init.timer pz-discord-bot.service
+sudo -u pzuser systemctl --user disable zomboid.service pz-backup.timer pz-modcheck.timer pz-heapcheck.timer pz-maintenance.timer pz-creation-date-init.timer pz-discord-bot.service
 loginctl disable-linger pzuser
 
 # 2. Remove files

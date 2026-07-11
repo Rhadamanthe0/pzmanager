@@ -1,30 +1,72 @@
 # Advanced Configuration
 
-Performance tuning and server reset procedures.
+Memory model, performance tuning, and server reset procedures.
 
-## RAM Configuration
+## RAM / JVM Configuration
 
-RAM is configured by `scripts/internal/configureJvm.sh`, run at install time
-**and re-applied after every SteamCMD update** (the nightly maintenance runs
-`app_update ... validate`, which restores the vanilla `ProjectZomboid64.json`).
-It is intentionally not tunable via a command (no `pzm config ram`). It sets,
-in `ProjectZomboid64.json`:
+JVM args live in `ProjectZomboid64.json` (the `vmArgs` array), written by
+`scripts/internal/configureJvm.sh`. That script runs at install time **and is
+re-applied after every SteamCMD update** — the nightly maintenance runs
+`app_update ... validate`, which restores the vanilla JSON, so any manual edit
+of `ProjectZomboid64.json` is overwritten the next night. There is no
+`pzm config ram` command. What it sets:
 
-- `-Xms2g` — fixed heap floor (ZGC gives unused heap above this back to the OS).
-- `-Xmx<half of physical RAM>` — heap ceiling, e.g. 7g on a 14 GiB machine.
-  This is a real, survivable guardrail: it triggers a clean Java
+- **No `-Xms`.** It was removed: with `AlwaysPreTouch` the real resident cost is
+  the pre-touched `-Xmx`, not `-Xms`, and ZGC give-back never fires on this
+  ever-growing workload. The heap now starts at the ergonomic default and grows
+  on demand.
+- `-Xmx` = **`PZ_XMX_GB` GB if set in `.env`, else half of physical RAM** (e.g.
+  7g on a 14 GiB machine). This is a real guardrail: it triggers a clean Java
   `OutOfMemoryError` before the heap can crowd out PZ's native memory + the OS.
-- `-XX:+UseZGC -XX:+AlwaysPreTouch -XX:ZCollectionInterval=5` — GC tuning.
+- `-XX:+UseZGC` (generational by default on JDK 25) `-XX:+AlwaysPreTouch`
+  `-XX:ZCollectionInterval=5` — GC tuning.
+- `-XX:+UseStringDeduplication` — the heap is full of map cells with repeated
+  sprite/tile strings; dedup trims the String part of the live set.
+- `-Djava.net.preferIPv4Stack=true` — RakNet/UdpEngine network stability.
+- `-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=<logs/zomboid>` plus a
+  rotating `-Xlog:gc*` to `scripts/logs/zomboid/gc.log` — diagnostics.
 
 **No cgroup memory cap.** `MemoryMax`/`MemoryHigh` are deliberately *not* set:
 on a modest machine they sit at the level of physical RAM, and the kernel
 throttles/OOM-kills PZ the instant it touches the cap (this caused server
-crashes). The only cgroup limit is `MemorySwapMax=1G` in
-`data/setupTemplates/zomboid.service`, a small overflow buffer.
+crashes). Instead, `data/setupTemplates/zomboid.service` sets
+`MemorySwapMax=0` — swap is **forbidden** to the process, because swapping game
+pages causes micro-freezes and worsens network desync. The `-Xmx` cap leaves
+the headroom to stay resident.
 
-To change `Xmx` durably, edit `scripts/internal/configureJvm.sh` (a manual
-edit of `ProjectZomboid64.json` would be overwritten by the next nightly
-maintenance), run it, then restart: `pzm server restart 5m`.
+**To change `Xmx`**, either set `PZ_XMX_GB` in `scripts/.env` (simplest) or edit
+`scripts/internal/configureJvm.sh`, then apply and restart:
+
+```bash
+nano ~/pzmanager/scripts/.env        # e.g. uncomment: export PZ_XMX_GB=8
+~/pzmanager/scripts/internal/configureJvm.sh
+pzm server restart 5m
+```
+
+> ⚠️ Keep `-Xmx` at roughly half of physical RAM. With `AlwaysPreTouch` the full
+> `Xmx` is resident from boot, and `Xmx` + ~5 GB of PZ native memory can exceed
+> total RAM, triggering a brutal Linux OOM-kill instead of a clean Java OOM. Only
+> raise `PZ_XMX_GB` above half if you know the box has the headroom.
+
+## Memory-driven restart (why the server restarts on its own)
+
+On a large modded B42 server the Java heap fills with **live map-cell data**
+(`IsoGridSquare`/`IsoObject`/chunks held by `ServerMap`/`IsoMetaGrid`) as players
+explore. These are referenced, not garbage: a forced GC frees nothing and `save`
+keeps them resident. There is no console command or config knob to evict cold
+chunks at runtime, so **a restart is the only way to reclaim that memory** —
+otherwise the heap OOMs after ~15 h of uptime.
+
+pzmanager handles this adaptively via `pz-heapcheck.timer` (every ~3 min): it
+reads the post-major-GC heap occupancy from `scripts/logs/zomboid/gc.log` and,
+when it reaches `HEAP_RESTART_PERCENT` (`.env`, default **95**), triggers
+`pzm server restart` with `HEAP_RESTART_DELAY` (default `5m`) and a player
+warning. A quiet server never gets a needless restart; a fast-filling evening
+session is caught before it OOMs. The daily 04:30 maintenance restart is the
+backstop if the monitor never fires.
+
+Tuning: if a crash ever happens *during* the warning countdown, lower
+`HEAP_RESTART_PERCENT` to 90 or shorten `HEAP_RESTART_DELAY`.
 
 ## RCON Commands
 

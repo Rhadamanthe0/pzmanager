@@ -107,6 +107,16 @@ export LOG_MAINTENANCE_DIR="${LOG_BASE_DIR}/maintenance"
 export LOG_RETENTION_DAYS=30
 ```
 
+### Whitelist
+
+```bash
+export WHITELIST_PURGE_DAYS=90
+```
+
+**WHITELIST_PURGE_DAYS**: Accounts with no activity for this many days have their
+access (whitelist + SteamID) auto-removed during nightly maintenance. The
+character is kept, and the built-in `admin` account is always spared.
+
 ### Maintenance
 
 ```bash
@@ -114,6 +124,20 @@ export REBOOT_ON_MAINTENANCE=true   # true = reboot machine, false = restart ser
 ```
 
 **REBOOT_ON_MAINTENANCE**: After daily maintenance, reboot the machine (`true`) or just restart the PZ service (`false`).
+
+### Memory / heap restart
+
+```bash
+export HEAP_RESTART_PERCENT=95      # restart when post-GC heap reaches this % of -Xmx
+export HEAP_RESTART_DELAY="5m"      # player warning before the restart
+#export PZ_XMX_GB=8                 # override -Xmx (GB); empty = half of physical RAM
+```
+
+The heap fills with live map cells that nothing can free at runtime, so the
+server restarts itself when the post-major-GC heap (read from
+`logs/zomboid/gc.log`) reaches `HEAP_RESTART_PERCENT`. `PZ_XMX_GB` overrides the
+heap ceiling. See [ADVANCED.md](ADVANCED.md#ram--jvm-configuration) for the full
+model and the OOM caveat before raising `PZ_XMX_GB` above half of RAM.
 
 ### Discord (Optional)
 
@@ -131,10 +155,12 @@ export DISCORD_BOT_GUILD_ID=""         # server ID (instant command sync)
 export DISCORD_BOT_CHANNEL_ID=""       # allowed channel ID(s), comma-separated
 export DISCORD_BOT_ADMIN_ROLE_ID=""    # role allowed to run commands
 export DISCORD_BOT_CMD_TIMEOUT=2400    # per-command timeout (seconds)
+export DISCORD_BOT_DEATH_CHANNEL_ID="" # channel for death / PvP notifications (empty = off)
 ```
 
 Runs `pzm` commands from Discord via `/pzm …` slash commands. Leave
 `DISCORD_BOT_TOKEN` empty to keep it disabled. Install with `pzm install discord`.
+Set `DISCORD_BOT_DEATH_CHANNEL_ID` to also post player-death and PvP embeds.
 Full guide: [DISCORD_BOT.md](DISCORD_BOT.md).
 
 ## Backups Configuration

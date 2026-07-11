@@ -12,7 +12,9 @@
 - **Auto-updates** - Detects mod and server updates every 5 min, triggers maintenance automatically
 - **Auto-backups** - Hourly incremental backups, 14-day retention
 - **Auto-maintenance** - Daily system/server updates at 4:30 AM
-- **Discord notifications** - Server status, mod updates, maintenance alerts
+- **Adaptive memory restart** - Restarts only when the Java heap actually fills up (B42 map-cell growth), not on a blind schedule
+- **Discord notifications** - Server status, mod updates, maintenance alerts, optional death/PvP feed
+- **Discord command bot** - Run `pzm` from Discord (`/pzm …`)
 - **Player warnings** - In-game countdown messages before restarts
 - **SteamID whitelist** - B42 access control (`Open=false`); auto-removes access of long-inactive players (keeps their character)
 

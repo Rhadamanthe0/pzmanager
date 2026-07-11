@@ -221,12 +221,12 @@ backup, so you can roll back if needed. See [USAGE.md](USAGE.md#backups).
 
 ```bash
 systemctl --user list-timers
-# Should show pz-backup, pz-maintenance, pz-modcheck, pz-creation-date-init
+# Should show pz-backup, pz-maintenance, pz-modcheck, pz-heapcheck, pz-creation-date-init
 ```
 
 **Re-enable timers**:
 ```bash
-systemctl --user enable --now pz-backup.timer pz-maintenance.timer pz-modcheck.timer pz-creation-date-init.timer
+systemctl --user enable --now pz-backup.timer pz-maintenance.timer pz-modcheck.timer pz-heapcheck.timer pz-creation-date-init.timer
 ```
 
 ### Check Timer Logs
@@ -414,18 +414,27 @@ re-applies them after every SteamCMD update — edit the script, not the JSON
 (a manual JSON edit is overwritten by the nightly maintenance):
 
 ```bash
-nano ~/pzmanager/scripts/internal/configureJvm.sh
-# Adjust xms_gb / the xmx_gb computation (half of RAM by default),
-# then apply and restart:
+# Simplest: set the heap size in .env, then apply and restart
+nano ~/pzmanager/scripts/.env        # uncomment / set: export PZ_XMX_GB=8
 ~/pzmanager/scripts/internal/configureJvm.sh
 pzm server restart 5m
 ```
 
-> ⚠️ Keep `-Xmx` ≤ ~half of physical RAM. PZ B42 modded uses 6-9 GB of native
-> memory *on top of* the Java heap; an `Xmx` close to total RAM will exhaust the
+There is no `-Xms` (removed); `-Xmx` defaults to half of physical RAM unless
+`PZ_XMX_GB` is set. Full model: [ADVANCED.md](ADVANCED.md#ram--jvm-configuration).
+
+> ⚠️ Keep `-Xmx` at roughly half of physical RAM. PZ B42 modded uses 6-9 GB of
+> native memory *on top of* the Java heap, and with `AlwaysPreTouch` the whole
+> `Xmx` is resident from boot; an `Xmx` close to total RAM will exhaust the
 > machine and trigger a brutal Linux OOM-kill instead of a clean Java OOM.
 > Do **not** add a cgroup `MemoryMax`/`MemoryHigh` — it throttles/crashes PZ at
 > the cap.
+
+> **Note:** a `java.lang.OutOfMemoryError: Java heap space` after ~15 h of uptime
+> is expected on a large explored map — the heap fills with live map cells that
+> nothing can free at runtime. pzmanager restarts the server automatically before
+> this (see [ADVANCED.md](ADVANCED.md#memory-driven-restart-why-the-server-restarts-on-its-own)).
+> Raising `Xmx` only delays it.
 
 ## Getting Help
 
