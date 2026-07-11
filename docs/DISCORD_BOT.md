@@ -11,6 +11,7 @@ notifications: a small Python bot (discord.py) connects to Discord's Gateway
 - [Setup](#setup)
 - [Commands](#commands)
 - [Batch: run several commands at once](#batch-run-several-commands-at-once)
+- [Death & PvP notifications](#death--pvp-notifications)
 - [Security](#security)
 - [Managing the service](#managing-the-service)
 - [Troubleshooting](#troubleshooting)
@@ -78,6 +79,7 @@ export DISCORD_BOT_GUILD_ID="<server id>"
 export DISCORD_BOT_CHANNEL_ID="<channel id>"      # comma-separated for several
 export DISCORD_BOT_ADMIN_ROLE_ID="<role id>"
 export DISCORD_BOT_CMD_TIMEOUT=2400               # per-command timeout (seconds)
+export DISCORD_BOT_DEATH_CHANNEL_ID="<channel id>"  # optional — death/PvP feed (empty = off)
 ```
 
 ### 4. Install
@@ -150,6 +152,31 @@ Rules:
   with **`pzm help` attached** as `pzm-help.txt`.
 - Messages that contain no `pzm` line at all are ignored (normal chat is
   untouched).
+
+## Death & PvP notifications
+
+Optional. Set `DISCORD_BOT_DEATH_CHANNEL_ID` and the bot tails the server logs in
+the background and posts an embed to that channel on:
+
+- **☠️ Mort définitive** — a permanent death (from the `*_user.txt` log). The
+  embed carries the character name, the account when it can be resolved
+  unambiguously, the position, and a best-effort **Cause** (⚔️ PvP combat if a
+  matching PvP kill happened shortly before and nearby, else 🧟 environment /
+  zombie). Vanilla PZ does **not** log a cause of death, so this is inferred from
+  context, never guessed from the (always "non pvp") death flag.
+- **⚔️ Incapacité PvP** — a PvP knockdown (from the `*_pvp.txt` log): victim,
+  killer, weapon, position. With revive mods a PvP hit is a revivable knockdown,
+  not a permanent death, so the two embeds are a two-stage flow.
+
+Notes:
+
+- It is **live-only**: it skips history on boot, handles log rotation, and dedups
+  (15 s per character for deaths, 45 s per victim for PvP).
+- The bot needs **View Channel + Send Messages + Embed Links** in that channel
+  (otherwise it logs `403 Missing Permissions`). Embed Links is not in the
+  default command-bot invite, so grant it on the death channel.
+- Leave `DISCORD_BOT_DEATH_CHANNEL_ID` empty to disable this feature entirely;
+  the command bot works without it.
 
 ## Security
 

@@ -128,9 +128,11 @@ REDÉMARRAGE
 
 ## Configuration
 
-RAM is set automatically (`-Xms2g` / `-Xmx` = half of physical RAM) at install
-time and re-applied after every server update; it is not tunable via a command.
-See [ADVANCED.md](ADVANCED.md#ram-configuration).
+RAM is set automatically (`-Xmx` = `PZ_XMX_GB` GB if set in `.env`, else half of
+physical RAM; no `-Xms`) at install time and re-applied after every server
+update; it is not tunable via a command. The server also restarts itself when the
+heap fills up (there is no way to reclaim explored map cells at runtime). See
+[ADVANCED.md](ADVANCED.md#ram--jvm-configuration).
 
 ## RCON
 
@@ -176,6 +178,7 @@ systemctl --user list-timers
 |-------|----------|----------|
 | pz-backup | Hourly :14 | Incremental backup |
 | pz-modcheck | Every 5 min | Check mod & server updates |
+| pz-heapcheck | Every ~3 min | Restart if Java heap ≥ `HEAP_RESTART_PERCENT` |
 | pz-maintenance | Daily 4:30 | Full maintenance (reboot or restart selon .env) |
 | pz-creation-date-init | Daily 00:00 | Init whitelist creation dates |
 
@@ -186,7 +189,7 @@ systemctl --user list-timers
 | Start server | `pzm server start` |
 | Stop in 5 min | `pzm server stop 5m` |
 | Check status | `pzm server status` |
-| Add player | `pzm whitelist add "Name" "SteamID64"` |
+| Add player | `pzm whitelist add "SteamID64" "Name"` |
 | Manual backup | `pzm backup create` |
 | Send message | `pzm rcon servermsg "Text"` |
 

@@ -67,9 +67,9 @@ Manage users authorized to connect to the server.
 pzm whitelist list
 ```
 
-**Add player**:
+**Add player** (SteamID64 first, name optional):
 ```bash
-pzm whitelist add "PlayerName" "76561198012345678"
+pzm whitelist add "76561198012345678" "PlayerName"
 ```
 
 **Remove player**:
