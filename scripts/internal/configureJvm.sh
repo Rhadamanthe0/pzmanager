@@ -57,10 +57,17 @@ args = [a for a in data['vmArgs'] if not any(d in a for d in drop)]
 # Heap : plafond Xmx uniquement (pas de -Xms -> init ergonomique, croît à la demande)
 args.append(f'-Xmx{xmx_gb}g')
 
-# ZGC (générationnel par défaut en JDK 25) + pré-touche + cycle périodique 5s
+# ZGC (générationnel par défaut en JDK 25) + pré-touche + cycle périodique.
+# ZCollectionInterval force une collecte MAJEURE (young + old) à cet intervalle.
+# À 5s, la passe old (~4,5s, ne libère quasi rien sur ce heap majoritairement
+# vivant) tournait en quasi-continu -> CPU de fond + chauffe. À 60s, les collectes
+# young restent fréquentes/bon marché (pilotées par l'allocation) et les majeures
+# deviennent rares. Le moniteur heap (pz-heapcheck, ~3 min) lit la dernière ligne
+# "Major Collection" de gc.log : une majeure/min suffit largement (le heap met
+# ~15 h à se remplir). Remonter si gc.log devient trop clairsemé.
 args.append('-XX:+UseZGC')
 args.append('-XX:+AlwaysPreTouch')
-args.append('-XX:ZCollectionInterval=5')
+args.append('-XX:ZCollectionInterval=60')
 
 # Déduplication des String : le heap est plein de cellules de map aux chaînes
 # répétées (noms de sprites/tiles) -> la dédup réduit la part String du live set
