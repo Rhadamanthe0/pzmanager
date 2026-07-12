@@ -14,6 +14,8 @@ Configuration lue depuis l'environnement (exporté par run-bot.sh via .env) :
   DISCORD_BOT_ADMIN_ROLE_ID  ID du rôle autorisé à lancer des commandes
   DISCORD_BOT_CMD_TIMEOUT    Timeout d'exécution d'une commande, secondes (défaut 2400)
   DISCORD_BOT_DEATH_CHANNEL_ID  Salon où notifier les morts de joueurs (optionnel)
+  DISCORD_BOT_MONITORING_CHANNEL_ID  Salon de télémétrie périodique (optionnel)
+  DISCORD_BOT_MONITORING_INTERVAL    Intervalle du monitoring, secondes (défaut 60)
   PZ_MANAGER_DIR             Racine pzmanager (contient le dispatcher `pzm`)
   PZ_SOURCE_DIR              Racine Zomboid (contient Logs/ pour les morts)
 
@@ -30,6 +32,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import time
 from datetime import datetime, timezone
 from typing import Literal, Optional
@@ -73,6 +76,22 @@ DEATH_DEDUP_SECONDS = 15     # même joueur = 1 notif (le moteur logge parfois
 DEATH_LINE_RE = re.compile(
     r"user (?P<name>.+?) died at \((?P<x>-?\d+),(?P<y>-?\d+),(?P<z>-?\d+)\) "
     r"\((?P<pvp>non pvp|pvp)\)")
+
+# --- Monitoring serveur (télémétrie périodique) ------------------------------
+# Poste, toutes les MONITORING_INTERVAL secondes, un embed de santé du serveur
+# dans DISCORD_BOT_MONITORING_CHANNEL_ID : uptime, heap Java (gc.log), RSS/natif
+# du process, RAM système, températures (hwmon), charge CPU, disque, état GC et
+# alertes pré-crash. Zéro dépendance (lecture directe de /proc et /sys). Chaque
+# cycle = un NOUVEAU message : l'historique du salon sert de « boîte noire » pour
+# diagnostiquer un crash a posteriori. Désactivé si le salon est vide.
+_MON_CHANNEL_RAW = os.environ.get("DISCORD_BOT_MONITORING_CHANNEL_ID", "").strip()
+MONITORING_CHANNEL_ID = int(_MON_CHANNEL_RAW) if _MON_CHANNEL_RAW.isdigit() else None
+MONITORING_INTERVAL = max(15, int(os.environ.get("DISCORD_BOT_MONITORING_INTERVAL", "60") or "60"))
+MON_HISTORY = 30             # points conservés pour les mini-graphes (sparklines)
+LOG_ZOMBOID_DIR = os.environ.get("LOG_ZOMBOID_DIR", "").rstrip("/")
+GC_LOG_PATH = f"{LOG_ZOMBOID_DIR}/gc.log" if LOG_ZOMBOID_DIR else ""
+HEAP_RESTART_PERCENT = int(os.environ.get("HEAP_RESTART_PERCENT", "95") or "95")
+_PZ_XMX_RAW = os.environ.get("PZ_XMX_GB", "").strip()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -886,6 +905,411 @@ async def death_watcher():
         await asyncio.sleep(DEATH_POLL_SECONDS)
 
 
+# --- Monitoring : collecte des métriques -------------------------------------
+
+_CLK_TCK = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+_SPARK = "▁▂▃▄▅▆▇█"
+# Résumé d'une collecte ZGC : "NNNNM(PP%)->MMMMM(QQ%)" (majeure OU mineure).
+_GC_HEAP_RE = re.compile(r"(\d+)M\((\d+)%\)->(\d+)M\((\d+)%\)")
+_GC_MAJOR_RE = re.compile(
+    r"Major Collection \([^)]*\) \d+M\(\d+%\)->(\d+)M\((\d+)%\) ([\d.,]+)s")
+
+
+def _spark(vals) -> str:
+    """Mini-graphe Unicode d'une série (échelle auto min..max)."""
+    v = [x for x in vals if x is not None]
+    if len(v) < 2:
+        return ""
+    lo, hi = min(v), max(v)
+    if hi - lo < 1e-9:
+        return _SPARK[0] * len(v)
+    return "".join(_SPARK[int((x - lo) / (hi - lo) * (len(_SPARK) - 1))] for x in v)
+
+
+def _bar(pct, width=10) -> str:
+    n = max(0, min(width, int(round((pct or 0) / 100 * width))))
+    return "█" * n + "░" * (width - n)
+
+
+def _read_int(path):
+    try:
+        with open(path) as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _tail_text(path, nbytes=65536) -> str:
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - nbytes))
+            return f.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+def _meminfo() -> dict:
+    out = {}
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                k, _, rest = line.partition(":")
+                out[k] = int(rest.strip().split()[0])   # kB
+    except OSError:
+        pass
+    return out
+
+
+def _proc_status(pid) -> dict:
+    out = {}
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            for line in f:
+                k, _, rest = line.partition(":")
+                if k in ("VmRSS", "VmHWM", "VmSwap"):
+                    out[k] = int(rest.strip().split()[0])   # kB
+    except OSError:
+        pass
+    return out
+
+
+def _java_pid():
+    """PID de la JVM serveur : le process 'ProjectZomboid'/'java' au plus gros RSS
+    (robuste au shell parent du service)."""
+    best, best_rss = None, -1
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/comm") as f:
+                comm = f.read().strip()
+        except OSError:
+            continue
+        if "ProjectZomboid" not in comm and comm != "java":
+            continue
+        rss = _proc_status(pid).get("VmRSS", 0)
+        if rss > best_rss:
+            best, best_rss = int(pid), rss
+    return best
+
+
+def _proc_cpu_jiffies(pid):
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            parts = f.read().split()
+        return int(parts[13]) + int(parts[14])          # utime + stime
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def _proc_uptime_seconds(pid):
+    """Âge du process = uptime serveur depuis le dernier (re)démarrage."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            starttime = int(f.read().split()[21]) / _CLK_TCK
+        with open("/proc/uptime") as f:
+            return float(f.read().split()[0]) - starttime
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def _temps() -> dict:
+    """Températures (°C) par capteur hwmon, résolues par NOM (les index sont volatils
+    d'un boot à l'autre)."""
+    want = {"k10temp": "cpu", "nvme": "nvme", "amdgpu": "gpu", "spd5118": "ram"}
+    out = {}
+    for h in glob.glob("/sys/class/hwmon/hwmon*"):
+        try:
+            with open(f"{h}/name") as f:
+                key = want.get(f.read().strip())
+        except OSError:
+            continue
+        if not key:
+            continue
+        val = None
+        for inp in sorted(glob.glob(f"{h}/temp*_input")):
+            raw = _read_int(inp)
+            if not raw:                                  # 0 ou None = capteur muet
+                continue
+            val = raw / 1000.0
+            try:
+                with open(inp.replace("_input", "_label")) as f:
+                    lbl = f.read().strip()
+            except OSError:
+                lbl = ""
+            if lbl in ("Tctl", "Composite", "edge"):     # capteur principal du device
+                break
+        if val is not None:
+            out[key] = val
+    return out
+
+
+def _gc_heap():
+    """(used_mb, pct, major_pct, major_used_mb, major_pause_s) depuis gc.log.
+    used/pct = dernière collecte (fraîche) ; major_* = dernière MAJEURE (plancher
+    du live-set = indicateur d'OOM). Les % sont des % de Xmx."""
+    txt = _tail_text(GC_LOG_PATH)
+    if not txt:
+        return None
+    used = pct = None
+    for m in _GC_HEAP_RE.finditer(txt):
+        used, pct = int(m.group(3)), int(m.group(4))     # post-flèche = état courant
+    maj_pct = maj_used = maj_pause = None
+    for m in _GC_MAJOR_RE.finditer(txt):
+        maj_used, maj_pct = int(m.group(1)), int(m.group(2))
+        maj_pause = float(m.group(3).replace(",", "."))
+    if used is None:
+        return None
+    return used, pct, maj_pct, maj_used, maj_pause
+
+
+def _recent_heapdump():
+    """(nom, âge_s) du dernier .hprof si présent (un dump = OOM survenu)."""
+    if not LOG_ZOMBOID_DIR:
+        return None
+    dumps = glob.glob(f"{LOG_ZOMBOID_DIR}/*.hprof")
+    if not dumps:
+        return None
+    newest = max(dumps, key=os.path.getmtime)
+    return os.path.basename(newest), time.time() - os.path.getmtime(newest)
+
+
+def _xmx_gb() -> int:
+    if _PZ_XMX_RAW.isdigit():
+        return int(_PZ_XMX_RAW)
+    total = _meminfo().get("MemTotal", 0)
+    return max(2, total // 1024 // 1024 // 2)
+
+
+def collect_stats(prev: dict) -> dict:
+    """Un instantané complet. `prev` porte l'état inter-cycles (CPU delta)."""
+    now = time.monotonic()
+    s = {"pid": _java_pid()}
+    s["mem"] = _meminfo()
+    st = _proc_status(s["pid"]) if s["pid"] else {}
+    s["rss_kb"], s["hwm_kb"], s["pswap_kb"] = st.get("VmRSS"), st.get("VmHWM"), st.get("VmSwap")
+    s["uptime"] = _proc_uptime_seconds(s["pid"]) if s["pid"] else None
+    s["cpu_pct"] = None
+    if s["pid"]:
+        jif = _proc_cpu_jiffies(s["pid"])
+        if jif is not None and prev.get("jif") is not None:
+            dt = now - prev["ts"]
+            if dt > 0:
+                s["cpu_pct"] = max(0.0, (jif - prev["jif"]) / (_CLK_TCK * dt) * 100.0)
+        prev["jif"], prev["ts"] = jif, now
+    s["temps"] = _temps()
+    try:
+        s["load"] = os.getloadavg()
+    except OSError:
+        s["load"] = None
+    s["gc"] = _gc_heap()
+    try:
+        s["disk"] = shutil.disk_usage(PZ_SOURCE_DIR or PZ_MANAGER_DIR)
+    except OSError:
+        s["disk"] = None
+    s["heapdump"] = _recent_heapdump()
+    return s
+
+
+# --- Monitoring : rendu de l'embed -------------------------------------------
+
+def _push_hist(hist: dict, s: dict):
+    gc = s["gc"]
+    mem = s["mem"]
+    total, avail = mem.get("MemTotal", 0), mem.get("MemAvailable", 0)
+    vals = {
+        "heap": gc[1] if gc else None,
+        "rss": s["rss_kb"] / 1048576 if s["rss_kb"] else None,
+        "temp": s["temps"].get("cpu"),
+        "load": s["load"][0] if s["load"] else None,
+        "memused": (1 - avail / total) * 100 if total else None,
+    }
+    for k, v in vals.items():
+        hist[k].append(v)
+        if len(hist[k]) > MON_HISTORY:
+            hist[k].pop(0)
+
+
+def _fmt_dur(sec):
+    if not sec:
+        return "—"
+    sec = int(sec)
+    d, sec = divmod(sec, 86400)
+    h, sec = divmod(sec, 3600)
+    m = sec // 60
+    if d:
+        return f"{d}j {h}h {m}m"
+    if h:
+        return f"{h}h {m}m"
+    return f"{m}m"
+
+
+def _status(s):
+    """(couleur, [alertes]) — évalue les prédicteurs de crash."""
+    alerts, warn = [], False
+    xmx = _xmx_gb()
+    mem = s["mem"]
+    total, avail = mem.get("MemTotal", 0), mem.get("MemAvailable", 0)
+    avail_mb = avail / 1024
+    gc = s["gc"]
+    live = gc[2] if gc and gc[2] is not None else None      # plancher live-set (majeure)
+    crit = False
+    if s["pid"] is None:
+        alerts.append("🔴 Serveur INACTIF (aucun process JVM)")
+        crit = True
+    if live is not None and live >= HEAP_RESTART_PERCENT - 3:
+        alerts.append(f"🔴 Heap live-set {live}% ≈ seuil de restart ({HEAP_RESTART_PERCENT}%)")
+        crit = True
+    elif live is not None and live >= HEAP_RESTART_PERCENT - 15:
+        alerts.append(f"🟠 Heap live-set {live}% — montée vers le seuil ({HEAP_RESTART_PERCENT}%)")
+        warn = True
+    if total and avail_mb < 600:
+        alerts.append(f"🔴 RAM système dispo {avail_mb/1024:.1f} Go — risque d'OOM-kill OS")
+        crit = True
+    elif total and avail_mb < 1200:
+        alerts.append(f"🟠 RAM système dispo {avail_mb/1024:.1f} Go — marge basse")
+        warn = True
+    if s["pswap_kb"]:
+        alerts.append(f"🟠 Le process a swappé ({s['pswap_kb']/1024:.0f} Mo) — anormal (MemorySwapMax=0)")
+        warn = True
+    if gc and gc[4] and gc[4] > 8:
+        alerts.append(f"🟠 Pause GC majeure longue ({gc[4]:.1f}s)")
+        warn = True
+    cpu_t = s["temps"].get("cpu")
+    if cpu_t and cpu_t >= 90:
+        alerts.append(f"🔴 CPU {cpu_t:.0f}°C — surchauffe")
+        crit = True
+    elif cpu_t and cpu_t >= 82:
+        alerts.append(f"🟠 CPU {cpu_t:.0f}°C — chaud")
+        warn = True
+    if s["disk"] and s["disk"].free / s["disk"].total < 0.05:
+        alerts.append("🔴 Disque du monde < 5% libre — la sauvegarde peut échouer")
+        crit = True
+    if s["heapdump"] and s["heapdump"][1] < 7200:
+        alerts.append(f"🔴 Heap dump récent ({_fmt_dur(s['heapdump'][1])}) — OOM survenu")
+        crit = True
+    color = 0xE74C3C if crit else (0xE67E22 if warn else 0x2ECC71)
+    return color, alerts
+
+
+def _monitoring_embed(s: dict, hist: dict) -> discord.Embed:
+    color, alerts = _status(s)
+    mem = s["mem"]
+    total = mem.get("MemTotal", 0)
+    avail = mem.get("MemAvailable", 0)
+    used_pct = (1 - avail / total) * 100 if total else 0
+    cached = (mem.get("Buffers", 0) + mem.get("Cached", 0)) / 1048576
+    shmem = mem.get("Shmem", 0) / 1048576
+    sswap = (mem.get("SwapTotal", 0) - mem.get("SwapFree", 0)) / 1024   # Mo
+    xmx = _xmx_gb()
+    gc = s["gc"]
+
+    embed = discord.Embed(title="📊 Monitoring serveur", color=color,
+                          timestamp=datetime.now(timezone.utc))
+
+    state = "🟢 actif" if s["pid"] else "🔴 inactif"
+    embed.add_field(
+        name="Serveur",
+        value=f"{state} · uptime **{_fmt_dur(s['uptime'])}**"
+              + (f" · pid `{s['pid']}`" if s["pid"] else ""),
+        inline=False)
+
+    # Heap Java (le nerf de la guerre : OOM = heap plein de cellules vivantes)
+    if gc:
+        used_mb, pct, maj_pct = gc[0], gc[1], gc[2]
+        heap_line = f"**{used_mb} Mo / {xmx} Go** — {pct}% de Xmx  {_spark(hist['heap'])}"
+        if maj_pct is not None:
+            heap_line += f"\nPlancher live-set (dern. majeure) : **{maj_pct}%** · seuil restart {HEAP_RESTART_PERCENT}%"
+    else:
+        heap_line = "—"
+    embed.add_field(name="🧠 Heap Java", value=heap_line, inline=False)
+
+    # Process JVM : RSS = heap résident + natif hors-heap
+    if s["rss_kb"]:
+        rss_g = s["rss_kb"] / 1048576
+        native_g = max(0.0, rss_g - (gc[0] / 1024 if gc else 0))
+        hwm_g = s["hwm_kb"] / 1048576 if s["hwm_kb"] else 0
+        proc_line = (f"RSS **{rss_g:.1f} Go** · natif ~{native_g:.1f} Go · pic {hwm_g:.1f} Go"
+                     f" · swap {s['pswap_kb'] / 1024:.0f} Mo  {_spark(hist['rss'])}")
+    else:
+        proc_line = "—"
+    embed.add_field(name="💾 Process (JVM)", value=proc_line, inline=False)
+
+    # RAM système : la vraie marge anti OOM-kill OS
+    embed.add_field(
+        name="🖥️ RAM système",
+        value=f"util **{used_pct:.0f}%** `{_bar(used_pct)}` · dispo **{avail/1048576:.1f} Go** / {total/1048576:.1f}\n"
+              f"cache {cached:.1f} Go · shmem {shmem:.1f} Go · swap sys {sswap:.0f} Mo",
+        inline=False)
+
+    # Températures (le mobile initial : chauffe du mini-PC)
+    t = s["temps"]
+    temp_parts = []
+    for key, lbl in (("cpu", "CPU"), ("nvme", "NVMe"), ("gpu", "GPU"), ("ram", "RAM")):
+        if key in t:
+            temp_parts.append(f"{lbl} **{t[key]:.0f}°C**")
+    embed.add_field(
+        name="🌡️ Températures",
+        value=(" · ".join(temp_parts) or "—") + (f"  {_spark(hist['temp'])}" if "cpu" in t else ""),
+        inline=True)
+
+    # CPU
+    if s["load"]:
+        cpu_line = f"charge {s['load'][0]:.2f} / {s['load'][1]:.2f} / {s['load'][2]:.2f} ({os.cpu_count()} cœurs)"
+        if s["cpu_pct"] is not None:
+            cpu_line += f"\nprocess **{s['cpu_pct']:.0f}%**"
+    else:
+        cpu_line = "—"
+    embed.add_field(name="⚙️ CPU", value=cpu_line, inline=True)
+
+    # Disque + GC
+    if s["disk"]:
+        free_pct = s["disk"].free / s["disk"].total * 100
+        disk_line = f"libre **{s['disk'].free / 1e9:.0f} Go** ({free_pct:.0f}%)"
+    else:
+        disk_line = "—"
+    if gc and gc[2] is not None:
+        disk_line += f"\n♻️ dern. majeure {gc[2]}% en {gc[4]:.1f}s" if gc[4] else f"\n♻️ dern. majeure {gc[2]}%"
+    embed.add_field(name="🗄️ Disque (monde)", value=disk_line, inline=True)
+
+    if alerts:
+        embed.add_field(name="⚠️ Alertes", value="\n".join(alerts), inline=False)
+
+    embed.set_footer(text=f"maj toutes les {MONITORING_INTERVAL}s")
+    return embed
+
+
+async def monitoring_loop():
+    """Tâche de fond : poste un embed de santé toutes les MONITORING_INTERVAL s."""
+    await bot.wait_until_ready()
+    if MONITORING_CHANNEL_ID is None:
+        return
+    channel = bot.get_channel(MONITORING_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(MONITORING_CHANNEL_ID)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
+            log.warning("Salon de monitoring %s inaccessible (%s) — monitoring désactivé",
+                        MONITORING_CHANNEL_ID, e)
+            return
+    log.info("Monitoring actif : salon=%s intervalle=%ss", MONITORING_CHANNEL_ID, MONITORING_INTERVAL)
+
+    prev, hist = {}, {k: [] for k in ("heap", "rss", "temp", "load", "memused")}
+    collect_stats(prev)                      # amorce le delta CPU sans poster
+    await asyncio.sleep(min(MONITORING_INTERVAL, 5))
+    while not bot.is_closed():
+        try:
+            s = collect_stats(prev)
+            _push_hist(hist, s)
+            await channel.send(embed=_monitoring_embed(s, hist))
+        except discord.HTTPException as e:
+            log.warning("Monitoring : envoi Discord échoué (%s)", e)
+        except Exception:
+            log.exception("Monitoring : erreur de collecte")
+        await asyncio.sleep(MONITORING_INTERVAL)
+
+
 @bot.event
 async def setup_hook():
     if GUILD_ID.isdigit():
@@ -900,6 +1324,10 @@ async def setup_hook():
         bot.loop.create_task(death_watcher())
     else:
         log.info("Notification des morts désactivée (DISCORD_BOT_DEATH_CHANNEL_ID vide)")
+    if MONITORING_CHANNEL_ID is not None:
+        bot.loop.create_task(monitoring_loop())
+    else:
+        log.info("Monitoring désactivé (DISCORD_BOT_MONITORING_CHANNEL_ID vide)")
 
 
 @bot.event
