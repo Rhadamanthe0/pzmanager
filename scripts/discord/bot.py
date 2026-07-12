@@ -87,7 +87,6 @@ DEATH_LINE_RE = re.compile(
 _MON_CHANNEL_RAW = os.environ.get("DISCORD_BOT_MONITORING_CHANNEL_ID", "").strip()
 MONITORING_CHANNEL_ID = int(_MON_CHANNEL_RAW) if _MON_CHANNEL_RAW.isdigit() else None
 MONITORING_INTERVAL = max(15, int(os.environ.get("DISCORD_BOT_MONITORING_INTERVAL", "60") or "60"))
-MON_HISTORY = 30             # points conservés pour les mini-graphes (sparklines)
 LOG_ZOMBOID_DIR = os.environ.get("LOG_ZOMBOID_DIR", "").rstrip("/")
 GC_LOG_PATH = f"{LOG_ZOMBOID_DIR}/gc.log" if LOG_ZOMBOID_DIR else ""
 HEAP_RESTART_PERCENT = int(os.environ.get("HEAP_RESTART_PERCENT", "95") or "95")
@@ -908,22 +907,10 @@ async def death_watcher():
 # --- Monitoring : collecte des métriques -------------------------------------
 
 _CLK_TCK = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
-_SPARK = "▁▂▃▄▅▆▇█"
 # Résumé d'une collecte ZGC : "NNNNM(PP%)->MMMMM(QQ%)" (majeure OU mineure).
 _GC_HEAP_RE = re.compile(r"(\d+)M\((\d+)%\)->(\d+)M\((\d+)%\)")
 _GC_MAJOR_RE = re.compile(
     r"Major Collection \([^)]*\) \d+M\(\d+%\)->(\d+)M\((\d+)%\) ([\d.,]+)s")
-
-
-def _spark(vals) -> str:
-    """Mini-graphe Unicode d'une série (échelle auto min..max)."""
-    v = [x for x in vals if x is not None]
-    if len(v) < 2:
-        return ""
-    lo, hi = min(v), max(v)
-    if hi - lo < 1e-9:
-        return _SPARK[0] * len(v)
-    return "".join(_SPARK[int((x - lo) / (hi - lo) * (len(_SPARK) - 1))] for x in v)
 
 
 def _bar(pct, width=10) -> str:
@@ -1114,23 +1101,6 @@ def collect_stats(prev: dict) -> dict:
 
 # --- Monitoring : rendu de l'embed -------------------------------------------
 
-def _push_hist(hist: dict, s: dict):
-    gc = s["gc"]
-    mem = s["mem"]
-    total, avail = mem.get("MemTotal", 0), mem.get("MemAvailable", 0)
-    vals = {
-        "heap": gc[1] if gc else None,
-        "rss": s["rss_kb"] / 1048576 if s["rss_kb"] else None,
-        "temp": s["temps"].get("cpu"),
-        "load": s["load"][0] if s["load"] else None,
-        "memused": (1 - avail / total) * 100 if total else None,
-    }
-    for k, v in vals.items():
-        hist[k].append(v)
-        if len(hist[k]) > MON_HISTORY:
-            hist[k].pop(0)
-
-
 def _fmt_dur(sec):
     if not sec:
         return "—"
@@ -1193,7 +1163,7 @@ def _status(s):
     return color, alerts
 
 
-def _monitoring_embed(s: dict, hist: dict) -> discord.Embed:
+def _monitoring_embed(s: dict) -> discord.Embed:
     color, alerts = _status(s)
     mem = s["mem"]
     total = mem.get("MemTotal", 0)
@@ -1218,7 +1188,7 @@ def _monitoring_embed(s: dict, hist: dict) -> discord.Embed:
     # Heap Java (le nerf de la guerre : OOM = heap plein de cellules vivantes)
     if gc:
         used_mb, pct, maj_pct = gc[0], gc[1], gc[2]
-        heap_line = f"**{used_mb} Mo / {xmx} Go** — {pct}% de Xmx  {_spark(hist['heap'])}"
+        heap_line = f"**{used_mb} Mo / {xmx} Go** — {pct}% de Xmx"
         if maj_pct is not None:
             heap_line += f"\nPlancher live-set (dern. majeure) : **{maj_pct}%** · seuil restart {HEAP_RESTART_PERCENT}%"
     else:
@@ -1231,7 +1201,7 @@ def _monitoring_embed(s: dict, hist: dict) -> discord.Embed:
         native_g = max(0.0, rss_g - (gc[0] / 1024 if gc else 0))
         hwm_g = s["hwm_kb"] / 1048576 if s["hwm_kb"] else 0
         proc_line = (f"RSS **{rss_g:.1f} Go** · natif ~{native_g:.1f} Go · pic {hwm_g:.1f} Go"
-                     f" · swap {s['pswap_kb'] / 1024:.0f} Mo  {_spark(hist['rss'])}")
+                     f" · swap {s['pswap_kb'] / 1024:.0f} Mo")
     else:
         proc_line = "—"
     embed.add_field(name="💾 Process (JVM)", value=proc_line, inline=False)
@@ -1251,7 +1221,7 @@ def _monitoring_embed(s: dict, hist: dict) -> discord.Embed:
             temp_parts.append(f"{lbl} **{t[key]:.0f}°C**")
     embed.add_field(
         name="🌡️ Températures",
-        value=(" · ".join(temp_parts) or "—") + (f"  {_spark(hist['temp'])}" if "cpu" in t else ""),
+        value=" · ".join(temp_parts) or "—",
         inline=True)
 
     # CPU
@@ -1295,14 +1265,13 @@ async def monitoring_loop():
             return
     log.info("Monitoring actif : salon=%s intervalle=%ss", MONITORING_CHANNEL_ID, MONITORING_INTERVAL)
 
-    prev, hist = {}, {k: [] for k in ("heap", "rss", "temp", "load", "memused")}
+    prev = {}
     collect_stats(prev)                      # amorce le delta CPU sans poster
     await asyncio.sleep(min(MONITORING_INTERVAL, 5))
     while not bot.is_closed():
         try:
             s = collect_stats(prev)
-            _push_hist(hist, s)
-            await channel.send(embed=_monitoring_embed(s, hist))
+            await channel.send(embed=_monitoring_embed(s))
         except discord.HTTPException as e:
             log.warning("Monitoring : envoi Discord échoué (%s)", e)
         except Exception:

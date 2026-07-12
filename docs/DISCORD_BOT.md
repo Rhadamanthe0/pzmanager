@@ -194,13 +194,13 @@ Each embed carries:
 - **Server** — active/inactive, uptime since the last (re)start, JVM PID.
 - **🧠 Heap Java** — used MB / `Xmx` and % (from `gc.log`), the **live-set floor**
   (last major-GC %, the number that drives the auto-restart) vs
-  `HEAP_RESTART_PERCENT`, with a trend sparkline. This is the Java-heap-OOM story.
+  `HEAP_RESTART_PERCENT`. This is the Java-heap-OOM story.
 - **💾 Process (JVM)** — resident `RSS`, the **native/off-heap** part (`RSS − heap`,
   ~5 GB on B42 modded), peak RSS, and process swap (should stay 0).
 - **🖥️ System RAM** — used %, **available** GB (the real margin before the OS
   OOM-killer), cache, shmem, system swap.
-- **🌡️ Temperatures** — CPU (`k10temp`), NVMe, GPU, RAM DIMM, with a CPU trend
-  sparkline (the mini-PC thermal angle).
+- **🌡️ Temperatures** — CPU (`k10temp`), NVMe, GPU, RAM DIMM (the mini-PC
+  thermal angle).
 - **⚙️ CPU** — 1/5/15 load average and the JVM's own CPU %.
 - **🗄️ Disk** — free space on the world filesystem, plus the last major GC's
   duration.
