@@ -191,7 +191,9 @@ and `/sys` (no extra Python dependency, no RCON, no load on the game).
 
 Each embed carries:
 
-- **Server** — active/inactive, uptime since the last (re)start, JVM PID.
+- **Server** — active/inactive, **online players**, uptime since the last
+  (re)start, JVM PID. The player count is derived by replaying the connect /
+  disconnect lines in `*_user.txt` (no RCON, no game load).
 - **🧠 Heap Java** — used MB / `Xmx` and % (from `gc.log`), the **live-set floor**
   (last major-GC %, the number that drives the auto-restart) vs
   `HEAP_RESTART_PERCENT`. This is the Java-heap-OOM story.
