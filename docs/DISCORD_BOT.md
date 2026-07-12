@@ -12,6 +12,7 @@ notifications: a small Python bot (discord.py) connects to Discord's Gateway
 - [Commands](#commands)
 - [Batch: run several commands at once](#batch-run-several-commands-at-once)
 - [Death & PvP notifications](#death--pvp-notifications)
+- [Server monitoring](#server-monitoring)
 - [Security](#security)
 - [Managing the service](#managing-the-service)
 - [Troubleshooting](#troubleshooting)
@@ -80,6 +81,8 @@ export DISCORD_BOT_CHANNEL_ID="<channel id>"      # comma-separated for several
 export DISCORD_BOT_ADMIN_ROLE_ID="<role id>"
 export DISCORD_BOT_CMD_TIMEOUT=2400               # per-command timeout (seconds)
 export DISCORD_BOT_DEATH_CHANNEL_ID="<channel id>"  # optional — death/PvP feed (empty = off)
+export DISCORD_BOT_MONITORING_CHANNEL_ID="<channel id>"  # optional — telemetry feed (empty = off)
+export DISCORD_BOT_MONITORING_INTERVAL=60           # monitoring cadence (seconds, min 15)
 ```
 
 ### 4. Install
@@ -177,6 +180,42 @@ Notes:
   default command-bot invite, so grant it on the death channel.
 - Leave `DISCORD_BOT_DEATH_CHANNEL_ID` empty to disable this feature entirely;
   the command bot works without it.
+
+## Server monitoring
+
+Optional. Set `DISCORD_BOT_MONITORING_CHANNEL_ID` and the bot posts a **health
+embed every minute** (`DISCORD_BOT_MONITORING_INTERVAL`, default 60s) to that
+channel — a rolling **black box** so that when the server crashes you can scroll
+back and see exactly what led up to it. Everything is read straight from `/proc`
+and `/sys` (no extra Python dependency, no RCON, no load on the game).
+
+Each embed carries:
+
+- **Server** — active/inactive, uptime since the last (re)start, JVM PID.
+- **🧠 Heap Java** — used MB / `Xmx` and % (from `gc.log`), the **live-set floor**
+  (last major-GC %, the number that drives the auto-restart) vs
+  `HEAP_RESTART_PERCENT`, with a trend sparkline. This is the Java-heap-OOM story.
+- **💾 Process (JVM)** — resident `RSS`, the **native/off-heap** part (`RSS − heap`,
+  ~5 GB on B42 modded), peak RSS, and process swap (should stay 0).
+- **🖥️ System RAM** — used %, **available** GB (the real margin before the OS
+  OOM-killer), cache, shmem, system swap.
+- **🌡️ Temperatures** — CPU (`k10temp`), NVMe, GPU, RAM DIMM, with a CPU trend
+  sparkline (the mini-PC thermal angle).
+- **⚙️ CPU** — 1/5/15 load average and the JVM's own CPU %.
+- **🗄️ Disk** — free space on the world filesystem, plus the last major GC's
+  duration.
+- **⚠️ Alerts** — only when something is off: heap near the restart threshold,
+  system RAM low (OS-OOM-kill risk), the process swapped, a long GC pause, CPU
+  overheating, disk nearly full, or a fresh heap dump (an OOM happened). The
+  embed colour tracks the worst state (green / orange / red).
+
+Notes:
+
+- The bot needs **View Channel + Send Messages + Embed Links** in that channel
+  (same requirement as the death feed).
+- One message per minute is intentional (the timeline is the point). Raise
+  `DISCORD_BOT_MONITORING_INTERVAL` if that is too chatty.
+- Leave `DISCORD_BOT_MONITORING_CHANNEL_ID` empty to disable it entirely.
 
 ## Security
 
