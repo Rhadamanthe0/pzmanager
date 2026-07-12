@@ -19,9 +19,16 @@ of `ProjectZomboid64.json` is overwritten the next night. There is no
   7g on a 14 GiB machine). This is a real guardrail: it triggers a clean Java
   `OutOfMemoryError` before the heap can crowd out PZ's native memory + the OS.
 - `-XX:+UseZGC` (generational by default on JDK 25) `-XX:+AlwaysPreTouch`
-  `-XX:ZCollectionInterval=5` — GC tuning.
+  `-XX:ZCollectionInterval=60` — GC tuning. `ZCollectionInterval` forces a
+  *major* (young+old) collection at that interval; 60s keeps the cheap young
+  collections frequent while making the expensive majors rare (5s ran a
+  near-continuous major pass that freed almost nothing → wasted CPU/heat).
 - `-XX:+UseStringDeduplication` — the heap is full of map cells with repeated
   sprite/tile strings; dedup trims the String part of the live set.
+- `-XX:+UseCompactObjectHeaders` (JEP 519, product in JDK 25) — shrinks every
+  object header from ~12 to 8 bytes. The heap is millions of tiny map-cell
+  objects, so this trims ~10-20% of the live set: less resident RAM **and** a
+  later heap OOM (it shrinks the live data, unlike `-Xmx` which only delays).
 - `-Djava.net.preferIPv4Stack=true` — RakNet/UdpEngine network stability.
 - `-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=<logs/zomboid>` plus a
   rotating `-Xlog:gc*` to `scripts/logs/zomboid/gc.log` — diagnostics.

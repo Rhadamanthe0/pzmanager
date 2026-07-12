@@ -50,7 +50,7 @@ with open(f) as fp:
 # '-Xms' reste dans la liste retirée -> on NE le repose PAS (défaut JVM = init à la demande).
 drop = ('znetlog', '-Xms', '-Xmx', 'UseZGC', 'AlwaysPreTouch',
         'ZCollectionInterval', 'MaxRAMPercentage', 'preferIPv4Stack',
-        'UseStringDeduplication',
+        'UseStringDeduplication', 'UseCompactObjectHeaders',
         'HeapDumpOnOutOfMemoryError', 'HeapDumpPath', 'Xlog:gc')
 args = [a for a in data['vmArgs'] if not any(d in a for d in drop)]
 
@@ -73,6 +73,15 @@ args.append('-XX:ZCollectionInterval=60')
 # répétées (noms de sprites/tiles) -> la dédup réduit la part String du live set
 # et retarde marginalement l'OOM. Coût = un thread de fond, négligeable.
 args.append('-XX:+UseStringDeduplication')
+
+# En-têtes d'objets compacts (Projet Lilliput, JEP 519 — product en JDK 25, off par
+# défaut). Ramène l'en-tête de CHAQUE objet de ~12 à 8 octets. Le heap PZ est fait
+# de MILLIONS de petits objets (IsoGridSquare/IsoObject/chunks) -> cas idéal :
+# ~10-20% de live set en moins => moins de RAM résidente ET OOM repoussé (il RÉDUIT
+# les données vivantes, là où monter -Xmx ne fait que retarder). Bonus perf : moins
+# d'octets à marquer/relocaliser + meilleure localité cache -> pauses GC plutôt plus
+# courtes. À surveiller (encore off par défaut côté Oracle) ; retrait = cette ligne.
+args.append('-XX:+UseCompactObjectHeaders')
 
 # Stabilité réseau : forcer la pile IPv4 (évite le fallback IPv6 de RakNet/UdpEngine)
 args.append('-Djava.net.preferIPv4Stack=true')

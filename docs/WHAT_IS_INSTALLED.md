@@ -162,8 +162,9 @@ This document details **everything** modified on your system to ensure transpare
     "-Xmx7g",
     "-XX:+UseZGC",
     "-XX:+AlwaysPreTouch",
-    "-XX:ZCollectionInterval=5",
+    "-XX:ZCollectionInterval=60",
     "-XX:+UseStringDeduplication",
+    "-XX:+UseCompactObjectHeaders",
     "-Djava.net.preferIPv4Stack=true",
     "-XX:+HeapDumpOnOutOfMemoryError",
     "-XX:HeapDumpPath=.../scripts/logs/zomboid",
@@ -180,9 +181,16 @@ This document details **everything** modified on your system to ensure transpare
   physical RAM** (computed at install; e.g. 7g on a 14 GiB machine). Real
   guardrail: clean Java OOM before the heap starves PZ's native memory + the OS.
 - **Generational ZGC** (`-XX:+UseZGC`, generational by default on JDK 25) with
-  `AlwaysPreTouch` and a 5s periodic cycle — sub-millisecond GC pauses.
+  `AlwaysPreTouch` and a 60s periodic major cycle — sub-millisecond GC pauses.
+  (`ZCollectionInterval` forces a *major* collection at that interval; 60s keeps
+  the cheap young collections frequent while making the majors rare, instead of
+  the old 5s that ran a near-continuous, near-useless major pass.)
 - **String deduplication** (`-XX:+UseStringDeduplication`): the heap is full of
   map cells with repeated sprite/tile strings; dedup trims the String live set.
+- **Compact object headers** (`-XX:+UseCompactObjectHeaders`, JEP 519, product in
+  JDK 25): shrinks every object header from ~12 to 8 bytes. The heap is millions
+  of tiny map-cell objects, so this cuts ~10-20% of the live set — less resident
+  RAM and a later OOM, plus slightly shorter GC pauses (fewer bytes to scan).
 - **IPv4 stack** (`-Djava.net.preferIPv4Stack=true`): RakNet/UdpEngine stability.
 - **Diagnostics**: heap dump on OOM + rotating GC log to `scripts/logs/zomboid/`.
 - **Headless**: No GUI / **Steam**: integration enabled.
