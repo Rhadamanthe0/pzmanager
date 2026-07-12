@@ -589,6 +589,9 @@ PVP_CAUSE_RADIUS2 = 30 ** 2   # un incapacité meurt là où il est tombé -> ma
 # si son nom figure dans cette liste (les PNJ ne se connectent jamais -> écartés ; et sur
 # ce serveur le nom de perso == l'username de compte, donc aucune vraie mort n'est perdue).
 CONNECT_RE = re.compile(r'(?P<sid>\d{17}) "(?P<user>.+?)" fully connected \(')
+# Symétrique du connect : sert au comptage LIVE des joueurs (monitoring). user.txt logge
+# aussi « <sid> "<user>" disconnected player (x,y,z). » à chaque départ.
+DISCONNECT_RE = re.compile(r'(?P<sid>\d{17}) "(?P<user>.+?)" disconnected player \(')
 
 # Le vrai PvP est dans pvp.txt (usernames de compte, pas noms de perso) :
 #   Combat: "Tueur" (...) hit "Victime" (...) weapon="Arme" damage=...
@@ -1096,7 +1099,41 @@ def collect_stats(prev: dict) -> dict:
     except OSError:
         s["disk"] = None
     s["heapdump"] = _recent_heapdump()
+    s["players"] = _online_players(prev)
     return s
+
+
+def _online_players(prev: dict):
+    """Nombre de joueurs connectés, sans RCON : on rejoue user.txt (connexions/
+    déconnexions) via un _Tail dédié. État porté par `prev` entre les cycles.
+    None si le dossier de logs est inconnu. Remis à zéro sur rotation de session."""
+    if not DEATH_LOG_DIR:
+        return None
+    tail = prev.get("user_tail")
+    if tail is None:
+        tail = prev["user_tail"] = _Tail(os.path.join(DEATH_LOG_DIR, "*_user.txt"))
+        prev["online"], prev["user_path"] = set(), None
+    online = prev["online"]
+    # Nouvelle session (restart serveur) -> le fichier change : on repart de zéro
+    # (le _Tail rejoue alors tout le nouveau fichier ci-dessous).
+    try:
+        files = glob.glob(os.path.join(DEATH_LOG_DIR, "*_user.txt"))
+        newest = max(files, key=os.path.getmtime) if files else None
+    except OSError:
+        newest = None
+    if newest != prev["user_path"]:
+        online.clear()
+        prev["user_path"] = newest
+    lines, _ = tail.read()
+    for line in lines:
+        m = CONNECT_RE.search(line)
+        if m:
+            online.add(m.group("sid"))
+            continue
+        m = DISCONNECT_RE.search(line)
+        if m:
+            online.discard(m.group("sid"))
+    return len(online)
 
 
 # --- Monitoring : rendu de l'embed -------------------------------------------
@@ -1179,9 +1216,12 @@ def _monitoring_embed(s: dict) -> discord.Embed:
                           timestamp=datetime.now(timezone.utc))
 
     state = "🟢 actif" if s["pid"] else "🔴 inactif"
+    players = s.get("players")
+    players_txt = (f" · 👥 **{players}** joueur{'s' if players != 1 else ''}"
+                   if players is not None else "")
     embed.add_field(
         name="Serveur",
-        value=f"{state} · uptime **{_fmt_dur(s['uptime'])}**"
+        value=f"{state}{players_txt} · uptime **{_fmt_dur(s['uptime'])}**"
               + (f" · pid `{s['pid']}`" if s["pid"] else ""),
         inline=False)
 
