@@ -106,11 +106,51 @@ update_game_server() {
         fi
     fi
 
-    "${STEAMCMD_PATH}" +force_install_dir "${PZ_INSTALL_DIR}" +login anonymous \
+    "${STEAMCMD_PATH}" +force_install_dir "${PZ_INSTALL_DIR}" +login "${STEAM_LOGIN:-anonymous}" \
         +app_update "${STEAM_APP_ID}" -beta "${STEAM_BETA_BRANCH}" validate +quit
 
     # Le validate restaure le ProjectZomboid64.json vanilla : réappliquer le tuning
     "${SCRIPT_DIR}/../internal/configureJvm.sh"
+}
+
+# App ID du JEU (108600) pour les mods Workshop — distinct du serveur dédié (380870)
+readonly STEAM_WORKSHOP_APP_ID=108600
+
+download_workshop_mods() {
+    # Pré-télécharge les mods Workshop listés dans servertest.ini avec le compte
+    # STEAM_LOGIN. Depuis 2026 Steam a retiré PZ des DL Workshop anonymes : le
+    # serveur ne peut plus télécharger lui-même un mod NEUF ou MIS À JOUR au boot
+    # (onItemNotDownloaded result=3 -> NPE -> crash-loop). En les pré-tirant ici
+    # (serveur arrêté -> écriture du dossier workshop sûre) avec un compte possédant
+    # PZ, le serveur les retrouve "Installed/Ready" au démarrage. Non bloquant.
+    local login="${STEAM_LOGIN:-anonymous}"
+    if [[ "$login" == "anonymous" ]]; then
+        log "STEAM_LOGIN non défini : pré-DL des mods ignoré (DL anonyme cassé pour les items neufs/mis à jour)."
+        return 0
+    fi
+    local ini="${PZ_SOURCE_DIR}/Server/servertest.ini"
+    if [[ ! -f "$ini" ]]; then
+        log "WARNING: $ini introuvable, pré-DL des mods ignoré"
+        return 0
+    fi
+    local items
+    items=$(grep -oP '^WorkshopItems=\K.*' "$ini" | tr ';' ' ')
+    if [[ -z "${items// }" ]]; then
+        log "Aucun WorkshopItems à pré-télécharger."
+        return 0
+    fi
+    log "Pré-téléchargement des mods Workshop (compte ${login})..."
+    local args=(+force_install_dir "${PZ_INSTALL_DIR}" +login "${login}")
+    local id
+    for id in $items; do
+        args+=(+workshop_download_item "${STEAM_WORKSHOP_APP_ID}" "${id}")
+    done
+    args+=(+quit)
+    if "${STEAMCMD_PATH}" "${args[@]}"; then
+        log "Pré-téléchargement des mods Workshop terminé."
+    else
+        log "WARNING: pré-DL des mods Workshop en échec (non bloquant) — vérifier le login '${login}' (jeton steamcmd expiré ?)."
+    fi
 }
 
 sync_external() {
@@ -129,6 +169,7 @@ main() {
     rotate_backups
     update_system
     update_game_server
+    download_workshop_mods
     sync_external
 
     [[ "$SILENT_MODE" == true ]] && touch "${SILENT_FLAG_FILE}"
