@@ -1266,7 +1266,10 @@ def _monitoring_embed(s: dict) -> discord.Embed:
 
     # CPU
     if s["load"]:
-        cpu_line = f"charge {s['load'][0]:.2f} / {s['load'][1]:.2f} / {s['load'][2]:.2f} ({os.cpu_count()} cœurs)"
+        cores = os.cpu_count() or 1
+        load1 = s["load"][0] / cores * 100
+        load5 = s["load"][1] / cores * 100
+        cpu_line = f"charge **{load1:.0f}%** (1 min) / **{load5:.0f}%** (5 min)"
         if s["cpu_pct"] is not None:
             cpu_line += f"\nprocess **{s['cpu_pct']:.0f}%**"
     else:
