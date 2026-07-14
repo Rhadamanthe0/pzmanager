@@ -196,7 +196,7 @@ download_zomboid_server() {
         beta_args="-beta $STEAM_BETA_BRANCH"
     fi
 
-    sudo -u "$PZ_USER" /usr/games/steamcmd +force_install_dir "$PZ_INSTALL_DIR" +login anonymous +app_update 380870 $beta_args validate +quit
+    sudo -u "$PZ_USER" /usr/games/steamcmd +force_install_dir "$PZ_INSTALL_DIR" +login "${STEAM_LOGIN:-anonymous}" +app_update 380870 $beta_args validate +quit
 }
 
 configure_zomboid_jvm() {
