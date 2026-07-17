@@ -63,36 +63,40 @@ the allow-list can connect, and players pick their own password on first login.
 ```bash
 pzm whitelist list                                  # Allowed SteamIDs + accounts + bans
 pzm whitelist add "76561198012345678" "Name"        # Authorize a SteamID (name optional)
-pzm whitelist remove "Name"                         # Remove access (by name or SteamID)
+pzm whitelist remove "76561198012345678"            # Remove a SteamID's access (SteamID64 only)
 pzm whitelist remove "76561198012345678" --ban      # Remove + permanent ban
 pzm whitelist remove-account "Name" [--dry-run]     # Delete ONE account, keep the SteamID
-pzm whitelist rename "Old" "New" [--dry-run]        # Rename an account, keep its character
+pzm whitelist rename-account "Old" "New" [--dry-run]  # Rename an account, keep its character
 pzm whitelist resetpassword "Name"                  # Reset a player's password
 pzm whitelist purge                                 # List inactive (default: WHITELIST_PURGE_DAYS)
 pzm whitelist purge 3m                              # List inactive 3+ months
 pzm whitelist purge 3m --delete                     # Delete inactive after confirmation
 ```
 
-### Which removal do you want?
+### SteamID vs account
 
-A SteamID can carry **several accounts** (B42 allows 2 per SteamID), and an
-account is not a character. The three commands work at three different levels:
+A SteamID can carry **two accounts** (B42's limit), and an account is not a
+character — so removal happens at two levels, kept apart by the `-account`
+suffix:
 
-| Command | Removes | Keeps | Server |
-|---|---|---|---|
-| `remove <id64\|name>` | the **SteamID authorization** — the player can no longer connect at all, and **every account** on that SteamID goes down with it | the accounts in DB, the characters | running |
-| `remove-account <name>` | **one account** (the login) | the characters, and the SteamID if another account still uses it | **stopped** |
-| `rename <old> <new>` | nothing | everything — renames the login and re-attaches the character | **stopped** |
+| Command | Acts on | Removes | Keeps | Server |
+|---|---|---|---|---|
+| `remove <id64>` | the **SteamID** | its access — so **every account** on it | the characters | running |
+| `remove-account <name>` | **one account** | that login | the characters, and the SteamID if another account still uses it | **stopped** |
+| `rename-account <old> <new>` | **one account** | nothing | everything — renames the login, re-attaches the character | **stopped** |
 
-So to drop one account of a shared SteamID (say `Cerensz PNJ` while keeping
-`Snardat`), use `remove-account`: `remove` would cut off both.
+`remove` takes a **SteamID64 only, never a name**: `remove <name>` would read as
+"remove this player" but would cut the SteamID's access, dropping the *other*
+account sharing it too. To act on one account of a shared SteamID (say
+`Cerensz PNJ` while keeping `Snardat`), use `remove-account`. Passing a name to
+`remove` is refused, with the two exact commands printed.
 
 **None of them deletes a character.** Characters live in `players.db` and are
-only touched by `rename` (re-attach) and `backup restore-character`. A player
-whose access is removed and later re-authorized gets their character back.
+only touched by `rename-account` (re-attach) and `backup restore-character`. A
+player whose access is removed and later re-authorized gets their character back.
 
-`remove-account`, `rename` and `purge --delete` write straight to
-`servertest.db`, which the server holds open while running: they refuse to run
+`remove-account`, `rename-account` and `purge --delete` write straight to the
+world database, which the server holds open while running: they refuse to run
 unless it is stopped, and snapshot the databases first. Use `--dry-run` to see
 the plan without stopping anything.
 

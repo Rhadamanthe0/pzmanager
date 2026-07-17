@@ -472,12 +472,34 @@ async def whitelist_add(interaction: discord.Interaction, id64: str, nom: Option
     await execute(interaction, args)
 
 
-@whitelist_group.command(name="remove", description="Retirer un SteamID (--ban = bannir définitivement)")
-@app_commands.describe(cible="SteamID64 ou nom", ban="Bannir définitivement")
-async def whitelist_remove(interaction: discord.Interaction, cible: str, ban: bool = False):
-    args = ["whitelist", "remove", cible]
+@whitelist_group.command(name="remove", description="Retirer l'accès d'un SteamID (tous ses comptes ; --ban)")
+@app_commands.describe(steamid64="SteamID64 (17 chiffres) — retire TOUS ses comptes",
+                       ban="Bannir définitivement")
+async def whitelist_remove(interaction: discord.Interaction, steamid64: str, ban: bool = False):
+    args = ["whitelist", "remove", steamid64]
     if ban:
         args.append("--ban")
+    await execute(interaction, args)
+
+
+@whitelist_group.command(name="remove-account", description="Supprimer UN compte (garde les autres du même SteamID)")
+@app_commands.describe(nom="Pseudo ou SteamID64 du compte à supprimer",
+                       dry_run="Afficher le plan sans rien modifier")
+async def whitelist_remove_account(interaction: discord.Interaction, nom: str, dry_run: bool = False):
+    args = ["whitelist", "remove-account", nom]
+    if dry_run:
+        args.append("--dry-run")
+    await execute(interaction, args)
+
+
+@whitelist_group.command(name="rename-account", description="Renommer un compte (garde perso et mot de passe)")
+@app_commands.describe(ancien="Pseudo actuel", nouveau="Nouveau pseudo",
+                       dry_run="Afficher le plan sans rien modifier")
+async def whitelist_rename_account(interaction: discord.Interaction, ancien: str, nouveau: str,
+                                   dry_run: bool = False):
+    args = ["whitelist", "rename-account", ancien, nouveau]
+    if dry_run:
+        args.append("--dry-run")
     await execute(interaction, args)
 
 
