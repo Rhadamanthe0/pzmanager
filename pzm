@@ -43,7 +43,8 @@ Commandes disponibles:
     reset [options]    Wipe complet (backup → suppression → nouveau monde)
       --keep-config       Restaurer configs (servertest.ini, SandboxVars, spawns)
       --keep-whitelist    Restaurer whitelist
-    maintenance [délai] [--reason TEXT]   Maintenance complète (défaut: 30m)
+    maintenance [délai] [--reason TEXT]   Maintenance complète
+                       (30m|15m|5m|2m|30s|now|auto, défaut: 30m)
       --reason TEXT       Raison de la maintenance (ex: "Augmentation RAM")
 
   install <action>
