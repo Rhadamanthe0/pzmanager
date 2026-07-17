@@ -114,6 +114,37 @@ check_server_update() {
     return 1
 }
 
+# Motif de maintenance nommant les mods concernés, ex :
+#   "Mods mis à jour : Brita's Weapon Pack, Authentic Z"
+# checkModsNeedUpdate ne nomme pas les mods : listOutdatedMods.sh les retrouve en
+# comparant le cache local à Steam. Sortie vide (API muette, cache absent) =>
+# on retombe sur le motif générique plutôt que d'annoncer une liste fausse.
+# Le motif part en servermsg et sur Discord : on borne la liste et on retire les
+# guillemets, qui casseraient la commande console.
+build_mod_update_reason() {
+    local -r generic="Mods mis à jour"
+    local -r max_names=3
+    local -r max_title=40
+    local names=()
+
+    mapfile -t names < <("${SCRIPT_DIR}/../internal/listOutdatedMods.sh" 2>/dev/null | tr -d '"\\' | grep -v '^$')
+    [[ ${#names[@]} -gt 0 ]] || { echo "${generic}"; return; }
+
+    # Certains titres Workshop dépassent 60 caractères : sans borne, l'avertissement
+    # en jeu devient illisible.
+    local list="" name
+    for name in "${names[@]:0:${max_names}}"; do
+        (( ${#name} > max_title )) && name="${name:0:max_title}…"
+        list+="${name}, "
+    done
+    list="${list%, }"
+
+    local hidden=$(( ${#names[@]} - max_names ))
+    (( hidden > 0 )) && list+=" et ${hidden} autre$( ((hidden > 1)) && echo s )"
+
+    echo "${generic} : ${list}"
+}
+
 trigger_maintenance() {
     local reason="$1"
     log_event "Triggering maintenance (5m delay) - reason: ${reason}"
@@ -132,7 +163,7 @@ main() {
     fi
 
     if check_mods; then
-        trigger_maintenance "Mods mis à jour"
+        trigger_maintenance "$(build_mod_update_reason)"
         exit 0
     fi
 
