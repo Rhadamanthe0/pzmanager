@@ -81,11 +81,13 @@ pzm backup create          # Manual backup
 pzm admin maintenance 2m --reason "Augmentation de la RAM"
 ```
 
-**Delays**: `30m`, `15m`, `5m`, `2m`, `30s`, `now`
+**Delays**: `30m`, `15m`, `5m`, `2m`, `30s`, `now`, `auto` (default for
+`server stop/restart`: 5m if 2+ players are connected, 2m if 1, now if none)
 
-**Maintenance option**: `--reason TEXT` adds context to Discord/in-game messages
-- Example: `--reason "RAM upgrade"` → Messages show "MAINTENANCE (Lancé manuellement - RAM upgrade)"`
-- Then: "MAINTENANCE TERMINÉE" and "REDÉMARRAGE SERVEUR"
+**`--reason TEXT`** adds context to the Discord and in-game messages, on
+`server stop/start/restart` as well as `admin maintenance`:
+- `--reason "RAM upgrade"` → `ATTENTION : MAINTENANCE DANS 2 MINUTES ! (Lancé manuellement - RAM upgrade)`
+- Details: [USAGE.md — Administration](USAGE.md#administration)
 
 ## Server Configuration
 

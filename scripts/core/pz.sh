@@ -79,9 +79,12 @@ delay_for_player_count() {
     fi
 }
 
+# Envoie le même message en jeu et sur Discord. $2 = préfixe Discord seulement
+# (ex. "@here "), qui n'a pas de sens dans le chat du serveur.
 send_msg() {
-    "${SCRIPT_DIR}/../internal/sendCommand.sh" servermsg "$1" --no-output
-    send_discord "$1"
+    local msg="$1" discord_prefix="${2:-}"
+    "${SCRIPT_DIR}/../internal/sendCommand.sh" servermsg "$msg" --no-output
+    send_discord "${discord_prefix}${msg}"
 }
 
 format_context() {
@@ -125,30 +128,14 @@ warn_players() {
     for entry in ${delays[$DELAY]}; do
         local label="${entry%%:*}" secs="${entry##*:}"
         local simple_msg="ATTENTION : ${display_action} DANS ${label//_/ } !"
-        local context_suffix=""
-
-        # Add context only to first message and only if reason/automatic
-        if $first && ([[ -n "$REASON" ]] || [[ "$IS_AUTOMATIC" == true ]]); then
-            local reason_part="$REASON"
-            if [[ "$IS_AUTOMATIC" == true ]]; then
-                if [[ -z "$REASON" ]]; then
-                    reason_part="Lancé automatiquement"
-                else
-                    reason_part="Lancé automatiquement - $REASON"
-                fi
-            else
-                reason_part="Lancé manuellement - $REASON"
-            fi
-            context_suffix=" ($reason_part)"
-        fi
 
         if $first; then
-            # First warning with @here and context
-            "${SCRIPT_DIR}/../internal/sendCommand.sh" servermsg "$simple_msg$context_suffix" --no-output
-            send_discord "@here $simple_msg$context_suffix"
+            # Premier avertissement : @here + le motif. format_context "" rend
+            # le suffixe seul (vide si ni motif ni --automatic).
+            send_msg "${simple_msg}$(format_context "")" "@here "
             first=false
         else
-            # Subsequent warnings: simple message only
+            # Avertissements suivants : message simple, sans ping ni motif.
             send_msg "$simple_msg"
         fi
         sleep "$secs"

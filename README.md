@@ -65,6 +65,7 @@ command bot: [docs/DISCORD_BOT.md](docs/DISCORD_BOT.md).
 | [CONFIGURATION](docs/CONFIGURATION.md) | Environment variables |
 | [DISCORD_BOT](docs/DISCORD_BOT.md) | Run pzm from Discord (/pzm bot) |
 | [SERVER_CONFIG](docs/SERVER_CONFIG.md) | PZ server settings |
+| [MOD_UPDATES](docs/MOD_UPDATES.md) | Adding/removing Workshop mods (agentic-AI-driven) |
 | [ADVANCED](docs/ADVANCED.md) | RAM/JVM tuning & server reset |
 | [TROUBLESHOOTING](docs/TROUBLESHOOTING.md) | Common issues |
 | [WHAT_IS_INSTALLED](docs/WHAT_IS_INSTALLED.md) | Full system details |

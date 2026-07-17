@@ -41,7 +41,7 @@ while [[ $# -gt 0 ]]; do
             MAINTENANCE_REASON="${1#--reason=}"
             shift
             ;;
-        30m|15m|5m|2m|30s|now)
+        30m|15m|5m|2m|30s|now|auto)
             DELAY="$1"
             shift
             ;;
@@ -81,12 +81,14 @@ rotate_backups() {
 
 update_system() {
     log "Mise à jour système..."
-    local apt_lock_timeout="-o DPkg::Lock::Timeout=300"
-    sudo /usr/bin/apt-get update -qq "$apt_lock_timeout"
-    sudo /usr/bin/apt-get upgrade -y -qq "$apt_lock_timeout"
-    sudo /usr/bin/apt-get install -y -qq "$apt_lock_timeout" "${JAVA_PACKAGE}"
-    sudo /usr/bin/apt-get autoremove -y -qq "$apt_lock_timeout"
-    sudo /usr/bin/apt-get autoclean -qq "$apt_lock_timeout"
+    # Deux arguments distincts, pas une chaîne unique : la forme doit rester
+    # alignée sur les règles de data/setupTemplates/pzuser-sudoers.
+    local -a apt_lock=(-o DPkg::Lock::Timeout=300)
+    sudo /usr/bin/apt-get update -qq "${apt_lock[@]}"
+    sudo /usr/bin/apt-get upgrade -y -qq "${apt_lock[@]}"
+    sudo /usr/bin/apt-get install -y -qq "${apt_lock[@]}" "${JAVA_PACKAGE}"
+    sudo /usr/bin/apt-get autoremove -y -qq "${apt_lock[@]}"
+    sudo /usr/bin/apt-get autoclean -qq "${apt_lock[@]}"
     [[ -d "${JAVA_PATH}" ]] || die "Java non installé"
 }
 

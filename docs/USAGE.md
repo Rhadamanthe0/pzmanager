@@ -10,12 +10,16 @@ su - pzuser
 
 ```bash
 pzm server start              # Start
-pzm server stop [delay]       # Stop (default: 2m)
-pzm server restart [delay]    # Restart (default: 2m)
+pzm server stop [delay]       # Stop (default: auto)
+pzm server restart [delay]    # Restart (default: auto)
 pzm server status             # Status + logs
 ```
 
-**Delays**: `30m`, `15m`, `5m`, `2m`, `30s`, `now`
+**Delays**: `30m`, `15m`, `5m`, `2m`, `30s`, `now`, `auto`
+
+`auto` is the default and picks the delay from the number of connected players:
+**5m** if 2 or more, **2m** if 1, **now** if none — so an empty server restarts
+without a pointless countdown.
 
 **Send a message to connected players**:
 ```bash
@@ -96,21 +100,26 @@ pzm admin maintenance 2m --reason "RAM upgrade"    # Maintenance with reason
 
 **Message formats by action type**:
 
+Only the **first** warning carries the `@here` ping and the reason; the
+following ones are bare. The `@here` goes to Discord only, never to the in-game
+chat.
+
 *Manual maintenance* (`pzm admin maintenance 2m --reason "RAM upgrade"`):
 ```
 @here ATTENTION : MAINTENANCE DANS 2 MINUTES ! (Lancé manuellement - RAM upgrade)
 ATTENTION : MAINTENANCE DANS 30 SECONDES !
-MAINTENANCE TERMINÉE
-REDÉMARRAGE SERVEUR
+DÉBUT MAINTENANCE
 ```
 
 *Automatic maintenance - mods detected*:
 ```
 @here ATTENTION : MAINTENANCE DANS 5 MINUTES ! (Lancé automatiquement - Mods mis à jour)
 ATTENTION : MAINTENANCE DANS 30 SECONDES !
-MAINTENANCE TERMINÉE
-REDÉMARRAGE SERVEUR
+DÉBUT MAINTENANCE
 ```
+
+If the machine reboots afterwards (`REBOOT_ON_MAINTENANCE`), a final
+`Maintenance terminée - Redémarrage machine` is posted to Discord.
 
 *Simple stop* (`pzm server stop 2m`):
 ```

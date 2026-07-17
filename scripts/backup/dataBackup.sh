@@ -56,11 +56,13 @@ ln -s "${BACKUP_PATH}" "${BACKUP_LATEST_LINK}"
 # Cleanup old backups
 cd "${BACKUP_DIR}"
 
-deleted_count=$(find . -maxdepth 1 -type d -name "backup_*" -mtime "+${BACKUP_RETENTION_DAYS}" -print | wc -l)
+# Un seul parcours : la liste sert à la fois au compte et à la suppression.
+old_backups=()
+mapfile -t old_backups < <(find . -maxdepth 1 -type d -name "backup_*" -mtime "+${BACKUP_RETENTION_DAYS}")
 
-if (( deleted_count > 0 )); then
-    find . -maxdepth 1 -type d -name "backup_*" -mtime "+${BACKUP_RETENTION_DAYS}" -exec rm -rf {} +
-    echo "Cleaned: $deleted_count backup(s) older than ${BACKUP_RETENTION_DAYS} days."
+if (( ${#old_backups[@]} > 0 )); then
+    rm -rf -- "${old_backups[@]}"
+    echo "Cleaned: ${#old_backups[@]} backup(s) older than ${BACKUP_RETENTION_DAYS} days."
 fi
 
 total_count=$(find . -maxdepth 1 -type d -name "backup_*" | wc -l)

@@ -32,6 +32,48 @@ SKIPPED_STEPS=()
 
 # === Utilities ===
 
+# Timers d'automatisation, activés à l'identique à l'installation et à la
+# restauration. Liste unique : deux listes séparées avaient divergé (la
+# restauration oubliait pz-creation-date-init.timer, sur lequel repose la purge
+# des inactifs).
+readonly AUTOMATION_TIMERS=(
+    pz-backup.timer
+    pz-modcheck.timer
+    pz-maintenance.timer
+    pz-creation-date-init.timer
+    pz-heapcheck.timer
+)
+
+# Le service tourne en --user : sans session ouverte, XDG_RUNTIME_DIR n'existe
+# pas et systemctl --user échoue. Renvoie le chemin sur stdout.
+ensure_runtime_dir() {
+    local uid runtime_dir
+    uid=$(id -u "$PZ_USER")
+    runtime_dir="/run/user/$uid"
+
+    if [[ ! -d "$runtime_dir" ]]; then
+        mkdir -p "$runtime_dir"
+        chown "$PZ_USER:$PZ_USER" "$runtime_dir"
+        chmod 700 "$runtime_dir"
+    fi
+
+    echo "$runtime_dir"
+}
+
+# systemctl --user pour PZ_USER, tolérant à l'échec (|| true) comme les appels
+# qu'elle remplace : l'install ne doit pas s'arrêter sur un timer récalcitrant.
+user_systemctl() {
+    local runtime_dir="$1"; shift
+    sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user "$@" || true
+}
+
+enable_automation_timers() {
+    local runtime_dir="$1" timer
+    for timer in "${AUTOMATION_TIMERS[@]}"; do
+        user_systemctl "$runtime_dir" enable --now "$timer"
+    done
+}
+
 confirm_action() {
     local message="$1"
     [[ "$FORCE_MODE" == true ]] && return 0
@@ -150,22 +192,12 @@ restore_backup() {
     restore_sudoers "$backup_path"
     restore_zomboid_data "$backup_path"
 
-    local uid=$(id -u "$PZ_USER")
-    local runtime_dir="/run/user/$uid"
-
-    # Create runtime directory if it doesn't exist
-    if [[ ! -d "$runtime_dir" ]]; then
-        mkdir -p "$runtime_dir"
-        chown "$PZ_USER:$PZ_USER" "$runtime_dir"
-        chmod 700 "$runtime_dir"
-    fi
+    local runtime_dir
+    runtime_dir="$(ensure_runtime_dir)"
 
     echo "Rechargement des services systemd..."
-    sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user daemon-reload || true
-    sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user enable --now pz-backup.timer || true
-    sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user enable --now pz-modcheck.timer || true
-    sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user enable --now pz-maintenance.timer || true
-    sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user enable --now pz-heapcheck.timer || true
+    user_systemctl "$runtime_dir" daemon-reload
+    enable_automation_timers "$runtime_dir"
 
     echo "=== Restauration terminée ==="
     show_summary
@@ -244,24 +276,13 @@ install_systemd_services() {
 }
 
 enable_zomboid_service() {
-    local uid=$(id -u "$PZ_USER")
-    local runtime_dir="/run/user/$uid"
-
-    # Create runtime directory if it doesn't exist (no active session)
-    if [[ ! -d "$runtime_dir" ]]; then
-        mkdir -p "$runtime_dir"
-        chown "$PZ_USER:$PZ_USER" "$runtime_dir"
-        chmod 700 "$runtime_dir"
-    fi
+    local runtime_dir
+    runtime_dir="$(ensure_runtime_dir)"
 
     echo "Activation des services et timers..."
-    sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user daemon-reload || true
-    sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user enable zomboid.service || true
-    sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user enable --now pz-backup.timer || true
-    sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user enable --now pz-modcheck.timer || true
-    sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user enable --now pz-maintenance.timer || true
-    sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user enable --now pz-creation-date-init.timer || true
-    sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user enable --now pz-heapcheck.timer || true
+    user_systemctl "$runtime_dir" daemon-reload
+    user_systemctl "$runtime_dir" enable zomboid.service
+    enable_automation_timers "$runtime_dir"
 }
 
 generate_admin_password() {

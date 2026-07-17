@@ -136,64 +136,18 @@ sudo journalctl -xe
 
 ## Complete Server Reset
 
-### When to Use
-
-Ultimate solution when:
-- Irreparable world corruption
-- Complete rules/mods change
-- Persistent degraded performance
-- Starting from scratch
-
-### Complete Reset (new world)
+Last resort for irreparable world corruption, a complete rules/mods change, or
+persistent degraded performance that nothing else fixes.
 
 ```bash
 pzm admin reset
 ```
 
-Creates completely clean server, new world.
+> ⚠️ **Deletes all current data, with no confirmation prompt.** A backup is
+> written to `~/OLD/Zomboid_OLD_TIMESTAMP/` first, and `--keep-config` /
+> `--keep-whitelist` preserve configs and player access.
 
-### Reset with Config Preservation
-
-```bash
-pzm admin reset --keep-config
-```
-
-New world but preserves (restored before world generation):
-- Server configuration (servertest.ini) — mods, network settings
-- Game rules (servertest_SandboxVars.lua) — difficulty, loot, zombies
-- Spawn points (servertest_spawnpoints.lua)
-- Spawn regions (servertest_spawnregions.lua)
-
-Workshop mods are downloaded automatically on first launch.
-
-### Reset with Whitelist Preservation
-
-```bash
-pzm admin reset --keep-whitelist
-```
-
-New world but preserves player whitelist (except admin account).
-
-### Reset Keeping Everything
-
-```bash
-pzm admin reset --keep-config --keep-whitelist
-```
-
-Options are combinable.
-
-### Process
-
-1. **Confirmation**: Type `RESET` in uppercase
-2. **Backup**: Saved to `~/OLD/Zomboid_OLD_TIMESTAMP/`
-3. **Config restore** (if --keep-config): Configs copied before generation
-4. **World generation**: Automatic (~2 min), admin password displayed
-5. **Whitelist restore** (if --keep-whitelist): Players restored from backup
-6. **Startup**: New server ready
-
-**⚠️ Warning**: Deletes all current data! Automatic backup created.
-
-Complete documentation: [ADVANCED.md - Complete Server Reset](ADVANCED.md#complete-server-reset)
+Procedure and options: [ADVANCED.md — Complete Server Reset](ADVANCED.md#complete-server-reset).
 
 ## Player Character Won't Load
 

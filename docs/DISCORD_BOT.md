@@ -113,7 +113,8 @@ Guild-scoped, so they appear almost instantly:
 /pzm help
 ```
 
-- `delai` is a dropdown: `30m` / `15m` / `5m` / `2m` / `30s` / `now`.
+- `delai` is a dropdown: `30m` / `15m` / `5m` / `2m` / `30s` / `now` / `auto`
+  (`auto` = the default for stop/restart: 5m if 2+ players, 2m if 1, now if 0).
 - Flags (`ban`, `delete`, `keep_config`, `keep_whitelist`) are `True`/`False`
   options.
 
@@ -162,8 +163,8 @@ Optional. Set `DISCORD_BOT_DEATH_CHANNEL_ID` and the bot tails the server logs i
 the background and posts an embed to that channel on:
 
 - **☠️ Mort définitive** — a permanent death (from the `*_user.txt` log). The
-  embed carries the character name, the account when it can be resolved
-  unambiguously, the position, and a best-effort **Cause** (⚔️ PvP combat if a
+  embed carries the character name, the position, and a best-effort **Cause**
+  (⚔️ PvP combat if a
   matching PvP kill happened shortly before and nearby, else 🧟 environment /
   zombie). Vanilla PZ does **not** log a cause of death, so this is inferred from
   context, never guessed from the (always "non pvp") death flag.
@@ -203,7 +204,8 @@ Each embed carries:
   OOM-killer), cache, shmem, system swap.
 - **🌡️ Temperatures** — CPU (`k10temp`), NVMe, GPU, RAM DIMM (the mini-PC
   thermal angle).
-- **⚙️ CPU** — 1/5/15 load average and the JVM's own CPU %.
+- **⚙️ CPU** — load over 1 min and 5 min, as a **percentage of available cores**,
+  plus the JVM's own CPU %.
 - **🗄️ Disk** — free space on the world filesystem, plus the last major GC's
   duration.
 - **⚠️ Alerts** — only when something is off: heap near the restart threshold,

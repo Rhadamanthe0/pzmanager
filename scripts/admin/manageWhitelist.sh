@@ -476,6 +476,10 @@ Commandes:
   list                              Liste blanche SteamID + comptes + bannis
   add <steamID64> [pseudo]          Autoriser un SteamID (serveur démarré requis)
   remove <steamID64|pseudo> [--ban] Retirer un SteamID (--ban = bannir aussi)
+  remove-account <pseudo|steamID64> [...] [--dry-run]
+                                    Supprimer des comptes (serveur arrêté requis)
+  rename <ancien> <nouveau> [--dry-run]
+                                    Renommer un compte (serveur arrêté requis)
   resetpassword <username>          Reset le mot de passe d'un joueur
   purge [delay] [--delete]          Lister/supprimer les comptes inactifs
 
@@ -484,6 +488,8 @@ Exemples:
   $0 add "76561198012345678" "PlayerName"
   $0 remove "PlayerName"
   $0 remove "76561198012345678" --ban
+  $0 remove-account "PlayerName" --dry-run
+  $0 rename "AncienPseudo" "NouveauPseudo"
   $0 resetpassword "PlayerName"
   $0 purge                          # Inactifs depuis ${WHITELIST_PURGE_DAYS}j (défaut)
   $0 purge 3m --delete              # Supprime après confirmation
@@ -495,6 +501,9 @@ Notes:
   - Steam ID 64 (17 chiffres, ex: 76561198012345678) via https://steamid.xyz/
   - --ban ajoute un bannissement définitif (banid) : retour impossible même renommé.
   - Délai purge: Xm (mois) ou Xj (jours) ; purge exclut toujours 'admin'.
+  - remove-account/rename écrivent directement en base -> serveur arrêté requis.
+    Les personnages sont conservés ; remove-account retire les SteamID devenus
+    orphelins. Le compte 'admin' est protégé des deux.
 HELPEOF
 }
 

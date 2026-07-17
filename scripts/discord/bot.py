@@ -108,7 +108,7 @@ bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
 
 # Commandes pzm reconnues en tête de ligne d'un batch (évite de réagir au bavardage).
-KNOWN_CMDS = {"server", "backup", "whitelist", "admin", "install",
+KNOWN_CMDS = {"server", "backup", "whitelist", "admin", "install", "map",
               "rcon", "discord", "help", "--help", "-h"}
 
 # Un seul pzm à la fois (un `server stop 2m` tient le process plusieurs minutes).
@@ -380,7 +380,7 @@ async def run_batch(message: discord.Message, batch: list[list[str]]):
 # Groupe /pzm calqué sur le dispatcher : chaque sous-commande construit un argv
 # fixe puis délègue à execute(). Les délais sont des menus déroulants (Literal).
 
-Delay = Literal["30m", "15m", "5m", "2m", "30s", "now"]
+Delay = Literal["30m", "15m", "5m", "2m", "30s", "now", "auto"]
 
 pzm_group = app_commands.Group(name="pzm", description="Gestion du serveur Project Zomboid")
 
@@ -414,14 +414,16 @@ async def _run_delayed(interaction, base: list[str], delai, reason):
 
 
 @server_group.command(name="stop", description="Arrêter le serveur")
-@app_commands.describe(delai="Délai avant arrêt (défaut 2m)", reason="Raison affichée aux joueurs")
+@app_commands.describe(delai="Délai avant arrêt (défaut auto : 5m si 2+ joueurs, 2m si 1, now si 0)",
+                       reason="Raison affichée aux joueurs")
 async def server_stop(interaction: discord.Interaction, delai: Optional[Delay] = None,
                       reason: Optional[str] = None):
     await _run_delayed(interaction, ["server", "stop"], delai, reason)
 
 
 @server_group.command(name="restart", description="Redémarrer le serveur")
-@app_commands.describe(delai="Délai avant redémarrage (défaut 2m)", reason="Raison affichée aux joueurs")
+@app_commands.describe(delai="Délai avant redémarrage (défaut auto : 5m si 2+ joueurs, 2m si 1, now si 0)",
+                       reason="Raison affichée aux joueurs")
 async def server_restart(interaction: discord.Interaction, delai: Optional[Delay] = None,
                          reason: Optional[str] = None):
     await _run_delayed(interaction, ["server", "restart"], delai, reason)
@@ -1155,7 +1157,6 @@ def _fmt_dur(sec):
 def _status(s):
     """(couleur, [alertes]) — évalue les prédicteurs de crash."""
     alerts, warn = [], False
-    xmx = _xmx_gb()
     mem = s["mem"]
     total, avail = mem.get("MemTotal", 0), mem.get("MemAvailable", 0)
     avail_mb = avail / 1024

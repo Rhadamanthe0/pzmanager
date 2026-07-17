@@ -95,19 +95,18 @@ pzm whitelist purge 3m --delete  # Delete after confirmation
 
 ### Mods
 
-Complete documentation: [PZ Wiki - Modding](https://pzwiki.net/wiki/Modding)
-
-**Quick installation**:
-1. Find mod on [Steam Workshop](https://steamcommunity.com/app/108600/workshop/)
-2. Note the Workshop ID (number in URL)
-3. Edit servertest.ini:
+Two lines drive the mod list — `Mods=` holds Mod IDs **in load order**,
+`WorkshopItems=` holds the matching Workshop IDs:
 
 ```ini
 Mods=modname1;modname2
 WorkshopItems=2992700364;111111111
 ```
 
-4. Restart: `pzm server restart 15m`
+Do not edit them ad hoc. Adding or removing a mod without pre-downloading it
+puts the server in a boot crash-loop: follow
+**[MOD_UPDATES.md](MOD_UPDATES.md)**, which covers resolving Mod IDs and
+dependencies, load order, pre-download, deploy, verification and rollback.
 
 ### Network Ports
 
