@@ -13,6 +13,14 @@ WorkingDirectory=%h/pzmanager/data/pzserver/
 # "quit" et remeurt à f:0 en boucle (flap). Lecture non-bloquante (iflag=nonblock):
 # vide instantanément si des octets traînent, retourne aussitôt si le FIFO est vide.
 ExecStartPre=/bin/sh -c "dd if=%h/pzmanager/data/pzserver/zomboid.control iflag=nonblock of=/dev/null 2>/dev/null; exit 0"
+# Purge des accès inactifs juste AVANT le lancement de la JVM. C'est le seul
+# instant où le monde est garanti fermé quel que soit le chemin de démarrage
+# (boot après maintenance, pzm server start/restart, socket-activation) : la
+# purge écrit dans <monde>.db, que le jeu tient ouverte dès qu'il tourne.
+# Le "-" rend l'étape non bloquante : une purge en échec ne doit JAMAIS empêcher
+# le serveur de démarrer. Pas de --force : en ExecStartPre l'unité est
+# "activating", donc le garde-fou serveur-arrêté de la purge passe de lui-même.
+ExecStartPre=-%h/pzmanager/scripts/admin/purgeInactivePlayers.sh
 # -servername est passé explicitement depuis PZ_SERVER_NAME (.env) : sans lui PZ
 # retombe sur son défaut "servertest", et le nom du monde pourrait diverger des
 # chemins (db/<nom>.db, Server/<nom>.ini) que lisent les scripts. Le :- garantit
