@@ -470,7 +470,7 @@ warning countdown).
 │   │   └── restoreZomboidData.sh     # Data-only restoration
 │   │
 │   ├── admin/
-│   │   ├── triggerMaintenanceOnModUpdate.sh  # Auto-maintenance if mods or server need update
+│   │   ├── triggerMaintenanceOnModUpdate.sh  # Mod update -> restart; server update -> full maintenance
 │   │   ├── manageWhitelist.sh        # SQLite whitelist management
 │   │   ├── resetServer.sh            # Complete server reset
 │   │   └── performFullMaintenance.sh # Automatic maintenance

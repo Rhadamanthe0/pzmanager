@@ -1,6 +1,9 @@
 #!/bin/bash
-# triggerMaintenanceOnModUpdate.sh - Déclenche maintenance si mods ou serveur mis à jour
+# triggerMaintenanceOnModUpdate.sh - Réagit aux mises à jour de mods et du serveur
 # Timer systemd toutes les 5 min. Lock partagé avec pz.sh/performFullMaintenance.sh
+#
+# Mod mis à jour    -> simple redémarrage (le serveur retélécharge l'item au boot)
+# Serveur mis à jour -> maintenance complète (apt, app_update, re-tune JVM, reboot)
 
 set -euo pipefail
 
@@ -145,6 +148,24 @@ build_mod_update_reason() {
     echo "${generic} : ${list}"
 }
 
+# Un mod mis à jour ne demande qu'un redémarrage : le serveur PZ retélécharge
+# lui-même l'item Workshop au boot (GetItemState -> NeedsUpdate -> download).
+# La maintenance complète (apt upgrade, app_update validate, re-tune JVM et reboot
+# de la machine) ne sert qu'à une mise à jour du BUILD serveur ; la déclencher pour
+# un mod rebootait la machine plusieurs fois par jour sans rien apporter de plus :
+# son pré-DL des mods (download_workshop_mods) sort immédiatement tant que
+# STEAM_LOGIN vaut anonymous, ce qui est le cas ici.
+trigger_restart() {
+    local reason="$1"
+    log_event "Triggering restart (5m delay) - reason: ${reason}"
+    # Verrou volontairement conservé : pz.sh ne fait que le tenter
+    # (try_acquire_maintenance_lock || true), et le garder empêche une maintenance
+    # de s'intercaler pendant les 5 min de préavis. À l'inverse de
+    # performFullMaintenance.sh, qui l'exige et impose de le relâcher avant l'appel.
+    "${SCRIPT_DIR}/../core/pz.sh" restart "5m" --reason "$reason" --automatic
+    log_event "Restart completed"
+}
+
 trigger_maintenance() {
     local reason="$1"
     log_event "Triggering maintenance (5m delay) - reason: ${reason}"
@@ -163,7 +184,7 @@ main() {
     fi
 
     if check_mods; then
-        trigger_maintenance "$(build_mod_update_reason)"
+        trigger_restart "$(build_mod_update_reason)"
         exit 0
     fi
 
