@@ -65,11 +65,36 @@ pzm whitelist list                                  # Allowed SteamIDs + account
 pzm whitelist add "76561198012345678" "Name"        # Authorize a SteamID (name optional)
 pzm whitelist remove "Name"                         # Remove access (by name or SteamID)
 pzm whitelist remove "76561198012345678" --ban      # Remove + permanent ban
+pzm whitelist remove-account "Name" [--dry-run]     # Delete ONE account, keep the SteamID
+pzm whitelist rename "Old" "New" [--dry-run]        # Rename an account, keep its character
 pzm whitelist resetpassword "Name"                  # Reset a player's password
 pzm whitelist purge                                 # List inactive (default: WHITELIST_PURGE_DAYS)
 pzm whitelist purge 3m                              # List inactive 3+ months
 pzm whitelist purge 3m --delete                     # Delete inactive after confirmation
 ```
+
+### Which removal do you want?
+
+A SteamID can carry **several accounts** (B42 allows 2 per SteamID), and an
+account is not a character. The three commands work at three different levels:
+
+| Command | Removes | Keeps | Server |
+|---|---|---|---|
+| `remove <id64\|name>` | the **SteamID authorization** — the player can no longer connect at all, and **every account** on that SteamID goes down with it | the accounts in DB, the characters | running |
+| `remove-account <name>` | **one account** (the login) | the characters, and the SteamID if another account still uses it | **stopped** |
+| `rename <old> <new>` | nothing | everything — renames the login and re-attaches the character | **stopped** |
+
+So to drop one account of a shared SteamID (say `Cerensz PNJ` while keeping
+`Snardat`), use `remove-account`: `remove` would cut off both.
+
+**None of them deletes a character.** Characters live in `players.db` and are
+only touched by `rename` (re-attach) and `backup restore-character`. A player
+whose access is removed and later re-authorized gets their character back.
+
+`remove-account`, `rename` and `purge --delete` write straight to
+`servertest.db`, which the server holds open while running: they refuse to run
+unless it is stopped, and snapshot the databases first. Use `--dry-run` to see
+the plan without stopping anything.
 
 **Player onboarding**: see [PROCEDURE_JOUEURS](PROCEDURE_JOUEURS.md) (French) — the
 player sends their SteamID64, you authorize it, they connect and set their own password.

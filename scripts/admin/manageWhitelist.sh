@@ -2,7 +2,7 @@
 # ------------------------------------------------------------------------------
 # manageWhitelist.sh - Gestion de la whitelist du serveur (B42 par SteamID)
 # ------------------------------------------------------------------------------
-# Usage: ./manageWhitelist.sh <list|add|remove|resetpassword|purge> [arguments]
+# Usage: ./manageWhitelist.sh <list|add|remove|remove-account|rename|resetpassword|purge> [arguments]
 #
 # Modèle B42 (>= 42.13.2) : le serveur tourne en Open=false et autorise les
 # joueurs via une LISTE BLANCHE DE STEAMID (table `allowedsteamid`). Le joueur
@@ -11,12 +11,27 @@
 # base : add/remove pilotent la console du serveur (addsteamid/removesteamid/
 # banid) via sendCommand.sh. Le serveur DOIT être démarré pour add/remove.
 #
+# Trois niveaux distincts, souvent confondus :
+#   - remove         retire l'AUTORISATION SteamID -> TOUS les comptes de ce
+#                    SteamID tombent (un SteamID peut en porter 2).
+#   - remove-account supprime UN compte ; le SteamID reste autorisé s'il est
+#                    encore porté par un autre compte.
+#   - rename         ne supprime rien.
+# Aucun des trois ne supprime un PERSONNAGE (players.db/networkPlayers) : seul
+# `rename` y touche, pour réattacher le perso au nouveau login.
+#
 # Commandes:
 #   list                          - Afficher la liste blanche SteamID + comptes
 #   add <steamID64> [pseudo]      - Autoriser un SteamID (pseudo = info facultatif)
 #   remove <steamID64|pseudo> [--ban]  - Retirer un SteamID (--ban = bannir aussi)
+#   remove-account <pseudo|steamID64>... [--dry-run] - Supprimer des comptes
+#   rename <ancien> <nouveau> [--dry-run] - Renommer un compte
 #   resetpassword <username>      - Reset le mot de passe d'un joueur
 #   purge [delay] [--delete]      - Lister/supprimer les comptes inactifs
+#
+# add/remove/resetpassword passent par la console -> SERVEUR DÉMARRÉ.
+# remove-account/rename/purge --delete écrivent en base -> SERVEUR ARRÊTÉ
+# (refus explicite sinon, snapshot des bases avant écriture).
 #
 # Exemples:
 #   ./manageWhitelist.sh list
@@ -278,9 +293,14 @@ purge_whitelist() {
 
     # Suppression si demandée
     if [[ "$do_delete" == "--delete" ]]; then
+        # Même contrainte que remove-account/rename : on écrit directement dans
+        # servertest.db, que le serveur tient ouverte tant qu'il tourne.
+        require_server_stopped
+
         echo ""
         read -p "Supprimer ces $count compte(s) ? [oui/NON]: " confirm
         if [[ "$confirm" == "oui" ]]; then
+            snapshot_dbs
             sqlite3 "$DB_PATH" "DELETE FROM whitelist WHERE $where_clause;" || \
                 die "Échec de la suppression"
             echo "✓ $count compte(s) supprimé(s)"
@@ -501,7 +521,9 @@ Notes:
   - Steam ID 64 (17 chiffres, ex: 76561198012345678) via https://steamid.xyz/
   - --ban ajoute un bannissement définitif (banid) : retour impossible même renommé.
   - Délai purge: Xm (mois) ou Xj (jours) ; purge exclut toujours 'admin'.
-  - remove-account/rename écrivent directement en base -> serveur arrêté requis.
+  - remove retire le SteamID -> TOUS les comptes de ce SteamID tombent.
+    Pour n'en retirer qu'un seul (SteamID partagé), utiliser remove-account.
+  - remove-account/rename/purge --delete écrivent en base -> serveur arrêté.
     Les personnages sont conservés ; remove-account retire les SteamID devenus
     orphelins. Le compte 'admin' est protégé des deux.
 HELPEOF
