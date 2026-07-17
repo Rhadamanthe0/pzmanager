@@ -509,7 +509,7 @@ async def admin_maintenance(interaction: discord.Interaction, delai: Optional[De
 
 
 @admin_group.command(name="reset", description="⚠️ Wipe complet du monde → nouveau monde")
-@app_commands.describe(keep_config="Restaurer les configs (servertest.ini, SandboxVars, spawns)",
+@app_commands.describe(keep_config="Restaurer les configs (.ini du monde, SandboxVars, spawns)",
                        keep_whitelist="Restaurer la whitelist")
 async def admin_reset(interaction: discord.Interaction, keep_config: bool = False,
                       keep_whitelist: bool = False):

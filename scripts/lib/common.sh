@@ -18,6 +18,21 @@ source_env() {
     }
 
     source "$env_file"
+    apply_env_defaults
+}
+
+# Valeurs par défaut des variables introduites après la création du .env.
+#
+# source_env ne copie .env.example que si .env est ABSENT : il ne fusionne jamais
+# les nouvelles clés dans un .env existant. Sans ces défauts, toute installation
+# antérieure casserait sur "variable sans liaison" (set -u) après une mise à jour
+# qui ajoute une variable. `:=` n'écrase rien : un .env qui définit la clé gagne.
+apply_env_defaults() {
+    # Nom du monde PZ ; "servertest" est le défaut du jeu. Voir .env.example.
+    : "${PZ_SERVER_NAME:=servertest}"
+    : "${PZ_DB_PATH:=${PZ_SOURCE_DIR}/db/${PZ_SERVER_NAME}.db}"
+    : "${PZ_INI_PATH:=${PZ_SOURCE_DIR}/Server/${PZ_SERVER_NAME}.ini}"
+    export PZ_SERVER_NAME PZ_DB_PATH PZ_INI_PATH
 }
 
 # Arrêt avec message d'erreur

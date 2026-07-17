@@ -41,10 +41,35 @@ export PZ_SERVICE_NAME="zomboid.service"
 export PZ_SOURCE_DIR="${PZ_MANAGER_DIR}/Zomboid"
 ```
 
+### World Name
+
+PZ names every file of the save after the world: `db/<name>.db`,
+`Server/<name>.ini`, `Server/<name>_SandboxVars.lua`, `_spawnpoints`,
+`_spawnregions`. `servertest` is the game's own default.
+
+```bash
+export PZ_SERVER_NAME="servertest"
+export PZ_DB_PATH="${PZ_SOURCE_DIR}/db/${PZ_SERVER_NAME}.db"
+export PZ_INI_PATH="${PZ_SOURCE_DIR}/Server/${PZ_SERVER_NAME}.ini"
+```
+
+`zomboid.service` passes it to the game with `-servername`, so the world's name
+and the paths the scripts read cannot drift apart.
+
+> ⚠️ **Changing this on an existing server gives you a blank new world.** PZ
+> creates the `<new name>` save next to the old one; the previous world stays on
+> disk under its own name, intact but ignored — whitelist and characters
+> included. To rename an existing world, stop the server and rename its files
+> first.
+
+You do **not** need to change it to run several servers on one machine: each
+server runs under its own `PZ_USER` with its own `Zomboid/` directory, so they
+can all use the default name.
+
 ### Network Ports
 
 Change ports when running multiple servers on the same machine.
-These ports must match the values in `servertest.ini`.
+These ports must match the values in the server's `.ini`.
 
 ```bash
 export PZ_PORT_GAME=16261             # DefaultPort in servertest.ini

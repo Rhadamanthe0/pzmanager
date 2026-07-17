@@ -6,7 +6,7 @@
 #
 # Options:
 #   --keep-whitelist    Restaure whitelist depuis backup
-#   --keep-config       Restaure servertest.ini, SandboxVars, spawnpoints,
+#   --keep-config       Restaure <monde>.ini, SandboxVars, spawnpoints,
 #                       spawnregions AVANT la génération du monde (les mods
 #                       seront téléchargés au premier lancement)
 #
@@ -49,12 +49,13 @@ parse_args() {
 readonly TIMESTAMP=$(date +"%Y-%m-%d_%Hh%Mm%Ss")
 readonly OLD_DIR="${PZ_HOME}/OLD/Zomboid_OLD_${TIMESTAMP}"
 
-# Fichiers de config à restaurer avec --keep-config
+# Fichiers de config à restaurer avec --keep-config. PZ les nomme tous d'après
+# le nom du monde (PZ_SERVER_NAME).
 readonly CONFIG_FILES=(
-    "servertest.ini"
-    "servertest_SandboxVars.lua"
-    "servertest_spawnpoints.lua"
-    "servertest_spawnregions.lua"
+    "${PZ_SERVER_NAME}.ini"
+    "${PZ_SERVER_NAME}_SandboxVars.lua"
+    "${PZ_SERVER_NAME}_spawnpoints.lua"
+    "${PZ_SERVER_NAME}_spawnregions.lua"
 )
 
 # Bannière d'annonce. PAS de confirmation interactive : le reset est exécutable
@@ -64,7 +65,7 @@ announce_reset() {
     echo "⚠️  RESET SERVEUR - SUPPRESSION COMPLÈTE DES DONNÉES ⚠️"
     echo ""
     echo "Actions: Arrêt → Backup → Suppression → Nouveau monde"
-    $OPT_KEEP_CONFIG && echo "       → Restauration configs (servertest.ini, SandboxVars, spawns)"
+    $OPT_KEEP_CONFIG && echo "       → Restauration configs (${PZ_SERVER_NAME}.ini, SandboxVars, spawns)"
     $OPT_KEEP_WHITELIST && echo "       → Restauration whitelist"
     echo ""
 }
@@ -155,8 +156,11 @@ generate_world() {
 
     echo "Démarrage du serveur pour génération..."
 
+    # -servername comme dans zomboid.service : sans lui PZ génèrerait le monde
+    # sous son nom par défaut, et les scripts chercheraient PZ_SERVER_NAME.
     "${PZ_INSTALL_DIR}/start-server.sh" \
         -cachedir="${cachedir}" \
+        -servername "${PZ_SERVER_NAME}" \
         -adminpassword "$password" > /dev/null 2>&1 &
 
     local max_wait=300
@@ -164,7 +168,7 @@ generate_world() {
 
     # Phase 1: attendre que la DB soit créée
     while [[ $waited -lt $max_wait ]]; do
-        if [[ -f "${cachedir}/db/servertest.db" ]]; then
+        if [[ -f "${PZ_DB_PATH}" ]]; then
             break
         fi
         if (( waited > 30 )) && ! pgrep -f "ProjectZomboid64.*-cachedir=${cachedir}" > /dev/null 2>&1; then
@@ -186,7 +190,7 @@ generate_world() {
     local admin_wait=0
     while [[ $admin_wait -lt 60 ]]; do
         local admin_count
-        admin_count=$(sqlite3 "${cachedir}/db/servertest.db" "SELECT COUNT(*) FROM whitelist WHERE username = 'admin'" 2>/dev/null || echo "0")
+        admin_count=$(sqlite3 "${PZ_DB_PATH}" "SELECT COUNT(*) FROM whitelist WHERE username = 'admin'" 2>/dev/null || echo "0")
         if [[ "$admin_count" -ge 1 ]]; then
             break
         fi
@@ -215,8 +219,8 @@ restore_whitelist() {
     echo ""
     echo "=== 5. Restauration whitelist ==="
 
-    local old_db="$OLD_DIR/db/servertest.db"
-    local new_db="${PZ_SOURCE_DIR}/db/servertest.db"
+    local old_db="${OLD_DIR}/db/${PZ_SERVER_NAME}.db"
+    local new_db="${PZ_DB_PATH}"
 
     [[ -f "$old_db" ]] || { echo "⚠ Pas de base backup, skip whitelist"; return 0; }
     [[ -f "$new_db" ]] || { echo "⚠ Pas de base nouveau serveur, skip whitelist"; return 0; }
@@ -271,10 +275,10 @@ Usage: $0 [OPTIONS]
 Options:
   --keep-whitelist    Restaurer whitelist depuis backup
   --keep-config       Restaurer configs depuis backup AVANT génération monde:
-                        - servertest.ini (mods, settings réseau)
-                        - servertest_SandboxVars.lua (difficulté, loot, zombies)
-                        - servertest_spawnpoints.lua (points d'apparition)
-                        - servertest_spawnregions.lua (régions de spawn)
+                        - ${PZ_SERVER_NAME}.ini (mods, settings réseau)
+                        - ${PZ_SERVER_NAME}_SandboxVars.lua (difficulté, loot, zombies)
+                        - ${PZ_SERVER_NAME}_spawnpoints.lua (points d'apparition)
+                        - ${PZ_SERVER_NAME}_spawnregions.lua (régions de spawn)
                       Les mods Workshop sont téléchargés au premier lancement.
 
 Les options sont combinables.

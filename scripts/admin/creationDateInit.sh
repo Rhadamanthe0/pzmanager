@@ -13,7 +13,7 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
 source_env "${SCRIPT_DIR}/.."
 
-readonly DB_PATH="${PZ_SOURCE_DIR}/db/servertest.db"
+readonly DB_PATH="${PZ_DB_PATH}"
 
 main() {
     [[ -f "$DB_PATH" ]] || { log "Base de donnees introuvable: $DB_PATH"; exit 0; }

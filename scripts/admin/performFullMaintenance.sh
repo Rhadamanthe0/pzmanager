@@ -130,7 +130,7 @@ download_workshop_mods() {
         log "STEAM_LOGIN non défini : pré-DL des mods ignoré (DL anonyme cassé pour les items neufs/mis à jour)."
         return 0
     fi
-    local ini="${PZ_SOURCE_DIR}/Server/servertest.ini"
+    local ini="${PZ_INI_PATH}"
     if [[ ! -f "$ini" ]]; then
         log "WARNING: $ini introuvable, pré-DL des mods ignoré"
         return 0
