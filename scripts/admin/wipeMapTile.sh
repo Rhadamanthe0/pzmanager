@@ -42,7 +42,10 @@ readonly CHUNK_SIZE=10
 readonly CELL_SIZE=300
 
 usage() {
-    awk 'NR==1{next} /^# ---/{c++; if(c==2) exit} c>=1{sub(/^# ?/,""); print}' "$0"
+    # Imprime le bandeau d'en-tete : tout ce qui est entre le shebang et le
+    # 3e separateur "# ---" (1er = ouverture, 2e = sous le titre, 3e = fin),
+    # separateurs eux-memes exclus.
+    awk 'NR==1{next} /^# ---/{c++; if(c==3) exit; next} {sub(/^# ?/,""); print}' "$0"
     exit "${1:-0}"
 }
 

@@ -87,6 +87,32 @@ pzm rcon "help"                          # All commands
 
 Full list: [PZ Wiki - Server Commands](https://pzwiki.net/wiki/Server_commands)
 
+## Regenerating a Map Area
+
+When a map mod is updated but players have already explored the area, PZ keeps
+serving the cached chunks and the old version stays on screen. Deleting that
+area's save files makes the game regenerate it from the mod on next visit.
+
+```bash
+pzm map wipe <x> <y>                 # One tile (regenerates its 10×10 chunk)
+pzm map wipe <x1> <y1> <x2> <y2>     # A rectangle of tiles
+pzm map wipe <x> <y> --cell          # Also wipe cell-level data (see below)
+```
+
+Coordinates are in-game tile coordinates. `pzm map wipe --help` documents the
+Build 42 save layout it relies on (chunks of 10 tiles, cells of 300).
+
+`--cell` additionally deletes zombie/animal population and metadata, which are
+stored per **300×300 cell** — so it affects the whole cell, not just the tiles
+you asked for. Use it only when the cell-level data is what is stale.
+
+> ⚠️ **Deletion is immediate — there is no dry-run.** The server must be stopped
+> (the command refuses to run otherwise). Every deleted file is snapshotted to
+> `${BACKUP_DIR}/tile-wipe-snapshots/` first, which is your only way back.
+
+Anything built by players in the wiped area is lost — it is part of the save
+data being regenerated.
+
 ## Complete Server Reset
 
 Use when: corrupted world, major config change, fresh start.
@@ -113,12 +139,15 @@ pzm admin reset --keep-config --keep-whitelist
 
 Options are combinable. With `--keep-config`, configs are restored **before** world generation so Workshop mods are downloaded on first launch.
 
+> ⚠️ **There is no confirmation prompt.** `pzm admin reset` wipes the world
+> immediately, and it is runnable from the Discord bot too. The only barrier is
+> access to `pzm` / to the bot's admin role — keep that role tight.
+
 Process:
-1. Type `RESET` to confirm
-2. Backup created in `~/OLD/Zomboid_OLD_TIMESTAMP/`
-3. World generation (automatic, ~2 min)
-4. Admin password displayed (note it!)
-5. Server started
+1. Backup created in `~/OLD/Zomboid_OLD_TIMESTAMP/`
+2. World generation (automatic, ~2 min)
+3. Admin password displayed (note it!)
+4. Server started
 
 ## Maintenance Scheduling
 

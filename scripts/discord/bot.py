@@ -108,7 +108,7 @@ bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
 
 # Commandes pzm reconnues en tête de ligne d'un batch (évite de réagir au bavardage).
-KNOWN_CMDS = {"server", "backup", "whitelist", "admin", "install",
+KNOWN_CMDS = {"server", "backup", "whitelist", "admin", "install", "map",
               "rcon", "discord", "help", "--help", "-h"}
 
 # Un seul pzm à la fois (un `server stop 2m` tient le process plusieurs minutes).
@@ -1155,7 +1155,6 @@ def _fmt_dur(sec):
 def _status(s):
     """(couleur, [alertes]) — évalue les prédicteurs de crash."""
     alerts, warn = [], False
-    xmx = _xmx_gb()
     mem = s["mem"]
     total, avail = mem.get("MemTotal", 0), mem.get("MemAvailable", 0)
     avail_mb = avail / 1024

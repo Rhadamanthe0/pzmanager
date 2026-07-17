@@ -22,17 +22,6 @@ require_command() {
     command -v "$cmd" >/dev/null 2>&1 || { echo "[ERROR] la commande '$cmd' est requise mais introuvable" >&2; exit 1; }
 }
 
-load_common() {
-    local common="${SCRIPT_DIR}/../lib/common.sh"
-    if [[ -r "$common" ]]; then
-        # shellcheck source=/dev/null
-        source "$common"
-    else
-        echo "[WARN] Fichier common.sh introuvable, utilisation de fonctions minimales" >&2
-        die() { echo "[FATAL] $*" >&2; exit 1; }
-    fi
-}
-
 create_user() {
     require_command id
     require_command useradd
@@ -142,8 +131,6 @@ main() {
     fi
 
     echo "[INFO] Configuration pour l'utilisateur: $PZ_USER"
-
-    load_common
 
     # Charger les ports depuis .env si disponible
     local env_file="${PZ_HOME}/pzmanager/scripts/.env"

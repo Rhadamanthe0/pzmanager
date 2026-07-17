@@ -23,26 +23,28 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
 source_env "${SCRIPT_DIR}/.."
 
-# Parse options
 OPT_KEEP_WHITELIST=false
 OPT_KEEP_CONFIG=false
 
-for arg in "$@"; do
-    case "$arg" in
-        --keep-whitelist) OPT_KEEP_WHITELIST=true ;;
-        --keep-config)    OPT_KEEP_CONFIG=true ;;
-        --help|-h)
-            show_help
-            exit 0
-            ;;
-        *)
-            echo "Option invalide: $arg"
-            echo ""
-            show_help
-            exit 1
-            ;;
-    esac
-done
+# Parsé depuis main() : show_help n'est définie que plus bas dans le fichier.
+parse_args() {
+    for arg in "$@"; do
+        case "$arg" in
+            --keep-whitelist) OPT_KEEP_WHITELIST=true ;;
+            --keep-config)    OPT_KEEP_CONFIG=true ;;
+            --help|-h)
+                show_help
+                exit 0
+                ;;
+            *)
+                echo "Option invalide: $arg"
+                echo ""
+                show_help
+                exit 1
+                ;;
+        esac
+    done
+}
 
 readonly TIMESTAMP=$(date +"%Y-%m-%d_%Hh%Mm%Ss")
 readonly OLD_DIR="${PZ_HOME}/OLD/Zomboid_OLD_${TIMESTAMP}"
@@ -287,6 +289,7 @@ HELPEOF
 }
 
 main() {
+    parse_args "$@"
     announce_reset
     stop_server
     backup_current
@@ -304,4 +307,4 @@ main() {
     finalize
 }
 
-main
+main "$@"

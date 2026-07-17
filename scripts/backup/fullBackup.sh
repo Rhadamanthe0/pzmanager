@@ -22,11 +22,18 @@ readonly BACKUP_DEST="${SYNC_BACKUPS_DIR}/${TIMESTAMP}"
 readonly DIRS_TO_SYNC=(
     "${PZ_HOME}/.ssh"
     "${PZ_HOME}/.config/systemd/user"
-    "${PZ_HOME}/pzmanager/data/setupTemplates"
-    "${SCRIPT_DIR}"
+    "${PZ_DATA_DIR}/setupTemplates"
+    "${PZ_SCRIPTS_DIR}"
 )
 
-log() { echo -e "\033[0;32m[INFO]\033[0m $1"; }
+# Contenu volumineux ou reconstructible, exclu de la sauvegarde des scripts :
+# les logs sont déjà persistés ailleurs et le venv se rebâtit via `pzm install
+# discord`. Sans ça, sauvegarder PZ_SCRIPTS_DIR embarquerait des centaines de Mo.
+readonly SYNC_EXCLUDES=(
+    --exclude "logs/"
+    --exclude ".venv/"
+    --exclude "__pycache__/"
+)
 
 trap 'echo -e "\033[0;31m[ERROR]\033[0m Line $LINENO: $BASH_COMMAND failed." >&2' ERR
 
@@ -35,7 +42,7 @@ sync_files() {
     mkdir -p "${BACKUP_DEST}"
 
     for item in "${DIRS_TO_SYNC[@]}"; do
-        [[ -e "$item" ]] && rsync -aR --delete "$item" "${BACKUP_DEST}/" || echo "Skipped: $item"
+        [[ -e "$item" ]] && rsync -aR --delete "${SYNC_EXCLUDES[@]}" "$item" "${BACKUP_DEST}/" || echo "Skipped: $item"
     done
 }
 

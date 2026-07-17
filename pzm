@@ -32,6 +32,9 @@ Commandes disponibles:
     list               Liste blanche SteamID + comptes + bannis
     add <id64> [nom]   Autoriser un SteamID (Open=false ; serveur démarré requis)
     remove <id64|nom> [--ban]  Retirer un SteamID (--ban = bannir définitivement)
+    remove-account <nom|id64> [...] [--dry-run]  Supprimer des comptes (garde les
+                       personnages ; retire les SteamID devenus orphelins ; serveur arrêté)
+    rename <ancien> <nouveau> [--dry-run]  Renommer un compte (garde perso et mdp)
     resetpassword <nom>  Reset mot de passe (nouveau mdp à la prochaine co)
     purge [durée]      Lister inactifs (3m, 60d... défaut: .env)
     purge <durée> --delete  Supprimer inactifs après confirmation
@@ -119,19 +122,7 @@ cmd_backup() {
             exec "${SCRIPT_DIR}/scripts/backup/restoreCharacter.sh" "$@"
             ;;
         list)
-            echo "=== Backups incrémentiaux (30j rétention) ==="
-            if [[ -d "${SCRIPT_DIR}/data/dataBackups" ]]; then
-                ls -1td "${SCRIPT_DIR}/data/dataBackups/backup_"* 2>/dev/null | head -20 || echo "Aucun backup trouvé"
-            else
-                echo "Aucun backup trouvé"
-            fi
-            echo ""
-            echo "=== Backups complets ==="
-            if [[ -d "${SCRIPT_DIR}/data/fullBackups" ]]; then
-                ls -1td "${SCRIPT_DIR}/data/fullBackups/"* 2>/dev/null | head -10 || echo "Aucun backup trouvé"
-            else
-                echo "Aucun backup trouvé"
-            fi
+            exec "${SCRIPT_DIR}/scripts/backup/listBackups.sh"
             ;;
         *)
             echo "Erreur: Action backup invalide: $action"
