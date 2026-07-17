@@ -102,11 +102,29 @@ player sends their SteamID64, you authorize it, they connect and set their own p
 **Notes**:
 - Steam ID 64: 17 digits starting with `7656119...` ([steamid.xyz](https://steamid.xyz/))
 - `--ban` adds a permanent `banid` — the player can't return even renamed.
-- Access of accounts inactive ≥ `WHITELIST_PURGE_DAYS` (default 90) is **auto-removed**
-  nightly during maintenance (whitelist + SteamID); the **character is kept**, and the
-  built-in `admin` account is always spared.
 - `purge` here is the manual, interactive variant (lists/deletes `whitelist` rows only).
 - Purge: Xm (months) or Xd (days), default in .env
+
+### Automatic access purge
+
+Accounts inactive ≥ `WHITELIST_PURGE_DAYS` (default 90) have their access removed
+**automatically, on every server start** — the account first, then its SteamID
+**only if no remaining account still uses it**. The **character is always kept**,
+and the built-in `admin` account is always spared.
+
+It runs from `zomboid.service`'s `ExecStartPre`, just before the game launches:
+that is the only moment guaranteed world-closed on *every* start path (boot,
+`pzm server start/restart`, socket-activation), and the purge writes straight to
+the world database. A failed purge never blocks the server from starting.
+
+Inspect it at any time — this touches nothing, even with the server up:
+
+```bash
+scripts/admin/purgeInactivePlayers.sh --force --dry-run --days 60
+```
+
+It prints, per account, whether the SteamID would be released or kept because
+another account shares it.
 
 ## Administration
 

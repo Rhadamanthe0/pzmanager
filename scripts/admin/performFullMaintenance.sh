@@ -66,13 +66,6 @@ stop_server() {
     "${SCRIPT_DIR}/../core/pz.sh" stop "$DELAY" --maintenance --reason "$MAINTENANCE_REASON" $automatic_opt $silent_opt
 }
 
-purge_inactive_access() {
-    # Serveur arrêté ici (par stop_server) -> écriture DB sûre. Retire les accès
-    # (whitelist + SteamID) des comptes inactifs ; les personnages sont conservés.
-    log "Purge des accès inactifs (>= ${WHITELIST_PURGE_DAYS}j)..."
-    "${SCRIPT_DIR}/purgeInactivePlayers.sh" --force || log "WARNING: purge des inactifs échouée (non bloquant)"
-}
-
 rotate_backups() {
     log "Rotation des backups (${BACKUP_RETENTION_DAYS} jours)..."
     [[ -d "${BACKUP_DIR}" ]] || return 0
@@ -166,8 +159,10 @@ main() {
     log "=== MAINTENANCE DEMARREE ==="
     [[ -x "${SCRIPT_DIR}/../core/pz.sh" ]] || die "pz.sh introuvable"
 
+    # La purge des accès inactifs n'est plus déclenchée ici : elle est en
+    # ExecStartPre de zomboid.service, donc rejouée à chaque démarrage (dont
+    # celui qui suit cette maintenance), toujours monde fermé.
     stop_server
-    purge_inactive_access
     rotate_backups
     update_system
     update_game_server

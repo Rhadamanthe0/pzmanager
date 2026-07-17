@@ -13,13 +13,23 @@
 #
 # Le compte interne 'admin' est TOUJOURS préservé (sinon perte d'administration).
 #
-# Écrit directement dans servertest.db -> DOIT tourner SERVEUR ARRÊTÉ. Conçu
-# pour être appelé par performFullMaintenance.sh dans la fenêtre serveur-arrêté.
-# Une sauvegarde de servertest.db est faite avant toute suppression.
+# Écrit directement dans <monde>.db -> DOIT tourner MONDE FERMÉ. Une sauvegarde
+# de la base est faite avant toute suppression.
 #
-# Usage: ./purgeInactivePlayers.sh [--force] [--dry-run]
-#   --force    Ne pas refuser même si le service zomboid est actif (usage maint.)
-#   --dry-run  Affiche ce qui serait supprimé sans rien modifier
+# Déclenchée depuis ExecStartPre de zomboid.service, donc juste avant que la JVM
+# ne démarre : c'est le seul instant garanti fermé quel que soit le chemin de
+# démarrage (boot, pzm server start/restart, socket-activation). Elle n'est plus
+# appelée par la maintenance nocturne, qui redémarrait le serveur juste après et
+# la rejouait donc pour rien. En ExecStartPre l'unité est "activating" : le
+# garde-fou ci-dessous passe de lui-même, sans --force.
+#
+# Usage: ./purgeInactivePlayers.sh [--force] [--dry-run] [--days N]
+#   --force    Ne pas refuser même si le service zomboid est actif
+#   --dry-run  Affiche le plan (dont le sort de chaque SteamID) sans rien modifier
+#   --days N   Seuil d'inactivité en jours ; prime sur WHITELIST_PURGE_DAYS (.env)
+#
+# Voir le plan sans rien toucher, serveur allumé :
+#   ./purgeInactivePlayers.sh --force --dry-run --days 60
 # ------------------------------------------------------------------------------
 
 set -euo pipefail
@@ -32,13 +42,21 @@ readonly DB_PATH="${PZ_DB_PATH}"
 
 FORCE=false
 DRY_RUN=false
-for arg in "$@"; do
-    case "$arg" in
-        --force) FORCE=true ;;
+DAYS_OVERRIDE=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --force)   FORCE=true ;;
         --dry-run) DRY_RUN=true ;;
+        --days)    DAYS_OVERRIDE="${2:-}"; shift ;;
+        --days=*)  DAYS_OVERRIDE="${1#--days=}" ;;
         *) ;;
     esac
+    shift
 done
+
+if [[ -n "$DAYS_OVERRIDE" ]]; then
+    [[ "$DAYS_OVERRIDE" =~ ^[0-9]+$ ]] || die "--days attend un nombre de jours (reçu: '${DAYS_OVERRIDE}')"
+fi
 
 command -v sqlite3 &>/dev/null || die "sqlite3 non installé."
 [[ -f "$DB_PATH" ]] || { log "Base introuvable: $DB_PATH (purge ignorée)"; exit 0; }
@@ -46,15 +64,17 @@ command -v sqlite3 &>/dev/null || die "sqlite3 non installé."
 # Refuser si le serveur tourne (écriture DB live dangereuse), sauf --force.
 # (sql_escape et server_is_active viennent de lib/common.sh)
 if [[ "$FORCE" != true ]] && server_is_active; then
-    die "Le serveur est actif : la purge écrit dans servertest.db et doit se faire serveur arrêté.
-Lance-la pendant la maintenance, ou utilise --force en connaissance de cause."
+    die "Le serveur est actif : la purge écrit dans la base du monde et doit se faire serveur arrêté.
+Elle tourne d'elle-même au prochain démarrage (ExecStartPre de zomboid.service).
+Pour la voir sans rien modifier : $0 --force --dry-run"
 fi
 
 # Détecter la colonne created_at (présente après creationDateInit.sh)
 HAS_CREATED_AT=false
 sqlite3 "$DB_PATH" "PRAGMA table_info(whitelist)" 2>/dev/null | grep -q '|created_at|' && HAS_CREATED_AT=true
 
-readonly DAYS="${WHITELIST_PURGE_DAYS:-90}"
+# --days l'emporte sur .env : sans ça, le seuil n'est testable qu'en éditant .env.
+readonly DAYS="${DAYS_OVERRIDE:-${WHITELIST_PURGE_DAYS:-90}}"
 
 # Comptes inactifs (prédicat partagé avec la purge interactive — cf. common.sh).
 WHERE="$(inactive_where_clause "$DAYS" "$HAS_CREATED_AT")"
@@ -70,11 +90,34 @@ if [[ "${#VICTIMS[@]}" -eq 0 ]]; then
     exit 0
 fi
 
+# Le SteamID n'est désautorisé que s'il ne reste AUCUN compte gardé qui le
+# porte. On l'annonce dès le plan : c'est la question qu'on se pose devant une
+# purge (« est-ce que je coupe l'accès du copain qui partage le SteamID ? »), et
+# le dry-run doit pouvoir y répondre sans rien supprimer.
+VICTIM_IDS="$(printf '%s\n' "${VICTIMS[@]}" | cut -d'|' -f1 | paste -sd,)"
+
+steamid_becomes_orphan() {
+    local sid="$1" esc kept
+    [[ -n "$sid" ]] || return 1
+    esc="$(sql_escape "$sid")"
+    kept=$(sqlite3 "$DB_PATH" \
+        "SELECT COUNT(*) FROM whitelist WHERE steamid = '${esc}' AND id NOT IN (${VICTIM_IDS})" \
+        2>/dev/null || echo "1")
+    [[ "$kept" -eq 0 ]]
+}
+
 log "${#VICTIMS[@]} compte(s) inactif(s) détecté(s) :"
 for row in "${VICTIMS[@]}"; do
     IFS='|' read -r id uname sid <<< "$row"
-    log "  - ${uname} (steamid: ${sid:-aucun})"
+    if [[ -z "$sid" ]]; then
+        log "  - ${uname} : compte supprimé (aucun steamid)"
+    elif steamid_becomes_orphan "$sid"; then
+        log "  - ${uname} : compte supprimé + SteamID ${sid} désautorisé (plus aucun compte)"
+    else
+        log "  - ${uname} : compte supprimé, SteamID ${sid} CONSERVÉ (encore utilisé)"
+    fi
 done
+log "Les personnages sont conservés dans tous les cas."
 
 if [[ "$DRY_RUN" == true ]]; then
     log "[dry-run] Aucune modification effectuée."
