@@ -29,36 +29,26 @@ This document details **everything** modified on your system to ensure transpare
 
 ## System Packages
 
+Only packages that are missing get installed — both scripts skip what is already
+present.
+
 ### Installed by setupSystem.sh
 
-**Base packages**:
-- `rsync`: Incremental backups with hard links
-- `unzip`: Archive decompression
-- `zip`: Archive creation (full backups)
-- `ufw`: Simplified firewall
+- `sudo`, `curl`: base tooling
+- `rsync`: incremental backups with hard links
+- `zip` / `unzip`: full-backup archives
+- `ufw`: simplified firewall
+- `sqlite3`: reads the world database (whitelist, purge)
+- `python3-venv`: builds the Discord bot's virtualenv
 
-**Installed by configurationInitiale.sh**:
+### Installed by configurationInitiale.sh
 
-**32-bit architecture** (required by SteamCMD):
-- `dpkg --add-architecture i386`
-- `lib32gcc-s1`
-- `lib32stdc++6`
+**32-bit architecture** (required by SteamCMD): `dpkg --add-architecture i386`
 
-**SteamCMD and dependencies**:
-- `steamcmd`
-- `ca-certificates`
-- `software-properties-common`
-- `apt-transport-https`
-- `dirmngr`
-- `curl`
-- `wget`
-
-**Java** (version configurable via `.env`):
-- `openjdk-25-jre-headless` (default)
-- OR `openjdk-17-jre-headless`
-- OR `openjdk-21-jre-headless`
-
-**Location**: `/usr/lib/jvm/java-25-openjdk-amd64` (depending on version)
+- `lib32gcc-s1`, `libsdl2-2.0-0:i386`: SteamCMD dependencies
+- `steamcmd`: installs and updates the game
+- `openjdk-25-jre-headless` (`JAVA_PACKAGE` in `.env`), in
+  `/usr/lib/jvm/java-25-openjdk-amd64` (`JAVA_PATH`)
 
 ---
 
@@ -224,6 +214,10 @@ Zomboid/
 └── mods/
 ```
 
+The `servertest*` filenames are derived from the world name `PZ_SERVER_NAME`
+(default `servertest`); change that variable and every file above follows. See
+[CONFIGURATION.md — World Name](CONFIGURATION.md#world-name).
+
 **Typical size**: 500MB - 5GB (depending on usage)
 
 ### Admin User
@@ -234,21 +228,20 @@ An `admin` user is automatically created during installation with a random 24-ch
 - Role: 7 (admin)
 - Excluded from `pzm whitelist purge` (never deleted)
 
-### Whitelist Schema
+### Access model (SteamID whitelist)
 
-The whitelist uses `role` (integer) and requires `world='servertest'`:
+Build 42 (≥ 42.13.2) gates access by **SteamID**, not by manual DB rows. With
+`Open=false`, only SteamIDs in the `allowedsteamid` table can connect; a player
+then registers their own account and password on first login. So you **never**
+INSERT a whitelist row by hand — `pzm whitelist add <steamID64>` drives the
+server console (`addsteamid`), and the player self-registers. See
+[USAGE.md — Whitelist](USAGE.md#whitelist) for the full command set (`add`,
+`remove`, `remove-account`, `rename-account`, `purge`).
 
-| Role | Name | Description |
-|------|------|-------------|
-| 1 | banned | Cannot login |
-| 2 | user | Standard player |
-| 3 | priority | Login priority |
-| 4 | observer | Spectator mode |
-| 5 | gm | Game master |
-| 6 | moderator | Moderator |
-| 7 | admin | Full access |
-
-**Important**: Role 1 is **banned** (not user!). New users must be added with role 2.
+Access levels are set with `pzm rcon setaccesslevel <name> <level>`, where
+`<level>` is one of `admin`, `moderator`, `gm`, `observer`, `priority`, `user`
+(plus any custom level, e.g. `Animateur`) — lowercase and case-sensitive. The
+built-in `admin` account is created at install and excluded from the purge.
 
 ---
 
@@ -544,8 +537,7 @@ warning countdown).
 │   ├── PROCEDURE_JOUEURS.md
 │   └── WHAT_IS_INSTALLED.md          # This file
 │
-├── README.md
-└── LICENSE
+└── README.md
 ```
 
 ### Disk Space Used
@@ -569,83 +561,23 @@ warning countdown).
 
 ## Environment Variables
 
-### .env File
+Every path, port, retention and secret lives in **`scripts/.env`**, created
+automatically from `data/setupTemplates/.env.example` on the first script run.
+Nothing is hardcoded: the scripts read the exported `PZ_*`, `BACKUP_*` and
+`LOG_*` variables.
 
-**Location**: `/home/pzuser/pzmanager/scripts/.env`
-
-**Automatically created** from `.env.example` on first run
-
-**Main variables**:
-
-#### User and Paths
 ```bash
-PZ_USER="pzuser"
-PZ_HOME="/home/pzuser"
-PZ_MANAGER_DIR="${PZ_HOME}/pzmanager"
-PZ_DATA_DIR="${PZ_MANAGER_DIR}/data"
-PZ_SOURCE_DIR="${PZ_MANAGER_DIR}/Zomboid"
-PZ_INSTALL_DIR="${PZ_DATA_DIR}/pzserver"
+nano ~/pzmanager/scripts/.env
 ```
 
-#### Java
-```bash
-JAVA_VERSION="25"
-JAVA_PACKAGE="openjdk-25-jre-headless"
-JAVA_PATH="/usr/lib/jvm/java-25-openjdk-amd64"
-```
+Every variable is documented — with its default and its trade-offs — in
+**[CONFIGURATION.md](CONFIGURATION.md)**, and commented inline in
+`.env.example`. They are deliberately not listed a third time here.
 
-#### SteamCMD
-```bash
-STEAMCMD_PATH="/usr/games/steamcmd"
-STEAM_APP_ID="380870"
-STEAM_BETA_BRANCH="unstable"
-```
-
-#### Backups
-```bash
-BACKUP_DIR="${PZ_DATA_DIR}/dataBackups"
-BACKUP_LATEST_LINK="${BACKUP_DIR}/latest"
-BACKUP_RETENTION_DAYS="14"
-SYNC_BACKUPS_DIR="${PZ_DATA_DIR}/fullBackups"
-```
-
-#### Logs
-```bash
-LOG_ZOMBOID_DIR="${PZ_HOME}/scripts/logs/zomboid"
-LOG_MAINTENANCE_DIR="${PZ_HOME}/scripts/logs/maintenance"
-LOG_RETENTION_DAYS="30"
-```
-
-#### Service
-```bash
-PZ_SERVICE_NAME="zomboid.service"
-```
-
-#### Whitelist
-```bash
-WHITELIST_PURGE_DAYS=90   # auto-remove access after this many inactive days (keeps character)
-```
-
-#### Maintenance
-```bash
-REBOOT_ON_MAINTENANCE=true   # true = reboot machine, false = restart service only
-```
-
-#### Memory / heap restart
-```bash
-HEAP_RESTART_PERCENT=95      # restart when post-GC heap reaches this % of -Xmx
-HEAP_RESTART_DELAY="5m"      # player warning before the restart
-#PZ_XMX_GB=8                 # override -Xmx (GB); empty = half of physical RAM
-```
-
-#### Discord (optional)
-```bash
-DISCORD_WEBHOOK=""              # outbound webhook; empty = disabled
-DISCORD_BOT_TOKEN=""            # inbound /pzm command bot; empty = disabled
-DISCORD_BOT_DEATH_CHANNEL_ID="" # channel for death / PvP embeds; empty = off
-```
-
-**Modify**: `nano /home/pzuser/pzmanager/scripts/.env`
+> `.env` is only created when it does **not** exist: an update that adds a
+> variable never rewrites your file. New variables fall back to their defaults
+> (`apply_env_defaults` in `scripts/lib/common.sh`), so an old `.env` keeps
+> working — copy the new lines from `.env.example` if you want to change them.
 
 ---
 
@@ -667,7 +599,7 @@ MaxPlayers=32
 
 # Gameplay
 PauseEmpty=true              # Pause if no players
-Open=true                    # Public server
+Open=false                   # SteamID whitelist (required by pzmanager's access model)
 Public=true                  # Visible in server list
 PublicPort=16261
 PublicDescription=
@@ -735,14 +667,14 @@ loginctl disable-linger pzuser
 # 2. Remove files
 rm -rf /home/pzuser/pzmanager
 
-# 4. Remove user
+# 3. Remove user
 userdel -r pzuser
 
-# 5. Remove system configuration
+# 4. Remove system configuration
 rm /etc/sudoers.d/pzuser
 rm /var/lib/systemd/linger/pzuser
 
-# 6. (Optional) Remove packages
+# 5. (Optional) Remove packages
 apt remove --purge steamcmd openjdk-25-jre-headless
 apt autoremove
 ```
