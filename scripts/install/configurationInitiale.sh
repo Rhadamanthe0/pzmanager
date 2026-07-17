@@ -351,7 +351,7 @@ install_zomboid() {
     echo ""
     echo "Prochaines étapes :"
     echo "  1. Démarrer le serveur : sudo -u $PZ_USER pzm server start"
-    echo "  2. Configurer le serveur : $PZ_SOURCE_DIR/Server/servertest.ini"
+    echo "  2. Configurer le serveur : ${PZ_INI_PATH}"
 }
 
 show_help() {

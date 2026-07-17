@@ -28,7 +28,7 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
 source_env "${SCRIPT_DIR}/.."
 
-readonly DB_PATH="${PZ_SOURCE_DIR}/db/servertest.db"
+readonly DB_PATH="${PZ_DB_PATH}"
 
 FORCE=false
 DRY_RUN=false
@@ -84,7 +84,7 @@ fi
 # Sauvegarde de sécurité avant suppression
 SNAP_DIR="${BACKUP_DIR}/purge-snapshots"
 ensure_directory "$SNAP_DIR"
-SNAP="${SNAP_DIR}/servertest_$(date +'%Y-%m-%d_%Hh%Mm%S').db"
+SNAP="${SNAP_DIR}/${PZ_SERVER_NAME}_$(date +'%Y-%m-%d_%Hh%Mm%S').db"
 cp -f "$DB_PATH" "$SNAP" && log "Sauvegarde: $SNAP"
 
 removed_accounts=0

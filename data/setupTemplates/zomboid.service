@@ -13,7 +13,11 @@ WorkingDirectory=%h/pzmanager/data/pzserver/
 # "quit" et remeurt à f:0 en boucle (flap). Lecture non-bloquante (iflag=nonblock):
 # vide instantanément si des octets traînent, retourne aussitôt si le FIFO est vide.
 ExecStartPre=/bin/sh -c "dd if=%h/pzmanager/data/pzserver/zomboid.control iflag=nonblock of=/dev/null 2>/dev/null; exit 0"
-ExecStart=/bin/sh -c "ADMIN_ARGS=''; PW_FILE='%h/pzmanager/.admin_password'; if [ -f \"$PW_FILE\" ]; then ADMIN_ARGS=\"-adminpassword $(cat $PW_FILE)\"; rm -f \"$PW_FILE\"; fi; exec %h/pzmanager/data/pzserver/start-server.sh -cachedir=%h/pzmanager/Zomboid $ADMIN_ARGS <> %h/pzmanager/data/pzserver/zomboid.control"
+# -servername est passé explicitement depuis PZ_SERVER_NAME (.env) : sans lui PZ
+# retombe sur son défaut "servertest", et le nom du monde pourrait diverger des
+# chemins (db/<nom>.db, Server/<nom>.ini) que lisent les scripts. Le :- garantit
+# un nom non vide même si .env est absent ou la variable non définie.
+ExecStart=/bin/sh -c "ENV_FILE='%h/pzmanager/scripts/.env'; if [ -r \"$ENV_FILE\" ]; then . \"$ENV_FILE\"; fi; ADMIN_ARGS=''; PW_FILE='%h/pzmanager/.admin_password'; if [ -f \"$PW_FILE\" ]; then ADMIN_ARGS=\"-adminpassword $(cat $PW_FILE)\"; rm -f \"$PW_FILE\"; fi; exec %h/pzmanager/data/pzserver/start-server.sh -cachedir=%h/pzmanager/Zomboid -servername \"${PZ_SERVER_NAME:-servertest}\" $ADMIN_ARGS <> %h/pzmanager/data/pzserver/zomboid.control"
 ExecStartPost=-/bin/sh -c "%h/pzmanager/scripts/internal/notifyServerReady.sh &"
 ExecStop=/bin/sh -c "echo 'quit' > %h/pzmanager/data/pzserver/zomboid.control"
 KillSignal=SIGCONT

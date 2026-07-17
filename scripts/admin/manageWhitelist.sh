@@ -52,7 +52,7 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
 source_env "${SCRIPT_DIR}/.."
 
-readonly DB_PATH="${PZ_SOURCE_DIR}/db/servertest.db"
+readonly DB_PATH="${PZ_DB_PATH}"
 readonly SEND_COMMAND="${SCRIPT_DIR}/../internal/sendCommand.sh"
 readonly ACTION="${1:-}"
 
@@ -332,7 +332,7 @@ snapshot_dbs() {
     local snap_dir="${PZ_SOURCE_DIR}/db/whitelist-snapshots"
     ensure_directory "$snap_dir"
     local ts; ts="$(date +'%Y-%m-%d_%Hh%Mm%S')"
-    cp -f "$DB_PATH" "${snap_dir}/servertest_${ts}.db" && log "Snapshot: ${snap_dir}/servertest_${ts}.db"
+    cp -f "$DB_PATH" "${snap_dir}/${PZ_SERVER_NAME}_${ts}.db" && log "Snapshot: ${snap_dir}/${PZ_SERVER_NAME}_${ts}.db"
     if [[ -n "${PLAYERS_DB:-}" && -f "${PLAYERS_DB:-}" ]]; then
         cp -f "$PLAYERS_DB" "${snap_dir}/players_${ts}.db" && log "Snapshot: ${snap_dir}/players_${ts}.db"
     fi

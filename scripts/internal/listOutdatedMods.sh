@@ -21,7 +21,7 @@ source_env "${SCRIPT_DIR}/.."
 # 108600 = jeu Project Zomboid (propriétaire des items Workshop).
 # À ne pas confondre avec STEAM_APP_ID=380870 = outil serveur dédié.
 readonly WORKSHOP_APP_ID=108600
-readonly SERVER_INI="${PZ_SOURCE_DIR}/Server/servertest.ini"
+readonly SERVER_INI="${PZ_INI_PATH}"
 readonly WORKSHOP_ACF="${PZ_INSTALL_DIR}/steamapps/workshop/appworkshop_${WORKSHOP_APP_ID}.acf"
 readonly STEAM_API="https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/"
 readonly API_TIMEOUT=30
