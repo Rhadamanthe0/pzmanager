@@ -34,7 +34,7 @@ Commandes disponibles:
     remove <id64|nom> [--ban]  Retirer un SteamID (--ban = bannir définitivement)
     remove-account <nom|id64> [...] [--dry-run]  Supprimer des comptes (garde les
                        personnages ; retire les SteamID devenus orphelins ; serveur arrêté)
-    rename <ancien> <nouveau> [--dry-run]  Renommer un compte (garde perso et mdp)
+    rename-account <ancien> <nouveau> [--dry-run]  Renommer un compte (garde perso et mdp)
     resetpassword <nom>  Reset mot de passe (nouveau mdp à la prochaine co)
     purge [durée]      Lister inactifs (3m, 60d... défaut: .env)
     purge <durée> --delete  Supprimer inactifs après confirmation
@@ -139,12 +139,12 @@ cmd_whitelist() {
     shift || true
 
     case "$action" in
-        list|add|remove|remove-account|rename|resetpassword|purge|help)
+        list|add|remove|remove-account|rename-account|resetpassword|purge|help)
             exec "${SCRIPT_DIR}/scripts/admin/manageWhitelist.sh" "$action" "$@"
             ;;
         *)
             echo "Erreur: Action whitelist invalide: $action"
-            echo "Actions: list, add, remove, remove-account, rename, resetpassword, purge, help"
+            echo "Actions: list, add, remove, remove-account, rename-account, resetpassword, purge, help"
             exit 1
             ;;
     esac

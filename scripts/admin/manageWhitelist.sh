@@ -2,7 +2,7 @@
 # ------------------------------------------------------------------------------
 # manageWhitelist.sh - Gestion de la whitelist du serveur (B42 par SteamID)
 # ------------------------------------------------------------------------------
-# Usage: ./manageWhitelist.sh <list|add|remove|remove-account|rename|resetpassword|purge> [arguments]
+# Usage: ./manageWhitelist.sh <list|add|remove|remove-account|rename-account|resetpassword|purge> [arguments]
 #
 # Modèle B42 (>= 42.13.2) : le serveur tourne en Open=false et autorise les
 # joueurs via une LISTE BLANCHE DE STEAMID (table `allowedsteamid`). Le joueur
@@ -11,33 +11,36 @@
 # base : add/remove pilotent la console du serveur (addsteamid/removesteamid/
 # banid) via sendCommand.sh. Le serveur DOIT être démarré pour add/remove.
 #
-# Trois niveaux distincts, souvent confondus :
-#   - remove         retire l'AUTORISATION SteamID -> TOUS les comptes de ce
-#                    SteamID tombent (un SteamID peut en porter 2).
-#   - remove-account supprime UN compte ; le SteamID reste autorisé s'il est
-#                    encore porté par un autre compte.
-#   - rename         ne supprime rien.
-# Aucun des trois ne supprime un PERSONNAGE (players.db/networkPlayers) : seul
-# `rename` y touche, pour réattacher le perso au nouveau login.
+# Deux niveaux distincts, à ne pas confondre — d'où le suffixe -account :
+#   - remove          agit sur le STEAMID : retire l'autorisation, donc TOUS les
+#                     comptes qui la partagent (B42 en autorise 2 par SteamID).
+#                     N'accepte QUE le SteamID64, jamais un pseudo : « remove
+#                     <pseudo> » se lirait « retirer ce joueur » et éjecterait
+#                     silencieusement l'autre compte du même SteamID.
+#   - remove-account  agit sur le COMPTE : en supprime un ; le SteamID reste
+#                     autorisé tant qu'un autre compte le porte.
+#   - rename-account  agit sur le COMPTE : ne supprime rien.
+# Aucune ne supprime un PERSONNAGE (players.db/networkPlayers) : seul
+# `rename-account` y touche, pour réattacher le perso au nouveau login.
 #
 # Commandes:
 #   list                          - Afficher la liste blanche SteamID + comptes
 #   add <steamID64> [pseudo]      - Autoriser un SteamID (pseudo = info facultatif)
-#   remove <steamID64|pseudo> [--ban]  - Retirer un SteamID (--ban = bannir aussi)
+#   remove <steamID64> [--ban]    - Retirer un SteamID (--ban = bannir aussi)
 #   remove-account <pseudo|steamID64>... [--dry-run] - Supprimer des comptes
-#   rename <ancien> <nouveau> [--dry-run] - Renommer un compte
+#   rename-account <ancien> <nouveau> [--dry-run] - Renommer un compte
 #   resetpassword <username>      - Reset le mot de passe d'un joueur
 #   purge [delay] [--delete]      - Lister/supprimer les comptes inactifs
 #
 # add/remove/resetpassword passent par la console -> SERVEUR DÉMARRÉ.
-# remove-account/rename/purge --delete écrivent en base -> SERVEUR ARRÊTÉ
-# (refus explicite sinon, snapshot des bases avant écriture).
+# remove-account/rename-account/purge --delete écrivent en base -> SERVEUR
+# ARRÊTÉ (refus explicite sinon, snapshot des bases avant écriture).
 #
 # Exemples:
 #   ./manageWhitelist.sh list
 #   ./manageWhitelist.sh add "76561198012345678" "PlayerName"
-#   ./manageWhitelist.sh remove "PlayerName"
 #   ./manageWhitelist.sh remove "76561198012345678" --ban
+#   ./manageWhitelist.sh remove-account "PlayerName"
 #   ./manageWhitelist.sh resetpassword "PlayerName"
 #   ./manageWhitelist.sh purge 3m --delete
 #
@@ -178,6 +181,31 @@ Le SteamID64 fait 17 chiffres et commence par 7656119 (https://steamid.xyz/)."
     echo "  Le joueur peut se connecter avec son pseudo et choisir SON mot de passe."
 }
 
+# Un pseudo a été passé à `remove`. On refuse, mais on résout le pseudo pour
+# donner les deux commandes exactes : c'est précisément là qu'on se trompe.
+reject_name_for_remove() {
+    local name="$1" esc sid shared
+    esc="$(sql_escape "$name")"
+    sid=$(sqlite3 "$DB_PATH" "SELECT steamid FROM whitelist WHERE username = '${esc}' LIMIT 1" 2>/dev/null || true)
+
+    if [[ -z "$sid" ]]; then
+        die "'${name}' n'est pas un SteamID64, et aucun compte de ce nom n'existe.
+  remove attend un SteamID64 (17 chiffres) : $0 remove <steamID64> [--ban]
+  Pour supprimer un COMPTE par son pseudo :  $0 remove-account <pseudo>"
+    fi
+
+    shared=$(sqlite3 "$DB_PATH" "SELECT GROUP_CONCAT(username, ', ') FROM whitelist WHERE steamid = '$(sql_escape "$sid")'" 2>/dev/null || echo "$name")
+
+    die "remove attend un SteamID64, pas un pseudo — les deux ne font pas la même chose.
+
+  '${name}' utilise le SteamID ${sid}, porté par : ${shared}
+
+  Retirer l'ACCÈS de ce SteamID (donc TOUS les comptes ci-dessus, serveur démarré) :
+      $0 remove ${sid}
+  Supprimer le seul compte '${name}' (garde les autres et le perso, serveur arrêté) :
+      $0 remove-account \"${name}\""
+}
+
 remove_from_whitelist() {
     local do_ban=false identifier="" a
     for a in "$@"; do
@@ -188,25 +216,24 @@ remove_from_whitelist() {
         fi
     done
 
-    [[ -n "$identifier" ]] || die "Usage: $0 remove <steamID64|pseudo> [--ban]
+    [[ -n "$identifier" ]] || die "Usage: $0 remove <steamID64> [--ban]
 Exemple: $0 remove \"76561198012345678\" --ban"
+
+    # remove n'accepte QUE le SteamID64. Accepter un pseudo ici brouillait la
+    # frontière avec remove-account : « remove <pseudo> » ressemble à « retirer
+    # ce joueur » alors que ça retire le SteamID, donc TOUS les comptes qui le
+    # partagent (B42 en autorise 2). On refuse, en montrant les deux options.
+    if ! is_steamid64 "$identifier"; then
+        reject_name_for_remove "$identifier"
+    fi
+    local steamid="$identifier" username=""
+    validate_steamid "$steamid"
 
     require_server_running
 
-    # Résoudre l'identifiant vers un SteamID (et un pseudo si connu).
-    local steamid="" username=""
-    if is_steamid64 "$identifier"; then
-        steamid="$identifier"
-        username=$(sqlite3 "$DB_PATH" "SELECT username FROM whitelist WHERE steamid = '$steamid' LIMIT 1" 2>/dev/null || true)
-    else
-        username="$identifier"
-        steamid=$(sqlite3 "$DB_PATH" "SELECT steamid FROM whitelist WHERE username = '$username' LIMIT 1" 2>/dev/null || true)
-        [[ -n "$steamid" ]] || die "Aucun SteamID connu pour '$username' en base.
-Passe directement le SteamID64: $0 remove <steamID64> [--ban]"
-    fi
-    validate_steamid "$steamid"
+    username=$(sqlite3 "$DB_PATH" "SELECT GROUP_CONCAT(username, ', ') FROM whitelist WHERE steamid = '$(sql_escape "$steamid")'" 2>/dev/null || true)
 
-    echo "Retrait de l'autorisation du SteamID: $steamid${username:+  (joueur: $username)}"
+    echo "Retrait de l'autorisation du SteamID: $steamid${username:+  (comptes: $username)}"
     run_console removesteamid "$steamid"
 
     if [[ "$do_ban" == true ]]; then
@@ -293,7 +320,7 @@ purge_whitelist() {
 
     # Suppression si demandée
     if [[ "$do_delete" == "--delete" ]]; then
-        # Même contrainte que remove-account/rename : on écrit directement dans
+        # Même contrainte que remove-account/rename-account : on écrit directement dans
         # servertest.db, que le serveur tient ouverte tant qu'il tourne.
         require_server_stopped
 
@@ -312,7 +339,7 @@ purge_whitelist() {
     fi
 }
 
-# --- Helpers pour remove-account / rename (écriture DB, serveur arrêté) -------
+# --- Helpers pour remove-account / rename-account (écriture DB, serveur arrêté) --
 
 # Refuse d'écrire si le serveur tourne (la sauvegarde auto écraserait la modif).
 require_server_stopped() {
@@ -433,7 +460,7 @@ remove_accounts() {
     echo "  (Les SteamID encore partagés par un compte gardé restent autorisés.)"
 }
 
-# rename <ancien_pseudo> <nouveau_pseudo> [--dry-run]
+# rename-account <ancien_pseudo> <nouveau_pseudo> [--dry-run]
 # Renomme le LOGIN d'un compte dans whitelist ET dans players.db (networkPlayers)
 # pour garder le personnage attaché. Le mot de passe est conservé.
 rename_account() {
@@ -446,7 +473,7 @@ rename_account() {
         esac
     done
     local old="${pos[0]:-}" new="${pos[1]:-}"
-    [[ -n "$old" && -n "$new" ]] || die "Usage: $0 rename <ancien_pseudo> <nouveau_pseudo> [--dry-run]"
+    [[ -n "$old" && -n "$new" ]] || die "Usage: $0 rename-account <ancien_pseudo> <nouveau_pseudo> [--dry-run]"
     [[ "$old" != "admin" ]] || die "Le compte 'admin' ne peut pas être renommé."
 
     local esc_old esc_new
@@ -463,7 +490,7 @@ rename_account() {
         char_count=$(sqlite3 "$PLAYERS_DB" "SELECT COUNT(*) FROM networkPlayers WHERE username='${esc_old}'" 2>/dev/null || echo 0)
     fi
 
-    echo "=== rename : '${old}' -> '${new}' ==="
+    echo "=== rename-account : '${old}' -> '${new}' ==="
     echo "  whitelist : ${exists} compte(s) à renommer (mot de passe conservé)"
     echo "  players.db: ${char_count} personnage(s) networkPlayers à réattacher"
     echo "  ⚠ Le joueur devra désormais se connecter avec le login '${new}'."
@@ -492,13 +519,17 @@ Gestion de la whitelist du serveur Project Zomboid (B42, par SteamID)
 
 Usage: $0 <commande> [arguments]
 
-Commandes:
+Commandes agissant sur le STEAMID (l'autorisation d'accès) :
   list                              Liste blanche SteamID + comptes + bannis
   add <steamID64> [pseudo]          Autoriser un SteamID (serveur démarré requis)
-  remove <steamID64|pseudo> [--ban] Retirer un SteamID (--ban = bannir aussi)
+  remove <steamID64> [--ban]        Retirer l'accès d'un SteamID, donc TOUS les
+                                    comptes qui le partagent (serveur démarré ;
+                                    --ban = bannir aussi). SteamID64 uniquement.
+
+Commandes agissant sur un COMPTE (le pseudo de connexion) :
   remove-account <pseudo|steamID64> [...] [--dry-run]
                                     Supprimer des comptes (serveur arrêté requis)
-  rename <ancien> <nouveau> [--dry-run]
+  rename-account <ancien> <nouveau> [--dry-run]
                                     Renommer un compte (serveur arrêté requis)
   resetpassword <username>          Reset le mot de passe d'un joueur
   purge [delay] [--delete]          Lister/supprimer les comptes inactifs
@@ -506,26 +537,26 @@ Commandes:
 Exemples:
   $0 list
   $0 add "76561198012345678" "PlayerName"
-  $0 remove "PlayerName"
   $0 remove "76561198012345678" --ban
   $0 remove-account "PlayerName" --dry-run
-  $0 rename "AncienPseudo" "NouveauPseudo"
+  $0 rename-account "AncienPseudo" "NouveauPseudo"
   $0 resetpassword "PlayerName"
   $0 purge                          # Inactifs depuis ${WHITELIST_PURGE_DAYS}j (défaut)
   $0 purge 3m --delete              # Supprime après confirmation
 
 Notes:
   - Serveur en Open=false : seuls les SteamID autorisés peuvent se connecter.
+  - Un SteamID peut porter 2 comptes : c'est pourquoi remove (SteamID) et
+    remove-account (un compte) sont deux commandes différentes. remove refuse un
+    pseudo, sinon « remove <pseudo> » couperait aussi l'autre compte sans le dire.
   - Le joueur choisit lui-même son mot de passe à la première connexion.
   - add/remove pilotent la console du serveur -> le serveur doit être démarré.
   - Steam ID 64 (17 chiffres, ex: 76561198012345678) via https://steamid.xyz/
   - --ban ajoute un bannissement définitif (banid) : retour impossible même renommé.
   - Délai purge: Xm (mois) ou Xj (jours) ; purge exclut toujours 'admin'.
-  - remove retire le SteamID -> TOUS les comptes de ce SteamID tombent.
-    Pour n'en retirer qu'un seul (SteamID partagé), utiliser remove-account.
-  - remove-account/rename/purge --delete écrivent en base -> serveur arrêté.
+  - remove-account/rename-account/purge --delete écrivent en base -> serveur arrêté.
     Les personnages sont conservés ; remove-account retire les SteamID devenus
-    orphelins. Le compte 'admin' est protégé des deux.
+    orphelins. Le compte 'admin' est protégé.
 HELPEOF
 }
 
@@ -550,7 +581,7 @@ main() {
             check_database
             remove_accounts "${@:2}"
             ;;
-        rename)
+        rename-account)
             check_database
             rename_account "${@:2}"
             ;;
