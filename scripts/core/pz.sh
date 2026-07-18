@@ -141,12 +141,12 @@ warn_players() {
         sleep "$secs"
     done
 
-    # Final message: depends on action type
+    # Message final : le motif a déjà été donné sur le premier avertissement
+    # (avec @here), on ne le répète pas ici — juste le marqueur « ça part ».
     if [[ "$IS_MAINTENANCE" == true ]]; then
         send_msg "DÉBUT MAINTENANCE"
     else
-        local context_msg=$(format_context "$display_action")
-        send_msg "$context_msg"
+        send_msg "$display_action"
     fi
     sleep 5
 }
