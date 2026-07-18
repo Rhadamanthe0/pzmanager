@@ -48,7 +48,20 @@ if [[ ${#backup_dirs[@]} -eq 0 ]]; then
     exit 1
 fi
 
-rsync "${rsync_opts[@]}" --relative "${backup_dirs[@]}" "${BACKUP_PATH}"
+rsync_status=0
+rsync "${rsync_opts[@]}" --relative "${backup_dirs[@]}" "${BACKUP_PATH}" || rsync_status=$?
+
+# On sauvegarde un monde VIVANT : PZ écrit/consolide ses chunks de carte en
+# continu, donc un fichier listé par rsync peut disparaître avant d'être copié.
+# rsync le signale par le code 24 (fichiers disparus) ou 23 (transfert partiel,
+# ex. « open .../map/NN/NNN.bin: No such file or directory »). Ces deux cas sont
+# bénins : le snapshot reste un incrément valide et le run horaire suivant
+# recopiera le chunk manquant. Seul un autre code est une vraie erreur.
+if (( rsync_status == 23 || rsync_status == 24 )); then
+    echo "Warning: rsync a ignoré des fichiers disparus pendant la copie (code ${rsync_status}) — normal sur un monde en cours, snapshot conservé."
+elif (( rsync_status != 0 )); then
+    die "rsync a échoué (code ${rsync_status})."
+fi
 
 rm -rf "${BACKUP_LATEST_LINK}"
 ln -s "${BACKUP_PATH}" "${BACKUP_LATEST_LINK}"
