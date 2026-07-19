@@ -1197,13 +1197,13 @@ def _status(s):
     if total and avail_mb < 600:
         alerts.append(f"🔴 RAM système dispo {avail_mb/1024:.1f} Go — risque d'OOM-kill OS")
         crit = True
-    elif total and avail_mb < 1200:
-        alerts.append(f"🟠 RAM système dispo {avail_mb/1024:.1f} Go — marge basse")
+    elif total and (1 - avail / total) * 100 >= 90:
+        alerts.append(f"🟠 RAM système util {(1 - avail / total) * 100:.0f}% — marge basse")
         warn = True
     if s["pswap_kb"]:
         alerts.append(f"🟠 Le process a swappé ({s['pswap_kb']/1024:.0f} Mo) — anormal (MemorySwapMax=0)")
         warn = True
-    if gc and gc[4] and gc[4] > 8:
+    if gc and gc[4] and gc[4] > 10:
         alerts.append(f"🟠 Pause GC majeure longue ({gc[4]:.1f}s)")
         warn = True
     cpu_t = s["temps"].get("cpu")
@@ -1244,16 +1244,13 @@ def _monitoring_embed(s: dict) -> discord.Embed:
                    if players is not None else "")
     embed.add_field(
         name="Serveur",
-        value=f"{state}{players_txt} · uptime **{_fmt_dur(s['uptime'])}**"
-              + (f" · pid `{s['pid']}`" if s["pid"] else ""),
+        value=f"{state}{players_txt} · uptime **{_fmt_dur(s['uptime'])}**",
         inline=False)
 
     # Heap Java (le nerf de la guerre : OOM = heap plein de cellules vivantes)
     if gc:
-        used_mb, pct, maj_pct = gc[0], gc[1], gc[2]
+        used_mb, pct = gc[0], gc[1]
         heap_line = f"**{used_mb} Mo / {xmx} Go** — {pct}% de Xmx"
-        if maj_pct is not None:
-            heap_line += f"\nPlancher live-set (dern. majeure) : **{maj_pct}%** · seuil restart {HEAP_RESTART_PERCENT}%"
     else:
         heap_line = "—"
     embed.add_field(name="🧠 Heap Java", value=heap_line, inline=False)
@@ -1305,7 +1302,9 @@ def _monitoring_embed(s: dict) -> discord.Embed:
         disk_line = f"libre **{s['disk'].free / 1e9:.0f} Go** ({free_pct:.0f}%)"
     else:
         disk_line = "—"
-    if gc and gc[2] is not None:
+    # Détail de la dernière collecte majeure : uniquement en cas d'alerte
+    # (info de diagnostic, inutile quand tout est vert).
+    if alerts and gc and gc[2] is not None:
         disk_line += f"\n♻️ dern. majeure {gc[2]}% en {gc[4]:.1f}s" if gc[4] else f"\n♻️ dern. majeure {gc[2]}%"
     embed.add_field(name="🗄️ Disque (monde)", value=disk_line, inline=True)
 
