@@ -60,6 +60,18 @@ send_discord() {
     "${SCRIPT_DIR}/../internal/sendDiscord.sh" "$1"
 }
 
+# Verrou d'opération stop/restart : interdit deux arrêts/redémarrages simultanés.
+# C'est le garde-fou contre l'incident du 2026-07-20 (un 2e `pzm server restart`
+# lancé pendant le 1er -> `quit` en plein chargement de map -> crash-loop B42).
+# flock est lié au fd 201 : le verrou est libéré automatiquement à la mort du
+# process (pas de verrou fantôme, contrairement à un lock basé sur l'mtime).
+# Tenu pour TOUTE la durée de pz.sh (préavis + arrêt + backup + démarrage).
+readonly SERVERCTL_LOCK_FILE="/tmp/pzmanager-serverctl-$(id -un).lock"
+acquire_serverctl_lock_or_die() {
+    exec 201>"$SERVERCTL_LOCK_FILE"
+    flock -n 201 || die "Un arrêt/redémarrage est déjà en cours. Attends qu'il se termine (le serveur doit être « en ligne » avant toute nouvelle action)."
+}
+
 # Nombre de joueurs actuellement connectés (0 si serveur arrêté / indéterminé).
 count_connected_players() {
     server_is_active || { echo 0; return; }
@@ -155,6 +167,14 @@ shutdown_server() {
     local action="$1"
     try_acquire_maintenance_lock || true
 
+    # Ne jamais agir sur un serveur qui charge encore la map : un `quit`/stop
+    # pendant le boot fait planter B42 (NPE IsoMetaGrid.save, grid=null) ->
+    # crash-loop. On attend la fin du boot courant AVANT préavis, comptage et
+    # arrêt. Cas normal (serveur déjà prêt) : retour immédiat.
+    if server_is_active && ! wait_for_server_ready; then
+        log "AVERTISSEMENT : fin de boot non signalée (timeout) ; on poursuit l'arrêt (systemd récupérera un boot bloqué)."
+    fi
+
     # Délai automatique selon le nombre de joueurs connectés
     if [[ "$DELAY" == "auto" ]]; then
         local players; players="$(count_connected_players)"
@@ -192,11 +212,13 @@ do_start() {
 }
 
 do_stop() {
+    acquire_serverctl_lock_or_die
     shutdown_server "ARRÊT"
     echo "Terminé."
 }
 
 do_restart() {
+    acquire_serverctl_lock_or_die
     shutdown_server "REDÉMARRAGE"
     echo "Démarrage du service..."
     systemctl --user start "${PZ_SERVICE_NAME}"

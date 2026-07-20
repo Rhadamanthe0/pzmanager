@@ -12,10 +12,9 @@ source_env "${SCRIPT_DIR}/.."
 readonly SILENT_FLAG="${SCRIPT_DIR}/../../.silent_next_start"
 readonly NOTIFY_LOCK="/tmp/pzmanager-notify-ready-$(id -un).lock"
 readonly TIMEOUT=300
-# Marqueur de fin de boot. B42 n'imprime plus "*** SERVER STARTED ****"
-# (disparu vers la 42.x de juin 2026) ; "LuaNet: Initialization [DONE]" est la
-# dernière étape d'init émise à chaque démarrage (1 fois par boot).
-readonly READY_MARKER="LuaNet: Initialization [DONE]"
+# Marqueur de fin de boot : source unique dans common.sh (SERVER_READY_MARKER),
+# partagée avec wait_for_server_ready pour ne jamais diverger.
+readonly READY_MARKER="${SERVER_READY_MARKER}"
 
 # Check and consume silent flag
 if [[ -f "$SILENT_FLAG" ]]; then
