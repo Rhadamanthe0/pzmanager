@@ -116,17 +116,32 @@ wait_for_server_ready() {
     # historique (pas d'attente) plutôt que de bloquer ou de fausser la détection.
     (( since_epoch > 0 )) || return 0
 
-    local start elapsed=0
+    # Feedback : le chemin rapide (marqueur déjà présent) reste MUET. On n'affiche
+    # quelque chose que si on doit réellement patienter, pour qu'un stop/restart
+    # lancé pendant un boot n'ait plus l'air gelé (aucun message n'est envoyé aux
+    # joueurs tant que cette attente n'est pas finie -> sinon on croit à un bug).
+    local start elapsed=0 announced=false last_notice=0
     start="$(date +%s)"
     while (( elapsed < timeout )); do
         server_is_active || return 0
         if journalctl --user -u "${PZ_SERVICE_NAME}" --since "@${since_epoch}" \
             --no-pager 2>/dev/null | grep -qF "$SERVER_READY_MARKER"; then
+            $announced && echo "Boot du serveur terminé — poursuite de l'opération."
             return 0
+        fi
+        if ! $announced; then
+            echo "Le serveur est encore en train de booter (chargement de la map) ;"
+            echo "attente de la fin du boot avant d'agir (évite le crash-loop B42, max ${timeout}s)..."
+            announced=true
+            last_notice=$elapsed
+        elif (( elapsed - last_notice >= 15 )); then
+            echo "  ... toujours en attente de la fin du boot (${elapsed}s / ${timeout}s)"
+            last_notice=$elapsed
         fi
         sleep 3
         elapsed=$(( $(date +%s) - start ))
     done
+    echo "AVERTISSEMENT : fin de boot toujours non signalée après ${timeout}s." >&2
     return 1
 }
 
