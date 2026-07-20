@@ -11,7 +11,7 @@ Configuration lue depuis l'environnement (exporté par run-bot.sh via .env) :
   DISCORD_BOT_TOKEN          Token du bot Discord (obligatoire)
   DISCORD_BOT_GUILD_ID       ID du serveur Discord (sync instantané des commandes)
   DISCORD_BOT_CHANNEL_ID     ID(s) du/des salon(s) autorisé(s) (séparés par virgule)
-  DISCORD_BOT_ADMIN_ROLE_ID  ID du rôle autorisé à lancer des commandes
+  DISCORD_BOT_ADMIN_ROLE_ID  ID(s) du/des rôle(s) autorisé(s) (séparés par virgule)
   DISCORD_BOT_CMD_TIMEOUT    Timeout d'exécution d'une commande, secondes (défaut 2400)
   DISCORD_BOT_DEATH_CHANNEL_ID  Salon où notifier les morts de joueurs (optionnel)
   DISCORD_BOT_MONITORING_CHANNEL_ID  Salon de télémétrie périodique (optionnel)
@@ -44,7 +44,6 @@ from discord import app_commands
 
 TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
 GUILD_ID = os.environ.get("DISCORD_BOT_GUILD_ID", "").strip()
-ADMIN_ROLE_ID = os.environ.get("DISCORD_BOT_ADMIN_ROLE_ID", "").strip()
 CMD_TIMEOUT = int(os.environ.get("DISCORD_BOT_CMD_TIMEOUT", "2400") or "2400")
 PZ_MANAGER_DIR = os.environ.get("PZ_MANAGER_DIR", "").rstrip("/")
 PZM = f"{PZ_MANAGER_DIR}/pzm"
@@ -53,7 +52,12 @@ PZM = f"{PZ_MANAGER_DIR}/pzm"
 ALLOWED_CHANNELS = {
     int(c) for c in os.environ.get("DISCORD_BOT_CHANNEL_ID", "").replace(" ", "").split(",") if c
 }
-ROLE_ID = int(ADMIN_ROLE_ID) if ADMIN_ROLE_ID.isdigit() else None
+# Rôles autorisés (liste d'IDs séparés par des virgules — un membre en possédant
+# au moins un peut piloter le serveur).
+ROLE_IDS = {
+    int(r) for r in os.environ.get("DISCORD_BOT_ADMIN_ROLE_ID", "").replace(" ", "").split(",")
+    if r.isdigit()
+}
 
 # Limite d'un message Discord. Dès que la sortie ne tient pas dans un seul bloc
 # de code, on la joint en fichier plutôt que d'empiler plusieurs messages.
@@ -118,14 +122,14 @@ run_lock = asyncio.Lock()
 # --- Helpers -----------------------------------------------------------------
 
 def has_admin_role(user) -> bool:
-    """True si l'utilisateur (Member) possède le rôle admin configuré."""
+    """True si l'utilisateur (Member) possède au moins un rôle admin configuré."""
     roles = getattr(user, "roles", None)
-    return ROLE_ID is not None and bool(roles) and any(r.id == ROLE_ID for r in roles)
+    return bool(ROLE_IDS) and bool(roles) and any(r.id in ROLE_IDS for r in roles)
 
 
 def authz_error(interaction: discord.Interaction) -> str | None:
     """Retourne un message d'erreur si l'appelant n'est pas autorisé, sinon None."""
-    if not ALLOWED_CHANNELS or ROLE_ID is None:
+    if not ALLOWED_CHANNELS or not ROLE_IDS:
         return ("⚠️ Bot mal configuré : renseigne `DISCORD_BOT_CHANNEL_ID` et "
                 "`DISCORD_BOT_ADMIN_ROLE_ID` dans `scripts/.env`.")
     if interaction.channel_id not in ALLOWED_CHANNELS:
@@ -1366,8 +1370,8 @@ async def setup_hook():
 
 @bot.event
 async def on_ready():
-    log.info("Connecté en tant que %s | salons=%s role=%s",
-             bot.user, ALLOWED_CHANNELS or "AUCUN", ROLE_ID or "AUCUN")
+    log.info("Connecté en tant que %s | salons=%s roles=%s",
+             bot.user, ALLOWED_CHANNELS or "AUCUN", ROLE_IDS or "AUCUN")
 
 
 @bot.event
@@ -1375,7 +1379,7 @@ async def on_message(message: discord.Message):
     """Batch : un membre admin colle plusieurs `pzm …` dans un salon autorisé."""
     if message.author.bot or message.guild is None:
         return
-    if not ALLOWED_CHANNELS or ROLE_ID is None:
+    if not ALLOWED_CHANNELS or not ROLE_IDS:
         return
     if message.channel.id not in ALLOWED_CHANNELS:
         return
