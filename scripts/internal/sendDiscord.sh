@@ -27,11 +27,11 @@ fi
 # Utiliser jq si disponible (plus sûr), sinon curl avec échappement JSON manuel
 if command -v jq &> /dev/null; then
     jq -n --arg content "$message" '{content: $content}' | \
-        curl -s -H "Content-Type: application/json" -d @- "${DISCORD_WEBHOOK}" > /dev/null 2>&1 || true
+        curl -s --connect-timeout 5 --max-time 10 -H "Content-Type: application/json" -d @- "${DISCORD_WEBHOOK}" > /dev/null 2>&1 || true
 else
     # Échapper pour JSON: \ -> \\, " -> \", tab -> \t
     escaped_message=$(echo "$message" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g')
-    curl -s -H "Content-Type: application/json" \
+    curl -s --connect-timeout 5 --max-time 10 -H "Content-Type: application/json" \
          -d "{\"content\": \"$escaped_message\"}" \
          "${DISCORD_WEBHOOK}" > /dev/null 2>&1 || true
 fi
