@@ -11,7 +11,7 @@
 #   wipeMapTile.sh <x> <y> [options]                # une seule tuile (son chunk)
 #   wipeMapTile.sh <x1> <y1> <x2> <y2> [options]    # rectangle de tuiles
 #
-# Le wipe efface le terrain (chunks 10x10) ET le niveau cellule (300x300) :
+# Le wipe efface le terrain (chunks 8x8) ET le niveau cellule (256x256) :
 # chunkdata + metagrid (definitions de pieces) + zpop (zombies) + apop
 # (animaux). Necessaire des qu'un mod change des batiments/pieces (sinon les
 # pieces restent desynchro).
@@ -20,17 +20,21 @@
 #   --save <nom>   Nom de la sauvegarde MP (defaut: auto-detection)
 #   -h|--help
 #
-# NB: le niveau cellule porte sur toute la cellule 300x300, pas seulement la
+# NB: le niveau cellule porte sur toute la cellule 256x256, pas seulement la
 #     zone de tuiles demandee.
 #
 # Format de sauvegarde Build 42 (verifie sur ce serveur) :
-#   map/<cx>/<cy>.bin                      terrain,   par CHUNK  (10 tuiles)
-#   isoregiondata/datachunk_<cx>_<cy>.bin  isoregion, par CHUNK  (10 tuiles)
-#   chunkdata/chunkdata_<Cx>_<Cy>.bin      metadata,  par CELLULE (300 tuiles)
+#   map/<cx>/<cy>.bin                      terrain,   par CHUNK  (8 tuiles)
+#   isoregiondata/datachunk_<cx>_<cy>.bin  isoregion, par CHUNK  (8 tuiles)
+#   chunkdata/chunkdata_<Cx>_<Cy>.bin      metadata,  par CELLULE (256 tuiles)
 #   zpop/zpop_<Cx>_<Cy>.bin                pop zombie, par CELLULE
 #   apop/apop_<Cx>_<Cy>.bin                pop animale, par CELLULE
 #   metagrid/metacell_<Cx>_<Cy>.bin        metagrid,  par CELLULE
-#   ou  cx = tuileX / 10   et   Cx = tuileX / 300
+#   ou  cx = tuileX / 8   et   Cx = tuileX / 256
+#
+# ATTENTION Build 42 : une cellule = 256 tuiles (PAS 300 comme en B41) et un
+# chunk = 8 tuiles (PAS 10). Verifie via les .lotheader (8x8 par cellule, idem
+# Muldraugh vanilla B42.19) et la position des chunks regeneres cote save.
 #
 # Suppression IMMEDIATE (pas de dry-run). Securite : refuse de tourner si le
 # serveur est actif ; snapshot de chaque fichier supprime dans
@@ -43,8 +47,8 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
 source_env "${SCRIPT_DIR}/.."
 
-readonly CHUNK_SIZE=10
-readonly CELL_SIZE=300
+readonly CHUNK_SIZE=8
+readonly CELL_SIZE=256
 
 usage() {
     # Imprime le bandeau d'en-tete : tout ce qui est entre le shebang et le
@@ -133,8 +137,8 @@ n_chunks=$(( (CX2 - CX1 + 1) * (CY2 - CY1 + 1) ))
 echo "=== Wipe de zone carte ==="
 echo "Sauvegarde   : $SAVE_NAME"
 echo "Tuiles       : ($X1,$Y1) -> ($X2,$Y2)"
-echo "Chunks       : X ${CX1}..${CX2}, Y ${CY1}..${CY2}  (${n_chunks} chunk(s) 10x10)"
-echo "Cellules     : X ${CELL_X1}..${CELL_X2}, Y ${CELL_Y1}..${CELL_Y2}  (niveau 300x300, chunkdata/metagrid/zpop/apop)"
+echo "Chunks       : X ${CX1}..${CX2}, Y ${CY1}..${CY2}  (${n_chunks} chunk(s) 8x8)"
+echo "Cellules     : X ${CELL_X1}..${CELL_X2}, Y ${CELL_Y1}..${CELL_Y2}  (niveau 256x256, chunkdata/metagrid/zpop/apop)"
 echo "Fichiers existants a supprimer : ${#targets[@]}"
 printf '  %s\n' "${targets[@]:0:20}"
 (( ${#targets[@]} > 20 )) && echo "  ... (+$(( ${#targets[@]} - 20 )) autres)"
