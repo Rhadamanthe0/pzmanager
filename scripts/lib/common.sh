@@ -116,6 +116,19 @@ wait_for_server_ready() {
     # historique (pas d'attente) plutôt que de bloquer ou de fausser la détection.
     (( since_epoch > 0 )) || return 0
 
+    # Robustesse (bug 2026-07-20 : boucle de 300s sur un serveur POURTANT prêt).
+    # Le marqueur ne sert qu'à distinguer un boot EN COURS d'un serveur prêt, ce qui
+    # n'a d'intérêt que dans les premières minutes après un démarrage. Si le service
+    # est actif depuis plus longtemps qu'un boot (BOOT_GRACE), il est FORCÉMENT
+    # booté -> on rend la main sans scanner le journal. Raison : sur un long uptime,
+    # scanner tout le journal depuis ActiveEnterTimestamp (des heures, des dizaines de
+    # milliers de lignes, ~Go) est lourd et s'est révélé non fiable sous pression
+    # mémoire (journalctl renvoyait vide -> marqueur jamais vu -> boucle 300s muette,
+    # aucun message envoyé). On ne garde le scan (fenêtre alors petite) que pendant la
+    # fenêtre de boot, seul moment où un `quit` prématuré fait planter B42.
+    local BOOT_GRACE=240
+    (( $(date +%s) - since_epoch > BOOT_GRACE )) && return 0
+
     # Feedback : le chemin rapide (marqueur déjà présent) reste MUET. On n'affiche
     # quelque chose que si on doit réellement patienter, pour qu'un stop/restart
     # lancé pendant un boot n'ait plus l'air gelé (aucun message n'est envoyé aux
@@ -124,8 +137,16 @@ wait_for_server_ready() {
     start="$(date +%s)"
     while (( elapsed < timeout )); do
         server_is_active || return 0
-        if journalctl --user -u "${PZ_SERVICE_NAME}" --since "@${since_epoch}" \
-            --no-pager 2>/dev/null | grep -qF "$SERVER_READY_MARKER"; then
+        # Défensif : on COMPTE (grep -cF) au lieu de `grep -qF`. grep -q sort à la 1re
+        # occurrence -> SIGPIPE possible vers journalctl ; sous `set -o pipefail` (actif
+        # dans pz.sh) ce 141 pourrait fausser le `if`. grep -cF lit tout le flux (pas de
+        # SIGPIPE) ; `|| true` absorbe le retour 1 quand il n'y a aucune occurrence.
+        # NB : la VRAIE cause du blocage 300s du 2026-07-20 était le scan géant du
+        # journal sur long uptime (corrigé par BOOT_GRACE ci-dessus), pas ce point.
+        local hits
+        hits="$(journalctl --user -u "${PZ_SERVICE_NAME}" --since "@${since_epoch}" \
+            --no-pager 2>/dev/null | grep -cF "$SERVER_READY_MARKER" || true)"
+        if (( hits > 0 )); then
             $announced && echo "Boot du serveur terminé — poursuite de l'opération."
             return 0
         fi
