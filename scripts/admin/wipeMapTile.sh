@@ -11,13 +11,12 @@
 #   wipeMapTile.sh <x> <y> [options]                # une seule tuile (son chunk)
 #   wipeMapTile.sh <x1> <y1> <x2> <y2> [options]    # rectangle de tuiles
 #
+# Le wipe efface le terrain (chunks 10x10) ET le niveau cellule (300x300) :
+# chunkdata + metagrid (definitions de pieces) + zpop (zombies) + apop
+# (animaux). Necessaire des qu'un mod change des batiments/pieces (sinon les
+# pieces restent desynchro).
+#
 # Options:
-#   --no-cell      NE PAS toucher au niveau cellule (300x300). Par defaut le wipe
-#                  efface AUSSI chunkdata + metagrid (definitions de pieces) +
-#                  zpop (zombies) + apop (animaux), car un mod qui change des
-#                  batiments/pieces laisse sinon les pieces desynchro. --no-cell
-#                  limite au terrain (chunks 10x10) pour un simple retouche sol.
-#                  (--cell reste accepte pour compat, c'est deja le defaut.)
 #   --save <nom>   Nom de la sauvegarde MP (defaut: auto-detection)
 #   -h|--help
 #
@@ -56,14 +55,11 @@ usage() {
 }
 
 # --- Parse des arguments -----------------------------------------------------
-WIPE_CELL=true        # niveau cellule efface par defaut (voir en-tete)
 SAVE_NAME=""
 COORDS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --no-cell) WIPE_CELL=false; shift ;;
-        --cell)   WIPE_CELL=true; shift ;;   # defaut, garde pour compat
         --save)   SAVE_NAME="${2:-}"; shift 2 ;;
         -h|--help) usage 0 ;;
         -*)       die "Option inconnue: $1" ;;
@@ -121,18 +117,16 @@ for (( cx=CX1; cx<=CX2; cx++ )); do
         [[ -f "${SAVE_DIR}/isoregiondata/datachunk_${cx}_${cy}.bin" ]] && targets+=("isoregiondata/datachunk_${cx}_${cy}.bin")
     done
 done
-if $WIPE_CELL; then
-    for (( cx=CELL_X1; cx<=CELL_X2; cx++ )); do
-        for (( cy=CELL_Y1; cy<=CELL_Y2; cy++ )); do
-            for f in "chunkdata/chunkdata_${cx}_${cy}.bin" \
-                     "zpop/zpop_${cx}_${cy}.bin" \
-                     "apop/apop_${cx}_${cy}.bin" \
-                     "metagrid/metacell_${cx}_${cy}.bin"; do
-                [[ -f "${SAVE_DIR}/${f}" ]] && targets+=("$f")
-            done
+for (( cx=CELL_X1; cx<=CELL_X2; cx++ )); do
+    for (( cy=CELL_Y1; cy<=CELL_Y2; cy++ )); do
+        for f in "chunkdata/chunkdata_${cx}_${cy}.bin" \
+                 "zpop/zpop_${cx}_${cy}.bin" \
+                 "apop/apop_${cx}_${cy}.bin" \
+                 "metagrid/metacell_${cx}_${cy}.bin"; do
+            [[ -f "${SAVE_DIR}/${f}" ]] && targets+=("$f")
         done
     done
-fi
+done
 
 # --- Rapport -----------------------------------------------------------------
 n_chunks=$(( (CX2 - CX1 + 1) * (CY2 - CY1 + 1) ))
@@ -140,11 +134,7 @@ echo "=== Wipe de zone carte ==="
 echo "Sauvegarde   : $SAVE_NAME"
 echo "Tuiles       : ($X1,$Y1) -> ($X2,$Y2)"
 echo "Chunks       : X ${CX1}..${CX2}, Y ${CY1}..${CY2}  (${n_chunks} chunk(s) 10x10)"
-if $WIPE_CELL; then
-    echo "Cellules     : X ${CELL_X1}..${CELL_X2}, Y ${CELL_Y1}..${CELL_Y2}  (niveau 300x300, chunkdata/metagrid/zpop/apop)"
-else
-    echo "Cellules     : ignorees (--no-cell : terrain seul)"
-fi
+echo "Cellules     : X ${CELL_X1}..${CELL_X2}, Y ${CELL_Y1}..${CELL_Y2}  (niveau 300x300, chunkdata/metagrid/zpop/apop)"
 echo "Fichiers existants a supprimer : ${#targets[@]}"
 printf '  %s\n' "${targets[@]:0:20}"
 (( ${#targets[@]} > 20 )) && echo "  ... (+$(( ${#targets[@]} - 20 )) autres)"
