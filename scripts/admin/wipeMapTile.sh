@@ -12,11 +12,17 @@
 #   wipeMapTile.sh <x1> <y1> <x2> <y2> [options]    # rectangle de tuiles
 #
 # Options:
-#   --cell         Effacer AUSSI les fichiers niveau cellule (300x300) : pop
-#                  zombies/animaux + metadonnees. ATTENTION : porte sur toute la
-#                  cellule, pas seulement la zone demandee.
+#   --no-cell      NE PAS toucher au niveau cellule (300x300). Par defaut le wipe
+#                  efface AUSSI chunkdata + metagrid (definitions de pieces) +
+#                  zpop (zombies) + apop (animaux), car un mod qui change des
+#                  batiments/pieces laisse sinon les pieces desynchro. --no-cell
+#                  limite au terrain (chunks 10x10) pour un simple retouche sol.
+#                  (--cell reste accepte pour compat, c'est deja le defaut.)
 #   --save <nom>   Nom de la sauvegarde MP (defaut: auto-detection)
 #   -h|--help
+#
+# NB: le niveau cellule porte sur toute la cellule 300x300, pas seulement la
+#     zone de tuiles demandee.
 #
 # Format de sauvegarde Build 42 (verifie sur ce serveur) :
 #   map/<cx>/<cy>.bin                      terrain,   par CHUNK  (10 tuiles)
@@ -50,13 +56,14 @@ usage() {
 }
 
 # --- Parse des arguments -----------------------------------------------------
-WIPE_CELL=false
+WIPE_CELL=true        # niveau cellule efface par defaut (voir en-tete)
 SAVE_NAME=""
 COORDS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --cell)   WIPE_CELL=true; shift ;;
+        --no-cell) WIPE_CELL=false; shift ;;
+        --cell)   WIPE_CELL=true; shift ;;   # defaut, garde pour compat
         --save)   SAVE_NAME="${2:-}"; shift 2 ;;
         -h|--help) usage 0 ;;
         -*)       die "Option inconnue: $1" ;;
@@ -133,7 +140,11 @@ echo "=== Wipe de zone carte ==="
 echo "Sauvegarde   : $SAVE_NAME"
 echo "Tuiles       : ($X1,$Y1) -> ($X2,$Y2)"
 echo "Chunks       : X ${CX1}..${CX2}, Y ${CY1}..${CY2}  (${n_chunks} chunk(s) 10x10)"
-$WIPE_CELL && echo "Cellules     : X ${CELL_X1}..${CELL_X2}, Y ${CELL_Y1}..${CELL_Y2}  (niveau 300x300, --cell)"
+if $WIPE_CELL; then
+    echo "Cellules     : X ${CELL_X1}..${CELL_X2}, Y ${CELL_Y1}..${CELL_Y2}  (niveau 300x300, chunkdata/metagrid/zpop/apop)"
+else
+    echo "Cellules     : ignorees (--no-cell : terrain seul)"
+fi
 echo "Fichiers existants a supprimer : ${#targets[@]}"
 printf '  %s\n' "${targets[@]:0:20}"
 (( ${#targets[@]} > 20 )) && echo "  ... (+$(( ${#targets[@]} - 20 )) autres)"
