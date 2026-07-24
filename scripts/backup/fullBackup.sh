@@ -71,11 +71,23 @@ archive_game_data() {
 }
 
 cleanup_old_backups() {
-    log "Cleaning backups older than ${BACKUP_RETENTION_DAYS} days..."
+    # Rétention off-site par COMPTE (pas par jours) : ces backups sont des ZIP
+    # complets mirrorés par Syncthing vers le PC fixe. Chaque zip = ~monde complet,
+    # donc on en garde un petit nombre fixe. Le nom horodaté YYYY-MM-DD_HH-MM trie
+    # chronologiquement en lexicographique -> sort -r = du plus récent au plus vieux.
+    local keep="${OFFSITE_BACKUP_COUNT:-7}"
+    log "Nettoyage off-site : conservation des ${keep} derniers ZIP..."
 
     [[ -d "${SYNC_BACKUPS_DIR}" ]] || return 0
 
-    find "${SYNC_BACKUPS_DIR}" -mindepth 1 -maxdepth 1 -type d -name "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9]-[0-9][0-9]" -mtime "+${BACKUP_RETENTION_DAYS}" -print -exec rm -rf {} +
+    local dirs=()
+    mapfile -t dirs < <(find "${SYNC_BACKUPS_DIR}" -mindepth 1 -maxdepth 1 -type d -name "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9]-[0-9][0-9]" | sort -r)
+
+    local i
+    for (( i = keep; i < ${#dirs[@]}; i++ )); do
+        rm -rf -- "${dirs[i]}"
+        echo "  Supprimé (au-delà des ${keep}) : $(basename "${dirs[i]}")"
+    done
 }
 
 sync_files
