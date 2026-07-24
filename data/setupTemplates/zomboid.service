@@ -37,6 +37,12 @@ TimeoutStopSec=120
 # et aggrave la désync réseau. Heap borné côté JVM via Xmx (moitié RAM), ce qui
 # laisse la marge nécessaire pour tenir en RAM. Voir configurationInitiale.sh.
 MemorySwapMax=0
+# Priorise le jeu face aux tâches de fond (backup horaire, modcheck, maintenance) :
+# sous contention CPU, ce poids élevé (défaut=100 ; pz-backup=10) garantit que le
+# tick du serveur passe avant tout le reste. Pas de Nice négatif ici (interdit aux
+# services --user sans privilège, casserait le démarrage) — CPUWeight suffit et
+# s'applique via le contrôleur cpu délégué au user manager.
+CPUWeight=1000
 
 [Install]
 WantedBy=default.target

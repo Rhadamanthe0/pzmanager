@@ -8,3 +8,12 @@ TimeoutStartSec=300
 ExecStart=%h/pzmanager/scripts/backup/dataBackup.sh
 StandardOutput=journal
 StandardError=journal
+# Le backup horaire (rsync incrémental qui doit stat ~965k fichiers du monde) ne
+# doit jamais hoqueter le jeu. Le NVMe est en scheduler "none" et le contrôleur io
+# n'est pas délégué → ionice/IOWeight sont sans effet ici ; on bride donc le CPU,
+# ce qui étale aussi le burst d'I/O (un rsync bridé émet ses I/O plus lentement).
+# Nice=19 : priorité CPU la plus basse. CPUWeight=10 : ~1/100 de la part du jeu
+# (zomboid.service = 1000). CPUQuota=50% : plafond dur à une demi-cœur.
+Nice=19
+CPUWeight=10
+CPUQuota=50%
