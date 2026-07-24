@@ -4,7 +4,9 @@ After=zomboid.service
 
 [Service]
 Type=oneshot
-TimeoutStartSec=300
+# 20% de CPU ralentit le rsync ; on relève le timeout (défaut 300s trop court) pour
+# qu'un backup plus lent — ou avec retries (voir dataBackup.sh) — ne soit pas tué.
+TimeoutStartSec=600
 ExecStart=%h/pzmanager/scripts/backup/dataBackup.sh
 StandardOutput=journal
 StandardError=journal
@@ -13,7 +15,8 @@ StandardError=journal
 # n'est pas délégué → ionice/IOWeight sont sans effet ici ; on bride donc le CPU,
 # ce qui étale aussi le burst d'I/O (un rsync bridé émet ses I/O plus lentement).
 # Nice=19 : priorité CPU la plus basse. CPUWeight=10 : ~1/100 de la part du jeu
-# (zomboid.service = 1000). CPUQuota=50% : plafond dur à une demi-cœur.
+# (zomboid.service = 1000). CPUQuota=20% : plafond dur à un cinquième de cœur, le
+# burst métadonnées des hardlinks est ainsi étalé et invisible pour le tick du jeu.
 Nice=19
 CPUWeight=10
-CPUQuota=50%
+CPUQuota=20%

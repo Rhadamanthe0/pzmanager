@@ -66,11 +66,10 @@ stop_server() {
     "${SCRIPT_DIR}/../core/pz.sh" stop "$DELAY" --maintenance --reason "$MAINTENANCE_REASON" $automatic_opt $silent_opt
 }
 
-rotate_backups() {
-    log "Rotation des backups (${BACKUP_RETENTION_DAYS} jours)..."
-    [[ -d "${BACKUP_DIR}" ]] || return 0
-    find "${BACKUP_DIR}" -maxdepth 1 -type d -name "backup_*" -mtime "+${BACKUP_RETENTION_DAYS}" -exec rm -rf {} +
-}
+# NB : la rotation des backups locaux n'est plus faite ici. Elle est gérée par la
+# rétention GFS de dataBackup.sh (prune_gfs), rejouée à chaque backup horaire — y
+# compris celui de :14 qui suit cette maintenance. Roter ici avec un simple
+# -mtime +N supprimerait à tort la tranche journalière longue conservée par le GFS.
 
 update_system() {
     log "Mise à jour système..."
@@ -163,7 +162,6 @@ main() {
     # ExecStartPre de zomboid.service, donc rejouée à chaque démarrage (dont
     # celui qui suit cette maintenance), toujours monde fermé.
     stop_server
-    rotate_backups
     update_system
     update_game_server
     download_workshop_mods
