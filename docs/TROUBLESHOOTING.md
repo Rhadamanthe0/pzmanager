@@ -239,11 +239,11 @@ pzm server restart 2m
 **When to use**: System crash, server migration, complete reconfiguration.
 
 ```bash
-# List complete backups
+# List complete backups (one ZIP per backup)
 ls -lt ~/pzmanager/data/fullBackups/
 
-# Restore everything
-sudo ./scripts/install/configurationInitiale.sh restore ~/pzmanager/data/fullBackups/2026-01-11_04-30
+# Restore everything (pass the .zip; older dir-format backups still work too)
+sudo ./scripts/install/configurationInitiale.sh restore ~/pzmanager/data/fullBackups/2026-01-11_04-30.zip
 ```
 
 **Restores**: Sudoers, SSH, systemd services/timers, scripts, .env, Zomboid data.

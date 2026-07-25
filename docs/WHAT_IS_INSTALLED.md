@@ -520,8 +520,8 @@ warning countdown).
 │   │   ├── backup_2026-01-12_15h14m00s/
 │   │   └── latest -> backup_2026-01-12_15h14m00s  (symlink)
 │   │
-│   ├── fullBackups/                  # Timestamped complete backups
-│   │   └── 2026-01-12_04-30/
+│   ├── fullBackups/                  # Off-site: one self-contained ZIP per backup
+│   │   └── 2026-01-12_04-30.zip       # config/ (ssh, systemd, scripts+.env, sudoers) + zomboid/ (Saves/db/Server)
 │   │
 │   └── versionning/                  # Installed versions history
 │       └── pz_version_*.txt
@@ -552,7 +552,7 @@ warning countdown).
 **Typical usage after 1 month**:
 - Server data: 500MB - 5GB
 - Hourly backups: 5-15GB (GFS retention, hardlink-deduped)
-- Complete backups: 5-10GB per backup
+- Off-site ZIPs: ~0.5-5GB each (one world + config, compressed; excludes the re-downloadable game install/mods)
 - Logs: 100-500MB
 
 **Recommended total**: 50-100GB free disk

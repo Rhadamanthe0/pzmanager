@@ -138,10 +138,24 @@ restore_sudoers() {
 }
 
 restore_zomboid_data() {
-    local backup_path="$1"
-    local zip_file="$backup_path$PZ_HOME/Zomboid_Latest_Full.zip"
+    # $1 = racine de config du backup ; $2 (optionnel) = dossier des données de jeu
+    # déjà extraites (nouveau format ZIP : zomboid/ = Saves/db/Server). Si $2 est
+    # vide, on retombe sur l'ancien format (zip interne Zomboid_Latest_Full.zip).
+    local cfg_root="$1" game_root="${2:-}"
+    local src=""
 
-    [[ -f "$zip_file" ]] || return 0
+    if [[ -n "$game_root" && -d "$game_root" ]]; then
+        src="$game_root"
+    else
+        local zip_file="$cfg_root$PZ_HOME/Zomboid_Latest_Full.zip"
+        [[ -f "$zip_file" ]] || return 0
+        mkdir -p "$BACKUP_DIR"
+        unzip -o -q "$zip_file" -d "$BACKUP_DIR/"
+        [[ -d "$BACKUP_DIR/latest" ]] && src="$BACKUP_DIR/latest"
+        chown -R "$PZ_USER:$PZ_USER" "$BACKUP_DIR"
+    fi
+
+    [[ -n "$src" && -d "$src" ]] || return 0
 
     if [[ -d "$PZ_SOURCE_DIR" ]]; then
         echo ""
@@ -154,24 +168,31 @@ restore_zomboid_data() {
     fi
 
     echo "Restauration des données Zomboid..."
-    mkdir -p "$BACKUP_DIR"
-    unzip -o -q "$zip_file" -d "$BACKUP_DIR/"
-
-    if [[ -d "$BACKUP_DIR/latest" ]]; then
-        mkdir -p "$PZ_SOURCE_DIR"
-        rsync -a "$BACKUP_DIR/latest/" "$PZ_SOURCE_DIR/"
-        echo "Données Zomboid restaurées vers $PZ_SOURCE_DIR"
-    fi
-
-    chown -R "$PZ_USER:$PZ_USER" "$BACKUP_DIR"
+    mkdir -p "$PZ_SOURCE_DIR"
+    rsync -a "$src/" "$PZ_SOURCE_DIR/"
     chown -R "$PZ_USER:$PZ_USER" "$PZ_SOURCE_DIR"
+    echo "Données Zomboid restaurées vers $PZ_SOURCE_DIR"
 }
 
 restore_backup() {
     local backup_path="${1:-}"
+    local cfg_root game_root="" tmp_extract=""
 
-    if [[ ! -d "$backup_path" ]]; then
-        echo "Usage: $0 restore ${SYNC_BACKUPS_DIR}/YYYY-MM-DD_HH-MM [--force]"
+    if [[ -f "$backup_path" && "$backup_path" == *.zip ]]; then
+        # Nouveau format : UN seul ZIP (config/ + zomboid/). On l'extrait dans un
+        # temp, puis on rejoue la restauration sur cette arborescence.
+        command -v unzip &>/dev/null || die "unzip non installé (nécessaire pour restaurer un ZIP)."
+        tmp_extract="$(mktemp -d)"
+        trap 'rm -rf "$tmp_extract" 2>/dev/null || true' RETURN
+        echo "Extraction de l'archive : $backup_path ..."
+        unzip -o -q "$backup_path" -d "$tmp_extract"
+        cfg_root="$tmp_extract/config"
+        [[ -d "$tmp_extract/zomboid" ]] && game_root="$tmp_extract/zomboid"
+    elif [[ -d "$backup_path" ]]; then
+        # Ancien format : dossier fullBackups/<ts>/ (config en vrac + zip interne).
+        cfg_root="$backup_path"
+    else
+        echo "Usage: $0 restore ${SYNC_BACKUPS_DIR}/YYYY-MM-DD_HH-MM.zip [--force]"
         echo -e "\nSauvegardes disponibles :"
         ls -1t "$SYNC_BACKUPS_DIR" 2>/dev/null || echo "Aucune"
         exit 1
@@ -179,18 +200,18 @@ restore_backup() {
 
     echo "=== Restauration : $backup_path ==="
 
-    restore_directory "$backup_path$PZ_HOME/.ssh" "$PZ_HOME/.ssh" "$PZ_USER"
+    restore_directory "$cfg_root$PZ_HOME/.ssh" "$PZ_HOME/.ssh" "$PZ_USER"
 
     if [[ -d "$PZ_HOME/.ssh" ]]; then
         chmod 700 "$PZ_HOME/.ssh"
         chmod 600 "$PZ_HOME/.ssh"/* 2>/dev/null || true
     fi
 
-    restore_directory "$backup_path$PZ_HOME/.config/systemd/user" "$PZ_HOME/.config/systemd/user" "$PZ_USER"
+    restore_directory "$cfg_root$PZ_HOME/.config/systemd/user" "$PZ_HOME/.config/systemd/user" "$PZ_USER"
     chown -R "$PZ_USER:$PZ_USER" "$PZ_HOME/.config"
-    restore_scripts "$backup_path$PZ_HOME/pzmanager" "$PZ_HOME/pzmanager" "$PZ_USER"
-    restore_sudoers "$backup_path"
-    restore_zomboid_data "$backup_path"
+    restore_scripts "$cfg_root$PZ_HOME/pzmanager" "$PZ_HOME/pzmanager" "$PZ_USER"
+    restore_sudoers "$cfg_root"
+    restore_zomboid_data "$cfg_root" "$game_root"
 
     local runtime_dir
     runtime_dir="$(ensure_runtime_dir)"
