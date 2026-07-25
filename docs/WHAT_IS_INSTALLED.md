@@ -387,8 +387,8 @@ RestartSec=5
 **Schedule**: Every hour at :14
 
 **Function**:
-- Incremental backup with hard links
-- Retention: 14 days (configurable via `.env`)
+- Incremental backup with hard links (CPU-throttled 20%, single-instance `flock`)
+- Retention: GFS — 24h hourly / 1-per-6h 7d / 1-per-day 30d (`BACKUP_GFS_*`)
 - Destination: `/home/pzuser/pzmanager/data/dataBackups/`
 
 #### pz-heapcheck.timer - Adaptive memory restart (every ~3 min)
@@ -413,7 +413,7 @@ warning countdown).
 
 **Steps**:
 1. Server shutdown with warnings (30min default)
-2. Backup rotation (deletion > 14 days)
+2. Off-site sync (`fullBackup.sh` → Syncthing; local retention is handled hourly by the GFS prune, not here)
 3. System update (`apt upgrade`)
 4. Java update
 5. PZ server update (SteamCMD)
@@ -515,7 +515,7 @@ warning countdown).
 │   │   ├── natives/
 │   │   └── jre64/                     # Embedded JRE (managed by SteamCMD)
 │   │
-│   ├── dataBackups/                  # Hourly backups (14-day retention)
+│   ├── dataBackups/                  # Hourly snapshots (GFS retention: 24h/7d@6h/30d)
 │   │   ├── backup_2026-01-12_14h14m00s/
 │   │   ├── backup_2026-01-12_15h14m00s/
 │   │   └── latest -> backup_2026-01-12_15h14m00s  (symlink)
@@ -551,7 +551,7 @@ warning countdown).
 
 **Typical usage after 1 month**:
 - Server data: 500MB - 5GB
-- Hourly backups: 5-15GB (14 days)
+- Hourly backups: 5-15GB (GFS retention, hardlink-deduped)
 - Complete backups: 5-10GB per backup
 - Logs: 100-500MB
 
