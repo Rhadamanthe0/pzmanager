@@ -116,6 +116,7 @@ export BACKUP_RETENTION_DAYS=14
 export BACKUP_GFS_HOURLY_HOURS=24
 export BACKUP_GFS_SIXHOURLY_DAYS=7
 export BACKUP_GFS_DAILY_DAYS=30
+export BACKUP_PRUNE_MAX_DELETE=15
 ```
 
 Local hourly snapshots use **GFS retention** (`prune_gfs` in `dataBackup.sh`), not a flat N-day rotation:
@@ -123,6 +124,7 @@ Local hourly snapshots use **GFS retention** (`prune_gfs` in `dataBackup.sh`), n
 - **BACKUP_GFS_HOURLY_HOURS**: keep every hourly snapshot for this many hours (default 24)
 - **BACKUP_GFS_SIXHOURLY_DAYS**: then keep 1 per 6h up to this many days (default 7)
 - **BACKUP_GFS_DAILY_DAYS**: then keep 1 per day up to this many days (default 30); older is deleted
+- **BACKUP_PRUNE_MAX_DELETE**: max snapshots deleted per run (default 15; 0 = unlimited). Deleting a hardlinked snapshot is hundreds of thousands of `unlink()`, slow under the unit's 20% CPU cap — bounding it per run lets a large backlog drain over several hourly runs without exceeding `TimeoutStartSec` (2400s). The run is also single-instance (`flock`), so a long prune never overlaps the next hourly trigger.
 
 `BACKUP_PRUNE_DRY_RUN=1 scripts/backup/dataBackup.sh` previews what would be pruned without deleting. `BACKUP_RETENTION_DAYS` is now legacy (kept for reference; the GFS variables above drive local retention).
 
@@ -255,16 +257,17 @@ sudo ./scripts/install/configurationInitiale.sh restore ~/pzmanager/data/fullBac
 nano ~/pzmanager/scripts/.env
 
 # Modify
-export BACKUP_RETENTION_DAYS=7     # 7 days instead of the default 14
-export LOG_RETENTION_DAYS=14        # Logs 14 days
+export BACKUP_GFS_DAILY_DAYS=14     # shorter daily GFS tier (default 30)
+export OFFSITE_BACKUP_COUNT=3        # fewer off-site ZIPs (default 7)
+export LOG_RETENTION_DAYS=14         # Logs 14 days
 ```
 
-**Disk space estimate**:
+**Disk space estimate** (hardlinked snapshots share unchanged files, so only changed data costs space):
 - Small server (1-2 players): ~500MB per backup
 - Medium server (5-10 players): ~1GB per backup
 - Large server (20+ players): ~2GB+ per backup
 
-With 14-day retention and hourly backups: ~15-30GB
+With GFS retention (~62→82 snapshots) and hardlink dedup: the tree is far smaller than a naive count × size — dominated by the churn between snapshots.
 
 ## Discord Integration
 

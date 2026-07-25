@@ -205,7 +205,7 @@ ls -la ~/pzmanager/data/dataBackups/
 du -sh ~/pzmanager/data/dataBackups/*
 ```
 
-If too large, reduce BACKUP_RETENTION_DAYS in .env.
+If too large, shorten the GFS daily tier (`BACKUP_GFS_DAILY_DAYS`, default 30) or the off-site ZIP count (`OFFSITE_BACKUP_COUNT`, default 7) in `.env`.
 
 ## Restore Zomboid Data
 
@@ -321,9 +321,10 @@ du -sh ~/pzmanager/data/*
 rm -rf ~/pzmanager/data/dataBackups/backup_YYYY-MM-DD*
 rm -rf ~/pzmanager/data/fullBackups/YYYY-MM-DD*
 
-# Or reduce retention
+# Or reduce retention (GFS tiers + off-site count)
 nano scripts/.env
-# Modify: BACKUP_RETENTION_DAYS=7
+# Modify: BACKUP_GFS_DAILY_DAYS=14   (shorter daily tier)
+#         OFFSITE_BACKUP_COUNT=3     (fewer off-site ZIPs)
 ```
 
 ### Clean Logs
