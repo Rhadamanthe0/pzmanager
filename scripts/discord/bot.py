@@ -1269,8 +1269,6 @@ def _monitoring_embed(s: dict) -> discord.Embed:
     avail = mem.get("MemAvailable", 0)
     used_pct = (1 - avail / total) * 100 if total else 0
     cached = (mem.get("Buffers", 0) + mem.get("Cached", 0)) / 1048576
-    shmem = mem.get("Shmem", 0) / 1048576
-    sswap = (mem.get("SwapTotal", 0) - mem.get("SwapFree", 0)) / 1024   # Mo
     xmx = _xmx_gb()
     gc = s["gc"]
 
@@ -1286,30 +1284,32 @@ def _monitoring_embed(s: dict) -> discord.Embed:
         value=f"{state}{players_txt} · uptime **{_fmt_dur(s['uptime'])}**",
         inline=False)
 
-    # Heap Java (le nerf de la guerre : OOM = heap plein de cellules vivantes)
+    # Mémoire du jeu (heap) : le nerf de la guerre — c'est ce qui se remplit à
+    # mesure que la carte est explorée et déclenche le restart auto quand c'est plein.
     if gc:
-        used_mb, pct = gc[0], gc[1]
-        heap_line = f"**{used_mb} Mo / {xmx} Go** — {pct}% de Xmx"
+        used_g, pct = gc[0] / 1024, gc[1]
+        heap_line = f"**{used_g:.1f} / {xmx} Go**  `{_bar(pct)}`  **{pct}%**"
     else:
         heap_line = "—"
-    embed.add_field(name="🧠 Heap Java", value=heap_line, inline=False)
+    embed.add_field(name="🧠 Mémoire du jeu (heap)", value=heap_line, inline=False)
 
-    # Process JVM : RSS = heap résident + natif hors-heap
+    # RAM totale du process serveur = le heap ci-dessus + tout le reste (moteur du
+    # jeu, réseau, JVM). C'est ce total-là qui pèse sur la machine. On ne détaille
+    # pas heap vs natif : avec AlwaysPreTouch le heap réservé fausse le découpage.
     if s["rss_kb"]:
         rss_g = s["rss_kb"] / 1048576
-        native_g = max(0.0, rss_g - (gc[0] / 1024 if gc else 0))
         hwm_g = s["hwm_kb"] / 1048576 if s["hwm_kb"] else 0
-        proc_line = (f"RSS **{rss_g:.1f} Go** · natif ~{native_g:.1f} Go · pic {hwm_g:.1f} Go"
-                     f" · swap {s['pswap_kb'] / 1024:.0f} Mo")
+        proc_line = f"**{rss_g:.1f} Go** de RAM au total · pic **{hwm_g:.1f} Go**"
     else:
         proc_line = "—"
-    embed.add_field(name="💾 Process (JVM)", value=proc_line, inline=False)
+    embed.add_field(name="💾 RAM du serveur", value=proc_line, inline=False)
 
-    # RAM système : la vraie marge anti OOM-kill OS
+    # RAM de la machine : la vraie marge anti OOM-kill OS. Le cache est
+    # récupérable à tout moment, donc un % élevé n'alarme pas tant qu'il reste du libre.
     embed.add_field(
-        name="🖥️ RAM système",
-        value=f"util **{used_pct:.0f}%** `{_bar(used_pct)}` · dispo **{avail/1048576:.1f} Go** / {total/1048576:.1f}\n"
-              f"cache {cached:.1f} Go · shmem {shmem:.1f} Go · swap sys {sswap:.0f} Mo",
+        name="🖥️ RAM de la machine",
+        value=f"**{used_pct:.0f}%** utilisée `{_bar(used_pct)}` · **{avail/1048576:.1f} Go** libres / {total/1048576:.1f}\n"
+              f"dont {cached:.1f} Go de cache (récupérable si besoin)",
         inline=False)
 
     # Températures (le mobile initial : chauffe du mini-PC)
@@ -1323,20 +1323,18 @@ def _monitoring_embed(s: dict) -> discord.Embed:
         value=" · ".join(temp_parts) or "—",
         inline=True)
 
-    # CPU
-    if s["load"]:
+    # CPU : moyenne des cœurs (= charge réelle machine) + cœur le plus chargé
+    # (= saturation mono-thread), sur le dernier intervalle de mesure.
+    cores_stat = s.get("cpu_cores")
+    if cores_stat:
+        avg = sum(cores_stat) / len(cores_stat)
+        mx = max(cores_stat)
+        iv = int(MONITORING_INTERVAL)
+        window = f"{iv // 60} min" if iv >= 60 and iv % 60 == 0 else f"{iv}s"
+        cpu_line = f"moyenne **{avg:.0f}%** · max **{mx:.0f}%**\n_sur {window}_"
+    elif s["load"]:
         cores = os.cpu_count() or 1
-        load1 = s["load"][0] / cores * 100
-        load5 = s["load"][1] / cores * 100
-        cpu_line = f"charge **{load1:.0f}%** (1 min) / **{load5:.0f}%** (5 min)"
-        if s["cpu_pct"] is not None:
-            cpu_line += f"\nprocess **{s['cpu_pct']:.0f}%**"
-        cores_stat = s.get("cpu_cores")
-        if cores_stat:
-            avg = sum(cores_stat) / len(cores_stat)
-            mx_idx = max(range(len(cores_stat)), key=lambda i: cores_stat[i])
-            cpu_line += (f"\ncœurs: moy **{avg:.0f}%** · max **{cores_stat[mx_idx]:.0f}%** "
-                         f"(cœur {mx_idx}, {len(cores_stat)} cœurs)")
+        cpu_line = f"charge **{s['load'][0] / cores * 100:.0f}%** (1 min)"
     else:
         cpu_line = "—"
     embed.add_field(name="⚙️ CPU", value=cpu_line, inline=True)
@@ -1351,7 +1349,7 @@ def _monitoring_embed(s: dict) -> discord.Embed:
     # (info de diagnostic, inutile quand tout est vert).
     if alerts and gc and gc[2] is not None:
         disk_line += f"\n♻️ dern. majeure {gc[2]}% en {gc[4]:.1f}s" if gc[4] else f"\n♻️ dern. majeure {gc[2]}%"
-    embed.add_field(name="🗄️ Disque (monde)", value=disk_line, inline=True)
+    embed.add_field(name="🗄️ Disque", value=disk_line, inline=True)
 
     if alerts:
         embed.add_field(name="⚠️ Alertes", value="\n".join(alerts), inline=False)
