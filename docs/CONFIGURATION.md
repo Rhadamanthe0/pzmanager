@@ -135,7 +135,7 @@ export SYNC_BACKUPS_DIR="${PZ_DATA_DIR}/fullBackups"
 export OFFSITE_BACKUP_COUNT=7
 ```
 
-Timestamped complete backups (YYYY-MM-DD_HH-MM) created by `fullBackup.sh`, mirrored off-site by a root **Syncthing** send-only folder. **OFFSITE_BACKUP_COUNT** keeps the N most recent ZIPs (retention by count, not days; default 7).
+Each off-site backup is a **single timestamped ZIP** (`YYYY-MM-DD_HH-MM.zip`) created by `fullBackup.sh`, mirrored off-site by a root **Syncthing** send-only folder. The ZIP holds only the **valuable, non-reconstructible** data — `config/` (`.ssh`, systemd `--user` units, `setupTemplates`, `scripts/` incl. `.env`, `sudoers.d/<user>`) and `zomboid/` (the latest `Saves`/`db`/`Server` snapshot) — and **excludes** anything re-downloadable (the SteamCMD install + Workshop mods under `data/pzserver`, the local backups themselves, logs, the Discord venv). **OFFSITE_BACKUP_COUNT** keeps the N most recent ZIPs (retention by count, not days; default 7).
 
 ### Logs
 
@@ -222,18 +222,16 @@ Full guide: [DISCORD_BOT.md](DISCORD_BOT.md).
 
 **Script**: `scripts/backup/fullBackup.sh`
 **Schedule**: Daily at 4:30 AM (during maintenance)
-**Method**: Complete snapshot + ZIP archive
+**Method**: A single self-contained ZIP of the valuable, non-reconstructible data
 **Retention**: `OFFSITE_BACKUP_COUNT` most recent (by count, default 7)
 
-**Contents**:
-- System configuration (sudoers)
-- SSH keys
-- Systemd services and timers
-- All scripts
-- ZIP archive of latest Zomboid backup
+**Contents** (one `YYYY-MM-DD_HH-MM.zip`):
+- `config/` — sudoers (`etc/sudoers.d/<user>`), SSH keys, systemd `--user` units, `setupTemplates`, all `scripts/` (incl. `.env`; excludes `logs/`, `.venv/`, `__pycache__/`)
+- `zomboid/` — the latest game snapshot (`Saves`/`db`/`Server` = world, players, server config)
+- **Excluded** (re-downloadable/rebuildable): SteamCMD install + Workshop mods (`data/pzserver`), the local backups themselves, logs, Discord venv
 
-**Location**: `~/pzmanager/data/fullBackups/YYYY-MM-DD_HH-MM/`
-**Off-site**: mirrored by a root Syncthing send-only folder → PC fixe → Google Drive (the ZIP is the transport format; Syncthing has no hardlink awareness).
+**Location**: `~/pzmanager/data/fullBackups/YYYY-MM-DD_HH-MM.zip`
+**Off-site**: mirrored by a root Syncthing send-only folder → PC fixe → Google Drive (the ZIP is the transport format; Syncthing has no hardlink awareness, so the hardlinked game snapshot is flattened into the archive).
 
 ### Manual Backup
 
@@ -248,7 +246,7 @@ sudo ./scripts/backup/fullBackup.sh
 ### Restore from Backup
 
 ```bash
-sudo ./scripts/install/configurationInitiale.sh restore ~/pzmanager/data/fullBackups/2026-01-10_04-30
+sudo ./scripts/install/configurationInitiale.sh restore ~/pzmanager/data/fullBackups/2026-01-10_04-30.zip
 ```
 
 ### Adjust Retention
