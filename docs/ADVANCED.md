@@ -107,8 +107,9 @@ stored per **300×300 cell** — so it affects the whole cell, not just the tile
 you asked for. Use it only when the cell-level data is what is stale.
 
 > ⚠️ **Deletion is immediate — there is no dry-run.** The server must be stopped
-> (the command refuses to run otherwise). Every deleted file is snapshotted to
-> `${BACKUP_DIR}/tile-wipe-snapshots/` first, which is your only way back.
+> (the command refuses to run otherwise). A **normal snapshot** of the world
+> (`backup_<ts>`, via `dataBackup.sh --snapshot-only`) is taken first — it shows up
+> in `pzm backup list`, so your way back is `pzm backup restore <backup>`.
 
 Anything built by players in the wiped area is lost — it is part of the save
 data being regenerated.
