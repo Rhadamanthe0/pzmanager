@@ -37,8 +37,9 @@
 # Muldraugh vanilla B42.19) et la position des chunks regeneres cote save.
 #
 # Suppression IMMEDIATE (pas de dry-run). Securite : refuse de tourner si le
-# serveur est actif ; snapshot de chaque fichier supprime dans
-# ${BACKUP_DIR}/tile-wipe-snapshots/ avant suppression.
+# serveur est actif ; un snapshot NORMAL du monde (backup_<ts>, via
+# dataBackup.sh --snapshot-only) est cree avant suppression -> rollback par
+# `pzm backup restore <backup>`.
 # ------------------------------------------------------------------------------
 
 set -euo pipefail
@@ -148,22 +149,23 @@ if (( ${#targets[@]} == 0 )); then
     exit 0
 fi
 
-# --- Snapshot + suppression --------------------------------------------------
-readonly STAMP="$(date +%Y-%m-%d_%Hh%Mm%Ss)"
-readonly SNAP_DIR="${BACKUP_DIR}/tile-wipe-snapshots/wipe_${STAMP}"
-ensure_directory "$SNAP_DIR"
+# --- Snapshot de sécurité (normal) + suppression -----------------------------
+# Filet avant suppression : un snapshot NORMAL du monde (backup_<ts>, visible dans
+# `pzm backup list`, purgé par le timer horaire) plutôt qu'un dossier
+# tile-wipe-snapshots/ à part bizarrement nommé. Rollback éventuel via
+# `pzm backup restore <backup>`. (En pratique la zone se régénère d'elle-même depuis
+# le mod au prochain passage d'un joueur — ce snapshot n'est qu'un filet.)
+# --snapshot-only => pas de save in-game (serveur arrêté) ni de prune GFS.
 echo
-log "Snapshot vers: $SNAP_DIR"
+log "Snapshot de sécurité (normal) avant wipe..."
+"${SCRIPT_DIR}/../backup/dataBackup.sh" --snapshot-only \
+    || die "Snapshot de sécurité échoué — wipe annulé (rien supprimé)."
 
 deleted=0
 for rel in "${targets[@]}"; do
-    src="${SAVE_DIR}/${rel}"
-    dst="${SNAP_DIR}/${rel}"
-    ensure_directory "$(dirname "$dst")"
-    cp -p "$src" "$dst"
-    rm -f "$src"
+    rm -f "${SAVE_DIR}/${rel}"
     (( deleted++ )) || true
 done
 
-log "Supprime: ${deleted} fichier(s). Snapshot conserve dans $SNAP_DIR"
+log "Supprime: ${deleted} fichier(s). Filet = dernier snapshot normal (pzm backup list)."
 echo "Terminez par: pzm server start  (la zone se regenerera au prochain passage d'un joueur)."

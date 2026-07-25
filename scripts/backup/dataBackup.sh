@@ -14,6 +14,21 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
 source_env "${SCRIPT_DIR}/.."
 
+# --snapshot-only : crée un snapshot NORMAL (backup_<ts>, comme le backup horaire)
+# sans déclencher la sauvegarde in-game ni le prune GFS. Utilisé par les opérations
+# destructrices (purge whitelist, wipe de tuiles) pour se garder un filet de sécurité
+# = un vrai snapshot (visible dans `pzm backup list`, purgé par le timer horaire),
+# au lieu d'un dossier à part bizarrement nommé. On saute le save (serveur arrêté /
+# en cours de boot dans ces cas) et le prune (laissé au timer horaire, pour ne pas
+# traîner des centaines d'unlink() dans le chemin d'un ExecStartPre / d'un wipe).
+SNAPSHOT_ONLY=0
+for arg in "$@"; do
+    case "$arg" in
+        --snapshot-only) SNAPSHOT_ONLY=1 ;;
+        *) die "Option inconnue: $arg (seul --snapshot-only est accepté)" ;;
+    esac
+done
+
 # Valider répertoires
 validate_directory "${PZ_SOURCE_DIR}" "Répertoire source Zomboid"
 ensure_directory "${BACKUP_DIR}"
@@ -32,8 +47,9 @@ if ! flock -n 201; then
     exit 0
 fi
 
-# Trigger in-game save if server is running
-if [[ -p "${PZ_CONTROL_PIPE}" ]]; then
+# Trigger in-game save if server is running (sauté en --snapshot-only : le serveur
+# est arrêté / en cours de boot, il n'y a personne pour lire le pipe).
+if [[ "$SNAPSHOT_ONLY" != "1" && -p "${PZ_CONTROL_PIPE}" ]]; then
     if timeout 10 bash -c "echo 'save' > '${PZ_CONTROL_PIPE}'" 2>/dev/null; then
         sleep 60
     else
@@ -160,7 +176,11 @@ prune_gfs() {
     echo "Rétention GFS : ${kept} gardés, ${dropped} supprimés ce run (${hourly_h}h horaires / ${sixh_d}j@6h / ${daily_d}j daily)."
 }
 
-prune_gfs
+if [[ "$SNAPSHOT_ONLY" == "1" ]]; then
+    echo "Snapshot ponctuel créé (prune GFS laissé au timer horaire) : ${BACKUP_PATH}"
+else
+    prune_gfs
+fi
 
 total_count=$(find "${BACKUP_DIR}" -maxdepth 1 -type d -name "backup_*" | wc -l)
 echo "Backup completed. Total: $total_count snapshots."

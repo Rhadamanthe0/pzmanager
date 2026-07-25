@@ -124,11 +124,14 @@ if [[ "$DRY_RUN" == true ]]; then
     exit 0
 fi
 
-# Sauvegarde de sécurité avant suppression
-SNAP_DIR="${BACKUP_DIR}/purge-snapshots"
-ensure_directory "$SNAP_DIR"
-SNAP="${SNAP_DIR}/${PZ_SERVER_NAME}_$(date +'%Y-%m-%d_%Hh%Mm%S').db"
-cp -f "$DB_PATH" "$SNAP" && log "Sauvegarde: $SNAP"
+# Filet de sécurité avant suppression : un snapshot NORMAL (backup_<ts>, visible dans
+# `pzm backup list` et purgé par le timer horaire) plutôt qu'un fichier .db à part.
+# --snapshot-only => pas de save in-game (serveur arrêté / en cours de boot en
+# ExecStartPre) ni de prune. Non bloquant : si un backup horaire tient déjà le verrou
+# flock il capture déjà l'état, donc un skip ne perd pas le filet de sécurité.
+if ! "${SCRIPT_DIR}/../backup/dataBackup.sh" --snapshot-only; then
+    log "WARNING: snapshot de sécurité échoué — purge poursuivie (l'état reste couvert par le dernier backup horaire)."
+fi
 
 removed_accounts=0
 removed_steamids=0
