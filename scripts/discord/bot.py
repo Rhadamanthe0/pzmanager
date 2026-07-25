@@ -1268,7 +1268,6 @@ def _monitoring_embed(s: dict) -> discord.Embed:
     total = mem.get("MemTotal", 0)
     avail = mem.get("MemAvailable", 0)
     used_pct = (1 - avail / total) * 100 if total else 0
-    cached = (mem.get("Buffers", 0) + mem.get("Cached", 0)) / 1048576
     xmx = _xmx_gb()
     gc = s["gc"]
 
@@ -1300,15 +1299,17 @@ def _monitoring_embed(s: dict) -> discord.Embed:
         total_line = f"Total en RAM **{rss_g:.1f} Go** · pic **{hwm_g:.1f} Go**"
     else:
         total_line = "Total en RAM —"
-    embed.add_field(name="🧠 Mémoire du serveur",
+    embed.add_field(name="🧠 RAM de PZ",
                     value=f"{heap_line}\n{total_line}", inline=False)
 
     # RAM de la machine : la vraie marge anti OOM-kill OS. Le cache est
     # récupérable à tout moment, donc un % élevé n'alarme pas tant qu'il reste du libre.
+    # « dispo » = MemAvailable (inclut déjà tout le cache réellement récupérable).
+    # On n'affiche PAS le « cache » brut : il contient la shmem = le heap ZGC de
+    # PZ, qui n'est pas récupérable — l'inclure induisait en erreur.
     embed.add_field(
         name="🖥️ RAM de la machine",
-        value=f"**{used_pct:.0f}%** utilisée `{_bar(used_pct)}` · **{avail/1048576:.1f} Go** libres / {total/1048576:.1f}\n"
-              f"dont {cached:.1f} Go de cache (récupérable si besoin)",
+        value=f"**{used_pct:.0f}%** utilisée `{_bar(used_pct)}` · **{avail/1048576:.1f} Go** dispo / {total/1048576:.1f}",
         inline=False)
 
     # Températures (le mobile initial : chauffe du mini-PC), sur 2 lignes :
