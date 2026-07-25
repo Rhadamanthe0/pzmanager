@@ -4,9 +4,11 @@ After=zomboid.service
 
 [Service]
 Type=oneshot
-# 20% de CPU ralentit le rsync ; on relève le timeout (défaut 300s trop court) pour
-# qu'un backup plus lent — ou avec retries (voir dataBackup.sh) — ne soit pas tué.
-TimeoutStartSec=600
+# À 20% de CPU, rsync et surtout le prune (unlink de snapshots hardlinkés) sont
+# lents. Le prune est plafonné par run (BACKUP_PRUNE_MAX_DELETE) pour tenir dans ce
+# timeout ; 2400s = marge confortable pour save+rsync+un lot de suppressions, sans
+# jamais tuer un run (ce qui le marquerait failed et laisserait un prune partiel).
+TimeoutStartSec=2400
 ExecStart=%h/pzmanager/scripts/backup/dataBackup.sh
 StandardOutput=journal
 StandardError=journal
