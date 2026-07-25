@@ -1021,6 +1021,28 @@ def _proc_cpu_jiffies(pid):
         return None
 
 
+def _percpu_stat():
+    """Compteurs cumulés (total, idle) par cœur, lus dans /proc/stat (lignes
+    cpu0, cpu1, ...). idle inclut iowait. Sert à calculer, par delta entre deux
+    cycles, l'utilisation de CHAQUE cœur -> moyenne + cœur le plus chargé."""
+    try:
+        out = []
+        with open("/proc/stat") as f:
+            for line in f:
+                if not line.startswith("cpu"):
+                    continue
+                parts = line.split()
+                # 'cpu' seul = agrégat (ignoré) ; 'cpuN' = un cœur.
+                if not parts[0][3:].isdigit():
+                    continue
+                vals = list(map(int, parts[1:]))
+                idle = vals[3] + (vals[4] if len(vals) > 4 else 0)   # idle + iowait
+                out.append((sum(vals), idle))
+        return out or None
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 def _proc_uptime_seconds(pid):
     """Âge du process = uptime serveur depuis le dernier (re)démarrage."""
     try:
@@ -1116,6 +1138,19 @@ def collect_stats(prev: dict) -> dict:
             if dt > 0:
                 s["cpu_pct"] = max(0.0, (jif - prev["jif"]) / (_CLK_TCK * dt) * 100.0)
         prev["jif"], prev["ts"] = jif, now
+    # Utilisation par cœur sur l'intervalle (delta de /proc/stat). None au 1er
+    # cycle (pas de référence) — le loop amorce prev avant de poster.
+    s["cpu_cores"] = None
+    cur_cpu = _percpu_stat()
+    if cur_cpu and prev.get("percpu") and len(cur_cpu) == len(prev["percpu"]):
+        pcts = []
+        for (tot, idle), (ptot, pidle) in zip(cur_cpu, prev["percpu"]):
+            d_tot = tot - ptot
+            if d_tot > 0:
+                pcts.append(max(0.0, min(100.0, (d_tot - (idle - pidle)) / d_tot * 100.0)))
+        if pcts:
+            s["cpu_cores"] = pcts
+    prev["percpu"] = cur_cpu
     s["temps"] = _temps()
     try:
         s["load"] = os.getloadavg()
@@ -1296,6 +1331,12 @@ def _monitoring_embed(s: dict) -> discord.Embed:
         cpu_line = f"charge **{load1:.0f}%** (1 min) / **{load5:.0f}%** (5 min)"
         if s["cpu_pct"] is not None:
             cpu_line += f"\nprocess **{s['cpu_pct']:.0f}%**"
+        cores_stat = s.get("cpu_cores")
+        if cores_stat:
+            avg = sum(cores_stat) / len(cores_stat)
+            mx_idx = max(range(len(cores_stat)), key=lambda i: cores_stat[i])
+            cpu_line += (f"\ncœurs: moy **{avg:.0f}%** · max **{cores_stat[mx_idx]:.0f}%** "
+                         f"(cœur {mx_idx}, {len(cores_stat)} cœurs)")
     else:
         cpu_line = "—"
     embed.add_field(name="⚙️ CPU", value=cpu_line, inline=True)
