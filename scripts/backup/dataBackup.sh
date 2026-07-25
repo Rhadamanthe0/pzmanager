@@ -18,6 +18,20 @@ source_env "${SCRIPT_DIR}/.."
 validate_directory "${PZ_SOURCE_DIR}" "Répertoire source Zomboid"
 ensure_directory "${BACKUP_DIR}"
 
+# Verrou d'instance unique. Un run peut durer longtemps (le prune GFS d'un gros
+# backlog de snapshots hardlinkés se compte en dizaines de minutes/heures), donc
+# le timer horaire pourrait relancer un backup alors que le précédent tourne
+# encore — ou un lancement manuel se superposer. flock non-bloquant : si un backup
+# tient déjà le verrou, on skippe proprement ce run (exit 0) au lieu de paralléliser
+# deux rsync/rm sur le même arbre. Le verrou est tenu (fd 201) jusqu'à la fin du
+# script ; libéré automatiquement si le process est tué (timeout systemd inclus).
+readonly BACKUP_LOCK_FILE="/tmp/pzmanager-backup-$(id -un).lock"
+exec 201>"${BACKUP_LOCK_FILE}"
+if ! flock -n 201; then
+    echo "Un backup est déjà en cours (${BACKUP_LOCK_FILE}) — run ignoré."
+    exit 0
+fi
+
 # Trigger in-game save if server is running
 if [[ -p "${PZ_CONTROL_PIPE}" ]]; then
     if timeout 10 bash -c "echo 'save' > '${PZ_CONTROL_PIPE}'" 2>/dev/null; then
@@ -96,6 +110,11 @@ prune_gfs() {
     local sixh_d="${BACKUP_GFS_SIXHOURLY_DAYS:-7}"
     local daily_d="${BACKUP_GFS_DAILY_DAYS:-30}"
     local dry="${BACKUP_PRUNE_DRY_RUN:-0}"
+    # Plafond de suppressions par run (0 = illimité). Supprimer un snapshot hardlinké
+    # = des centaines de milliers d'unlink() ; à CPUQuota 20% c'est lent. On borne
+    # donc chaque run pour qu'il finisse dans le TimeoutStartSec de l'unité (pas de
+    # kill/failed), et un gros backlog s'écoule proprement sur plusieurs runs horaires.
+    local max_delete="${BACKUP_PRUNE_MAX_DELETE:-0}"
     local now; now=$(date +%s)
     local -A seen_bucket=()
     local entries=() d name ts epoch
@@ -133,8 +152,12 @@ prune_gfs() {
         else
             rm -rf -- "${BACKUP_DIR:?}/${name}"
         fi
+        if (( max_delete > 0 && dropped >= max_delete )); then
+            echo "Prune plafonné à ${max_delete} suppressions ce run — backlog restant traité aux runs suivants."
+            break
+        fi
     done
-    echo "Rétention GFS : ${kept} gardés, ${dropped} supprimés (${hourly_h}h horaires / ${sixh_d}j@6h / ${daily_d}j daily)."
+    echo "Rétention GFS : ${kept} gardés, ${dropped} supprimés ce run (${hourly_h}h horaires / ${sixh_d}j@6h / ${daily_d}j daily)."
 }
 
 prune_gfs

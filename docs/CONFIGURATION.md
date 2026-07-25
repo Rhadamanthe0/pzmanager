@@ -111,17 +111,29 @@ export JAVA_PATH="/usr/lib/jvm/java-${JAVA_VERSION}-openjdk-amd64"
 export BACKUP_DIR="${PZ_DATA_DIR}/dataBackups"
 export BACKUP_LATEST_LINK="${BACKUP_DIR}/latest"
 export BACKUP_RETENTION_DAYS=14
+
+# Rétention GFS (grand-père/père/fils) des snapshots hardlinkés locaux
+export BACKUP_GFS_HOURLY_HOURS=24
+export BACKUP_GFS_SIXHOURLY_DAYS=7
+export BACKUP_GFS_DAILY_DAYS=30
 ```
 
-**BACKUP_RETENTION_DAYS**: Number of days to keep (default: 14)
+Local hourly snapshots use **GFS retention** (`prune_gfs` in `dataBackup.sh`), not a flat N-day rotation:
+
+- **BACKUP_GFS_HOURLY_HOURS**: keep every hourly snapshot for this many hours (default 24)
+- **BACKUP_GFS_SIXHOURLY_DAYS**: then keep 1 per 6h up to this many days (default 7)
+- **BACKUP_GFS_DAILY_DAYS**: then keep 1 per day up to this many days (default 30); older is deleted
+
+`BACKUP_PRUNE_DRY_RUN=1 scripts/backup/dataBackup.sh` previews what would be pruned without deleting. `BACKUP_RETENTION_DAYS` is now legacy (kept for reference; the GFS variables above drive local retention).
 
 ### External Synchronization
 
 ```bash
 export SYNC_BACKUPS_DIR="${PZ_DATA_DIR}/fullBackups"
+export OFFSITE_BACKUP_COUNT=7
 ```
 
-Timestamped complete backups (YYYY-MM-DD_HH-MM) created by fullBackup.sh.
+Timestamped complete backups (YYYY-MM-DD_HH-MM) created by `fullBackup.sh`, mirrored off-site by a root **Syncthing** send-only folder. **OFFSITE_BACKUP_COUNT** keeps the N most recent ZIPs (retention by count, not days; default 7).
 
 ### Logs
 
@@ -194,8 +206,8 @@ Full guide: [DISCORD_BOT.md](DISCORD_BOT.md).
 
 **Script**: `scripts/backup/dataBackup.sh`
 **Schedule**: Every hour at :14
-**Method**: Incremental with hard links (rsync)
-**Retention**: Configurable via `BACKUP_RETENTION_DAYS`
+**Method**: Incremental with hard links (rsync, CPU-throttled to 20%, `--partial` + retry ×3)
+**Retention**: GFS — hourly 24h / 1-per-6h 7d / 1-per-day 30d (`BACKUP_GFS_*`)
 
 **Contents**:
 - `Zomboid/Saves/` - World saves
@@ -209,6 +221,7 @@ Full guide: [DISCORD_BOT.md](DISCORD_BOT.md).
 **Script**: `scripts/backup/fullBackup.sh`
 **Schedule**: Daily at 4:30 AM (during maintenance)
 **Method**: Complete snapshot + ZIP archive
+**Retention**: `OFFSITE_BACKUP_COUNT` most recent (by count, default 7)
 
 **Contents**:
 - System configuration (sudoers)
@@ -218,6 +231,7 @@ Full guide: [DISCORD_BOT.md](DISCORD_BOT.md).
 - ZIP archive of latest Zomboid backup
 
 **Location**: `~/pzmanager/data/fullBackups/YYYY-MM-DD_HH-MM/`
+**Off-site**: mirrored by a root Syncthing send-only folder → PC fixe → Google Drive (the ZIP is the transport format; Syncthing has no hardlink awareness).
 
 ### Manual Backup
 
