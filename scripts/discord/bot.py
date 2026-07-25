@@ -1286,23 +1286,22 @@ def _monitoring_embed(s: dict) -> discord.Embed:
 
     # Mémoire du jeu (heap) : le nerf de la guerre — c'est ce qui se remplit à
     # mesure que la carte est explorée et déclenche le restart auto quand c'est plein.
+    # Un seul bloc mémoire : le heap (ce qui se remplit et déclenche le restart
+    # auto) ET la RAM totale du process (heap + moteur/réseau/JVM). On ne détaille
+    # pas heap vs natif : avec AlwaysPreTouch le heap réservé fausse le découpage.
     if gc:
         used_g, pct = gc[0] / 1024, gc[1]
-        heap_line = f"**{used_g:.1f} / {xmx} Go**  `{_bar(pct)}`  **{pct}%**"
+        heap_line = f"Jeu (heap) **{used_g:.1f} / {xmx} Go**  `{_bar(pct)}`  **{pct}%**"
     else:
-        heap_line = "—"
-    embed.add_field(name="🧠 Mémoire du jeu (heap)", value=heap_line, inline=False)
-
-    # RAM totale du process serveur = le heap ci-dessus + tout le reste (moteur du
-    # jeu, réseau, JVM). C'est ce total-là qui pèse sur la machine. On ne détaille
-    # pas heap vs natif : avec AlwaysPreTouch le heap réservé fausse le découpage.
+        heap_line = "Jeu (heap) —"
     if s["rss_kb"]:
         rss_g = s["rss_kb"] / 1048576
         hwm_g = s["hwm_kb"] / 1048576 if s["hwm_kb"] else 0
-        proc_line = f"**{rss_g:.1f} Go** de RAM au total · pic **{hwm_g:.1f} Go**"
+        total_line = f"Total en RAM **{rss_g:.1f} Go** · pic **{hwm_g:.1f} Go**"
     else:
-        proc_line = "—"
-    embed.add_field(name="💾 RAM du serveur", value=proc_line, inline=False)
+        total_line = "Total en RAM —"
+    embed.add_field(name="🧠 Mémoire du serveur",
+                    value=f"{heap_line}\n{total_line}", inline=False)
 
     # RAM de la machine : la vraie marge anti OOM-kill OS. Le cache est
     # récupérable à tout moment, donc un % élevé n'alarme pas tant qu'il reste du libre.
@@ -1312,44 +1311,47 @@ def _monitoring_embed(s: dict) -> discord.Embed:
               f"dont {cached:.1f} Go de cache (récupérable si besoin)",
         inline=False)
 
-    # Températures (le mobile initial : chauffe du mini-PC)
+    # Températures (le mobile initial : chauffe du mini-PC), sur 2 lignes :
+    # CPU + GPU en 1re, NVMe + RAM en 2de.
     t = s["temps"]
-    temp_parts = []
-    for key, lbl in (("cpu", "CPU"), ("nvme", "NVMe"), ("gpu", "GPU"), ("ram", "RAM")):
-        if key in t:
-            temp_parts.append(f"{lbl} **{t[key]:.0f}°C**")
+    def _temp_row(keys):
+        return " · ".join(f"{lbl} **{t[k]:.0f}°C**" for k, lbl in keys if k in t)
+    temp_rows = [_temp_row((("cpu", "CPU"), ("gpu", "GPU"))),
+                 _temp_row((("nvme", "NVMe"), ("ram", "RAM")))]
     embed.add_field(
         name="🌡️ Températures",
-        value=" · ".join(temp_parts) or "—",
+        value="\n".join(r for r in temp_rows if r) or "—",
         inline=True)
 
     # CPU : moyenne des cœurs (= charge réelle machine) + cœur le plus chargé
     # (= saturation mono-thread), sur le dernier intervalle de mesure.
     cores_stat = s.get("cpu_cores")
+    cpu_title = "⚙️ CPU"
     if cores_stat:
         avg = sum(cores_stat) / len(cores_stat)
         mx = max(cores_stat)
         iv = int(MONITORING_INTERVAL)
         window = f"{iv // 60} min" if iv >= 60 and iv % 60 == 0 else f"{iv}s"
-        cpu_line = f"moyenne **{avg:.0f}%** · max **{mx:.0f}%**\n_sur {window}_"
+        cpu_title = f"⚙️ CPU (sur {window})"
+        cpu_line = f"moyenne **{avg:.0f}%** · max **{mx:.0f}%**"
     elif s["load"]:
         cores = os.cpu_count() or 1
         cpu_line = f"charge **{s['load'][0] / cores * 100:.0f}%** (1 min)"
     else:
         cpu_line = "—"
-    embed.add_field(name="⚙️ CPU", value=cpu_line, inline=True)
+    embed.add_field(name=cpu_title, value=cpu_line, inline=True)
 
     # Disque + GC
     if s["disk"]:
         free_pct = s["disk"].free / s["disk"].total * 100
-        disk_line = f"libre **{s['disk'].free / 1e9:.0f} Go** ({free_pct:.0f}%)"
+        disk_line = f"**{s['disk'].free / 1e9:.0f} Go** ({free_pct:.0f}%)"
     else:
         disk_line = "—"
     # Détail de la dernière collecte majeure : uniquement en cas d'alerte
     # (info de diagnostic, inutile quand tout est vert).
     if alerts and gc and gc[2] is not None:
         disk_line += f"\n♻️ dern. majeure {gc[2]}% en {gc[4]:.1f}s" if gc[4] else f"\n♻️ dern. majeure {gc[2]}%"
-    embed.add_field(name="🗄️ Disque", value=disk_line, inline=True)
+    embed.add_field(name="🗄️ Disque libre", value=disk_line, inline=True)
 
     if alerts:
         embed.add_field(name="⚠️ Alertes", value="\n".join(alerts), inline=False)
