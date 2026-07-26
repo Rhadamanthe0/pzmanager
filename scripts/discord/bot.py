@@ -1375,9 +1375,16 @@ def _monitoring_embed(s: dict) -> discord.Embed:
     players = s.get("players")
     players_txt = (f" · 👥 **{players}** joueur{'s' if players != 1 else ''}"
                    if players is not None else "")
+    # Débit réseau (paquets/s mesurés au NIC) + ratio vs MaxPacketsPerSecond.
+    net, max_pps = s.get("net"), s.get("max_pps")
+    if net:
+        ratio = f" ({net['pps'] / max_pps * 100:.0f}% du max)" if max_pps else ""
+        net_txt = f" · 📡 **{net['pps']:.0f}** paq/s{ratio}"
+    else:
+        net_txt = ""
     embed.add_field(
         name="Serveur",
-        value=f"{state}{players_txt} · uptime **{_fmt_dur(s['uptime'])}**",
+        value=f"{state}{players_txt}{net_txt} · uptime **{_fmt_dur(s['uptime'])}**",
         inline=False)
 
     # Mémoire du jeu (heap) : le nerf de la guerre — c'est ce qui se remplit à
