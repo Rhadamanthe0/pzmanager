@@ -35,14 +35,19 @@ if [[ -n "${PZ_XMX_GB:-}" ]]; then
 else
     echo "Optimisation JVM (Xmx ${xmx_gb}g = moitié RAM ; pas de Xms)..."
 fi
+
+# Exporteur de métriques réseau interne de PZ (voir plus bas). Vide => désactivé.
+prom_port="${PZ_PROMETHEUS_PORT:-}"
+
 cp "$json_file" "${json_file}.bak"
 
-python3 - "$json_file" "$xmx_gb" "$LOG_ZOMBOID_DIR" << 'PYEOF'
+python3 - "$json_file" "$xmx_gb" "$LOG_ZOMBOID_DIR" "$prom_port" << 'PYEOF'
 import json, sys
 
 f = sys.argv[1]
 xmx_gb = sys.argv[2]
 log_dir = sys.argv[3]
+prom_port = sys.argv[4]
 with open(f) as fp:
     data = json.load(fp)
 
@@ -51,7 +56,8 @@ with open(f) as fp:
 drop = ('znetlog', '-Xms', '-Xmx', 'UseZGC', 'AlwaysPreTouch',
         'ZCollectionInterval', 'MaxRAMPercentage', 'preferIPv4Stack',
         'UseStringDeduplication', 'UseCompactObjectHeaders',
-        'HeapDumpOnOutOfMemoryError', 'HeapDumpPath', 'Xlog:gc')
+        'HeapDumpOnOutOfMemoryError', 'HeapDumpPath', 'Xlog:gc',
+        'prometheusEnabled', 'prometheusPort')
 args = [a for a in data['vmArgs'] if not any(d in a for d in drop)]
 
 # Heap : plafond Xmx uniquement (pas de -Xms -> init ergonomique, croît à la demande)
@@ -92,6 +98,21 @@ args.append('-Djava.net.preferIPv4Stack=true')
 args.append('-XX:+HeapDumpOnOutOfMemoryError')
 args.append(f'-XX:HeapDumpPath={log_dir}')
 args.append(f'-Xlog:gc*:file={log_dir}/gc.log:time,uptime,level,tags:filecount=5,filesize=20M')
+
+# Métriques réseau internes de PZ (client Prometheus embarqué). Avec
+# MultiplayerStatisticsPeriod>0 (servertest.ini), StatisticManager collecte
+# serverPacketSend/serverPacketReceive : des histogrammes PAR TYPE de paquet dont
+# _count = NOMBRE de paquets et _sum = OCTETS. Il ne démarre son exporteur HTTP
+# /metrics QUE si ces deux propriétés système sont posées (lues via getProperty).
+# Une fois actif -> source EXACTE des paquets/s du SEUL serveur de jeu (bien plus
+# propre que la mesure au niveau de la carte réseau, polluée par Docker/Pi-hole/WG),
+# scrappée par le bot Discord (monitoring). Vide (PZ_PROMETHEUS_PORT non défini) =
+# désactivé. ATTENTION : l'exporteur peut binder 0.0.0.0 et les métriques incluent
+# la position des joueurs -> vérifier `ss -tlnp` après boot et garder ce port
+# NON redirigé par le routeur.
+if prom_port:
+    args.append('-DprometheusEnabled=true')
+    args.append(f'-DprometheusPort={prom_port}')
 
 data['vmArgs'] = args
 with open(f, 'w') as fp:

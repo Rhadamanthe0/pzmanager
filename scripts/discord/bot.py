@@ -17,6 +17,8 @@ Configuration lue depuis l'environnement (exporté par run-bot.sh via .env) :
   DISCORD_BOT_MONITORING_CHANNEL_ID  Salon de télémétrie périodique (optionnel)
   DISCORD_BOT_MONITORING_INTERVAL    Intervalle du monitoring, secondes (défaut 60)
   DISCORD_BOT_MONITORING_CSV_DAYS    Rétention du journal CSV des métriques, jours (défaut 7)
+  PZ_PROMETHEUS_PORT         Port de l'exporteur métriques interne de PZ (localhost) ;
+                             source exacte des paquets/s du serveur de jeu (optionnel)
   PZ_MANAGER_DIR             Racine pzmanager (contient le dispatcher `pzm`)
   PZ_SOURCE_DIR              Racine Zomboid (contient Logs/ pour les morts)
 
@@ -36,6 +38,7 @@ import re
 import shlex
 import shutil
 import time
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 
@@ -101,6 +104,13 @@ HEAP_RESTART_PERCENT = int(os.environ.get("HEAP_RESTART_PERCENT", "95") or "95")
 # de DISCORD_BOT_MONITORING_CSV_DAYS jours.
 MONITORING_CSV_PATH = f"{LOG_ZOMBOID_DIR}/monitoring.csv" if LOG_ZOMBOID_DIR else ""
 MONITORING_CSV_DAYS = max(1, int(os.environ.get("DISCORD_BOT_MONITORING_CSV_DAYS", "7") or "7"))
+# Exporteur de métriques réseau INTERNE de PZ (client Prometheus embarqué, activé
+# par -DprometheusEnabled/-DprometheusPort via configureJvm.sh quand PZ_PROMETHEUS_PORT
+# est défini). Source EXACTE des paquets/s du SEUL serveur de jeu (tous clients), du
+# tick serveur (fps), de la perte de paquets et du trafic VOIP — bien plus propre que
+# la mesure au niveau de la carte réseau. Vide = non exposé -> on retombe sur le NIC.
+PZ_PROMETHEUS_PORT = os.environ.get("PZ_PROMETHEUS_PORT", "").strip()
+PROMETHEUS_URL = f"http://127.0.0.1:{PZ_PROMETHEUS_PORT}/metrics" if PZ_PROMETHEUS_PORT else ""
 _PZ_XMX_RAW = os.environ.get("PZ_XMX_GB", "").strip()
 
 logging.basicConfig(
@@ -1197,6 +1207,50 @@ def _ini_ints(path, keys):
     return out
 
 
+def _prom_val(line: str):
+    """Dernier champ (valeur) d'une ligne exposition Prometheus, en float."""
+    try:
+        return float(line.rsplit(" ", 1)[1])
+    except (ValueError, IndexError):
+        return 0.0
+
+
+def _prom_snapshot():
+    """Lit l'exporteur Prometheus interne de PZ (localhost). Retourne les compteurs
+    CUMULÉS paquets/octets (histogrammes packet_send/receive_bytes, sommés sur TOUS
+    les clients et types de paquets -> à dériver par delta) plus des jauges
+    instantanées (fps serveur, perte de paquets, VOIP). None si non exposé/injoignable."""
+    if not PROMETHEUS_URL:
+        return None
+    try:
+        with urllib.request.urlopen(PROMETHEUS_URL, timeout=4) as r:
+            text = r.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+    out = {"send_c": 0.0, "recv_c": 0.0, "send_b": 0.0, "recv_b": 0.0,
+           "fps": None, "ploss": None, "voip_s": None, "voip_r": None}
+    for line in text.splitlines():
+        if not line or line[0] == "#":
+            continue
+        if line.startswith("packet_send_bytes_count"):
+            out["send_c"] += _prom_val(line)
+        elif line.startswith("packet_send_bytes_sum"):
+            out["send_b"] += _prom_val(line)
+        elif line.startswith("packet_receive_bytes_count"):
+            out["recv_c"] += _prom_val(line)
+        elif line.startswith("packet_receive_bytes_sum"):
+            out["recv_b"] += _prom_val(line)
+        elif line.startswith('performance{parameter="fps"}'):
+            out["fps"] = _prom_val(line)
+        elif line.startswith('network{parameter="packet-loss-last-second"}'):
+            out["ploss"] = _prom_val(line)
+        elif line.startswith('network{parameter="voip-sent"}'):
+            out["voip_s"] = _prom_val(line)
+        elif line.startswith('network{parameter="voip-received"}'):
+            out["voip_r"] = _prom_val(line)
+    return out
+
+
 def collect_stats(prev: dict) -> dict:
     """Un instantané complet. `prev` porte l'état inter-cycles (CPU delta)."""
     now = time.monotonic()
@@ -1256,6 +1310,26 @@ def collect_stats(prev: dict) -> dict:
                 "pps": (max(0, cur[1] - pc[1]) + max(0, cur[3] - pc[3])) / dt,
             }
         prev["net_ctr"], prev["net_ts"] = cur, now
+    # Réseau INTERNE du serveur de jeu (exporteur Prometheus PZ, localhost) : paquets/s
+    # et débit du SEUL PZ, tous clients agrégés (delta des compteurs cumulés) — exact,
+    # sans le bruit Docker/Pi-hole/WG de la mesure NIC. Plus fps serveur / perte / VOIP.
+    s["game_net"] = None
+    s["srv_fps"] = s["packet_loss"] = s["voip_sent"] = s["voip_recv"] = None
+    ps = _prom_snapshot()
+    if ps:
+        s["srv_fps"], s["packet_loss"] = ps["fps"], ps["ploss"]
+        s["voip_sent"], s["voip_recv"] = ps["voip_s"], ps["voip_r"]
+        pp, ppts = prev.get("prom_ctr"), prev.get("prom_ts")
+        if pp and ppts is not None and now - ppts > 0:
+            dt = now - ppts
+            s["game_net"] = {
+                "pps_sent": max(0.0, ps["send_c"] - pp[0]) / dt,
+                "pps_recv": max(0.0, ps["recv_c"] - pp[1]) / dt,
+                "kbs_sent": max(0.0, ps["send_b"] - pp[2]) / dt / 1024,
+                "kbs_recv": max(0.0, ps["recv_b"] - pp[3]) / dt / 1024,
+            }
+        prev["prom_ctr"] = (ps["send_c"], ps["recv_c"], ps["send_b"], ps["recv_b"])
+        prev["prom_ts"] = now
     # Plafonds configurés (servertest.ini) pour les ratios « par rapport au max ».
     caps = _ini_ints(_server_ini_path(prev), ("MaxPlayers", "MaxPacketsPerSecond"))
     s["max_players"] = caps.get("MaxPlayers")
@@ -1375,16 +1449,22 @@ def _monitoring_embed(s: dict) -> discord.Embed:
     players = s.get("players")
     players_txt = (f" · 👥 **{players}** joueur{'s' if players != 1 else ''}"
                    if players is not None else "")
-    # Débit réseau (paquets/s mesurés au NIC) + ratio vs MaxPacketsPerSecond.
-    net, max_pps = s.get("net"), s.get("max_pps")
-    if net:
+    # Réseau : priorité aux paquets/s INTERNES exacts de PZ (exporteur Prometheus,
+    # émis↑ / reçus↓, tous clients) ; repli sur la mesure NIC (proxy) sinon.
+    gnet, net = s.get("game_net"), s.get("net")
+    if gnet:
+        net_txt = f" · 📡 **{gnet['pps_sent']:.0f}**↑/**{gnet['pps_recv']:.0f}**↓ paq/s"
+    elif net:
+        max_pps = s.get("max_pps")
         ratio = f" ({net['pps'] / max_pps * 100:.0f}% du max)" if max_pps else ""
-        net_txt = f" · 📡 **{net['pps']:.0f}** paq/s{ratio}"
+        net_txt = f" · 📡 **{net['pps']:.0f}** paq/s (NIC){ratio}"
     else:
         net_txt = ""
+    fps = s.get("srv_fps")
+    fps_txt = f" · ⚙️ **{fps:.0f}** fps" if fps is not None else ""
     embed.add_field(
         name="Serveur",
-        value=f"{state}{players_txt}{net_txt} · uptime **{_fmt_dur(s['uptime'])}**",
+        value=f"{state}{players_txt}{net_txt}{fps_txt} · uptime **{_fmt_dur(s['uptime'])}**",
         inline=False)
 
     # Mémoire du jeu (heap) : le nerf de la guerre — c'est ce qui se remplit à
@@ -1475,6 +1555,9 @@ _CSV_HEADER = [
     "rss_mb", "ram_avail_mb", "ram_used_pct", "swap_mb",
     "cpu_proc_pct", "cpu_sys_pct", "load1",
     "temp_cpu", "temp_nvme", "disk_free_pct",
+    # Métriques réseau INTERNES exactes de PZ (exporteur Prometheus) — vides si non exposé
+    "game_pps_sent", "game_pps_recv", "game_kbs_sent", "game_kbs_recv",
+    "srv_fps", "packet_loss", "voip_sent", "voip_recv",
 ]
 _last_csv_prune = 0.0
 
@@ -1490,6 +1573,7 @@ def _csv_row(s: dict) -> list:
     ram_used_pct = 100.0 * (1 - avail_kb / total_kb) if (avail_kb and total_kb) else None
     gc = s.get("gc")                        # (used, pct, maj_pct, maj_used, pause)
     net = s.get("net") or {}
+    gnet = s.get("game_net") or {}
     players, maxp = s.get("players"), s.get("max_players")
     pps, maxpps = net.get("pps"), s.get("max_pps")
     cores = s.get("cpu_cores")
@@ -1515,6 +1599,10 @@ def _csv_row(s: dict) -> list:
         f(s.get("cpu_pct")), f(cpu_sys),
         f(s["load"][0], 2) if s.get("load") else "",
         f(temps.get("cpu")), f(temps.get("nvme")), f(disk_free_pct),
+        f(gnet.get("pps_sent"), 0), f(gnet.get("pps_recv"), 0),
+        f(gnet.get("kbs_sent")), f(gnet.get("kbs_recv")),
+        f(s.get("srv_fps"), 0), f(s.get("packet_loss"), 3),
+        f(s.get("voip_sent"), 0), f(s.get("voip_recv"), 0),
     ]
 
 
