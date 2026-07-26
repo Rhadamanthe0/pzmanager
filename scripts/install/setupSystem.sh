@@ -75,6 +75,15 @@ configure_firewall() {
         ufw allow "$r"
     done
     echo "[INFO] Ports ouverts: ${rules[*]}"
+
+    # Exporteur de métriques interne de PZ (Prometheus, cf. PZ_PROMETHEUS_PORT) :
+    # le serveur le binde sur 0.0.0.0 et il expose des données sensibles (positions
+    # joueurs) ; le bot le scrape en localhost. On refuse explicitement l'accès
+    # externe — redondant avec le « deny incoming » par défaut mais explicite et
+    # maintenu ; UFW laisse toujours passer la loopback, donc le bot n'est pas gêné.
+    local prom_port="${PZ_PROMETHEUS_PORT:-9110}"
+    ufw deny "${prom_port}/tcp"
+    echo "[INFO] Port métriques ${prom_port}/tcp restreint à localhost"
 }
 
 configure_path() {

@@ -1228,7 +1228,11 @@ def _prom_snapshot():
     except Exception:
         return None
     out = {"send_c": 0.0, "recv_c": 0.0, "send_b": 0.0, "recv_b": 0.0,
-           "fps": None, "ploss": None, "voip_s": None, "voip_r": None}
+           "fps": None, "ploss": None, "voip_s": None, "voip_r": None,
+           # compteur reçu CUMULÉ par client : MaxPacketsPerSecond est un anti-flood
+           # PAR CLIENT sur l'ENTRANT (PacketsCache.isLimitExceeded) -> on suit chaque
+           # client pour comparer le plus actif au cap (le vrai « % du max »).
+           "recv_by_client": {}}
     for line in text.splitlines():
         if not line or line[0] == "#":
             continue
@@ -1237,7 +1241,11 @@ def _prom_snapshot():
         elif line.startswith("packet_send_bytes_sum"):
             out["send_b"] += _prom_val(line)
         elif line.startswith("packet_receive_bytes_count"):
-            out["recv_c"] += _prom_val(line)
+            v = _prom_val(line)
+            out["recv_c"] += v
+            m = re.search(r'client="([^"]*)"', line)
+            cl = m.group(1) if m else ""
+            out["recv_by_client"][cl] = out["recv_by_client"].get(cl, 0.0) + v
         elif line.startswith("packet_receive_bytes_sum"):
             out["recv_b"] += _prom_val(line)
         elif line.startswith('performance{parameter="fps"}'):
@@ -1328,7 +1336,15 @@ def collect_stats(prev: dict) -> dict:
                 "kbs_sent": max(0.0, ps["send_b"] - pp[2]) / dt / 1024,
                 "kbs_recv": max(0.0, ps["recv_b"] - pp[3]) / dt / 1024,
             }
+            # paquets/s ENTRANTS du client le plus actif -> à comparer à
+            # MaxPacketsPerSecond (cap anti-flood par client). Un client absent du
+            # relevé précédent -> delta 0 (pas de faux pic à la connexion).
+            prc = prev.get("prom_rbc") or {}
+            rates = [(c - prc.get(cl, c)) / dt for cl, c in ps["recv_by_client"].items()]
+            rates = [r for r in rates if r > 0]
+            s["game_net"]["recv_pps_max_client"] = max(rates) if rates else 0.0
         prev["prom_ctr"] = (ps["send_c"], ps["recv_c"], ps["send_b"], ps["recv_b"])
+        prev["prom_rbc"] = ps["recv_by_client"]
         prev["prom_ts"] = now
     # Plafonds configurés (servertest.ini) pour les ratios « par rapport au max ».
     caps = _ini_ints(_server_ini_path(prev), ("MaxPlayers", "MaxPacketsPerSecond"))
@@ -1454,6 +1470,10 @@ def _monitoring_embed(s: dict) -> discord.Embed:
     gnet, net = s.get("game_net"), s.get("net")
     if gnet:
         net_txt = f" · 📡 **{gnet['pps_sent']:.0f}**↑/**{gnet['pps_recv']:.0f}**↓ paq/s"
+        # % du cap = client entrant le plus actif vs MaxPacketsPerSecond (par client).
+        mc, max_pps = gnet.get("recv_pps_max_client"), s.get("max_pps")
+        if mc is not None and max_pps:
+            net_txt += f" (client max **{mc / max_pps * 100:.0f}%** du cap)"
     elif net:
         max_pps = s.get("max_pps")
         ratio = f" ({net['pps'] / max_pps * 100:.0f}% du max)" if max_pps else ""
@@ -1555,9 +1575,12 @@ _CSV_HEADER = [
     "rss_mb", "ram_avail_mb", "ram_used_pct", "swap_mb",
     "cpu_proc_pct", "cpu_sys_pct", "load1",
     "temp_cpu", "temp_nvme", "disk_free_pct",
-    # Métriques réseau INTERNES exactes de PZ (exporteur Prometheus) — vides si non exposé
+    # Métriques réseau INTERNES exactes de PZ (exporteur Prometheus) — vides si non exposé.
+    # recv_pps_max_client = paquets/s entrants du client le plus actif ; recv_cap_pct =
+    # son % de MaxPacketsPerSecond (le cap anti-flood, par client, sur l'entrant).
     "game_pps_sent", "game_pps_recv", "game_kbs_sent", "game_kbs_recv",
     "srv_fps", "packet_loss", "voip_sent", "voip_recv",
+    "recv_pps_max_client", "recv_cap_pct",
 ]
 _last_csv_prune = 0.0
 
@@ -1603,6 +1626,9 @@ def _csv_row(s: dict) -> list:
         f(gnet.get("kbs_sent")), f(gnet.get("kbs_recv")),
         f(s.get("srv_fps"), 0), f(s.get("packet_loss"), 3),
         f(s.get("voip_sent"), 0), f(s.get("voip_recv"), 0),
+        f(gnet.get("recv_pps_max_client"), 0),
+        f(100.0 * gnet["recv_pps_max_client"] / maxpps)
+        if gnet.get("recv_pps_max_client") is not None and maxpps else "",
     ]
 
 
