@@ -16,6 +16,7 @@ Configuration lue depuis l'environnement (exporté par run-bot.sh via .env) :
   DISCORD_BOT_DEATH_CHANNEL_ID  Salon où notifier les morts de joueurs (optionnel)
   DISCORD_BOT_MONITORING_CHANNEL_ID  Salon de télémétrie périodique (optionnel)
   DISCORD_BOT_MONITORING_INTERVAL    Intervalle du monitoring, secondes (défaut 60)
+  DISCORD_BOT_MONITORING_CSV_DAYS    Rétention du journal CSV des métriques, jours (défaut 7)
   PZ_MANAGER_DIR             Racine pzmanager (contient le dispatcher `pzm`)
   PZ_SOURCE_DIR              Racine Zomboid (contient Logs/ pour les morts)
 
@@ -25,6 +26,7 @@ seul `pzm` peut être invoqué.
 """
 
 import asyncio
+import csv
 import functools
 import glob
 import io
@@ -34,7 +36,7 @@ import re
 import shlex
 import shutil
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 
 import discord
@@ -94,6 +96,11 @@ MONITORING_INTERVAL = max(15, int(os.environ.get("DISCORD_BOT_MONITORING_INTERVA
 LOG_ZOMBOID_DIR = os.environ.get("LOG_ZOMBOID_DIR", "").rstrip("/")
 GC_LOG_PATH = f"{LOG_ZOMBOID_DIR}/gc.log" if LOG_ZOMBOID_DIR else ""
 HEAP_RESTART_PERCENT = int(os.environ.get("HEAP_RESTART_PERCENT", "95") or "95")
+# Journal CSV des métriques (« boîte noire » relisible hors Discord) : une ligne
+# par cycle de monitoring, dans scripts/logs/zomboid/ (gitignoré), purgé au-delà
+# de DISCORD_BOT_MONITORING_CSV_DAYS jours.
+MONITORING_CSV_PATH = f"{LOG_ZOMBOID_DIR}/monitoring.csv" if LOG_ZOMBOID_DIR else ""
+MONITORING_CSV_DAYS = max(1, int(os.environ.get("DISCORD_BOT_MONITORING_CSV_DAYS", "7") or "7"))
 _PZ_XMX_RAW = os.environ.get("PZ_XMX_GB", "").strip()
 
 logging.basicConfig(
@@ -1122,6 +1129,74 @@ def _xmx_gb() -> int:
     return max(2, total // 1024 // 1024 // 2)
 
 
+def _default_iface():
+    """Interface de la route par défaut (destination 00000000 dans /proc/net/route)."""
+    try:
+        with open("/proc/net/route") as f:
+            next(f)
+            for line in f:
+                p = line.split()
+                if len(p) > 1 and p[1] == "00000000":
+                    return p[0]
+    except (OSError, IndexError, StopIteration):
+        pass
+    return None
+
+
+def _net_counters(iface):
+    """(rx_bytes, rx_packets, tx_bytes, tx_packets) de `iface` depuis /proc/net/dev."""
+    try:
+        with open("/proc/net/dev") as f:
+            for line in f:
+                name, _, rest = line.partition(":")
+                if name.strip() != iface:
+                    continue
+                v = rest.split()
+                return int(v[0]), int(v[1]), int(v[8]), int(v[9])
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def _server_ini_path(prev: dict):
+    """Chemin du .ini serveur (servertest.ini par défaut), mis en cache dans prev."""
+    if "ini_path" in prev:
+        return prev["ini_path"]
+    path = ""
+    if PZ_SOURCE_DIR:
+        cand = f"{PZ_SOURCE_DIR}/Server/servertest.ini"
+        if os.path.isfile(cand):
+            path = cand
+        else:
+            inis = glob.glob(f"{PZ_SOURCE_DIR}/Server/*.ini")
+            path = inis[0] if inis else ""
+    prev["ini_path"] = path
+    return path
+
+
+def _ini_ints(path, keys):
+    """Valeurs entières de `keys` (clé=valeur) dans un .ini PZ ; None si absent."""
+    out = {k: None for k in keys}
+    if not path:
+        return out
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line[0] == "#" or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                k = k.strip()
+                if k in out:
+                    try:
+                        out[k] = int(v.strip())
+                    except ValueError:
+                        pass
+    except OSError:
+        pass
+    return out
+
+
 def collect_stats(prev: dict) -> dict:
     """Un instantané complet. `prev` porte l'état inter-cycles (CPU delta)."""
     now = time.monotonic()
@@ -1163,6 +1238,28 @@ def collect_stats(prev: dict) -> dict:
         s["disk"] = None
     s["heapdump"] = _recent_heapdump()
     s["players"] = _online_players(prev)
+    # Débit réseau sur l'interface de la route par défaut (delta entre cycles).
+    # PZ n'expose pas son compteur interne paquets/s -> on mesure au niveau NIC
+    # (PZ domine ce trafic ; inclut aussi le reste de la box = proxy, pas exact).
+    s["net"] = None
+    iface = prev.get("iface")
+    if not iface:
+        iface = prev["iface"] = _default_iface()
+    if iface:
+        cur = _net_counters(iface)
+        pc, pts = prev.get("net_ctr"), prev.get("net_ts")
+        if cur and pc and pts is not None and now - pts > 0:
+            dt = now - pts
+            s["net"] = {
+                "rx_kbs": max(0, cur[0] - pc[0]) / dt / 1024,
+                "tx_kbs": max(0, cur[2] - pc[2]) / dt / 1024,
+                "pps": (max(0, cur[1] - pc[1]) + max(0, cur[3] - pc[3])) / dt,
+            }
+        prev["net_ctr"], prev["net_ts"] = cur, now
+    # Plafonds configurés (servertest.ini) pour les ratios « par rapport au max ».
+    caps = _ini_ints(_server_ini_path(prev), ("MaxPlayers", "MaxPacketsPerSecond"))
+    s["max_players"] = caps.get("MaxPlayers")
+    s["max_pps"] = caps.get("MaxPacketsPerSecond")
     return s
 
 
@@ -1361,6 +1458,113 @@ def _monitoring_embed(s: dict) -> discord.Embed:
     return embed
 
 
+# --- Monitoring : journal CSV (boîte noire relisible) ------------------------
+# Une ligne par cycle. Colonnes stables (ordre figé) pour rester traçable dans
+# un tableur / une courbe. Purge time-based au-delà de MONITORING_CSV_DAYS.
+_CSV_HEADER = [
+    "timestamp", "uptime_s", "players", "max_players", "players_pct",
+    "net_pps", "max_pps", "pps_pct", "net_rx_kbs", "net_tx_kbs",
+    "heap_used_mb", "heap_pct", "heap_major_pct", "gc_pause_s",
+    "rss_mb", "ram_avail_mb", "ram_used_pct", "swap_mb",
+    "cpu_proc_pct", "cpu_sys_pct", "load1",
+    "temp_cpu", "temp_nvme", "disk_free_pct",
+]
+_last_csv_prune = 0.0
+
+
+def _csv_row(s: dict) -> list:
+    def f(x, nd=1):
+        if x is None:
+            return ""
+        return f"{x:.{nd}f}" if isinstance(x, float) else str(x)
+
+    mem = s.get("mem") or {}
+    total_kb, avail_kb = mem.get("MemTotal") or 0, mem.get("MemAvailable")
+    ram_used_pct = 100.0 * (1 - avail_kb / total_kb) if (avail_kb and total_kb) else None
+    gc = s.get("gc")                        # (used, pct, maj_pct, maj_used, pause)
+    net = s.get("net") or {}
+    players, maxp = s.get("players"), s.get("max_players")
+    pps, maxpps = net.get("pps"), s.get("max_pps")
+    cores = s.get("cpu_cores")
+    cpu_sys = sum(cores) / len(cores) if cores else None
+    temps = s.get("temps") or {}
+    disk = s.get("disk")
+    disk_free_pct = 100.0 * disk.free / disk.total if disk and disk.total else None
+    return [
+        datetime.now().replace(microsecond=0).isoformat(),
+        f(s.get("uptime"), 0),
+        f(players), f(maxp),
+        f(100.0 * players / maxp) if players is not None and maxp else "",
+        f(pps, 0), f(maxpps),
+        f(100.0 * pps / maxpps) if pps is not None and maxpps else "",
+        f(net.get("rx_kbs")), f(net.get("tx_kbs")),
+        f(gc[0]) if gc else "", f(gc[1]) if gc and gc[1] is not None else "",
+        f(gc[2]) if gc and gc[2] is not None else "",
+        f(gc[4], 3) if gc and gc[4] is not None else "",
+        f(s["rss_kb"] / 1024, 0) if s.get("rss_kb") else "",
+        f(avail_kb / 1024, 0) if avail_kb else "",
+        f(ram_used_pct),
+        f(s["pswap_kb"] / 1024, 0) if s.get("pswap_kb") is not None else "",
+        f(s.get("cpu_pct")), f(cpu_sys),
+        f(s["load"][0], 2) if s.get("load") else "",
+        f(temps.get("cpu")), f(temps.get("nvme")), f(disk_free_pct),
+    ]
+
+
+def _csv_prune():
+    """Réécrit le CSV sans les lignes plus vieilles que MONITORING_CSV_DAYS jours."""
+    cutoff = datetime.now() - timedelta(days=MONITORING_CSV_DAYS)
+    try:
+        with open(MONITORING_CSV_PATH, newline="") as fh:
+            rows = list(csv.reader(fh))
+    except OSError:
+        return
+    if len(rows) < 2:
+        return
+    header, kept = rows[0], []
+    for row in rows[1:]:
+        if not row:
+            continue
+        try:
+            recent = datetime.fromisoformat(row[0]) >= cutoff
+        except ValueError:
+            recent = True                   # ligne non datable : on la garde
+        if recent:
+            kept.append(row)
+    if len(kept) == len(rows) - 1:
+        return
+    tmp = MONITORING_CSV_PATH + ".tmp"
+    try:
+        with open(tmp, "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(header)
+            w.writerows(kept)
+        os.replace(tmp, MONITORING_CSV_PATH)
+    except OSError as e:
+        log.warning("Monitoring CSV : purge échouée (%s)", e)
+
+
+def _csv_log(s: dict):
+    """Ajoute une ligne au CSV (crée l'entête au 1er passage) puis purge ~1×/h."""
+    global _last_csv_prune
+    if not MONITORING_CSV_PATH:
+        return
+    try:
+        fresh = not os.path.exists(MONITORING_CSV_PATH)
+        with open(MONITORING_CSV_PATH, "a", newline="") as fh:
+            w = csv.writer(fh)
+            if fresh:
+                w.writerow(_CSV_HEADER)
+            w.writerow(_csv_row(s))
+    except OSError as e:
+        log.warning("Monitoring CSV : écriture échouée (%s)", e)
+        return
+    now = time.time()
+    if now - _last_csv_prune > 3600:
+        _last_csv_prune = now
+        _csv_prune()
+
+
 async def monitoring_loop():
     """Tâche de fond : poste un embed de santé toutes les MONITORING_INTERVAL s."""
     await bot.wait_until_ready()
@@ -1382,6 +1586,7 @@ async def monitoring_loop():
     while not bot.is_closed():
         try:
             s = collect_stats(prev)
+            _csv_log(s)                      # boîte noire disque (avant l'envoi Discord)
             await channel.send(embed=_monitoring_embed(s))
         except discord.HTTPException as e:
             log.warning("Monitoring : envoi Discord échoué (%s)", e)
