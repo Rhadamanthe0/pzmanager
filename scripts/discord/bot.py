@@ -1334,7 +1334,7 @@ def _monitoring_embed(s: dict) -> discord.Embed:
         iv = int(MONITORING_INTERVAL)
         window = f"{iv // 60} min" if iv >= 60 and iv % 60 == 0 else f"{iv}s"
         cpu_title = f"⚙️ CPU (sur {window})"
-        cpu_line = f"moyenne **{avg:.0f}%** · max **{mx:.0f}%**"
+        cpu_line = f"moyenne coeurs **{avg:.0f}%** · coeur le plus utilisé **{mx:.0f}%**"
     elif s["load"]:
         cores = os.cpu_count() or 1
         cpu_line = f"charge **{s['load'][0] / cores * 100:.0f}%** (1 min)"
