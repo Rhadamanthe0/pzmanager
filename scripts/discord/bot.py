@@ -1336,13 +1336,18 @@ def collect_stats(prev: dict) -> dict:
                 "kbs_sent": max(0.0, ps["send_b"] - pp[2]) / dt / 1024,
                 "kbs_recv": max(0.0, ps["recv_b"] - pp[3]) / dt / 1024,
             }
-            # paquets/s ENTRANTS du client le plus actif -> à comparer à
+            # paquets/s ENTRANTS du client le plus actif (+ son nom) -> à comparer à
             # MaxPacketsPerSecond (cap anti-flood par client). Un client absent du
             # relevé précédent -> delta 0 (pas de faux pic à la connexion).
             prc = prev.get("prom_rbc") or {}
-            rates = [(c - prc.get(cl, c)) / dt for cl, c in ps["recv_by_client"].items()]
-            rates = [r for r in rates if r > 0]
-            s["game_net"]["recv_pps_max_client"] = max(rates) if rates else 0.0
+            best_cl, best_rate = None, 0.0
+            for cl, c in ps["recv_by_client"].items():
+                r = (c - prc.get(cl, c)) / dt
+                if r > best_rate:
+                    best_rate, best_cl = r, cl
+            s["game_net"]["recv_pps_max_client"] = best_rate
+            # client="" = trafic pré-auth/serveur, pas un joueur -> pas de nom affiché
+            s["game_net"]["recv_pps_max_name"] = best_cl or None
         prev["prom_ctr"] = (ps["send_c"], ps["recv_c"], ps["send_b"], ps["recv_b"])
         prev["prom_rbc"] = ps["recv_by_client"]
         prev["prom_ts"] = now
@@ -1473,7 +1478,9 @@ def _monitoring_embed(s: dict) -> discord.Embed:
         # % du cap = client entrant le plus actif vs MaxPacketsPerSecond (par client).
         mc, max_pps = gnet.get("recv_pps_max_client"), s.get("max_pps")
         if mc is not None and max_pps:
-            net_txt += f" (client max **{mc / max_pps * 100:.0f}%** du cap)"
+            name = gnet.get("recv_pps_max_name")
+            who = f"**{name}** " if name else "client "
+            net_txt += f" ({who}max **{mc / max_pps * 100:.0f}%** du cap)"
     elif net:
         max_pps = s.get("max_pps")
         ratio = f" ({net['pps'] / max_pps * 100:.0f}% du max)" if max_pps else ""
