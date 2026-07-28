@@ -84,7 +84,7 @@ cmd_server() {
 
     case "$action" in
         start|stop|restart|status)
-            exec "${SCRIPT_DIR}/scripts/core/pz.sh" "$action" "$@"
+            exec "${SCRIPT_DIR}/data/scripts/core/pz.sh" "$action" "$@"
             ;;
         *)
             echo "Erreur: Action serveur invalide: $action"
@@ -101,10 +101,10 @@ cmd_backup() {
 
     case "$action" in
         create)
-            exec "${SCRIPT_DIR}/scripts/backup/dataBackup.sh"
+            exec "${SCRIPT_DIR}/data/scripts/backup/dataBackup.sh"
             ;;
         full)
-            exec "${SCRIPT_DIR}/scripts/backup/fullBackup.sh"
+            exec "${SCRIPT_DIR}/data/scripts/backup/fullBackup.sh"
             ;;
         restore)
             if [[ $# -eq 0 ]]; then
@@ -112,7 +112,7 @@ cmd_backup() {
                 echo "Usage: pzm backup restore <chemin>"
                 exit 1
             fi
-            exec "${SCRIPT_DIR}/scripts/backup/restoreZomboidData.sh" "$@"
+            exec "${SCRIPT_DIR}/data/scripts/backup/restoreZomboidData.sh" "$@"
             ;;
         restore-character)
             if [[ $# -lt 2 ]]; then
@@ -120,10 +120,10 @@ cmd_backup() {
                 echo "Usage: pzm backup restore-character <pseudo> <backup>"
                 exit 1
             fi
-            exec "${SCRIPT_DIR}/scripts/backup/restoreCharacter.sh" "$@"
+            exec "${SCRIPT_DIR}/data/scripts/backup/restoreCharacter.sh" "$@"
             ;;
         list)
-            exec "${SCRIPT_DIR}/scripts/backup/listBackups.sh"
+            exec "${SCRIPT_DIR}/data/scripts/backup/listBackups.sh"
             ;;
         *)
             echo "Erreur: Action backup invalide: $action"
@@ -140,7 +140,7 @@ cmd_whitelist() {
 
     case "$action" in
         list|add|remove|remove-account|rename-account|resetpassword|purge|help)
-            exec "${SCRIPT_DIR}/scripts/admin/manageWhitelist.sh" "$action" "$@"
+            exec "${SCRIPT_DIR}/data/scripts/admin/manageWhitelist.sh" "$action" "$@"
             ;;
         *)
             echo "Erreur: Action whitelist invalide: $action"
@@ -157,10 +157,10 @@ cmd_admin() {
 
     case "$action" in
         reset)
-            exec "${SCRIPT_DIR}/scripts/admin/resetServer.sh" "$@"
+            exec "${SCRIPT_DIR}/data/scripts/admin/resetServer.sh" "$@"
             ;;
         maintenance)
-            exec "${SCRIPT_DIR}/scripts/admin/performFullMaintenance.sh" "$@"
+            exec "${SCRIPT_DIR}/data/scripts/admin/performFullMaintenance.sh" "$@"
             ;;
         *)
             echo "Erreur: Action admin invalide: $action"
@@ -177,13 +177,13 @@ cmd_install() {
 
     case "$action" in
         system)
-            exec sudo "${SCRIPT_DIR}/scripts/install/setupSystem.sh"
+            exec sudo "${SCRIPT_DIR}/data/scripts/install/setupSystem.sh"
             ;;
         zomboid)
-            exec sudo "${SCRIPT_DIR}/scripts/install/configurationInitiale.sh" zomboid
+            exec sudo "${SCRIPT_DIR}/data/scripts/install/configurationInitiale.sh" zomboid
             ;;
         discord)
-            exec "${SCRIPT_DIR}/scripts/install/setupDiscordBot.sh"
+            exec "${SCRIPT_DIR}/data/scripts/install/setupDiscordBot.sh"
             ;;
         *)
             echo "Erreur: Action install invalide: $action"
@@ -200,7 +200,7 @@ cmd_map() {
 
     case "$action" in
         wipe)
-            exec "${SCRIPT_DIR}/scripts/admin/wipeMapTile.sh" "$@"
+            exec "${SCRIPT_DIR}/data/scripts/admin/wipeMapTile.sh" "$@"
             ;;
         *)
             echo "Erreur: Action map invalide: $action"
@@ -217,7 +217,7 @@ cmd_rcon() {
         echo "Usage: pzm rcon <commande>"
         exit 1
     fi
-    exec "${SCRIPT_DIR}/scripts/internal/sendCommand.sh" "$@"
+    exec "${SCRIPT_DIR}/data/scripts/internal/sendCommand.sh" "$@"
 }
 
 # Routage commande discord
@@ -227,7 +227,7 @@ cmd_discord() {
         echo "Usage: pzm discord <message>"
         exit 1
     fi
-    exec "${SCRIPT_DIR}/scripts/internal/sendDiscord.sh" "$*"
+    exec "${SCRIPT_DIR}/data/scripts/internal/sendDiscord.sh" "$*"
 }
 
 # Point d'entrée principal

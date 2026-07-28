@@ -3,6 +3,6 @@ Description=Project Zomboid - Whitelist Creation Date Init
 
 [Service]
 Type=oneshot
-ExecStart=%h/pzmanager/scripts/admin/creationDateInit.sh
+ExecStart=%h/pzmanager/data/scripts/admin/creationDateInit.sh
 StandardOutput=journal
 StandardError=journal

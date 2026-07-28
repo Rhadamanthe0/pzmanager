@@ -5,7 +5,7 @@ Memory model, performance tuning, and server reset procedures.
 ## RAM / JVM Configuration
 
 JVM args live in `ProjectZomboid64.json` (the `vmArgs` array), written by
-`scripts/internal/configureJvm.sh`. That script runs at install time **and is
+`data/scripts/internal/configureJvm.sh`. That script runs at install time **and is
 re-applied after every SteamCMD update** — the nightly maintenance runs
 `app_update ... validate`, which restores the vanilla JSON, so any manual edit
 of `ProjectZomboid64.json` is overwritten the next night. There is no
@@ -31,7 +31,7 @@ of `ProjectZomboid64.json` is overwritten the next night. There is no
   later heap OOM (it shrinks the live data, unlike `-Xmx` which only delays).
 - `-Djava.net.preferIPv4Stack=true` — RakNet/UdpEngine network stability.
 - `-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=<logs/zomboid>` plus a
-  rotating `-Xlog:gc*` to `scripts/logs/zomboid/gc.log` — diagnostics.
+  rotating `-Xlog:gc*` to `logs/zomboid/gc.log` — diagnostics.
 
 **No cgroup memory cap.** `MemoryMax`/`MemoryHigh` are deliberately *not* set:
 on a modest machine they sit at the level of physical RAM, and the kernel
@@ -41,12 +41,12 @@ crashes). Instead, `data/setupTemplates/zomboid.service` sets
 pages causes micro-freezes and worsens network desync. The `-Xmx` cap leaves
 the headroom to stay resident.
 
-**To change `Xmx`**, either set `PZ_XMX_GB` in `scripts/.env` (simplest) or edit
-`scripts/internal/configureJvm.sh`, then apply and restart:
+**To change `Xmx`**, either set `PZ_XMX_GB` in `.env` (simplest) or edit
+`data/scripts/internal/configureJvm.sh`, then apply and restart:
 
 ```bash
-nano ~/pzmanager/scripts/.env        # e.g. uncomment: export PZ_XMX_GB=8
-~/pzmanager/scripts/internal/configureJvm.sh
+nano ~/pzmanager/.env        # e.g. uncomment: export PZ_XMX_GB=8
+~/pzmanager/data/scripts/internal/configureJvm.sh
 pzm server restart 5m
 ```
 
@@ -65,7 +65,7 @@ chunks at runtime, so **a restart is the only way to reclaim that memory** —
 otherwise the heap OOMs after ~15 h of uptime.
 
 pzmanager handles this adaptively via `pz-heapcheck.timer` (every ~3 min): it
-reads the post-major-GC heap occupancy from `scripts/logs/zomboid/gc.log` and,
+reads the post-major-GC heap occupancy from `logs/zomboid/gc.log` and,
 when it reaches `HEAP_RESTART_PERCENT` (`.env`, default **95**), triggers
 `pzm server restart` with `HEAP_RESTART_DELAY` (default `5m`) and a player
 warning. A quiet server never gets a needless restart; a fast-filling evening

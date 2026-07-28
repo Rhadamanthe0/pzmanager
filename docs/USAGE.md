@@ -124,7 +124,7 @@ the world database. A failed purge never blocks the server from starting.
 Inspect it at any time — this touches nothing, even with the server up:
 
 ```bash
-scripts/admin/purgeInactivePlayers.sh --force --dry-run --days 60
+data/scripts/admin/purgeInactivePlayers.sh --force --dry-run --days 60
 ```
 
 It prints, per account, whether the SteamID would be released or kept because
@@ -211,7 +211,7 @@ pzm rcon setaccesslevel "Name" admin    # Set player access level
 pzm discord "message"         # Send Discord notification (outbound webhook)
 ```
 
-Requires `DISCORD_WEBHOOK` in `scripts/.env`
+Requires `DISCORD_WEBHOOK` in `.env`
 
 ### Command bot (run pzm from Discord)
 
@@ -220,7 +220,7 @@ pzm install discord           # install/enable the /pzm slash-command bot
 ```
 
 Lets authorized users run `pzm` from Discord via `/pzm server …`, `/pzm backup …`,
-`/pzm rcon …`, etc. Requires the `DISCORD_BOT_*` variables in `scripts/.env`.
+`/pzm rcon …`, etc. Requires the `DISCORD_BOT_*` variables in `.env`.
 See [DISCORD_BOT.md](DISCORD_BOT.md).
 
 ## Automations

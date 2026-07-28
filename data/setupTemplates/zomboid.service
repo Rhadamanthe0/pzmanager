@@ -20,13 +20,13 @@ ExecStartPre=/bin/sh -c "dd if=%h/pzmanager/data/pzserver/zomboid.control iflag=
 # Le "-" rend l'étape non bloquante : une purge en échec ne doit JAMAIS empêcher
 # le serveur de démarrer. Pas de --force : en ExecStartPre l'unité est
 # "activating", donc le garde-fou serveur-arrêté de la purge passe de lui-même.
-ExecStartPre=-%h/pzmanager/scripts/admin/purgeInactivePlayers.sh
+ExecStartPre=-%h/pzmanager/data/scripts/admin/purgeInactivePlayers.sh
 # -servername est passé explicitement depuis PZ_SERVER_NAME (.env) : sans lui PZ
 # retombe sur son défaut "servertest", et le nom du monde pourrait diverger des
 # chemins (db/<nom>.db, Server/<nom>.ini) que lisent les scripts. Le :- garantit
 # un nom non vide même si .env est absent ou la variable non définie.
-ExecStart=/bin/sh -c "ENV_FILE='%h/pzmanager/scripts/.env'; if [ -r \"$ENV_FILE\" ]; then . \"$ENV_FILE\"; fi; ADMIN_ARGS=''; PW_FILE='%h/pzmanager/.admin_password'; if [ -f \"$PW_FILE\" ]; then ADMIN_ARGS=\"-adminpassword $(cat $PW_FILE)\"; rm -f \"$PW_FILE\"; fi; exec %h/pzmanager/data/pzserver/start-server.sh -cachedir=%h/pzmanager/Zomboid -servername \"${PZ_SERVER_NAME:-servertest}\" $ADMIN_ARGS <> %h/pzmanager/data/pzserver/zomboid.control"
-ExecStartPost=-/bin/sh -c "%h/pzmanager/scripts/internal/notifyServerReady.sh &"
+ExecStart=/bin/sh -c "ENV_FILE='%h/pzmanager/.env'; if [ -r \"$ENV_FILE\" ]; then . \"$ENV_FILE\"; fi; ADMIN_ARGS=''; PW_FILE='%h/pzmanager/.admin_password'; if [ -f \"$PW_FILE\" ]; then ADMIN_ARGS=\"-adminpassword $(cat $PW_FILE)\"; rm -f \"$PW_FILE\"; fi; exec %h/pzmanager/data/pzserver/start-server.sh -cachedir=%h/pzmanager/Zomboid -servername \"${PZ_SERVER_NAME:-servertest}\" $ADMIN_ARGS <> %h/pzmanager/data/pzserver/zomboid.control"
+ExecStartPost=-/bin/sh -c "%h/pzmanager/data/scripts/internal/notifyServerReady.sh &"
 ExecStop=/bin/sh -c "echo 'quit' > %h/pzmanager/data/pzserver/zomboid.control"
 KillSignal=SIGCONT
 # Sauvegarde-à-l'extinction d'un gros monde B42 moddé dépasse souvent 30s ;

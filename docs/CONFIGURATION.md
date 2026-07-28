@@ -14,11 +14,11 @@ For advanced settings, see [ADVANCED.md](ADVANCED.md).
 
 ## .env File
 
-**Location**: `scripts/.env`
+**Location**: `.env`
 
 The .env file is automatically created from .env.example on first run.
 
-**Edit**: `nano ~/pzmanager/scripts/.env`
+**Edit**: `nano ~/pzmanager/.env`
 
 ### Main Paths
 
@@ -103,7 +103,7 @@ export JAVA_PATH="/usr/lib/jvm/java-${JAVA_VERSION}-openjdk-amd64"
 
 **Change version**:
 1. Modify `JAVA_VERSION` in .env
-2. Run maintenance: `./scripts/admin/performFullMaintenance.sh now`
+2. Run maintenance: `./data/scripts/admin/performFullMaintenance.sh now`
 
 ### Backups
 
@@ -126,7 +126,7 @@ Local hourly snapshots use **GFS retention** (`prune_gfs` in `dataBackup.sh`), n
 - **BACKUP_GFS_DAILY_DAYS**: then keep 1 per day up to this many days (default 30); older is deleted
 - **BACKUP_PRUNE_MAX_DELETE**: max snapshots deleted per run (default 15; 0 = unlimited). Deleting a hardlinked snapshot is hundreds of thousands of `unlink()`, slow under the unit's 20% CPU cap — bounding it per run lets a large backlog drain over several hourly runs without exceeding `TimeoutStartSec` (2400s). The run is also single-instance (`flock`), so a long prune never overlaps the next hourly trigger.
 
-`BACKUP_PRUNE_DRY_RUN=1 scripts/backup/dataBackup.sh` previews what would be pruned without deleting. `BACKUP_RETENTION_DAYS` is now legacy (kept for reference; the GFS variables above drive local retention).
+`BACKUP_PRUNE_DRY_RUN=1 data/scripts/backup/dataBackup.sh` previews what would be pruned without deleting. `BACKUP_RETENTION_DAYS` is now legacy (kept for reference; the GFS variables above drive local retention).
 
 ### External Synchronization
 
@@ -135,7 +135,7 @@ export SYNC_BACKUPS_DIR="${PZ_DATA_DIR}/fullBackups"
 export OFFSITE_BACKUP_COUNT=7
 ```
 
-Each off-site backup is a **single timestamped ZIP** (`YYYY-MM-DD_HH-MM.zip`) created by `fullBackup.sh`, mirrored off-site by a root **Syncthing** send-only folder. The ZIP holds only the **valuable, non-reconstructible** data — `config/` (`.ssh`, systemd `--user` units, `setupTemplates`, `scripts/` incl. `.env`, `sudoers.d/<user>`) and `zomboid/` (the latest `Saves`/`db`/`Server` snapshot) — and **excludes** anything re-downloadable (the SteamCMD install + Workshop mods under `data/pzserver`, the local backups themselves, logs, the Discord venv). **OFFSITE_BACKUP_COUNT** keeps the N most recent ZIPs (retention by count, not days; default 7).
+Each off-site backup is a **single timestamped ZIP** (`YYYY-MM-DD_HH-MM.zip`) created by `fullBackup.sh`, mirrored off-site by a root **Syncthing** send-only folder. The ZIP holds only the **valuable, non-reconstructible** data — `config/` (`.ssh`, systemd `--user` units, `setupTemplates`, `data/scripts/`, the root `.env`, `sudoers.d/<user>`) and `zomboid/` (the latest `Saves`/`db`/`Server` snapshot) — and **excludes** anything re-downloadable (the SteamCMD install + Workshop mods under `data/pzserver`, the local backups themselves, logs, the Discord venv). **OFFSITE_BACKUP_COUNT** keeps the N most recent ZIPs (retention by count, not days; default 7).
 
 ### Logs
 
@@ -206,7 +206,7 @@ Full guide: [DISCORD_BOT.md](DISCORD_BOT.md).
 
 ### Hourly Backups
 
-**Script**: `scripts/backup/dataBackup.sh`
+**Script**: `data/scripts/backup/dataBackup.sh`
 **Schedule**: Every hour at :14
 **Method**: Incremental with hard links (rsync, CPU-throttled to 20%, `--partial` + retry ×3)
 **Retention**: GFS — hourly 24h / 1-per-6h 7d / 1-per-day 30d (`BACKUP_GFS_*`)
@@ -220,13 +220,13 @@ Full guide: [DISCORD_BOT.md](DISCORD_BOT.md).
 
 ### Complete Backups
 
-**Script**: `scripts/backup/fullBackup.sh`
+**Script**: `data/scripts/backup/fullBackup.sh`
 **Schedule**: Daily at 4:30 AM (during maintenance)
 **Method**: A single self-contained ZIP of the valuable, non-reconstructible data
 **Retention**: `OFFSITE_BACKUP_COUNT` most recent (by count, default 7)
 
 **Contents** (one `YYYY-MM-DD_HH-MM.zip`):
-- `config/` — sudoers (`etc/sudoers.d/<user>`), SSH keys, systemd `--user` units, `setupTemplates`, all `scripts/` (incl. `.env`; excludes `logs/`, `.venv/`, `__pycache__/`)
+- `config/` — sudoers (`etc/sudoers.d/<user>`), SSH keys, systemd `--user` units, `setupTemplates`, all `data/scripts/` (excludes `.venv/`, `__pycache__/`), and the root `.env` (logs live outside `data/scripts/` and are not backed up)
 - `zomboid/` — the latest game snapshot (`Saves`/`db`/`Server` = world, players, server config)
 - **Excluded** (re-downloadable/rebuildable): SteamCMD install + Workshop mods (`data/pzserver`), the local backups themselves, logs, Discord venv
 
@@ -240,19 +240,19 @@ Full guide: [DISCORD_BOT.md](DISCORD_BOT.md).
 pzm backup create
 
 # Complete backup
-sudo ./scripts/backup/fullBackup.sh
+sudo ./data/scripts/backup/fullBackup.sh
 ```
 
 ### Restore from Backup
 
 ```bash
-sudo ./scripts/install/configurationInitiale.sh restore ~/pzmanager/data/fullBackups/2026-01-10_04-30.zip
+sudo ./data/scripts/install/configurationInitiale.sh restore ~/pzmanager/data/fullBackups/2026-01-10_04-30.zip
 ```
 
 ### Adjust Retention
 
 ```bash
-nano ~/pzmanager/scripts/.env
+nano ~/pzmanager/.env
 
 # Modify
 export BACKUP_GFS_DAILY_DAYS=14     # shorter daily GFS tier (default 30)
@@ -282,7 +282,7 @@ Optional notifications for server events.
 
 **2. Configure .env**
 ```bash
-nano ~/pzmanager/scripts/.env
+nano ~/pzmanager/.env
 
 # Paste URL
 export DISCORD_WEBHOOK="https://discord.com/api/webhooks/1234567890/abcdefghijklmnopqrstuvwxyz"
@@ -290,7 +290,7 @@ export DISCORD_WEBHOOK="https://discord.com/api/webhooks/1234567890/abcdefghijkl
 
 **3. Test**
 ```bash
-./scripts/internal/sendDiscord.sh "Test PZ server notification"
+./data/scripts/internal/sendDiscord.sh "Test PZ server notification"
 ```
 
 ### Disable Notifications
@@ -314,14 +314,14 @@ export DISCORD_WEBHOOK=""
 
 ### Zomboid Logs
 
-**Location**: `scripts/logs/zomboid/`
+**Location**: `logs/zomboid/`
 **Format**: `zomboid_YYYY-MM-DD_HHhMMmSS.log`
 **Source**: journald (via captureLogs.sh)
 **Retention**: `LOG_RETENTION_DAYS` (default: 30 days)
 
 ### Maintenance Logs
 
-**Location**: `scripts/logs/maintenance/`
+**Location**: `logs/maintenance/`
 **Format**: `maintenance_YYYY-MM-DD_HHhMMmSS.log`
 **Content**: Logs from performFullMaintenance.sh
 **Retention**: `LOG_RETENTION_DAYS`
@@ -336,8 +336,8 @@ pzm server status
 sudo journalctl -u zomboid.service -f
 
 # Maintenance logs
-ls -lt scripts/logs/maintenance/
-cat scripts/logs/maintenance/maintenance_YYYY-MM-DD_HHhMMmSS.log
+ls -lt logs/maintenance/
+cat logs/maintenance/maintenance_YYYY-MM-DD_HHhMMmSS.log
 ```
 
 ## Configuration Validation
@@ -345,7 +345,7 @@ cat scripts/logs/maintenance/maintenance_YYYY-MM-DD_HHhMMmSS.log
 ### Check .env Syntax
 
 ```bash
-bash -n ~/pzmanager/scripts/.env
+bash -n ~/pzmanager/.env
 ```
 
 ### Check sudoers
@@ -370,7 +370,7 @@ ls -la ~/pzmanager/data/dataBackups/
 ### Test Discord
 
 ```bash
-./scripts/internal/sendDiscord.sh "Test configuration"
+./data/scripts/internal/sendDiscord.sh "Test configuration"
 ```
 
 ## Resources

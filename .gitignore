@@ -1,21 +1,25 @@
-# Sensitive configuration
+# Sensitive configuration (à la racine ; contient aussi la clé de service Google)
 .env
 
-# Operational logs (757 files)
-scripts/logs/
+# Operational logs
+logs/
 
 # Discord bot Python venv (local, volumineux)
-scripts/discord/.venv/
-scripts/discord/__pycache__/
+data/scripts/discord/.venv/
+data/scripts/discord/__pycache__/
 
 # Backup directories (very large)
 data/dataBackups/
 data/fullBackups/
-data/versionning/
 
 # Game server installation (36M+ files, binary)
 data/pzserver/
 Zomboid/
+
+# Versionning des mods : le script et le mode opératoire sont versionnés ;
+# les données propres à CE serveur (états de version, mods parqués) ne le sont pas.
+versionning/V*.txt
+versionning/Mods bugués*.csv
 
 # Temporary files
 temp/

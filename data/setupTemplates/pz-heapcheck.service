@@ -7,6 +7,6 @@ Type=oneshot
 # `restart <délai>` (jusqu'à 15m + arrêt) : sans ce timeout large, systemd
 # tuerait le service à DefaultTimeoutStartSec (90s) en plein préavis joueurs.
 TimeoutStartSec=1500
-ExecStart=%h/pzmanager/scripts/internal/checkHeapAndRestart.sh
+ExecStart=%h/pzmanager/data/scripts/internal/checkHeapAndRestart.sh
 StandardOutput=journal
 StandardError=journal

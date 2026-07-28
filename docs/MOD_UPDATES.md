@@ -29,9 +29,9 @@ server down:
 
 ## The version ledger
 
-Every mod-list change is one numbered version. The current list plus the history
-lives outside git (it is server-specific data, not shipped code) in
-`temp/versionning/`:
+Every mod-list change is one numbered version. The tooling lives in `versionning/`;
+the ledger files themselves stay outside git (server-specific data, not shipped
+code) via `.gitignore`:
 
 | File | Content |
 |------|---------|
@@ -101,7 +101,7 @@ pzm server start now --reason "Mods V[N+1]"
 Then, ~2 min after start:
 
 ```bash
-grep -iE "not found|error|missing" "$(ls -t scripts/logs/zomboid/*.log | head -1)"
+grep -iE "not found|error|missing" "$(ls -t logs/zomboid/*.log | head -1)"
 ```
 
 `required mod X not found` means a missing dependency or a wrong load order.
@@ -119,7 +119,8 @@ Log in as admin — the log being clean is not enough:
 ### 6. Record
 
 Mark `V[N+1].txt` as deployed, and mirror the version into whatever tracker the
-site uses (this server syncs a spreadsheet from `temp/`). A `V[N].txt` without
+site uses (this server syncs a spreadsheet via `versionning/sheetVersionning.sh`).
+A `V[N].txt` without
 its tracker entry means the procedure was not finished.
 
 Announce to players what landed:

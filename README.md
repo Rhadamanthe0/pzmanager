@@ -23,12 +23,12 @@
 **Requirements**: Debian 12 / Ubuntu 22.04+, 4GB+ RAM, root access
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Rhadamanthe0/pzmanager/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Rhadamanthe0/pzmanager/main/data/scripts/install.sh | sudo bash
 ```
 
 Custom username (for multiple servers on the same machine):
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Rhadamanthe0/pzmanager/main/install.sh | sudo PZ_USER=pzuser42 bash
+curl -fsSL https://raw.githubusercontent.com/Rhadamanthe0/pzmanager/main/data/scripts/install.sh | sudo PZ_USER=pzuser42 bash
 ```
 
 That's it. Server ready in ~10 minutes.
@@ -49,7 +49,7 @@ pzm admin maintenance now      # Immediate maintenance
 ## Discord Setup (Optional)
 
 ```bash
-nano ~/pzmanager/scripts/.env
+nano ~/pzmanager/.env
 # Add: DISCORD_WEBHOOK="https://discord.com/api/webhooks/..."
 ```
 

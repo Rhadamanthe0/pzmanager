@@ -157,8 +157,8 @@ present.
     "-XX:+UseCompactObjectHeaders",
     "-Djava.net.preferIPv4Stack=true",
     "-XX:+HeapDumpOnOutOfMemoryError",
-    "-XX:HeapDumpPath=.../scripts/logs/zomboid",
-    "-Xlog:gc*:file=.../scripts/logs/zomboid/gc.log:...:filecount=5,filesize=20M"
+    "-XX:HeapDumpPath=.../logs/zomboid",
+    "-Xlog:gc*:file=.../logs/zomboid/gc.log:...:filecount=5,filesize=20M"
   ]
 }
 ```
@@ -182,11 +182,11 @@ present.
   of tiny map-cell objects, so this cuts ~10-20% of the live set — less resident
   RAM and a later OOM, plus slightly shorter GC pauses (fewer bytes to scan).
 - **IPv4 stack** (`-Djava.net.preferIPv4Stack=true`): RakNet/UdpEngine stability.
-- **Diagnostics**: heap dump on OOM + rotating GC log to `scripts/logs/zomboid/`.
+- **Diagnostics**: heap dump on OOM + rotating GC log to `logs/zomboid/`.
 - **Headless**: No GUI / **Steam**: integration enabled.
 
-**Modify RAM**: set `PZ_XMX_GB` in `scripts/.env` (or edit `Xmx` in
-`scripts/internal/configureJvm.sh`), run the script, and restart. The script
+**Modify RAM**: set `PZ_XMX_GB` in `.env` (or edit `Xmx` in
+`data/scripts/internal/configureJvm.sh`), run the script, and restart. The script
 applies the tuning at install time and re-applies it after every SteamCMD update
 (which restores the vanilla JSON) — a manual edit of `ProjectZomboid64.json`
 would not survive the nightly maintenance. There is no `pzm config ram` command
@@ -272,7 +272,7 @@ WorkingDirectory=%h/pzmanager/data/pzserver/
 ExecStartPre=/bin/sh -c "dd if=%h/pzmanager/data/pzserver/zomboid.control iflag=nonblock of=/dev/null 2>/dev/null; exit 0"
 # Reads the one-shot admin password from ~/pzmanager/.admin_password and deletes it
 ExecStart=/bin/sh -c "... exec .../start-server.sh -cachedir=%h/pzmanager/Zomboid $ADMIN_ARGS <> .../zomboid.control"
-ExecStartPost=-/bin/sh -c "%h/pzmanager/scripts/internal/notifyServerReady.sh &"
+ExecStartPost=-/bin/sh -c "%h/pzmanager/data/scripts/internal/notifyServerReady.sh &"
 ExecStop=/bin/sh -c "echo 'quit' > %h/pzmanager/data/pzserver/zomboid.control"
 KillSignal=SIGCONT
 TimeoutStopSec=120            # a large modded B42 save can take >30s to shut down cleanly
@@ -340,7 +340,7 @@ After=zomboid.service
 
 [Service]
 Type=simple
-ExecStart=%h/pzmanager/scripts/internal/captureLogs.sh
+ExecStart=%h/pzmanager/data/scripts/internal/captureLogs.sh
 Restart=always
 RestartSec=5
 ```
@@ -380,7 +380,7 @@ RestartSec=5
 
 **Lock**: Partage `/tmp/pzmanager-maintenance-<user>.lock` avec `pz.sh` et `performFullMaintenance.sh`. Skip silencieux si lock détenu.
 
-**Logs**: `scripts/logs/mod_checks/mod_checks_YYYY-MM-DD.log` (7-day retention)
+**Logs**: `logs/mod_checks/mod_checks_YYYY-MM-DD.log` (7-day retention)
 
 #### pz-backup.timer - Hourly backup
 
@@ -397,7 +397,7 @@ RestartSec=5
 it never overlaps its own execution or a restart warning).
 
 **Function**:
-- Reads the post-major-GC heap occupancy from `scripts/logs/zomboid/gc.log`.
+- Reads the post-major-GC heap occupancy from `logs/zomboid/gc.log`.
 - When it reaches `HEAP_RESTART_PERCENT` (`.env`, default 95), triggers
   `pzm server restart HEAP_RESTART_DELAY` (default `5m`, with a player warning).
 - The heap fills with live map cells that nothing frees at runtime, so a restart
@@ -420,7 +420,7 @@ warning countdown).
 6. External complete backup
 7. Machine reboot (if `REBOOT_ON_MAINTENANCE=true`) or service restart
 
-**Logs**: `/home/pzuser/pzmanager/scripts/logs/maintenance/`
+**Logs**: `/home/pzuser/pzmanager/logs/maintenance/`
 
 #### pz-creation-date-init.timer - Whitelist date init (midnight)
 
@@ -438,6 +438,9 @@ warning countdown).
 
 ```
 /home/pzuser/pzmanager/
+├── pzm                               # Unified CLI interface
+├── .env                              # Config variables (auto-created, gitignored)
+│
 ├── Zomboid/                          # PZ server data
 │   ├── Server/                       # Server config
 │   │   ├── servertest.ini
@@ -449,51 +452,49 @@ warning countdown).
 │   ├── Logs/
 │   └── mods/
 │
-├── scripts/
-│   ├── .env.example                  # Variables template
-│   ├── .env                          # Config variables (auto-created)
-│   ├── pzm                           # Unified CLI interface
-│   │
-│   ├── core/
-│   │   └── pz.sh                     # Server management (start/stop/restart/status)
-│   │
-│   ├── backup/
-│   │   ├── dataBackup.sh             # Hourly incremental backup
-│   │   ├── fullBackup.sh             # Complete backup with external sync
-│   │   └── restoreZomboidData.sh     # Data-only restoration
-│   │
-│   ├── admin/
-│   │   ├── triggerMaintenanceOnModUpdate.sh  # Mod update -> restart; server update -> full maintenance
-│   │   ├── manageWhitelist.sh        # SQLite whitelist management
-│   │   ├── resetServer.sh            # Complete server reset
-│   │   └── performFullMaintenance.sh # Automatic maintenance
-│   │
-│   ├── install/
-│   │   ├── setupSystem.sh            # System config (user, firewall, packages)
-│   │   └── configurationInitiale.sh  # PZ server install
-│   │
-│   ├── internal/
-│   │   ├── sendCommand.sh            # RCON with output capture
-│   │   ├── sendDiscord.sh            # Discord notifications
-│   │   ├── captureLogs.sh            # Journald log capture
-│   │   ├── configureJvm.sh           # JVM tuning (install + after each update)
-│   │   ├── checkHeapAndRestart.sh    # Adaptive memory restart (pz-heapcheck)
-│   │   └── notifyServerReady.sh      # Server startup notification
-│   │
-│   ├── discord/                      # Inbound /pzm command bot (Python/discord.py)
-│   │   ├── bot.py
-│   │   ├── run-bot.sh
-│   │   └── requirements.txt
-│   │
-│   ├── lib/
-│   │   └── common.sh                 # Sourced by every script (env, logging, locks)
-│   │
-│   └── logs/
-│       ├── zomboid/                  # Captured server logs
-│       ├── maintenance/              # Maintenance logs
-│       └── data_backup.log           # Hourly backup logs
+├── logs/                             # Operational logs (gitignored)
+│   ├── zomboid/                      # Captured server logs
+│   ├── maintenance/                  # Maintenance logs
+│   └── data_backup.log               # Hourly backup logs
 │
 ├── data/
+│   ├── scripts/
+│   │   ├── install.sh                # One-line installer (bootstrap)
+│   │   │
+│   │   ├── core/
+│   │   │   └── pz.sh                 # Server management (start/stop/restart/status)
+│   │   │
+│   │   ├── backup/
+│   │   │   ├── dataBackup.sh         # Hourly incremental backup
+│   │   │   ├── fullBackup.sh         # Complete backup with external sync
+│   │   │   └── restoreZomboidData.sh # Data-only restoration
+│   │   │
+│   │   ├── admin/
+│   │   │   ├── triggerMaintenanceOnModUpdate.sh  # Mod update -> restart; server update -> full maintenance
+│   │   │   ├── manageWhitelist.sh    # SQLite whitelist management
+│   │   │   ├── resetServer.sh        # Complete server reset
+│   │   │   └── performFullMaintenance.sh # Automatic maintenance
+│   │   │
+│   │   ├── install/
+│   │   │   ├── setupSystem.sh        # System config (user, firewall, packages)
+│   │   │   └── configurationInitiale.sh  # PZ server install
+│   │   │
+│   │   ├── internal/
+│   │   │   ├── sendCommand.sh        # RCON with output capture
+│   │   │   ├── sendDiscord.sh        # Discord notifications
+│   │   │   ├── captureLogs.sh        # Journald log capture
+│   │   │   ├── configureJvm.sh       # JVM tuning (install + after each update)
+│   │   │   ├── checkHeapAndRestart.sh  # Adaptive memory restart (pz-heapcheck)
+│   │   │   └── notifyServerReady.sh  # Server startup notification
+│   │   │
+│   │   ├── discord/                  # Inbound /pzm command bot (Python/discord.py)
+│   │   │   ├── bot.py
+│   │   │   ├── run-bot.sh
+│   │   │   └── requirements.txt
+│   │   │
+│   │   └── lib/
+│   │       └── common.sh             # Sourced by every script (env, logging, locks)
+│   │
 │   ├── setupTemplates/
 │   │   ├── pzuser-sudoers            # Sudo permissions
 │   │   ├── zomboid.service           # Systemd service (server)
@@ -520,11 +521,14 @@ warning countdown).
 │   │   ├── backup_2026-01-12_15h14m00s/
 │   │   └── latest -> backup_2026-01-12_15h14m00s  (symlink)
 │   │
-│   ├── fullBackups/                  # Off-site: one self-contained ZIP per backup
-│   │   └── 2026-01-12_04-30.zip       # config/ (ssh, systemd, scripts+.env, sudoers) + zomboid/ (Saves/db/Server)
-│   │
-│   └── versionning/                  # Installed versions history
-│       └── pz_version_*.txt
+│   └── fullBackups/                  # Off-site: one self-contained ZIP per backup
+│       └── 2026-01-12_04-30.zip      # config/ (ssh, systemd, data/scripts, .env, sudoers) + zomboid/ (Saves/db/Server)
+│
+├── versionning/                      # Mod-list version tracking
+│   ├── sheetVersionning.sh           # Google Sheet sync (key read from .env)
+│   ├── Process ajout mods.md         # This server's mod-add specifics
+│   ├── V<N>.txt                      # Per-version mod lists (gitignored)
+│   └── Mods bugués.csv               # Parked mods (gitignored)
 │
 ├── docs/                             # Documentation
 │   ├── QUICKSTART.md
@@ -561,13 +565,13 @@ warning countdown).
 
 ## Environment Variables
 
-Every path, port, retention and secret lives in **`scripts/.env`**, created
+Every path, port, retention and secret lives in **`.env`**, created
 automatically from `data/setupTemplates/.env.example` on the first script run.
 Nothing is hardcoded: the scripts read the exported `PZ_*`, `BACKUP_*` and
 `LOG_*` variables.
 
 ```bash
-nano ~/pzmanager/scripts/.env
+nano ~/pzmanager/.env
 ```
 
 Every variable is documented — with its default and its trade-offs — in
@@ -576,7 +580,7 @@ Every variable is documented — with its default and its trade-offs — in
 
 > `.env` is only created when it does **not** exist: an update that adds a
 > variable never rewrites your file. New variables fall back to their defaults
-> (`apply_env_defaults` in `scripts/lib/common.sh`), so an old `.env` keeps
+> (`apply_env_defaults` in `data/scripts/lib/common.sh`), so an old `.env` keeps
 > working — copy the new lines from `.env.example` if you want to change them.
 
 ---

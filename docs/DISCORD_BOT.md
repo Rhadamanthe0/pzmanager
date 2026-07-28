@@ -72,7 +72,7 @@ Enable **Developer Mode** (Discord *Settings → Advanced*), then right-click to
 | `DISCORD_BOT_CHANNEL_ID` | Right-click the dedicated channel → *Copy Channel ID* (comma-separated for several) |
 | `DISCORD_BOT_ADMIN_ROLE_ID` | Server Settings → Roles → right-click the role → *Copy Role ID* |
 
-### 3. Configure `scripts/.env`
+### 3. Configure `.env`
 
 ```bash
 export DISCORD_BOT_TOKEN="<bot token>"
@@ -91,7 +91,7 @@ export DISCORD_BOT_MONITORING_INTERVAL=60           # monitoring cadence (second
 pzm install discord
 ```
 
-This creates the Python venv (`scripts/discord/.venv`), installs `discord.py`,
+This creates the Python venv (`data/scripts/discord/.venv`), installs `discord.py`,
 and enables/starts `pz-discord-bot.service`. It requires the `python3-venv`
 package (already part of `pzm install system`; if missing, run
 `sudo apt install python3-venv` as root).
@@ -240,7 +240,7 @@ Notes:
 
 ```bash
 systemctl --user status pz-discord-bot.service     # state
-systemctl --user restart pz-discord-bot.service    # after editing scripts/.env
+systemctl --user restart pz-discord-bot.service    # after editing .env
 journalctl --user -u pz-discord-bot.service -f      # live logs
 ```
 
