@@ -38,7 +38,11 @@ server_is_active || exit 0
 # Dernière synthèse de GC MAJEUR :
 #   "... Major Collection (Timer) AAAAM(BB%)->CCCCM(DD%) X,Ys"
 # On extrait DD = occupation du heap après le GC (données vivantes / Xmx).
-last_line="$(grep -aE 'Major Collection .*->[0-9]+M\([0-9]+%\)' "$GC_LOG" 2>/dev/null | tail -1)"
+# `|| true` : juste après un restart, gc.log est recréé vierge (aucune ligne
+# "Major Collection" encore) -> grep sort en code 1, et sous set -e + pipefail
+# l'assignation ferait planter le script (service "failed" -> alerte Discord)
+# AVANT d'atteindre le garde-fou ci-dessous. On avale l'échec pour le gérer ici.
+last_line="$(grep -aE 'Major Collection .*->[0-9]+M\([0-9]+%\)' "$GC_LOG" 2>/dev/null | tail -1 || true)"
 [[ -n "$last_line" ]] || exit 0
 pct="$(sed -E 's/.*->[0-9]+M\(([0-9]+)%\).*/\1/' <<< "$last_line")"
 [[ "$pct" =~ ^[0-9]+$ ]] || exit 0
