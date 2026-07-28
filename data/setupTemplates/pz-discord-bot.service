@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/pzmanager
-ExecStart=%h/pzmanager/scripts/discord/run-bot.sh
+ExecStart=%h/pzmanager/data/scripts/discord/run-bot.sh
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal

@@ -9,7 +9,7 @@ Type=oneshot
 # timeout ; 2400s = marge confortable pour save+rsync+un lot de suppressions, sans
 # jamais tuer un run (ce qui le marquerait failed et laisserait un prune partiel).
 TimeoutStartSec=2400
-ExecStart=%h/pzmanager/scripts/backup/dataBackup.sh
+ExecStart=%h/pzmanager/data/scripts/backup/dataBackup.sh
 StandardOutput=journal
 StandardError=journal
 # Le backup horaire (rsync incrémental qui doit stat ~965k fichiers du monde) ne

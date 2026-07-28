@@ -215,13 +215,13 @@ If too large, shorten the GFS daily tier (`BACKUP_GFS_DAILY_DAYS`, default 30) o
 
 ```bash
 # List available backups
-./scripts/backup/restoreZomboidData.sh
+./data/scripts/backup/restoreZomboidData.sh
 
 # Restore specific backup
-./scripts/backup/restoreZomboidData.sh data/dataBackups/backup_2026-01-11_14h15m00s
+./data/scripts/backup/restoreZomboidData.sh data/dataBackups/backup_2026-01-11_14h15m00s
 
 # Restore latest backup
-./scripts/backup/restoreZomboidData.sh data/dataBackups/latest
+./data/scripts/backup/restoreZomboidData.sh data/dataBackups/latest
 ```
 
 **How it works**:
@@ -243,7 +243,7 @@ pzm server restart 2m
 ls -lt ~/pzmanager/data/fullBackups/
 
 # Restore everything (pass the .zip; older dir-format backups still work too)
-sudo ./scripts/install/configurationInitiale.sh restore ~/pzmanager/data/fullBackups/2026-01-11_04-30.zip
+sudo ./data/scripts/install/configurationInitiale.sh restore ~/pzmanager/data/fullBackups/2026-01-11_04-30.zip
 ```
 
 **Restores**: Sudoers, SSH, systemd services/timers, scripts, .env, Zomboid data.
@@ -260,7 +260,7 @@ sudo ./scripts/install/configurationInitiale.sh restore ~/pzmanager/data/fullBac
 ### Manual Test
 
 ```bash
-./scripts/internal/sendDiscord.sh "Test message"
+./data/scripts/internal/sendDiscord.sh "Test message"
 ```
 
 **If no message received**:
@@ -271,7 +271,7 @@ sudo ./scripts/install/configurationInitiale.sh restore ~/pzmanager/data/fullBac
 ### Check Configuration
 
 ```bash
-cat scripts/.env | grep DISCORD_WEBHOOK
+cat .env | grep DISCORD_WEBHOOK
 # Should not be empty if Discord enabled
 ```
 
@@ -289,7 +289,7 @@ cat scripts/.env | grep DISCORD_WEBHOOK
 sudo chown -R $USER:$USER ~/pzmanager
 
 # Executable scripts
-chmod +x ~/pzmanager/scripts/*.sh
+chmod +x ~/pzmanager/data/scripts/*.sh
 
 # SSH (if configured)
 chmod 700 ~/.ssh
@@ -302,7 +302,7 @@ chmod 600 ~/.ssh/* 2>/dev/null
 # Check file
 # Le sudoers est maintenant installé automatiquement par setupSystem.sh
 # Pour réinstaller manuellement :
-sudo ~/pzmanager/scripts/install/setupSystem.sh $USER
+sudo ~/pzmanager/data/scripts/install/setupSystem.sh $USER
 ```
 
 ## Insufficient Disk Space
@@ -322,7 +322,7 @@ rm -rf ~/pzmanager/data/dataBackups/backup_YYYY-MM-DD*
 rm -rf ~/pzmanager/data/fullBackups/YYYY-MM-DD*
 
 # Or reduce retention (GFS tiers + off-site count)
-nano scripts/.env
+nano .env
 # Modify: BACKUP_GFS_DAILY_DAYS=14   (shorter daily tier)
 #         OFFSITE_BACKUP_COUNT=3     (fewer off-site ZIPs)
 ```
@@ -331,7 +331,7 @@ nano scripts/.env
 
 ```bash
 # Delete old logs
-find ~/pzmanager/scripts/logs -type f -mtime +7 -delete
+find ~/pzmanager/logs -type f -mtime +7 -delete
 ```
 
 ### Purge APT
@@ -364,14 +364,14 @@ PauseEmpty=true
 ### Java Heap Too Small (OutOfMemoryError)
 
 JVM args live in `ProjectZomboid64.json` (the `vmArgs` array), not in the
-systemd service. They are written by `scripts/internal/configureJvm.sh`, which
+systemd service. They are written by `data/scripts/internal/configureJvm.sh`, which
 re-applies them after every SteamCMD update — edit the script, not the JSON
 (a manual JSON edit is overwritten by the nightly maintenance):
 
 ```bash
 # Simplest: set the heap size in .env, then apply and restart
-nano ~/pzmanager/scripts/.env        # uncomment / set: export PZ_XMX_GB=8
-~/pzmanager/scripts/internal/configureJvm.sh
+nano ~/pzmanager/.env        # uncomment / set: export PZ_XMX_GB=8
+~/pzmanager/data/scripts/internal/configureJvm.sh
 pzm server restart 5m
 ```
 

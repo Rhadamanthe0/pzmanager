@@ -12,7 +12,7 @@ Get your Project Zomboid server running in 10 minutes.
 ## Installation
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Rhadamanthe0/pzmanager/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Rhadamanthe0/pzmanager/main/data/scripts/install.sh | sudo bash
 ```
 
 **Duration**: 10-30 minutes
@@ -43,17 +43,17 @@ git clone https://github.com/Rhadamanthe0/pzmanager.git /opt/pzmanager
 cd /opt/pzmanager
 
 # System setup (username as argument, default: pzuser)
-./scripts/install/setupSystem.sh
+./data/scripts/install/setupSystem.sh
 
 # Move to home
 mv /opt/pzmanager /home/pzuser/
 chown -R pzuser:pzuser /home/pzuser/pzmanager
 
 # Configure .env (edit PZ_USER, ports, STEAM_BETA_BRANCH as needed)
-nano /home/pzuser/pzmanager/scripts/.env
+nano /home/pzuser/pzmanager/.env
 
 # Install server (reads PZ_USER and paths from .env)
-/home/pzuser/pzmanager/scripts/install/configurationInitiale.sh zomboid
+/home/pzuser/pzmanager/data/scripts/install/configurationInitiale.sh zomboid
 ```
 
 </details>
@@ -108,7 +108,7 @@ Apply changes: `pzm server restart 5m`
 ## Discord Notifications (Optional)
 
 ```bash
-nano ~/pzmanager/scripts/.env
+nano ~/pzmanager/.env
 ```
 
 Add your webhook:
@@ -135,7 +135,7 @@ View timers: `systemctl --user list-timers`
 pzm backup restore data/dataBackups/backup_YYYY-MM-DD_HHhMMmSSs
 
 # Complete system restore
-sudo ./scripts/install/configurationInitiale.sh restore /path/to/fullBackup
+sudo ./data/scripts/install/configurationInitiale.sh restore /path/to/fullBackup
 ```
 
 ## Uninstallation
