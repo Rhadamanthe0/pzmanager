@@ -57,7 +57,7 @@ drop = ('znetlog', '-Xms', '-Xmx', 'UseZGC', 'AlwaysPreTouch',
         'ZCollectionInterval', 'MaxRAMPercentage', 'preferIPv4Stack',
         'UseStringDeduplication', 'UseCompactObjectHeaders',
         'HeapDumpOnOutOfMemoryError', 'HeapDumpPath', 'Xlog:gc',
-        'prometheusEnabled', 'prometheusPort')
+        'prometheusEnabled', 'prometheusPort', 'OmitStackTraceInFastThrow')
 args = [a for a in data['vmArgs'] if not any(d in a for d in drop)]
 
 # Heap : plafond Xmx uniquement (pas de -Xms -> init ergonomique, croît à la demande)
@@ -91,6 +91,14 @@ args.append('-XX:+UseCompactObjectHeaders')
 
 # Stabilité réseau : forcer la pile IPv4 (évite le fallback IPv6 de RakNet/UdpEngine)
 args.append('-Djava.net.preferIPv4Stack=true')
+
+# Diagnostic : toujours imprimer la stack trace COMPLÈTE des exceptions répétées.
+# Par défaut la JVM tronque la trace des exceptions "fast-throw" (NPE, AIOOBE...)
+# une fois le point chaud JIT-compilé -> on perd la trace des NPE de désync
+# récurrents (HumanVisualPacket getPlayer()-null, IsoMetaGrid.save). Vanilla Linux
+# le fournit déjà, mais on le pose explicitement (et on le retire de la liste ci-
+# dessus) pour ne pas dépendre du JSON vanilla. Coût négligeable.
+args.append('-XX:-OmitStackTraceInFastThrow')
 
 # Diagnostic mémoire : dump heap auto sur OutOfMemoryError (post-mortem de fuite,
 # ~Xmx Go sur disque, 362 Go libres) + log GC rotatif (croissance heap-after-GC
