@@ -31,6 +31,8 @@ journalctl --user -u zomboid.service -n 100
 **Java not found**
 ```bash
 # B42 uses its own embedded JRE in data/pzserver/jre64/
+# (may be a symlink to GraalVM if PZ_GRAALVM_HOME is set — see ADVANCED.md;
+#  the real bundled JRE is then kept as data/pzserver/jre64.stock)
 # If missing, re-validate the server installation:
 pzm admin maintenance now
 ```

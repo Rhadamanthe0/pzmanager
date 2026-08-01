@@ -58,7 +58,7 @@ drop = ('znetlog', '-Xms', '-Xmx', 'UseZGC', 'AlwaysPreTouch',
         'UseStringDeduplication', 'UseCompactObjectHeaders',
         'HeapDumpOnOutOfMemoryError', 'HeapDumpPath', 'Xlog:gc',
         'prometheusEnabled', 'prometheusPort', 'OmitStackTraceInFastThrow',
-        'jdk.graal')
+        'jdk.graal', 'enable-native-access', 'sun-misc-unsafe-memory-access')
 args = [a for a in data['vmArgs'] if not any(d in a for d in drop)]
 
 # Heap : plafond Xmx uniquement (pas de -Xms -> init ergonomique, croît à la demande)
@@ -92,6 +92,15 @@ args.append('-XX:+UseCompactObjectHeaders')
 
 # Stabilité réseau : forcer la pile IPv4 (évite le fallback IPv6 de RakNet/UdpEngine)
 args.append('-Djava.net.preferIPv4Stack=true')
+
+# Compat-future (JDK 24+). PZ charge ses libs natives via System.loadLibrary
+# (zombie.pzexe) et LWJGL utilise sun.misc.Unsafe : depuis JDK 24 ces appels
+# émettent un WARNING et seront BLOQUÉS/RETIRÉS dans une future release -> sans ces
+# flags, une montée de JDK ferait échouer le chargement natif (serveur mort au boot).
+# Le JDK recommande lui-même --enable-native-access. Flags JDK standard : acceptés
+# sur Zulu (jre64 bundlé) comme sur GraalVM. Accessoirement : silence les warnings.
+args.append('--enable-native-access=ALL-UNNAMED')
+args.append('--sun-misc-unsafe-memory-access=allow')
 
 # Réglage du compilo Graal JIT. Actif UNIQUEMENT sur GraalVM (voir linkJvm.sh /
 # PZ_GRAALVM_HOME) : propriété système lue par le compilo Graal. Sur le jre64 bundlé
