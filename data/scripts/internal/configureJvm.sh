@@ -93,18 +93,18 @@ args.append('-XX:+UseCompactObjectHeaders')
 # Stabilité réseau : forcer la pile IPv4 (évite le fallback IPv6 de RakNet/UdpEngine)
 args.append('-Djava.net.preferIPv4Stack=true')
 
-# Optimisations du compilo Graal JIT. Actives UNIQUEMENT si le serveur tourne sur
-# GraalVM (voir linkJvm.sh / PZ_GRAALVM_HOME) : ce sont des propriétés système lues
-# par le compilo Graal. Sur le jre64 bundlé (Zulu/HotSpot, sans compilo Graal) elles
-# sont simplement IGNORÉES (une -D inconnue n'est jamais rejetée) -> inoffensives.
-# Ciblent exactement notre profil : boucles d'allocation intensives (instanciation
-# de millions d'IsoGridSquare à la génération de chunks = les gels mono-thread
-# diagnostiqués). Vectorization=SIMD, TuneInlinerExploration=1=inlining plus agressif.
-# NB: GraalVM VALIDE ces options et plante fatalement sur un nom inconnu (contrairement
-# à HotSpot qui ignore toute -D) -> ne mettre que des options existantes. Vérifié sur
-# GraalVM 25 : Vectorization + TuneInlinerExploration OK ; OptimizeConsecutiveAllocations
-# n'existe pas (le retirer a débloqué le boot le 2026-08-01).
-args.append('-Djdk.graal.Vectorization=true')
+# Réglage du compilo Graal JIT. Actif UNIQUEMENT sur GraalVM (voir linkJvm.sh /
+# PZ_GRAALVM_HOME) : propriété système lue par le compilo Graal. Sur le jre64 bundlé
+# (Zulu/HotSpot, sans compilo Graal) elle est IGNORÉE -> inoffensive.
+# IMPORTANT : sur Oracle GraalVM 25, TOUTES les optims perf enterprise (Vectorization,
+# VectorIntrinsics, toutes les optims de boucles, PEA/escape analysis, inlining) sont
+# déjà ON par défaut -> inutile de les poser (redondant + risque de crash si un nom
+# change/disparaît : GraalVM VALIDE les -Djdk.graal.* et plante fatalement sur un nom
+# inconnu, contrairement à HotSpot). On ne pose donc QUE ce qui diffère du défaut :
+# TuneInlinerExploration (défaut 0.0 -> 1 = explore + d'opportunités d'inlining ;
+# temps de compil amorti sur un serveur longue durée). Ciblé sur nos boucles
+# d'allocation intensives (instanciation d'IsoGridSquare à la génération de chunks
+# = les gels mono-thread diagnostiqués). Vérifié existant sur GraalVM 25.
 args.append('-Djdk.graal.TuneInlinerExploration=1')
 
 # Diagnostic : toujours imprimer la stack trace COMPLÈTE des exceptions répétées.
