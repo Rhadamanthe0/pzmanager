@@ -49,6 +49,13 @@ link_graal() {
         mv "$JRE" "$STOCK"
     fi
     ln -sfn "$GRAAL" "$JRE"
+    # Compat libjsig : start-server.sh précharge libjsig.so via LD_LIBRARY_PATH
+    # .../jre64/lib/amd64 (chemin JDK legacy, absent des JDK modernes/GraalVM où les
+    # libs sont dans lib/). Sans ça : warning "libjsig.so cannot be preloaded" et pas
+    # de chaînage de signaux JVM<->natif. On expose lib/amd64 -> lib dans GraalVM.
+    if [[ -d "${GRAAL}/lib" && ! -e "${GRAAL}/lib/amd64" ]]; then
+        ln -sfn . "${GRAAL}/lib/amd64" 2>/dev/null || true
+    fi
     log "linkJvm: jre64 -> GraalVM (${GRAAL})"
 }
 
