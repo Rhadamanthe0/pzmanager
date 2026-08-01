@@ -55,6 +55,51 @@ pzm server restart 5m
 > total RAM, triggering a brutal Linux OOM-kill instead of a clean Java OOM. Only
 > raise `PZ_XMX_GB` above half if you know the box has the headroom.
 
+## GraalVM (optional JIT engine)
+
+By default the server runs on the JRE bundled with PZ (`data/pzserver/jre64`, Azul
+Zulu / HotSpot). You can optionally run it on **Oracle GraalVM** instead, whose
+**Graal JIT compiler** optimises the allocation-heavy, single-threaded code paths
+(chunk generation → the transient tick stalls that show up as desync). The Graal
+JIT runs as **libgraal** (`UseJVMCINativeLibrary`), i.e. *outside* the Java heap —
+it does not eat your `-Xmx`.
+
+Setup (opt-in, fully reversible):
+
+```bash
+# 1. Install GraalVM JDK 25 outside the Steam tree (survives steamcmd validate)
+curl -sL -o /tmp/graalvm.tar.gz \
+  "https://download.oracle.com/graalvm/25/latest/graalvm-jdk-25_linux-x64_bin.tar.gz"
+mkdir -p ~/graalvm-jdk-25 && tar xzf /tmp/graalvm.tar.gz -C ~/graalvm-jdk-25 --strip-components=1
+
+# 2. Point the server at it
+nano ~/pzmanager/.env        # export PZ_GRAALVM_HOME="/home/<user>/graalvm-jdk-25"
+
+# 3. Apply the JVM args and restart (the switch happens at the restart)
+~/pzmanager/data/scripts/internal/configureJvm.sh
+pzm server restart 5m --reason "Switch Java engine to GraalVM"
+```
+
+How it works: `data/scripts/internal/linkJvm.sh` replaces `jre64` with a symlink to
+`$PZ_GRAALVM_HOME` (the real dir is kept as `jre64.stock`). It is re-applied at
+**every start** via `zomboid.service`'s `ExecStartPre` because `steamcmd validate`
+restores the real `jre64`; nightly maintenance calls `linkJvm.sh --stock` **before**
+the validate so steamcmd never writes through the symlink.
+
+**Rollback:** empty `PZ_GRAALVM_HOME` in `.env` and restart — the next start restores
+the bundled `jre64`. A bare restore (offsite backup) also degrades safely: GraalVM
+lives outside `pzmanager` and is not backed up, so `linkJvm.sh` falls back to the
+bundled JRE until you reinstall GraalVM.
+
+> ⚠️ **GraalVM validates `-Djdk.graal.*` options and aborts fatally on an unknown
+> name** (unlike HotSpot, which ignores any `-D`). All of GraalVM's enterprise perf
+> optimisations (Vectorization, loop opts, escape analysis, inlining) are **already
+> on by default** — do not add flags for them. `configureJvm.sh` sets only
+> `-Djdk.graal.TuneInlinerExploration=1` (the one value that differs from the
+> default). It also sets `--enable-native-access=ALL-UNNAMED` and
+> `--sun-misc-unsafe-memory-access=allow` (standard JDK flags, on Zulu too) so a
+> future JDK does not block PZ's native library loading.
+
 ## Memory-driven restart (why the server restarts on its own)
 
 On a large modded B42 server the Java heap fills with **live map-cell data**
