@@ -99,10 +99,12 @@ args.append('-Djava.net.preferIPv4Stack=true')
 # sont simplement IGNORÉES (une -D inconnue n'est jamais rejetée) -> inoffensives.
 # Ciblent exactement notre profil : boucles d'allocation intensives (instanciation
 # de millions d'IsoGridSquare à la génération de chunks = les gels mono-thread
-# diagnostiqués). Vectorization=SIMD, OptimizeConsecutiveAllocations=allocations
-# groupées, TuneInlinerExploration=1=inlining plus agressif.
+# diagnostiqués). Vectorization=SIMD, TuneInlinerExploration=1=inlining plus agressif.
+# NB: GraalVM VALIDE ces options et plante fatalement sur un nom inconnu (contrairement
+# à HotSpot qui ignore toute -D) -> ne mettre que des options existantes. Vérifié sur
+# GraalVM 25 : Vectorization + TuneInlinerExploration OK ; OptimizeConsecutiveAllocations
+# n'existe pas (le retirer a débloqué le boot le 2026-08-01).
 args.append('-Djdk.graal.Vectorization=true')
-args.append('-Djdk.graal.OptimizeConsecutiveAllocations=true')
 args.append('-Djdk.graal.TuneInlinerExploration=1')
 
 # Diagnostic : toujours imprimer la stack trace COMPLÈTE des exceptions répétées.
