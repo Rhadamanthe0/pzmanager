@@ -100,6 +100,12 @@ update_game_server() {
         fi
     fi
 
+    # Rétablir le vrai jre64 bundlé AVANT le validate : si jre64 est un lien vers
+    # GraalVM (cf. linkJvm.sh), steamcmd écrirait à travers le lien et corromprait
+    # l'install GraalVM externe. Le lien est ré-appliqué au prochain démarrage
+    # (ExecStartPre linkJvm.sh --auto). No-op si on n'utilise pas GraalVM.
+    "${SCRIPT_DIR}/../internal/linkJvm.sh" --stock || true
+
     "${STEAMCMD_PATH}" +force_install_dir "${PZ_INSTALL_DIR}" +login "${STEAM_LOGIN:-anonymous}" \
         +app_update "${STEAM_APP_ID}" -beta "${STEAM_BETA_BRANCH}" validate +quit
 
