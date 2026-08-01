@@ -57,7 +57,8 @@ drop = ('znetlog', '-Xms', '-Xmx', 'UseZGC', 'AlwaysPreTouch',
         'ZCollectionInterval', 'MaxRAMPercentage', 'preferIPv4Stack',
         'UseStringDeduplication', 'UseCompactObjectHeaders',
         'HeapDumpOnOutOfMemoryError', 'HeapDumpPath', 'Xlog:gc',
-        'prometheusEnabled', 'prometheusPort', 'OmitStackTraceInFastThrow')
+        'prometheusEnabled', 'prometheusPort', 'OmitStackTraceInFastThrow',
+        'jdk.graal')
 args = [a for a in data['vmArgs'] if not any(d in a for d in drop)]
 
 # Heap : plafond Xmx uniquement (pas de -Xms -> init ergonomique, croît à la demande)
@@ -91,6 +92,18 @@ args.append('-XX:+UseCompactObjectHeaders')
 
 # Stabilité réseau : forcer la pile IPv4 (évite le fallback IPv6 de RakNet/UdpEngine)
 args.append('-Djava.net.preferIPv4Stack=true')
+
+# Optimisations du compilo Graal JIT. Actives UNIQUEMENT si le serveur tourne sur
+# GraalVM (voir linkJvm.sh / PZ_GRAALVM_HOME) : ce sont des propriétés système lues
+# par le compilo Graal. Sur le jre64 bundlé (Zulu/HotSpot, sans compilo Graal) elles
+# sont simplement IGNORÉES (une -D inconnue n'est jamais rejetée) -> inoffensives.
+# Ciblent exactement notre profil : boucles d'allocation intensives (instanciation
+# de millions d'IsoGridSquare à la génération de chunks = les gels mono-thread
+# diagnostiqués). Vectorization=SIMD, OptimizeConsecutiveAllocations=allocations
+# groupées, TuneInlinerExploration=1=inlining plus agressif.
+args.append('-Djdk.graal.Vectorization=true')
+args.append('-Djdk.graal.OptimizeConsecutiveAllocations=true')
+args.append('-Djdk.graal.TuneInlinerExploration=1')
 
 # Diagnostic : toujours imprimer la stack trace COMPLÈTE des exceptions répétées.
 # Par défaut la JVM tronque la trace des exceptions "fast-throw" (NPE, AIOOBE...)

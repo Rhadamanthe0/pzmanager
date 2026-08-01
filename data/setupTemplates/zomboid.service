@@ -21,6 +21,10 @@ ExecStartPre=/bin/sh -c "dd if=%h/pzmanager/data/pzserver/zomboid.control iflag=
 # le serveur de démarrer. Pas de --force : en ExecStartPre l'unité est
 # "activating", donc le garde-fou serveur-arrêté de la purge passe de lui-même.
 ExecStartPre=-%h/pzmanager/data/scripts/admin/purgeInactivePlayers.sh
+# (Ré)applique le lien jre64 -> GraalVM si PZ_GRAALVM_HOME est défini (.env), sinon
+# garde le jre64 bundlé. SteamCMD "validate" restaure le vrai jre64 à chaque
+# maintenance : on rétablit donc le lien à chaque démarrage. "-" non bloquant.
+ExecStartPre=-%h/pzmanager/data/scripts/internal/linkJvm.sh --auto
 # -servername est passé explicitement depuis PZ_SERVER_NAME (.env) : sans lui PZ
 # retombe sur son défaut "servertest", et le nom du monde pourrait diverger des
 # chemins (db/<nom>.db, Server/<nom>.ini) que lisent les scripts. Le :- garantit
