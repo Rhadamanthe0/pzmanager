@@ -34,7 +34,9 @@
 #
 # add/remove/resetpassword passent par la console -> SERVEUR DÉMARRÉ.
 # remove-account/rename-account/purge --delete écrivent en base -> SERVEUR
-# ARRÊTÉ (refus explicite sinon, snapshot des bases avant écriture).
+# ARRÊTÉ (refus explicite sinon). Pas de snapshot dédié : le serveur est déjà
+# arrêté (donc le backup fait à l'arrêt couvre l'état) et les backups horaires
+# GFS (pzm backup list) sont là -> restauration via pzm backup restore.
 #
 # Exemples:
 #   ./manageWhitelist.sh list
@@ -327,7 +329,6 @@ purge_whitelist() {
         echo ""
         read -p "Supprimer ces $count compte(s) ? [oui/NON]: " confirm
         if [[ "$confirm" == "oui" ]]; then
-            snapshot_dbs
             sqlite3 "$DB_PATH" "DELETE FROM whitelist WHERE $where_clause;" || \
                 die "Échec de la suppression"
             echo "✓ $count compte(s) supprimé(s)"
@@ -352,17 +353,6 @@ Arrête-le d'abord :  pzm server stop 2m --reason \"Nettoyage whitelist\""
 # Localise le players.db live (perso multijoueur, table networkPlayers).
 locate_players_db() {
     PLAYERS_DB="$(find "${PZ_SOURCE_DIR}/Saves/Multiplayer" -name 'players.db' 2>/dev/null | head -1)"
-}
-
-# Snapshot de sécurité des bases avant toute écriture.
-snapshot_dbs() {
-    local snap_dir="${PZ_SOURCE_DIR}/db/whitelist-snapshots"
-    ensure_directory "$snap_dir"
-    local ts; ts="$(date +'%Y-%m-%d_%Hh%Mm%S')"
-    cp -f "$DB_PATH" "${snap_dir}/${PZ_SERVER_NAME}_${ts}.db" && log "Snapshot: ${snap_dir}/${PZ_SERVER_NAME}_${ts}.db"
-    if [[ -n "${PLAYERS_DB:-}" && -f "${PLAYERS_DB:-}" ]]; then
-        cp -f "$PLAYERS_DB" "${snap_dir}/players_${ts}.db" && log "Snapshot: ${snap_dir}/players_${ts}.db"
-    fi
 }
 
 # remove-account <pseudo|steamID64>... [--dry-run]
@@ -434,7 +424,6 @@ remove_accounts() {
     fi
 
     require_server_stopped
-    snapshot_dbs
 
     # 1) Supprimer les comptes whitelist ciblés
     local id
@@ -501,7 +490,6 @@ rename_account() {
     fi
 
     require_server_stopped
-    snapshot_dbs
 
     sqlite3 "$DB_PATH" "UPDATE whitelist SET username='${esc_new}' WHERE username='${esc_old}';" \
         || die "Échec du renommage dans whitelist"
