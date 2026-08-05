@@ -3,7 +3,9 @@
 # Timer systemd toutes les 5 min. Lock partagé avec pz.sh/performFullMaintenance.sh
 #
 # Mod mis à jour    -> simple redémarrage (le serveur retélécharge l'item au boot)
-# Serveur mis à jour -> maintenance complète (apt, app_update, re-tune JVM, reboot)
+# Serveur mis à jour -> maintenance complète (apt, app_update, re-tune JVM) puis
+#                       redémarrage du SERVICE seul (--no-reboot) : une MAJ de build
+#                       ne justifie pas un reboot machine.
 
 set -euo pipefail
 
@@ -153,11 +155,11 @@ build_mod_update_reason() {
 
 # Un mod mis à jour ne demande qu'un redémarrage : le serveur PZ retélécharge
 # lui-même l'item Workshop au boot (GetItemState -> NeedsUpdate -> download).
-# La maintenance complète (apt upgrade, app_update validate, re-tune JVM et reboot
-# de la machine) ne sert qu'à une mise à jour du BUILD serveur ; la déclencher pour
-# un mod rebootait la machine plusieurs fois par jour sans rien apporter de plus :
-# son pré-DL des mods (download_workshop_mods) sort immédiatement tant que
-# STEAM_LOGIN vaut anonymous, ce qui est le cas ici.
+# La maintenance complète (apt upgrade, app_update validate, re-tune JVM) ne sert
+# qu'à une mise à jour du BUILD serveur ; la déclencher pour un mod rebootait la
+# machine plusieurs fois par jour sans rien apporter de plus : son pré-DL des mods
+# (download_workshop_mods) sort immédiatement tant que STEAM_LOGIN vaut anonymous,
+# ce qui est le cas ici.
 trigger_restart() {
     local reason="$1"
     log_event "Triggering restart (5m delay) - reason: ${reason}"
@@ -171,9 +173,11 @@ trigger_restart() {
 
 trigger_maintenance() {
     local reason="$1"
-    log_event "Triggering maintenance (5m delay) - reason: ${reason}"
+    log_event "Triggering maintenance (5m delay, service restart only) - reason: ${reason}"
     flock -u 200
-    "${SCRIPT_DIR}/performFullMaintenance.sh" "5m" --reason "$reason" --automatic
+    # --no-reboot : redémarrage du service seul, pas de reboot machine (une MAJ de
+    # build PZ = steamcmd validate + re-tune JVM, aucune raison de rebooter la box).
+    "${SCRIPT_DIR}/performFullMaintenance.sh" "5m" --reason "$reason" --automatic --no-reboot
     log_event "Maintenance completed"
 }
 

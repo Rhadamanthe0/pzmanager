@@ -22,6 +22,7 @@ fi
 DELAY="30m"
 SILENT_MODE=false
 AUTOMATIC_MODE=false
+NO_REBOOT=false
 MAINTENANCE_REASON="Maintenance"
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -31,6 +32,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --automatic)
             AUTOMATIC_MODE=true
+            shift
+            ;;
+        --no-reboot)
+            # Force le redémarrage du SERVICE seul, jamais la machine, quel que
+            # soit REBOOT_ON_MAINTENANCE. Utilisé par le déclenchement sur MAJ de
+            # build PZ (triggerMaintenanceOnModUpdate.sh) : une MAJ de build ne
+            # justifie pas un reboot machine (contrairement à l'apt/noyau nocturne).
+            NO_REBOOT=true
             shift
             ;;
         --reason)
@@ -106,13 +115,18 @@ update_game_server() {
     # (ExecStartPre linkJvm.sh --auto). No-op si on n'utilise pas GraalVM.
     "${SCRIPT_DIR}/../internal/linkJvm.sh" --stock || true
 
-    # -beta seulement si une branche est configurée. STEAM_BETA_BRANCH vide =
-    # branche publique (stable) => opt-out beta : ne PAS passer -beta "" (steamcmd
-    # interpréterait le token suivant comme nom de branche).
-    local beta_args=()
-    [[ -n "${STEAM_BETA_BRANCH:-}" ]] && beta_args=(-beta "${STEAM_BETA_BRANCH}")
+    # STEAM_BETA_BRANCH vide = branche publique (stable). Il FAUT passer -beta
+    # public EXPLICITEMENT : ne rien passer n'efface PAS une beta déjà gravée dans
+    # le manifeste (UserConfig/MountedConfig "BetaKey"), donc app_update revalide
+    # l'ancienne beta au lieu de basculer sur public. C'est ce qui a causé la boucle
+    # "Mise à jour serveur disponible" -> maintenance -> reboot toutes les ~10 min
+    # au passage 42.19 -> stable le 2026-08-05 (install figé sur buildid 24438606
+    # alors que public était 24574884). "public" est le nom interne Valve de la
+    # branche par défaut ; -beta "" reste proscrit (steamcmd avalerait le token
+    # suivant comme nom de branche).
+    local beta_branch="${STEAM_BETA_BRANCH:-public}"
     "${STEAMCMD_PATH}" +force_install_dir "${PZ_INSTALL_DIR}" +login "${STEAM_LOGIN:-anonymous}" \
-        +app_update "${STEAM_APP_ID}" "${beta_args[@]}" validate +quit
+        +app_update "${STEAM_APP_ID}" -beta "${beta_branch}" validate +quit
 
     # Le validate restaure le ProjectZomboid64.json vanilla : réappliquer le tuning
     "${SCRIPT_DIR}/../internal/configureJvm.sh"
@@ -180,7 +194,7 @@ main() {
 
     [[ "$SILENT_MODE" == true ]] && touch "${SILENT_FLAG_FILE}"
 
-    if [[ "${REBOOT_ON_MAINTENANCE:-true}" == true ]]; then
+    if [[ "$NO_REBOOT" != true && "${REBOOT_ON_MAINTENANCE:-true}" == true ]]; then
         log "Maintenance terminée, redémarrage machine..."
         [[ "$SILENT_MODE" != true ]] && "${SCRIPT_DIR}/../internal/sendDiscord.sh" "Maintenance terminée - Redémarrage machine" || true
         sudo /sbin/reboot
