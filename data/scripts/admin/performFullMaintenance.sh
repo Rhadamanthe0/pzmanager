@@ -106,8 +106,13 @@ update_game_server() {
     # (ExecStartPre linkJvm.sh --auto). No-op si on n'utilise pas GraalVM.
     "${SCRIPT_DIR}/../internal/linkJvm.sh" --stock || true
 
+    # -beta seulement si une branche est configurée. STEAM_BETA_BRANCH vide =
+    # branche publique (stable) => opt-out beta : ne PAS passer -beta "" (steamcmd
+    # interpréterait le token suivant comme nom de branche).
+    local beta_args=()
+    [[ -n "${STEAM_BETA_BRANCH:-}" ]] && beta_args=(-beta "${STEAM_BETA_BRANCH}")
     "${STEAMCMD_PATH}" +force_install_dir "${PZ_INSTALL_DIR}" +login "${STEAM_LOGIN:-anonymous}" \
-        +app_update "${STEAM_APP_ID}" -beta "${STEAM_BETA_BRANCH}" validate +quit
+        +app_update "${STEAM_APP_ID}" "${beta_args[@]}" validate +quit
 
     # Le validate restaure le ProjectZomboid64.json vanilla : réappliquer le tuning
     "${SCRIPT_DIR}/../internal/configureJvm.sh"
