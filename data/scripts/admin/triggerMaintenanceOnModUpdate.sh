@@ -91,8 +91,11 @@ check_server_update() {
 
     # Parse the build ID for the configured beta branch (e.g. "unstable")
     # The manifest structure has: "branches" { "<branch>" { "buildid" "<id>" } }
+    # STEAM_BETA_BRANCH vide = branche publique (stable) : dans app_info elle
+    # s'appelle "public" -> matcher ce nom, sinon awk ne trouve aucun buildid.
+    local branch_name="${STEAM_BETA_BRANCH:-public}"
     local remote_buildid
-    remote_buildid=$(echo "$steam_output" | awk -v branch="${STEAM_BETA_BRANCH}" '
+    remote_buildid=$(echo "$steam_output" | awk -v branch="${branch_name}" '
         /"branches"/ { in_branches=1 }
         in_branches && $0 ~ "\"" branch "\"" { in_branch=1 }
         in_branch && /"buildid"/ {
@@ -104,16 +107,16 @@ check_server_update() {
     ')
 
     if [[ -z "$remote_buildid" ]]; then
-        log_event "WARNING: Could not read remote build ID for branch ${STEAM_BETA_BRANCH}"
+        log_event "WARNING: Could not read remote build ID for branch ${branch_name}"
         return 1
     fi
 
     if [[ "$installed_buildid" != "$remote_buildid" ]]; then
-        log_event "SERVER UPDATE AVAILABLE (installed: ${installed_buildid}, remote: ${remote_buildid}, branch: ${STEAM_BETA_BRANCH})"
+        log_event "SERVER UPDATE AVAILABLE (installed: ${installed_buildid}, remote: ${remote_buildid}, branch: ${branch_name})"
         return 0
     fi
 
-    log_event "OK - server up to date (buildid: ${installed_buildid}, branch: ${STEAM_BETA_BRANCH})"
+    log_event "OK - server up to date (buildid: ${installed_buildid}, branch: ${branch_name})"
     return 1
 }
 
