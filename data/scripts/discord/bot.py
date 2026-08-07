@@ -13,14 +13,13 @@ Configuration lue depuis l'environnement (exporté par run-bot.sh via .env) :
   DISCORD_BOT_CHANNEL_ID     ID(s) du/des salon(s) autorisé(s) (séparés par virgule)
   DISCORD_BOT_ADMIN_ROLE_ID  ID(s) du/des rôle(s) autorisé(s) (séparés par virgule)
   DISCORD_BOT_CMD_TIMEOUT    Timeout d'exécution d'une commande, secondes (défaut 2400)
-  DISCORD_BOT_DEATH_CHANNEL_ID  Salon où notifier les morts de joueurs (optionnel)
   DISCORD_BOT_MONITORING_CHANNEL_ID  Salon de télémétrie périodique (optionnel)
   DISCORD_BOT_MONITORING_INTERVAL    Intervalle du monitoring, secondes (défaut 60)
   DISCORD_BOT_MONITORING_CSV_DAYS    Rétention du journal CSV des métriques, jours (défaut 7)
   PZ_PROMETHEUS_PORT         Port de l'exporteur métriques interne de PZ (localhost) ;
                              source exacte des paquets/s du serveur de jeu (optionnel)
   PZ_MANAGER_DIR             Racine pzmanager (contient le dispatcher `pzm`)
-  PZ_SOURCE_DIR              Racine Zomboid (contient Logs/ pour les morts)
+  PZ_SOURCE_DIR              Racine Zomboid (contient Logs/ ; comptage joueurs → monitoring)
 
 Sécurité : chaque sous-commande construit un argv fixe passé à `pzm` via
 create_subprocess_exec (jamais shell=True). Aucune injection shell possible ;
@@ -68,23 +67,10 @@ ROLE_IDS = {
 # de code, on la joint en fichier plutôt que d'empiler plusieurs messages.
 DISCORD_MAX = 2000
 
-# --- Notification des morts de joueurs ---------------------------------------
-# PZ écrit chaque mort dans Zomboid/Logs/<session>_user.txt (fichier TOURNANT,
-# recréé à chaque session ; absent de journald). Format d'une ligne de mort :
-#   [dd-mm-yy HH:MM:SS.mmm] user <NOM> died at (x,y,z) (non pvp).
-# La cause de la mort n'est PAS journalisée par le serveur vanilla : on remonte
-# donc le maximum de contexte disponible — pseudo, coordonnées (x,y,étage),
-# PvP/Non-PvP, heure. Désactivé si DISCORD_BOT_DEATH_CHANNEL_ID est vide.
-_DEATH_CHANNEL_RAW = os.environ.get("DISCORD_BOT_DEATH_CHANNEL_ID", "").strip()
-DEATH_CHANNEL_ID = int(_DEATH_CHANNEL_RAW) if _DEATH_CHANNEL_RAW.isdigit() else None
 PZ_SOURCE_DIR = os.environ.get("PZ_SOURCE_DIR", "").rstrip("/")
-DEATH_LOG_DIR = f"{PZ_SOURCE_DIR}/Logs" if PZ_SOURCE_DIR else ""
-DEATH_POLL_SECONDS = 4       # fréquence de lecture du log
-DEATH_DEDUP_SECONDS = 15     # même joueur = 1 notif (le moteur logge parfois
-                             # plusieurs lignes en < 1 s pour une même mort)
-DEATH_LINE_RE = re.compile(
-    r"user (?P<name>.+?) died at \((?P<x>-?\d+),(?P<y>-?\d+),(?P<z>-?\d+)\) "
-    r"\((?P<pvp>non pvp|pvp)\)")
+# Répertoire des logs PZ (Zomboid/Logs/<session>_*.txt, fichiers TOURNANTS) — lu par le
+# monitoring pour compter les joueurs connectés (voir _Tail / CONNECT_RE plus bas).
+PZ_LOGS_DIR = f"{PZ_SOURCE_DIR}/Logs" if PZ_SOURCE_DIR else ""
 
 # --- Monitoring serveur (télémétrie périodique) ------------------------------
 # Poste, toutes les MONITORING_INTERVAL secondes, un embed de santé du serveur
@@ -615,58 +601,12 @@ async def pzm_help(interaction: discord.Interaction):
 tree.add_command(pzm_group)
 
 
-# --- Death-watcher : notification des morts de joueurs -----------------------
-
-PVP_DEDUP_SECONDS = 45   # même victime PvP = 1 notif (une bagarre logge plusieurs
-                         # « Kill » rapprochés, surtout avec un mod de réanimation)
-# Délai max entre un KO PvP et la mort définitive qui peut s'ensuivre : JaxeRevival
-# IncapacitatedTime=5 heures IN-GAME, et une heure in-game ≈ 11 min réelles ici
-# (PerkLog « Hours Survived », DayLength=4) -> ~55 min réelles. On garde 75 min de
-# marge pour continuer d'étiqueter « Combat PvP » une mort qui suit une incapacité PvP.
-PVP_CAUSE_WINDOW = 75 * 60
-PVP_CAUSE_RADIUS2 = 30 ** 2   # un incapacité meurt là où il est tombé -> match spatial serré
-
-# La ligne « died at » (user.txt) ne porte QUE le nom du PERSONNAGE (jamais l'username
-# de compte) + coordonnées, et son flag « (non pvp) » est TOUJOURS « non pvp » (inutile).
-# Les PNJ du mod (nommés « Bob » par défaut) écrivent EXACTEMENT la même ligne que les
-# joueurs. Le username de compte n'apparaît QUE sur les lignes connect (avec le SteamID).
-# On recense donc tous les comptes connectés de la session : une mort n'est notifiée que
-# si son nom figure dans cette liste (les PNJ ne se connectent jamais -> écartés ; et sur
-# ce serveur le nom de perso == l'username de compte, donc aucune vraie mort n'est perdue).
+# --- Lecture des logs PZ (tail de session) -----------------------------------
+# Le monitoring compte les joueurs connectés en rejouant Zomboid/Logs/<session>_user.txt
+# (fichier TOURNANT, recréé à chaque session ; absent de journald) : lignes connect /
+# disconnect ci-dessous, via la classe _Tail (rotation, troncature, ligne partielle).
 CONNECT_RE = re.compile(r'(?P<sid>\d{17}) "(?P<user>.+?)" fully connected \(')
-# Symétrique du connect : sert au comptage LIVE des joueurs (monitoring). user.txt logge
-# aussi « <sid> "<user>" disconnected player (x,y,z). » à chaque départ.
 DISCONNECT_RE = re.compile(r'(?P<sid>\d{17}) "(?P<user>.+?)" disconnected player \(')
-
-# Le vrai PvP est dans pvp.txt (usernames de compte, pas noms de perso) :
-#   Combat: "Tueur" (...) hit "Victime" (...) weapon="Arme" damage=...
-#   Kill:   "Tueur" (...) killed "Victime" (x,y,z).
-KILL_RE = re.compile(
-    r'Kill: "(?P<killer>.+?)" \([^)]*\) killed "(?P<victim>.+?)" '
-    r'\((?P<x>-?\d+),(?P<y>-?\d+),(?P<z>-?\d+)\)')
-COMBAT_RE = re.compile(
-    r'Combat: "(?P<attacker>.+?)" \([^)]*\) hit "(?P<victim>.+?)" \([^)]*\) '
-    r'weapon="(?P<weapon>[^"]*)"')
-
-# Incapacité NON-PvP : écrite par notre mod server-only (media/lua/server) dans
-# <session>_pzmanager.txt. Un KO PvP est deja notifié via pvp.txt -> on dédup par
-# username (les deux logs utilisent l'username de compte).
-#   INCAPACITATED "<username>" @ x,y,z
-INCAP_RE = re.compile(
-    r'INCAPACITATED "(?P<user>.+?)" @ (?P<x>-?\d+),(?P<y>-?\d+),(?P<z>-?\d+)')
-INCAP_DEDUP_SECONDS = 60        # même joueur à terre = 1 notif
-INCAP_PVP_MATCH_SECONDS = 20    # KO déjà vu en PvP (pvp.txt) dans cette fenêtre -> pas de doublon
-
-# Un téléport admin (admin.txt : « <compte> teleported to X,Y,Z. ») est parfois suivi,
-# à ~la même position et dans les minutes qui suivent, d'un « died at » FACTICE : le
-# joueur téléporté ne meurt pas vraiment (confirmé — il continue de jouer/téléporter
-# après). On mémorise donc les téléports pour écarter une mort survenue peu après un
-# téléport du MÊME compte tout près. Mesuré : morts factices <=15 tuiles du TP, vraies
-# morts proches d'un TP >=61 -> un rayon de 50 tuiles les sépare nettement.
-ADMIN_TP_RE = re.compile(
-    r'\] (?P<user>.+?) teleported to (?P<x>-?\d+),(?P<y>-?\d+),-?\d+\.')  # z ignoré (match x,y)
-TP_DEATH_WINDOW = 600           # 10 min : une mort dans cette fenêtre après un TP est suspecte
-TP_DEATH_RADIUS2 = 50 ** 2      # ... si elle est aussi à <=50 tuiles de la destination du TP
 
 
 class _Tail:
@@ -729,227 +669,6 @@ class _Tail:
             return [], True
         self._offset += len(data)
         return self._decode(data), True
-
-
-def _position(x: str, y: str, z: str) -> str:
-    pos = f"x={x}, y={y}"
-    return pos + (f" · étage {z}" if z not in ("0", "-0") else "")
-
-
-def _death_embed(name: str, x: str, y: str, z: str, cause: str) -> discord.Embed:
-    """Mort DÉFINITIVE issue de user.txt (le perso meurt pour de bon). Le nom est déjà
-    filtré en amont sur la liste des comptes connectés (perso == compte sur ce serveur),
-    d'où pas de parenthèse de compte. Cause : « ⚔️ Combat PvP » si un takedown PvP récent
-    proche est connu (le joueur a fini par succomber), sinon « 🧟 Environnement / zombie »
-    (le flag « non pvp » de user.txt étant toujours faux, on déduit la cause de pvp.txt)."""
-    embed = discord.Embed(
-        title="☠️ Mort définitive",
-        description=f"**{discord.utils.escape_markdown(name)}** est mort définitivement.",
-        color=0xB03030,
-        timestamp=datetime.now(timezone.utc),
-    )
-    embed.add_field(name="Cause",
-                    value="⚔️ Combat PvP" if cause == "pvp" else "🧟 Environnement / zombie",
-                    inline=True)
-    embed.add_field(name="Position", value=_position(x, y, z), inline=True)
-    return embed
-
-
-def _pvp_embed(victim: str, killer: str, weapon: Optional[str],
-               x: str, y: str, z: str) -> discord.Embed:
-    """Incapacité PvP issue de pvp.txt : la victime est mise à terre par le tueur
-    (usernames de compte). Avec le mod de réanimation, c'est un KO réanimable — la mort
-    définitive, si elle suit, est notifiée séparément (☠️). Arme = dernier coup + position."""
-    embed = discord.Embed(
-        title="⚔️ Incapacité PvP",
-        description=(f"**{discord.utils.escape_markdown(victim)}** a été mis à terre par "
-                     f"**{discord.utils.escape_markdown(killer)}** (réanimable)."),
-        color=0xE67E22,
-        timestamp=datetime.now(timezone.utc),
-    )
-    if weapon:
-        embed.add_field(name="Arme", value=discord.utils.escape_markdown(weapon), inline=True)
-    embed.add_field(name="Position", value=_position(x, y, z), inline=True)
-    return embed
-
-
-def _incap_embed(account: str, x: str, y: str, z: str) -> discord.Embed:
-    """Incapacité NON-PvP issue du mod server-only (<session>_pzmanager.txt) : un
-    joueur est à terre suite à un zombie / l'environnement (les KO PvP arrivent par
-    pvp.txt et sont notifiés séparément)."""
-    embed = discord.Embed(
-        title="🧟 Incapacité",
-        description=(f"**{discord.utils.escape_markdown(account)}** est à terre "
-                     f"(zombie / environnement) — réanimable."),
-        color=0xC27C0E,
-        timestamp=datetime.now(timezone.utc),
-    )
-    embed.add_field(name="Position", value=_position(x, y, z), inline=True)
-    return embed
-
-
-def _dedup(seen: dict[str, float], key: str, now: float, window: float) -> bool:
-    """True s'il faut IGNORER (même clé revue dans la fenêtre). Marque et purge sinon."""
-    if now - seen.get(key, float("-inf")) < window:
-        return True
-    seen[key] = now
-    for stale in [k for k, t in seen.items() if now - t > window * 4]:
-        del seen[stale]
-    return False
-
-
-async def _process_admin_line(channel, line: str, state: dict, emit: bool):
-    """admin.txt : mémorise les téléports (compte + destination) pour écarter ensuite les
-    morts factices qu'ils déclenchent. On n'enregistre que le live (`emit`) -> tous les
-    horodatages restent en `time.monotonic()`, comparables à ceux des morts. `channel`
-    n'est pas utilisé (signature homogène avec les autres processeurs)."""
-    if not emit:
-        return
-    m = ADMIN_TP_RE.search(line)
-    if not m:
-        return
-    now = time.monotonic()
-    tps = state["recent_tps"]
-    tps.append((now, m.group("user").strip(), int(m.group("x")), int(m.group("y"))))
-    tps[:] = [k for k in tps if now - k[0] < TP_DEATH_WINDOW]
-
-
-async def _process_user_line(channel, line: str, state: dict, emit: bool):
-    """user.txt : met à jour les comptes connectés et, si `emit`, notifie une mort
-    NON-PvP (les morts PvP sont couvertes par pvp.txt ; on saute donc une mort dont
-    un « Kill » PvP tout récent au même endroit a déjà été notifié)."""
-    accounts = state["accounts"]
-    m = CONNECT_RE.search(line)
-    if m:
-        accounts.add(m.group("user").strip())
-        return
-    if not emit:
-        return
-    m = DEATH_LINE_RE.search(line)
-    if not m:
-        return
-    name = m.group("name").strip()
-    if name not in accounts:
-        return  # PNJ (« Bob » par défaut) ou perso non rattaché à un compte -> pas de notif
-    now = time.monotonic()
-    x, y, z = m.group("x"), m.group("y"), m.group("z")
-    ix, iy = int(x), int(y)
-    # Mort factice consécutive à un téléport admin du même compte tout près -> on ignore
-    # (avant le dédup, pour ne pas consommer sa fenêtre au détriment d'une vraie mort).
-    if any(now - t <= TP_DEATH_WINDOW and acct == name
-           and (tx - ix) ** 2 + (ty - iy) ** 2 <= TP_DEATH_RADIUS2
-           for t, acct, tx, ty in state["recent_tps"]):
-        log.info("Mort factice ignorée (téléport récent) : %s (%s,%s)", name, x, y)
-        return
-    if _dedup(state["last_death"], name, now, DEATH_DEDUP_SECONDS):
-        return
-    # Cause : un takedown PvP récent (≤ fenêtre d'incapacité) et proche -> le joueur a
-    # succombé à ses blessures PvP ; sinon environnement / zombie.
-    cause = "pvp" if any(now - t < PVP_CAUSE_WINDOW
-                         and (kx - ix) ** 2 + (ky - iy) ** 2 <= PVP_CAUSE_RADIUS2
-                         for t, kx, ky, _v in state["recent_kills"]) else "env"
-    try:
-        await channel.send(embed=_death_embed(name, x, y, z, cause))
-        log.info("MORT DÉFINITIVE notifiée : %s (%s,%s,%s) cause=%s", name, x, y, z, cause)
-    except discord.HTTPException as e:
-        log.warning("Échec envoi notif mort pour %s : %s", name, e)
-
-
-async def _process_pvp_line(channel, line: str, state: dict, emit: bool):
-    """pvp.txt : mémorise l'arme des coups (Combat) et, si `emit`, notifie chaque
-    Kill (victime tuée par tueur + arme), dédupliqué par victime."""
-    weapon = state["weapon"]
-    m = COMBAT_RE.search(line)
-    if m:
-        if len(weapon) > 200:
-            weapon.clear()
-        weapon[(m.group("attacker").strip(), m.group("victim").strip())] = m.group("weapon")
-        return
-    m = KILL_RE.search(line)
-    if not m or not emit:
-        return
-    killer, victim = m.group("killer").strip(), m.group("victim").strip()
-    now = time.monotonic()
-    if _dedup(state["last_pvp"], victim, now, PVP_DEDUP_SECONDS):
-        return
-    x, y, z = m.group("x"), m.group("y"), m.group("z")
-    state["recent_kills"].append((now, int(x), int(y), victim))
-    state["recent_kills"][:] = [k for k in state["recent_kills"] if now - k[0] < PVP_CAUSE_WINDOW]
-    try:
-        await channel.send(embed=_pvp_embed(victim, killer, weapon.get((killer, victim)), x, y, z))
-        log.info("INCAPACITÉ PvP notifiée : %s mis à terre par %s (%s,%s,%s)",
-                 victim, killer, x, y, z)
-    except discord.HTTPException as e:
-        log.warning("Échec envoi notif PvP pour %s : %s", victim, e)
-
-
-async def _process_pzm_line(channel, line: str, state: dict, emit: bool):
-    """pzmanager.txt (mod server-only) : notifie une incapacité NON-PvP. On saute
-    celles déjà couvertes par un « Kill » PvP tout récent pour le même username (les
-    deux logs utilisent l'username de compte -> match direct, pas de coords)."""
-    m = INCAP_RE.search(line)
-    if not m or not emit:
-        return
-    user = m.group("user").strip()
-    now = time.monotonic()
-    if any(now - t < INCAP_PVP_MATCH_SECONDS and victim == user
-           for t, _x, _y, victim in state["recent_kills"]):
-        return  # KO déjà annoncé comme incapacité PvP (pvp.txt)
-    if _dedup(state["last_incap"], user, now, INCAP_DEDUP_SECONDS):
-        return
-    x, y, z = m.group("x"), m.group("y"), m.group("z")
-    try:
-        await channel.send(embed=_incap_embed(user, x, y, z))
-        log.info("INCAPACITÉ (non-PvP) notifiée : %s (%s,%s,%s)", user, x, y, z)
-    except discord.HTTPException as e:
-        log.warning("Échec envoi notif incapacité pour %s : %s", user, e)
-
-
-async def death_watcher():
-    """Tâche de fond : suit user.txt (morts non-PvP) ET pvp.txt (morts PvP) et poste
-    dans le salon dédié. Gère la rotation de session et saute l'historique au démarrage
-    (notifs « live » uniquement)."""
-    await bot.wait_until_ready()
-    if DEATH_CHANNEL_ID is None or not DEATH_LOG_DIR:
-        return
-    channel = bot.get_channel(DEATH_CHANNEL_ID)
-    if channel is None:
-        try:
-            channel = await bot.fetch_channel(DEATH_CHANNEL_ID)
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
-            log.warning("Salon des morts %s inaccessible (%s) — notif désactivée",
-                        DEATH_CHANNEL_ID, e)
-            return
-    log.info("Death-watcher actif : salon=%s dir=%s", DEATH_CHANNEL_ID, DEATH_LOG_DIR)
-
-    state = {
-        "accounts": set(),    # usernames connectés cette session (allow-list anti-PNJ)
-        "last_death": {},     # perso -> t : dédup des morts user.txt
-        "last_pvp": {},       # victime -> t : dédup des kills pvp.txt
-        "last_incap": {},     # username -> t : dédup des incapacités non-PvP
-        "weapon": {},         # (tueur, victime) -> arme du dernier coup
-        "recent_kills": [],   # (t, x, y, victime) : kills PvP récents (dédup croisée)
-        "recent_tps": [],     # (t, compte, x, y) : téléports admin récents (anti-mort factice)
-    }
-    admin_tail = _Tail(os.path.join(DEATH_LOG_DIR, "*_admin.txt"))
-    user_tail = _Tail(os.path.join(DEATH_LOG_DIR, "*_user.txt"))
-    pvp_tail = _Tail(os.path.join(DEATH_LOG_DIR, "*_pvp.txt"))
-    pzm_tail = _Tail(os.path.join(DEATH_LOG_DIR, "*_pzmanager.txt"))
-
-    while not bot.is_closed():
-        lines, emit = admin_tail.read()   # traité AVANT user : recent_tps à jour pour écarter les morts factices
-        for line in lines:
-            await _process_admin_line(channel, line, state, emit)
-        lines, emit = user_tail.read()
-        for line in lines:
-            await _process_user_line(channel, line, state, emit)
-        lines, emit = pvp_tail.read()   # traité AVANT pzm : recent_kills à jour pour la dédup
-        for line in lines:
-            await _process_pvp_line(channel, line, state, emit)
-        lines, emit = pzm_tail.read()
-        for line in lines:
-            await _process_pzm_line(channel, line, state, emit)
-        await asyncio.sleep(DEATH_POLL_SECONDS)
 
 
 # --- Monitoring : collecte des métriques -------------------------------------
@@ -1362,17 +1081,17 @@ def _online_players(prev: dict):
     """Nombre de joueurs connectés, sans RCON : on rejoue user.txt (connexions/
     déconnexions) via un _Tail dédié. État porté par `prev` entre les cycles.
     None si le dossier de logs est inconnu. Remis à zéro sur rotation de session."""
-    if not DEATH_LOG_DIR:
+    if not PZ_LOGS_DIR:
         return None
     tail = prev.get("user_tail")
     if tail is None:
-        tail = prev["user_tail"] = _Tail(os.path.join(DEATH_LOG_DIR, "*_user.txt"))
+        tail = prev["user_tail"] = _Tail(os.path.join(PZ_LOGS_DIR, "*_user.txt"))
         prev["online"], prev["user_path"] = set(), None
     online = prev["online"]
     # Nouvelle session (restart serveur) -> le fichier change : on repart de zéro
     # (le _Tail rejoue alors tout le nouveau fichier ci-dessous).
     try:
-        files = glob.glob(os.path.join(DEATH_LOG_DIR, "*_user.txt"))
+        files = glob.glob(os.path.join(PZ_LOGS_DIR, "*_user.txt"))
         newest = max(files, key=os.path.getmtime) if files else None
     except OSError:
         newest = None
@@ -1733,10 +1452,6 @@ async def setup_hook():
     else:
         await tree.sync()
         log.info("Slash commands synchronisées globalement (propagation ~1h)")
-    if DEATH_CHANNEL_ID is not None:
-        bot.loop.create_task(death_watcher())
-    else:
-        log.info("Notification des morts désactivée (DISCORD_BOT_DEATH_CHANNEL_ID vide)")
     if MONITORING_CHANNEL_ID is not None:
         bot.loop.create_task(monitoring_loop())
     else:
