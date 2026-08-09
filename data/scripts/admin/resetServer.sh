@@ -161,7 +161,7 @@ generate_world() {
     "${PZ_INSTALL_DIR}/start-server.sh" \
         -cachedir="${cachedir}" \
         -servername "${PZ_SERVER_NAME}" \
-        -adminpassword "$password" > /dev/null 2>&1 &
+        -adminpassword "$password" <<< "$password" > /dev/null 2>&1 &
 
     local max_wait=300
     local waited=0
