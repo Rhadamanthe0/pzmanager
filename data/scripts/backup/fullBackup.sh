@@ -7,7 +7,8 @@
 #
 # Contenu = UNIQUEMENT les données à valeur, PAS ce qui se reconstruit :
 #   config/   .ssh, units systemd --user, setupTemplates, data/scripts (SANS
-#             .venv/ __pycache__), le .env de la racine, /etc/sudoers.d/<user>
+#             .venv/ __pycache__), le .env de la racine, versionning/ (ledger des
+#             versions de mods, gitignoré), /etc/sudoers.d/<user>
 #   zomboid/  le dernier snapshot de jeu (Saves/ db/ Server/ = monde, joueurs,
 #             config serveur), déréférencé depuis dataBackups/latest.
 #
@@ -48,6 +49,7 @@ readonly DIRS_TO_SYNC=(
     "${PZ_DATA_DIR}/setupTemplates"
     "${PZ_SCRIPTS_DIR}"
     "${PZ_MANAGER_DIR}/.env"
+    "${PZ_MANAGER_DIR}/versionning"
 )
 
 # Reconstructible, exclu de la sauvegarde des scripts : le venv se rebâtit via
