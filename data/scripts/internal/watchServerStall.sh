@@ -129,17 +129,35 @@ if ! grep -q 'State: RUNNABLE' <<< "$main_state"; then
     exit 0
 fi
 
-msg="🧊 **Gel du thread principal détecté** — le serveur ne tourne plus (${clients} joueur(s) connectés, aucun paquet émis depuis ~$(( STALL_SAMPLES + 1 )) min). Thread dump : \`logs/zomboid/stall_${ts}.txt\`. Un \`pzm server restart now\` est nécessaire (le \`quit\` propre ne passera pas : il est traité par le thread bloqué)."
+# --- Notifications ------------------------------------------------------------
+# Canal public (annonces joueurs) : une seule ligne, lisible, sans jargon — les
+# joueurs ont juste besoin de savoir pourquoi ça coupe et que ça repart seul.
+"${SCRIPT_DIR}/sendDiscord.sh" \
+    "🧊 Gel du serveur détecté — redémarrage automatique en cours." || true
 
-# NE PAS passer par sendDiscord.sh : son webhook est le canal public d'annonces
-# (les joueurs y voient les redémarrages). Une alerte technique n'a rien à y
-# faire. On poste sur DISCORD_ADMIN_WEBHOOK si l'admin en a défini un dans .env,
-# sinon journal uniquement — jamais de repli sur le canal public.
+# Détail technique (chemin du dump) : réservé à l'admin. Sur
+# DISCORD_ADMIN_WEBHOOK si défini dans .env, sinon journal seul — jamais sur le
+# canal public.
 if [[ -n "${DISCORD_ADMIN_WEBHOOK:-}" ]]; then
-    jq -n --arg content "$msg" '{content: $content}' \
+    jq -n --arg content "🧊 Gel confirmé (main RUNNABLE, ${clients} joueur(s), compteur figé ~$(( STALL_SAMPLES + 1 )) min). Thread dump : \`logs/zomboid/stall_${ts}.txt\`" '{content: $content}' \
         | curl -s --connect-timeout 5 --max-time 10 \
                -H "Content-Type: application/json" -d @- "${DISCORD_ADMIN_WEBHOOK}" \
                > /dev/null 2>&1 || true
-else
-    log "stallwatch: DISCORD_ADMIN_WEBHOOK non défini — pas de notification Discord (journal uniquement)."
 fi
+
+# --- Redémarrage automatique --------------------------------------------------
+# Le serveur est mort pour les joueurs : attendre une intervention humaine ne
+# gagne rien (le 11/08 il est resté figé ~10 min). `now` car tout préavis serait
+# absurde — plus rien ne tourne — et `--silent` parce que l'annonce ci-dessus a
+# déjà prévenu les joueurs (notifyServerReady annoncera le retour en ligne).
+# Le `quit` propre ne passera pas (traité par le thread bloqué) : systemd
+# SIGKILL à TimeoutStopSec, c'est attendu.
+# Débrayable : STALL_AUTO_RESTART=0 dans .env.
+if [[ "${STALL_AUTO_RESTART:-1}" != "1" ]]; then
+    log "stallwatch: STALL_AUTO_RESTART=0 — redémarrage laissé à l'admin."
+    exit 0
+fi
+
+log "stallwatch: redémarrage automatique du serveur."
+"${PZ_MANAGER_ROOT}/pzm" server restart now --silent --reason "Gel du thread principal (redémarrage automatique)" \
+    || log "stallwatch: le redémarrage automatique a échoué — intervention manuelle nécessaire."
