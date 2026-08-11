@@ -35,7 +35,10 @@ source_env
 
 readonly PORT="${PZ_PROMETHEUS_PORT:-}"
 readonly STATE_FILE="/tmp/pzmanager-stallwatch-$(id -un).state"
-readonly STALL_SAMPLES="${STALL_WATCH_SAMPLES:-2}"   # relevés identiques avant capture
+# 1 seul relevé figé suffit à déclencher la CAPTURE : ce n'est pas elle qui
+# tranche, c'est le dump (main RUNNABLE ou non). Exiger 2 relevés ne fiabilisait
+# rien et coûtait ~1 min 30 de gel supplémentaire.
+readonly STALL_SAMPLES="${STALL_WATCH_SAMPLES:-1}"   # relevés identiques avant capture
 readonly JCMD="${PZ_GRAALVM_HOME:-}/bin/jcmd"
 
 server_is_active || { rm -f "$STATE_FILE"; exit 0; }
@@ -147,16 +150,27 @@ fi
 
 # --- Redémarrage automatique --------------------------------------------------
 # Le serveur est mort pour les joueurs : attendre une intervention humaine ne
-# gagne rien (le 11/08 il est resté figé ~10 min). `now` car tout préavis serait
-# absurde — plus rien ne tourne — et `--silent` parce que l'annonce ci-dessus a
-# déjà prévenu les joueurs (notifyServerReady annoncera le retour en ligne).
-# Le `quit` propre ne passera pas (traité par le thread bloqué) : systemd
-# SIGKILL à TimeoutStopSec, c'est attendu.
+# gagne rien (le 11/08 il est resté figé ~7 min 30).
 # Débrayable : STALL_AUTO_RESTART=0 dans .env.
 if [[ "${STALL_AUTO_RESTART:-1}" != "1" ]]; then
     log "stallwatch: STALL_AUTO_RESTART=0 — redémarrage laissé à l'admin."
     exit 0
 fi
+
+# SIGKILL immédiat, sans passer par l'arrêt propre. Le `quit` de l'ExecStop est
+# exécuté PAR la boucle principale, donc par le thread bloqué : il ne peut
+# structurellement pas aboutir, et les 120 s de TimeoutStopSec ne sont que de
+# l'attente avant le SIGKILL que systemd finira par envoyer. Aucune perte
+# supplémentaire : la boucle empêche déjà toute sauvegarde.
+log "stallwatch: SIGKILL immédiat (le quit ne peut pas aboutir sur un thread bloqué)."
+systemctl --user kill --signal=SIGKILL --kill-whom=all "${PZ_SERVICE_NAME}" || true
+
+# Laisser systemd constater la mort : tant qu'il voit le service actif, pz.sh
+# tenterait l'arrêt propre et on aurait rattrapé les 120 s qu'on vient d'éviter.
+for _ in $(seq 30); do
+    server_is_active || break
+    sleep 1
+done
 
 log "stallwatch: redémarrage automatique du serveur."
 "${PZ_MANAGER_ROOT}/pzm" server restart now --silent --reason "Gel du thread principal (redémarrage automatique)" \
