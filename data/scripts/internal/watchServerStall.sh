@@ -114,6 +114,32 @@ for i in 1 2 3; do
     (( i < 3 )) && sleep 10
 done
 
-"${SCRIPT_DIR}/sendDiscord.sh" \
-    "🧊 **Gel du thread principal détecté** — le serveur ne tourne plus (${clients} joueur(s) connectés, aucun paquet émis depuis ~$(( STALL_SAMPLES + 1 )) min). Thread dump capturé : \`logs/zomboid/stall_${ts}.txt\`. Un \`pzm server restart now\` est nécessaire (le \`quit\` propre ne passera pas : il est traité par le thread bloqué)." \
-    || true
+# --- Tri vrai gel / faux positif ---------------------------------------------
+# Un compteur figé ne suffit PAS à conclure : un client connecté mais encore en
+# écran de chargement (ou déconnecté sans que le serveur l'ait purgé) n'engendre
+# aucun envoi alors que la boucle principale tourne très bien — c'est ce qui a
+# produit 4 fausses alertes les 11/08 (04h35, 06h33, 09h02, 09h10).
+# Le juge de paix est dans le dump : en vrai gel, "main" est RUNNABLE et son
+# compteur `cpu=` grimpe d'une seconde par seconde (un cœur à 100 %) ; au repos
+# il dort dans `Thread.sleep` à GameServer.main.
+main_state="$(awk '/^"main" /{getline; print; exit}' "$out")"
+if ! grep -q 'State: RUNNABLE' <<< "$main_state"; then
+    log "stallwatch: faux positif (main au repos : ${main_state//[[:space:]]/ }) — capture supprimée."
+    rm -f "$out"
+    exit 0
+fi
+
+msg="🧊 **Gel du thread principal détecté** — le serveur ne tourne plus (${clients} joueur(s) connectés, aucun paquet émis depuis ~$(( STALL_SAMPLES + 1 )) min). Thread dump : \`logs/zomboid/stall_${ts}.txt\`. Un \`pzm server restart now\` est nécessaire (le \`quit\` propre ne passera pas : il est traité par le thread bloqué)."
+
+# NE PAS passer par sendDiscord.sh : son webhook est le canal public d'annonces
+# (les joueurs y voient les redémarrages). Une alerte technique n'a rien à y
+# faire. On poste sur DISCORD_ADMIN_WEBHOOK si l'admin en a défini un dans .env,
+# sinon journal uniquement — jamais de repli sur le canal public.
+if [[ -n "${DISCORD_ADMIN_WEBHOOK:-}" ]]; then
+    jq -n --arg content "$msg" '{content: $content}' \
+        | curl -s --connect-timeout 5 --max-time 10 \
+               -H "Content-Type: application/json" -d @- "${DISCORD_ADMIN_WEBHOOK}" \
+               > /dev/null 2>&1 || true
+else
+    log "stallwatch: DISCORD_ADMIN_WEBHOOK non défini — pas de notification Discord (journal uniquement)."
+fi
