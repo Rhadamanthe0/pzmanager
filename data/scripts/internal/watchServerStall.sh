@@ -40,9 +40,20 @@ readonly STATE_FILE="/tmp/pzmanager-stallwatch-$(id -un).state"
 # rien et coûtait ~1 min 30 de gel supplémentaire.
 readonly STALL_SAMPLES="${STALL_WATCH_SAMPLES:-1}"   # relevés identiques avant capture
 readonly JCMD="${PZ_GRAALVM_HOME:-}/bin/jcmd"
+readonly COOLDOWN_FILE="/tmp/pzmanager-stallwatch-$(id -un).cooldown"
+# Après un faux positif, on se tait ce temps-là : inutile de re-dumper (30 s de
+# jcmd) chaque minute tant que la cause bénigne dure.
+readonly FALSE_POSITIVE_COOLDOWN=600
 
-server_is_active || { rm -f "$STATE_FILE"; exit 0; }
+server_is_active || { rm -f "$STATE_FILE" "$COOLDOWN_FILE"; exit 0; }
 [[ -n "$PORT" ]] || exit 0
+
+if [[ -f "$COOLDOWN_FILE" ]]; then
+    if (( $(date +%s) < $(cat "$COOLDOWN_FILE" 2>/dev/null || echo 0) )); then
+        exit 0
+    fi
+    rm -f "$COOLDOWN_FILE"
+fi
 
 pid="$(pgrep -f 'ProjectZomboid64' | head -1 || true)"
 [[ -n "$pid" ]] || exit 0
@@ -118,19 +129,46 @@ for i in 1 2 3; do
 done
 
 # --- Tri vrai gel / faux positif ---------------------------------------------
-# Un compteur figé ne suffit PAS à conclure : un client connecté mais encore en
-# écran de chargement (ou déconnecté sans que le serveur l'ait purgé) n'engendre
-# aucun envoi alors que la boucle principale tourne très bien — c'est ce qui a
-# produit 4 fausses alertes les 11/08 (04h35, 06h33, 09h02, 09h10).
-# Le juge de paix est dans le dump : en vrai gel, "main" est RUNNABLE et son
-# compteur `cpu=` grimpe d'une seconde par seconde (un cœur à 100 %) ; au repos
-# il dort dans `Thread.sleep` à GameServer.main.
-main_state="$(awk '/^"main" /{getline; print; exit}' "$out")"
-if ! grep -q 'State: RUNNABLE' <<< "$main_state"; then
-    log "stallwatch: faux positif (main au repos : ${main_state//[[:space:]]/ }) — capture supprimée."
+# Un compteur figé ne suffit PAS à conclure : une sauvegarde du monde bloque la
+# boucle principale plusieurs dizaines de secondes, et un client encore en écran
+# de chargement n'engendre aucun envoi — dans les deux cas le compteur stagne
+# alors que le serveur va bien.
+#
+# Le seul critère fiable est le PROFIL CPU du thread "main" sur les 3 captures :
+#   - vrai gel  : RUNNABLE aux 3, et `cpu=` grimpe d'~1 s par seconde écoulée
+#                 (boucle infinie = un cœur saturé). Mesuré le 11/08 : 84 %.
+#   - sauvegarde: RUNNABLE au début puis endormi, et ~5 % de CPU seulement
+#                 (c'est de l'I/O). Mesuré le 14/08 : 7 % puis 3 %.
+# Se contenter de "RUNNABLE sur la 1re capture" a coûté un SIGKILL sur un
+# serveur sain avec 10 joueurs le 14/08 à 12h15 — d'où ce test sur la durée.
+readonly BURN_MIN_PCT="${STALL_BURN_MIN_PCT:-60}"
+
+# Les lignes "main" portent cpu= et elapsed= ; la locale FR écrit « 1004719,50ms ».
+mapfile -t main_lines < <(grep -E '^"main" ' "$out")
+runnable_count="$(grep -cE '^"main" .* runnable' "$out" || true)"
+
+burn_pct=-1
+if (( ${#main_lines[@]} >= 2 )); then
+    burn_pct="$(printf '%s\n' "${main_lines[0]}" "${main_lines[-1]}" \
+        | tr ',' '.' \
+        | awk 'BEGIN {n=0}
+               match($0,/cpu=[0-9.]+/)   {c[n]=substr($0,RSTART+4,RLENGTH-4)}
+               match($0,/elapsed=[0-9.]+/){e[n]=substr($0,RSTART+8,RLENGTH-8); n++}
+               END {if (n<2 || e[1]-e[0] <= 0) {print -1; exit}
+                    printf "%.0f", 100*(c[1]-c[0])/((e[1]-e[0])*1000)}')"
+fi
+
+if (( runnable_count < ${#main_lines[@]} )) || (( burn_pct < BURN_MIN_PCT )); then
+    log "stallwatch: faux positif (main runnable ${runnable_count}/${#main_lines[@]}, CPU brûlé ${burn_pct}% < ${BURN_MIN_PCT}%) — capture supprimée, pause ${FALSE_POSITIVE_COOLDOWN}s."
     rm -f "$out"
+    # Réarmer : sans ça, `strikes` continuait de grimper et le script répondait
+    # « dump déjà pris » sans plus rien vérifier — 40 min d'aveuglement le 14/08
+    # à 04h12. Le cooldown évite de re-dumper chaque minute entre-temps.
+    printf '%s %s 0\n' "$pid" "$sent" > "$STATE_FILE"
+    date -d "+${FALSE_POSITIVE_COOLDOWN} seconds" +%s > "$COOLDOWN_FILE"
     exit 0
 fi
+log "stallwatch: gel confirmé (main runnable ${runnable_count}/${#main_lines[@]}, CPU brûlé ${burn_pct}%)."
 
 # --- Notifications ------------------------------------------------------------
 # Canal public (annonces joueurs) : une seule ligne, lisible, sans jargon — les
