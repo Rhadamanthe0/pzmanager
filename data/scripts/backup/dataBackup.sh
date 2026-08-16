@@ -67,11 +67,22 @@ if [[ "$SNAPSHOT_ONLY" != "1" && -p "${PZ_CONTROL_PIPE}" ]]; then
     # directement dans le FIFO comme pour le `save` ci-dessous, sans passer par
     # sendCommand.sh : celui-ci rescrape journald pour récupérer la sortie de la
     # commande, ce qui coûte plusieurs secondes ici pour rien.
+    #
+    # UN SEUL message, EN JEU UNIQUEMENT : pas de send_discord (contrairement à
+    # pz.sh, qui double ses avertissements sur le webhook) — une notification
+    # Discord toutes les heures pour un gel d'une seconde serait du bruit. Et pas
+    # de marqueur au déclenchement non plus : le préavis suffit.
+    #
+    # Gabarit repris de warn_players() dans core/pz.sh pour rester cohérent avec
+    # les avertissements d'arrêt/redémarrage : « ATTENTION : <ACTION> DANS
+    # <durée> ! » en majuscules. Le délai est interpolé pour que le texte suive
+    # BACKUP_WARN_DELAY au lieu de mentir si on le change.
     warn_delay="${BACKUP_WARN_DELAY:-10}"
     if (( warn_delay > 0 )); then
-        warn_msg="Sauvegarde du monde dans ${warn_delay}s (backup horaire) : bref freeze d'environ une seconde."
+        warn_msg="ATTENTION : SAUVEGARDE DANS ${warn_delay} SECONDES !"
         # Message passé en ARGUMENT, jamais interpolé dans la chaîne `bash -c` :
-        # il contient une apostrophe (« d'environ ») qui casserait le quoting.
+        # ça met le quoting à l'abri quel que soit le texte (une apostrophe dans
+        # le message casserait la chaîne mono-quotée).
         if ! timeout 10 bash -c 'printf "servermsg \"%s\"\n" "$1" > "$2"' _ "$warn_msg" "${PZ_CONTROL_PIPE}" 2>/dev/null; then
             echo "Warning: préavis joueurs non envoyé (pipe timeout ou serveur muet) — on sauvegarde quand même."
         fi
