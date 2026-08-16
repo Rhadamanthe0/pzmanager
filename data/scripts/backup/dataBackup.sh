@@ -49,6 +49,18 @@ fi
 
 # Trigger in-game save if server is running (sauté en --snapshot-only : le serveur
 # est arrêté / en cours de boot, il n'y a personne pour lire le pipe).
+#
+# ⚠ NE PAS SUPPRIMER CE SAVE. Depuis le 2026-08-16, `SaveWorldEveryMinutes=0`
+# dans servertest.ini : le serveur n'écrit plus le monde périodiquement de
+# lui-même, ce `save` horaire est donc la SEULE sauvegarde sur disque entre deux
+# arrêts propres. Le retirer ferait perdre tout le monde depuis le démarrage au
+# prochain gel dur de la box / OOM heap (mort non propre = pas d'ExecStop).
+# Pourquoi 0 : chaque save fige la boucle principale (`ServerMap.SaveAll` est
+# synchrone) et PZ met alors les clients en pause au-delà de 600 ms
+# (« Pausing clients because saving is taking longer than 600ms » dans le log)
+# -> micro-lag ressenti par tous les joueurs. À 5 min c'était ~87 saves/jour ;
+# à 0 il n'en reste que 24 (celui-ci), au prix d'un RPO d'une heure — assouplir
+# le RPO était une décision admin explicite.
 if [[ "$SNAPSHOT_ONLY" != "1" && -p "${PZ_CONTROL_PIPE}" ]]; then
     if timeout 10 bash -c "echo 'save' > '${PZ_CONTROL_PIPE}'" 2>/dev/null; then
         sleep 60
