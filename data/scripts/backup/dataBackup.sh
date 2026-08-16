@@ -58,10 +58,26 @@ fi
 # Pourquoi 0 : chaque save fige la boucle principale (`ServerMap.SaveAll` est
 # synchrone) et PZ met alors les clients en pause au-delà de 600 ms
 # (« Pausing clients because saving is taking longer than 600ms » dans le log)
-# -> micro-lag ressenti par tous les joueurs. À 5 min c'était ~87 saves/jour ;
-# à 0 il n'en reste que 24 (celui-ci), au prix d'un RPO d'une heure — assouplir
+# -> micro-lag ressenti par tous les joueurs. À 5 min c'était 12 saves/heure ;
+# à 0 il n'en reste qu'un (celui-ci), au prix d'un RPO d'une heure — assouplir
 # le RPO était une décision admin explicite.
 if [[ "$SNAPSHOT_ONLY" != "1" && -p "${PZ_CONTROL_PIPE}" ]]; then
+    # Préavis joueurs : le gel étant inévitable, on l'annonce pour qu'il soit
+    # attendu plutôt que subi (0 = pas de préavis ni d'attente). On écrit
+    # directement dans le FIFO comme pour le `save` ci-dessous, sans passer par
+    # sendCommand.sh : celui-ci rescrape journald pour récupérer la sortie de la
+    # commande, ce qui coûte plusieurs secondes ici pour rien.
+    warn_delay="${BACKUP_WARN_DELAY:-10}"
+    if (( warn_delay > 0 )); then
+        warn_msg="Sauvegarde du monde dans ${warn_delay}s (backup horaire) : bref freeze d'environ une seconde."
+        # Message passé en ARGUMENT, jamais interpolé dans la chaîne `bash -c` :
+        # il contient une apostrophe (« d'environ ») qui casserait le quoting.
+        if ! timeout 10 bash -c 'printf "servermsg \"%s\"\n" "$1" > "$2"' _ "$warn_msg" "${PZ_CONTROL_PIPE}" 2>/dev/null; then
+            echo "Warning: préavis joueurs non envoyé (pipe timeout ou serveur muet) — on sauvegarde quand même."
+        fi
+        sleep "$warn_delay"
+    fi
+
     if timeout 10 bash -c "echo 'save' > '${PZ_CONTROL_PIPE}'" 2>/dev/null; then
         sleep 60
     else
