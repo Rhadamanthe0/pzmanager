@@ -179,6 +179,25 @@ sync_external() {
     fi
 }
 
+# Filet de sécurité : entre stop_server et le redémarrage final, TOUT échec
+# (verrou apt encore tenu après les 300 s, conflit dpkg, steamcmd injoignable,
+# `die "Java non installé"`) faisait sortir le script sous `set -e` — serveur
+# arrêté, aucun message Discord, et personne pour le relancer avant le timer du
+# lendemain. On relance donc systématiquement le serveur avant de propager
+# l'erreur, et on prévient.
+SERVER_STOPPED_BY_MAINTENANCE=false
+restart_server_on_failure() {
+    local rc=$?
+    (( rc == 0 )) && return 0
+    [[ "$SERVER_STOPPED_BY_MAINTENANCE" == true ]] || return 0
+    log "ÉCHEC de la maintenance (code ${rc}) — redémarrage du serveur pour ne pas le laisser hors ligne."
+    "${SCRIPT_DIR}/../core/pz.sh" start now --reason "Reprise après échec de la maintenance" --automatic || \
+        log "ERREUR: le redémarrage de secours a lui aussi échoué — intervention manuelle requise."
+    "${SCRIPT_DIR}/../internal/sendDiscord.sh" "Maintenance interrompue par une erreur — le serveur a été redémarré." || true
+    return $rc
+}
+trap restart_server_on_failure EXIT
+
 main() {
     log "=== MAINTENANCE DEMARREE ==="
     [[ -x "${SCRIPT_DIR}/../core/pz.sh" ]] || die "pz.sh introuvable"
@@ -187,6 +206,7 @@ main() {
     # ExecStartPre de zomboid.service, donc rejouée à chaque démarrage (dont
     # celui qui suit cette maintenance), toujours monde fermé.
     stop_server
+    SERVER_STOPPED_BY_MAINTENANCE=true
     update_system
     update_game_server
     download_workshop_mods
@@ -194,15 +214,22 @@ main() {
 
     [[ "$SILENT_MODE" == true ]] && touch "${SILENT_FLAG_FILE}"
 
+    # Passé ce point, la maintenance a réussi : le filet ci-dessus n'a plus lieu
+    # d'être (le reboot machine, notamment, n'est pas un échec).
+    SERVER_STOPPED_BY_MAINTENANCE=false
+
     if [[ "$NO_REBOOT" != true && "${REBOOT_ON_MAINTENANCE:-true}" == true ]]; then
         log "Maintenance terminée, redémarrage machine..."
         [[ "$SILENT_MODE" != true ]] && "${SCRIPT_DIR}/../internal/sendDiscord.sh" "Maintenance terminée - Redémarrage machine" || true
         sudo /sbin/reboot
     else
         log "Maintenance terminée, redémarrage du service..."
-        local automatic_opt=""
-        [[ "$AUTOMATIC_MODE" == true ]] && automatic_opt="--automatic"
-        "${SCRIPT_DIR}/../core/pz.sh" start --reason "$MAINTENANCE_REASON" $automatic_opt
+        # Tableau plutôt qu'une chaîne non quotée : `$automatic_opt` reposait sur
+        # le word-splitting d'une variable vide, et la quoter — le réflexe naturel
+        # — aurait passé un argument vide à pz.sh.
+        local -a opts=()
+        [[ "$AUTOMATIC_MODE" == true ]] && opts+=(--automatic)
+        "${SCRIPT_DIR}/../core/pz.sh" start --reason "$MAINTENANCE_REASON" "${opts[@]}"
     fi
 }
 

@@ -42,6 +42,7 @@ readonly AUTOMATION_TIMERS=(
     pz-maintenance.timer
     pz-creation-date-init.timer
     pz-heapcheck.timer
+    pz-stallwatch.timer
 )
 
 # Le service tourne en --user : sans session ouverte, XDG_RUNTIME_DIR n'existe
@@ -243,13 +244,18 @@ download_zomboid_server() {
     mkdir -p "$PZ_INSTALL_DIR"
     chown "$PZ_USER:$PZ_USER" "$PZ_INSTALL_DIR"
 
-    local beta_args=""
-    if [[ -n "${STEAM_BETA_BRANCH:-}" ]]; then
-        echo "  → Branche beta: $STEAM_BETA_BRANCH"
-        beta_args="-beta $STEAM_BETA_BRANCH"
-    fi
+    # -beta TOUJOURS explicite, y compris "public" : omettre l'option laisse la
+    # BetaKey précédente figée dans le manifeste, ce qui avait provoqué la boucle
+    # de mises à jour du 05/08/2026. performFullMaintenance.sh le documente et le
+    # fait déjà ; l'installation faisait l'inverse et rejouait donc le bug sur une
+    # machine neuve. Tableau plutôt que chaîne : plus de word-splitting implicite.
+    local -a beta_args=(-beta "${STEAM_BETA_BRANCH:-public}")
+    echo "  → Branche Steam: ${STEAM_BETA_BRANCH:-public}"
 
-    sudo -u "$PZ_USER" /usr/games/steamcmd +force_install_dir "$PZ_INSTALL_DIR" +login "${STEAM_LOGIN:-anonymous}" +app_update 380870 $beta_args validate +quit
+    # STEAMCMD_PATH / STEAM_APP_ID viennent du .env comme partout ailleurs, au
+    # lieu d'être écrits en dur ici seulement.
+    sudo -u "$PZ_USER" "${STEAMCMD_PATH:-/usr/games/steamcmd}" +force_install_dir "$PZ_INSTALL_DIR" \
+        +login "${STEAM_LOGIN:-anonymous}" +app_update "${STEAM_APP_ID:-380870}" "${beta_args[@]}" validate +quit
 }
 
 configure_zomboid_jvm() {
@@ -284,8 +290,17 @@ install_systemd_services() {
         fi
     done
 
-    # Automation timers and services
-    for unit_file in pz-backup.service pz-backup.timer pz-modcheck.service pz-modcheck.timer pz-maintenance.service pz-maintenance.timer pz-creation-date-init.service pz-creation-date-init.timer pz-heapcheck.service pz-heapcheck.timer; do
+    # Automation timers and services — dérivés de AUTOMATION_TIMERS plutôt que
+    # réénumérés à la main : cette liste-ci et celle des timers activés avaient
+    # divergé, et pz-stallwatch (le détecteur de gel, pourtant actif sur la
+    # machine) n'apparaissait dans aucune des deux ni dans setupTemplates/. Une
+    # réinstallation ou une restauration revenait donc sans lui, en silence.
+    local -a automation_units=()
+    local t
+    for t in "${AUTOMATION_TIMERS[@]}"; do
+        automation_units+=("${t%.timer}.service" "$t")
+    done
+    for unit_file in "${automation_units[@]}"; do
         if [[ -f "$templates_dir/$unit_file" ]]; then
             cp "$templates_dir/$unit_file" "$systemd_dir/$unit_file"
             chown "$PZ_USER:$PZ_USER" "$systemd_dir/$unit_file"

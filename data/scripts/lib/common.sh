@@ -40,7 +40,13 @@ apply_env_defaults() {
     : "${PZ_SERVER_NAME:=servertest}"
     : "${PZ_DB_PATH:=${PZ_SOURCE_DIR}/db/${PZ_SERVER_NAME}.db}"
     : "${PZ_INI_PATH:=${PZ_SOURCE_DIR}/Server/${PZ_SERVER_NAME}.ini}"
-    export PZ_SERVER_NAME PZ_DB_PATH PZ_INI_PATH
+    # PZ_MANAGER_DIR est un ALIAS de la racine déduite, pas une seconde source de
+    # vérité : la moitié des scripts l'utilisaient (checkHeapAndRestart, fullBackup,
+    # notifyServerReady...) et l'autre PZ_MANAGER_ROOT. Un .env recopié depuis une
+    # autre machine faisait alors pointer les deux moitiés sur des arbres différents,
+    # et l'écart ne se voyait que dans les chemins de redémarrage automatique.
+    : "${PZ_MANAGER_DIR:=${PZ_MANAGER_ROOT}}"
+    export PZ_SERVER_NAME PZ_DB_PATH PZ_INI_PATH PZ_MANAGER_DIR
 }
 
 # Arrêt avec message d'erreur
@@ -80,12 +86,23 @@ is_steamid64() { [[ "$1" =~ ^7656119[0-9]{10}$ ]]; }
 # par creationDateInit.sh). Partagée par la purge auto (purgeInactivePlayers.sh)
 # et la purge interactive (manageWhitelist.sh) pour qu'elles ciblent EXACTEMENT
 # les mêmes comptes — ce prédicat ne doit exister qu'à un seul endroit.
+#
+# ATTENTION (corrigé le 2026-08-18) : SANS created_at on ne connaît PAS l'âge d'un
+# compte jamais connecté, donc on ne peut pas le déclarer inactif — la branche
+# `false` les épargne désormais. Avant, elle les supprimait TOUS quel que soit leur
+# âge : un joueur inscrit le jour même dont la déconnexion n'avait pas encore écrit
+# `lastConnection` perdait son accès au démarrage suivant (la purge tourne dans
+# l'ExecStartPre de zomboid.service). Et comme AUCUN script ne crée la colonne
+# (`ALTER TABLE` absent du dépôt), cette branche est la seule qui s'exécute jamais.
+# Le prix : un compte jamais connecté n'est plus purgé automatiquement — il se
+# retire à la main (`pzm whitelist remove-account <pseudo>`), ce qui est le bon
+# arbitrage face à une révocation d'accès injustifiée.
 inactive_where_clause() {
     local days="$1" has_created_at="$2"
     if [[ "$has_created_at" == true ]]; then
         echo "(((lastConnection IS NULL OR lastConnection = '') AND (created_at IS NULL OR created_at < date('now', '-${days} days'))) OR (lastConnection < date('now', '-${days} days') AND lastConnection <> '')) AND username <> 'admin'"
     else
-        echo "((lastConnection IS NULL OR lastConnection = '' OR (lastConnection < date('now', '-${days} days') AND lastConnection <> '')) AND username <> 'admin')"
+        echo "(lastConnection < date('now', '-${days} days') AND lastConnection IS NOT NULL AND lastConnection <> '' AND username <> 'admin')"
     fi
 }
 
@@ -93,6 +110,19 @@ inactive_where_clause() {
 # Requiert que source_env ait été appelé (PZ_SERVICE_NAME).
 server_is_active() {
     systemctl --user is-active --quiet "${PZ_SERVICE_NAME}" 2>/dev/null
+}
+
+# Refuse d'aller plus loin si le serveur tourne. Toute écriture directe dans le
+# monde (<world>.db, players.db, fichiers de save) DOIT passer par ici : le jeu
+# garde ces fichiers ouverts et réécrit son état depuis sa mémoire, donc une
+# modification faite à chaud est au mieux perdue, au pire corrompue.
+# Usage: require_server_stopped [contexte affiché dans le --reason suggéré]
+require_server_stopped() {
+    local context="${1:-Maintenance}"
+    if server_is_active; then
+        die "Le serveur est actif : cette opération écrit dans le monde et doit se faire SERVEUR ARRÊTÉ.
+Arrête-le d'abord :  pzm server stop 2m --reason \"${context}\""
+    fi
 }
 
 # Marqueur journald émis à la toute fin du boot PZ (map chargée, serveur prêt).
@@ -192,4 +222,12 @@ try_acquire_maintenance_lock() {
 
     exec 200>"$lock_file"
     flock -n 200
+}
+
+# Libère le verrou pris par try_acquire_maintenance_lock. Passe par ici plutôt que
+# par un `flock -u 200` chez l'appelant : le numéro de fd est un détail interne, et
+# un appelant qui le devine se retrouve à déverrouiller dans le vide le jour où il
+# change (la maintenance suivante se croirait alors déjà en cours et s'auto-skipperait).
+release_maintenance_lock() {
+    flock -u 200 2>/dev/null || true
 }

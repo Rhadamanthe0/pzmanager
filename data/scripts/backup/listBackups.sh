@@ -4,7 +4,7 @@
 # ------------------------------------------------------------------------------
 # Usage: ./listBackups.sh
 #
-# Lit BACKUP_DIR / SYNC_BACKUPS_DIR / BACKUP_RETENTION_DAYS depuis .env : les
+# Lit BACKUP_DIR / SYNC_BACKUPS_DIR / BACKUP_GFS_* depuis .env : les
 # chemins et la rétention suivent la config, ils ne sont pas codés en dur.
 # ------------------------------------------------------------------------------
 

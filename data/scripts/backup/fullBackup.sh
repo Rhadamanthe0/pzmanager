@@ -72,9 +72,18 @@ stage_config() {
     local dst="${WORK}/config"
     mkdir -p "$dst"
 
+    # Distinguer « absent » (normal, on ignore) de « rsync a échoué » (anormal).
+    # L'ancienne forme `[[ -e ]] && rsync ... || echo "Ignoré"` rapportait un
+    # ÉCHEC de rsync (droits, disque plein) comme une simple absence : le ZIP
+    # hors-site était ensuite construit et mis en rotation sans le .env ni les
+    # units systemd, tout en se déclarant réussi.
     local item
     for item in "${DIRS_TO_SYNC[@]}"; do
-        [[ -e "$item" ]] && rsync -aR --delete "${SYNC_EXCLUDES[@]}" "$item" "${dst}/" || echo "Ignoré: $item"
+        if [[ ! -e "$item" ]]; then
+            echo "Ignoré (absent): $item"
+        elif ! rsync -aR --delete "${SYNC_EXCLUDES[@]}" "$item" "${dst}/"; then
+            die "rsync a échoué sur '$item' : sauvegarde hors-site incomplète, on n'écrase pas la rotation."
+        fi
     done
 
     # sudoers : lecture root en read-only, sortie redirigée par le shell user.

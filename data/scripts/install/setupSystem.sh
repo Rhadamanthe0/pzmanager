@@ -67,10 +67,15 @@ configure_firewall() {
     # Charger les ports depuis .env si disponible, sinon utiliser les défauts
     local port_game="${PZ_PORT_GAME:-16261}"
     local port_game2="${PZ_PORT_GAME2:-16262}"
-    local port_rcon="${PZ_PORT_RCON:-8766}"
-    local port_steam="${PZ_PORT_STEAM:-27015}"
+    local port_rcon="${PZ_PORT_RCON:-27015}"
+    local port_steam="${PZ_PORT_STEAM:-8766}"
 
-    local -a rules=("${port_game}/udp" "${port_game2}/udp" "${port_rcon}/udp" "${port_steam}/tcp")
+    # Le protocole suit le RÔLE du port, pas sa position dans la liste : RCON est
+    # du TCP, le port de requête Steam de l'UDP. L'ancienne forme ouvrait
+    # "${port_rcon}/udp" et "${port_steam}/tcp", ce qui ne tombait juste que parce
+    # que .env.example intervertissait aussi les deux noms — et devenait faux dès
+    # qu'un .env les nommait correctement, comme celui de cette machine.
+    local -a rules=("${port_game}/udp" "${port_game2}/udp" "${port_steam}/udp" "${port_rcon}/tcp")
     for r in "${rules[@]}"; do
         ufw allow "$r"
     done

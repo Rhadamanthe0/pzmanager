@@ -72,13 +72,20 @@ acquire_serverctl_lock_or_die() {
     flock -n 201 || die "Un arrêt/redémarrage est déjà en cours. Attends qu'il se termine (le serveur doit être « en ligne » avant toute nouvelle action)."
 }
 
-# Nombre de joueurs actuellement connectés (0 si serveur arrêté / indéterminé).
+# Nombre de joueurs actuellement connectés.
+#   "0"     = serveur arrêté, ou serveur qui répond « 0 joueur »
+#   ""      = INDÉTERMINÉ (la console n'a rien renvoyé d'exploitable)
+# La distinction est essentielle : renvoyer 0 dans le cas indéterminé faisait
+# choisir le délai « now » à delay_for_player_count, donc un arrêt SANS AUCUN
+# préavis. Or le scrape journald de sendCommand.sh rate sa fenêtre précisément
+# quand la boucle principale est gelée — c'est-à-dire au moment où on redémarre,
+# avec des joueurs connectés. On préfère un préavis inutile à un kick surprise.
 count_connected_players() {
     server_is_active || { echo 0; return; }
     local out n
     out="$("${SCRIPT_DIR}/../internal/sendCommand.sh" players 2>/dev/null || true)"
     n="$(printf '%s\n' "$out" | grep -oE 'Players connected \([0-9]+\)' | grep -oE '[0-9]+' | head -1)"
-    [[ "$n" =~ ^[0-9]+$ ]] && echo "$n" || echo 0
+    [[ "$n" =~ ^[0-9]+$ ]] && echo "$n" || echo ""
 }
 
 # Mappe un nombre de joueurs vers un délai :
@@ -178,8 +185,15 @@ shutdown_server() {
     # Délai automatique selon le nombre de joueurs connectés
     if [[ "$DELAY" == "auto" ]]; then
         local players; players="$(count_connected_players)"
-        DELAY="$(delay_for_player_count "$players")"
-        echo "Délai auto (${players} joueur(s) connecté(s)) → $DELAY"
+        if [[ -z "$players" ]]; then
+            # Comptage impossible : on ne sait pas si la salle est vide ou pleine,
+            # donc on préavise comme s'il y avait du monde.
+            DELAY="2m"
+            echo "Délai auto : nombre de joueurs indéterminé (console muette) → $DELAY par sécurité"
+        else
+            DELAY="$(delay_for_player_count "$players")"
+            echo "Délai auto (${players} joueur(s) connecté(s)) → $DELAY"
+        fi
     fi
 
     if [[ "$DELAY" == "now" ]]; then

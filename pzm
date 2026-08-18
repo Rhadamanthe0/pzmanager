@@ -56,7 +56,7 @@ Commandes disponibles:
     wipe <x> <y>                Regenerer le chunk d'une tuile
     wipe <x1> <y1> <x2> <y2>    Regenerer un rectangle de tuiles
       (serveur arrete ; suppression immediate + snapshot auto ;
-       --cell pour effacer aussi la pop/metadata de la/les cellule(s) 300x300)
+       efface aussi le niveau cellule 256x256 -- toujours, sans option)
 
   rcon <cmd> [args]    Envoyer commande RCON au serveur
 

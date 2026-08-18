@@ -69,9 +69,15 @@ Elle tourne d'elle-même au prochain démarrage (ExecStartPre de zomboid.service
 Pour la voir sans rien modifier : $0 --force --dry-run"
 fi
 
-# Détecter la colonne created_at (présente après creationDateInit.sh)
+# Détecter la colonne created_at.
+# NB : AUCUN script du dépôt ne la crée (pas d'ALTER TABLE), donc elle est en
+# pratique toujours absente et c'est la branche dégradée de inactive_where_clause
+# qui s'applique — voir le commentaire de ce prédicat dans common.sh.
+# grep -cF et non grep -q : sous pipefail, grep -q tue sqlite3 en SIGPIPE et le
+# test peut devenir faux à tort, ce qui changerait silencieusement de prédicat.
 HAS_CREATED_AT=false
-sqlite3 "$DB_PATH" "PRAGMA table_info(whitelist)" 2>/dev/null | grep -q '|created_at|' && HAS_CREATED_AT=true
+[[ "$(sqlite3 "$DB_PATH" "PRAGMA table_info(whitelist)" 2>/dev/null | grep -cF '|created_at|' || true)" -gt 0 ]] \
+    && HAS_CREATED_AT=true
 
 # --days l'emporte sur .env : sans ça, le seuil n'est testable qu'en éditant .env.
 readonly DAYS="${DAYS_OVERRIDE:-${WHITELIST_PURGE_DAYS:-90}}"
