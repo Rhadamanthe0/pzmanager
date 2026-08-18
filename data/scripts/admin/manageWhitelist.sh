@@ -96,7 +96,11 @@ detect_schema() {
     columns=$(sqlite3 "$DB_PATH" "PRAGMA table_info(whitelist)" 2>/dev/null)
 
     HAS_CREATED_AT=false
-    echo "$columns" | grep -q '|created_at|' && HAS_CREATED_AT=true
+    # grep -cF et non grep -q : sous `set -o pipefail`, grep -q sort à la 1re
+    # occurrence, le producteur meurt en SIGPIPE (141) et le test devient faux
+    # alors que la colonne existe. Ici le faux négatif bascule la purge sur la
+    # branche dégradée — le même piège est documenté dans common.sh.
+    [[ "$(echo "$columns" | grep -cF '|created_at|' || true)" -gt 0 ]] && HAS_CREATED_AT=true
 
     local created_col=""
     if [[ "$HAS_CREATED_AT" == true ]]; then
@@ -247,7 +251,13 @@ Exemple: $0 remove \"76561198012345678\" --ban"
 
     echo ""
     echo "✓ SteamID retiré de la liste blanche: $steamid"
-    [[ "$do_ban" == false ]] && echo "  (Pour un bannissement définitif, relance avec --ban.)"
+    # `if` et non `[[ ... ]] && echo` : en tant que DERNIÈRE commande de la fonction,
+    # le test faux (cas --ban) renvoyait 1, ce qui sous `set -e` faisait sortir tout
+    # le script en erreur alors que le bannissement avait réussi — le bot Discord
+    # affichait « ❌ ... (exit=1) » sur une commande qui avait fonctionné.
+    if [[ "$do_ban" == false ]]; then
+        echo "  (Pour un bannissement définitif, relance avec --ban.)"
+    fi
 }
 
 reset_password() {
@@ -255,9 +265,19 @@ reset_password() {
 
     [[ -n "$username" ]] || die "Usage: $0 resetpassword <username>"
 
+    # Écriture directe dans <world>.db : le serveur doit être arrêté, comme
+    # remove-account/rename-account. L'en-tête du fichier prétendait que ce chemin
+    # « passe par la console » — c'est faux, il fait un UPDATE sur la base live.
+    require_server_stopped "Reset mot de passe"
+
+    # Échappement obligatoire : le pseudo vient de l'utilisateur (et du champ libre
+    # `nom` du bot Discord). Interpolé brut, « O'Brien » cassait la requête et
+    # « x' OR '1'='1 » vidait le mot de passe de TOUS les comptes.
+    local esc_u; esc_u="$(sql_escape "$username")"
+
     # Vérifier si existe
     local existing
-    existing=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE username = '$username'" 2>/dev/null || echo "0")
+    existing=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE username = '${esc_u}'" 2>/dev/null || echo "0")
 
     if [[ "$existing" -eq 0 ]]; then
         die "Aucun utilisateur trouvé: $username"
@@ -265,11 +285,11 @@ reset_password() {
 
     # Afficher l'utilisateur
     echo "Reset mot de passe pour:"
-    sqlite3 -header -column "$DB_PATH" "SELECT $WHITELIST_COLUMNS FROM whitelist WHERE username = '$username'"
+    sqlite3 -header -column "$DB_PATH" "SELECT $WHITELIST_COLUMNS FROM whitelist WHERE username = '${esc_u}'"
     echo ""
 
     # Vider le mot de passe : le joueur en choisira un nouveau à la prochaine connexion.
-    sqlite3 "$DB_PATH" "UPDATE whitelist SET password = '' WHERE username = '$username';" || \
+    sqlite3 "$DB_PATH" "UPDATE whitelist SET password = '' WHERE username = '${esc_u}';" || \
         die "Échec du reset de mot de passe"
     echo "✓ Mot de passe de '$username' réinitialisé"
     echo "  Le joueur devra choisir un nouveau mot de passe à sa prochaine connexion."
@@ -341,18 +361,15 @@ purge_whitelist() {
 }
 
 # --- Helpers pour remove-account / rename-account (écriture DB, serveur arrêté) --
-
-# Refuse d'écrire si le serveur tourne (la sauvegarde auto écraserait la modif).
-require_server_stopped() {
-    if server_is_active; then
-        die "Le serveur est actif : cette opération écrit dans la base et doit se faire SERVEUR ARRÊTÉ.
-Arrête-le d'abord :  pzm server stop 2m --reason \"Nettoyage whitelist\""
-    fi
-}
+# La garde « serveur arrêté » vit maintenant dans common.sh (require_server_stopped) :
+# elle était recopiée dans quatre scripts avec quatre messages différents, et
+# manquait justement là où on écrivait dans le monde (backup restore, resetpassword).
 
 # Localise le players.db live (perso multijoueur, table networkPlayers).
+# -maxdepth 2 : le fichier est toujours à Saves/Multiplayer/<monde>/players.db,
+# alors qu'un find non borné parcourt ~578 000 entrées de l'arbre de sauvegarde.
 locate_players_db() {
-    PLAYERS_DB="$(find "${PZ_SOURCE_DIR}/Saves/Multiplayer" -name 'players.db' 2>/dev/null | head -1)"
+    PLAYERS_DB="$(find "${PZ_SOURCE_DIR}/Saves/Multiplayer" -maxdepth 2 -name 'players.db' 2>/dev/null | head -1)"
 }
 
 # remove-account <pseudo|steamID64>... [--dry-run]
@@ -423,7 +440,17 @@ remove_accounts() {
         echo "[dry-run] Aucune modification effectuée."; return 0
     fi
 
-    require_server_stopped
+    require_server_stopped "Nettoyage whitelist"
+
+    # Mémoriser les SteamID des comptes qu'on s'apprête à supprimer : après le
+    # DELETE ils ne sont plus retrouvables, et ce sont les SEULS dont l'autorisation
+    # peut être devenue orpheline du fait de cette commande.
+    local -a touched_sids=()
+    if [[ "${#del_ids[@]}" -gt 0 ]]; then
+        local id_list; id_list="$(IFS=,; echo "${del_ids[*]}")"
+        mapfile -t touched_sids < <(sqlite3 "$DB_PATH" \
+            "SELECT DISTINCT steamid FROM whitelist WHERE id IN (${id_list}) AND steamid IS NOT NULL AND steamid <> '';" 2>/dev/null)
+    fi
 
     # 1) Supprimer les comptes whitelist ciblés
     local id
@@ -438,11 +465,25 @@ remove_accounts() {
         sqlite3 "$DB_PATH" "DELETE FROM allowedsteamid WHERE steamid='${esc}';" || log "WARNING: échec suppression steamid $sid"
     done
 
-    # 3) Retirer allowedsteamid des SteamID qui n'ont plus aucun compte associé
-    #    (nettoyage des autorisations devenues orphelines après les suppressions).
-    sqlite3 "$DB_PATH" \
-        "DELETE FROM allowedsteamid WHERE steamid NOT IN (SELECT steamid FROM whitelist WHERE steamid IS NOT NULL AND steamid <> '');" \
-        || log "WARNING: échec nettoyage allowedsteamid orphelins"
+    # 3) Retirer allowedsteamid des SteamID de CES comptes-là s'ils n'ont plus
+    #    aucun compte associé.
+    #    Corrigé le 2026-08-18 : la requête était globale (`WHERE steamid NOT IN
+    #    (SELECT steamid FROM whitelist)`) et emportait au passage TOUTES les
+    #    autorisations en attente — `pzm whitelist add` ne crée qu'une ligne
+    #    allowedsteamid, la ligne whitelist n'apparaissant qu'à la première
+    #    connexion du joueur. Un seul remove-account désautorisait donc en silence
+    #    tous les joueurs autorisés mais pas encore venus (5 dans la base du 10/08),
+    #    que `list` affiche pourtant comme « (jamais connecté) ».
+    local remaining
+    for sid in "${touched_sids[@]}"; do
+        [[ -n "$sid" ]] || continue
+        esc="$(sql_escape "$sid")"
+        remaining=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE steamid='${esc}';" 2>/dev/null || echo 1)
+        if [[ "$remaining" -eq 0 ]]; then
+            sqlite3 "$DB_PATH" "DELETE FROM allowedsteamid WHERE steamid='${esc}';" \
+                || log "WARNING: échec nettoyage autorisation orpheline $sid"
+        fi
+    done
 
     echo ""
     echo "✓ Suppression effectuée. Personnages (networkPlayers) conservés."

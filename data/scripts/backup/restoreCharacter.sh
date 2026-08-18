@@ -65,10 +65,10 @@ Arrête-le d'abord :  pzm server stop 2m --reason \"Restauration personnage\""
 fi
 
 # --- Localiser players.db (live + backup) -----------------------------------
-LIVE_DB=$(find "${PZ_SOURCE_DIR}/Saves/Multiplayer" -name 'players.db' 2>/dev/null | head -1)
+LIVE_DB=$(find "${PZ_SOURCE_DIR}/Saves/Multiplayer" -maxdepth 2 -name 'players.db' 2>/dev/null | head -1)
 [[ -f "$LIVE_DB" ]] || die "players.db live introuvable sous ${PZ_SOURCE_DIR}/Saves/Multiplayer"
 
-BK_DB=$(find "${BACKUP_PATH}/Saves/Multiplayer" -name 'players.db' 2>/dev/null | head -1)
+BK_DB=$(find "${BACKUP_PATH}/Saves/Multiplayer" -maxdepth 2 -name 'players.db' 2>/dev/null | head -1)
 [[ -f "$BK_DB" ]] || die "players.db introuvable dans le backup: ${BACKUP_PATH}/Saves/Multiplayer"
 
 # sql_escape vient de lib/common.sh

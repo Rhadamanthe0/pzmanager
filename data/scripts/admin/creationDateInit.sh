@@ -18,6 +18,16 @@ readonly DB_PATH="${PZ_DB_PATH}"
 main() {
     [[ -f "$DB_PATH" ]] || { log "Base de donnees introuvable: $DB_PATH"; exit 0; }
 
+    # Ce script fait un UPDATE sur <world>.db, que le jeu garde ouvert : le timer
+    # tire a minuit, en pleine partie. Aujourd'hui il sort avant d'ecrire (la
+    # colonne created_at n'existe pas), mais le jour ou elle est ajoutee l'UPDATE
+    # courrait contre le monde live. On sort proprement plutot que de risquer un
+    # SQLITE_BUSY (qui, sous set -e, ferait remonter une unite en echec).
+    if server_is_active; then
+        log "Serveur actif : initialisation des dates de creation reportee au prochain arret."
+        exit 0
+    fi
+
     # Vérifier si la colonne created_at existe
     local columns
     columns=$(sqlite3 "$DB_PATH" "PRAGMA table_info(whitelist)" 2>/dev/null)

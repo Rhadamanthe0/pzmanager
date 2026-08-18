@@ -54,7 +54,15 @@ fi
 TIMESTAMP_BEFORE=$(date +%s.%N)
 
 # Send command
-echo "$CMD" > "${PZ_CONTROL_PIPE}"
+# timeout : écrire dans une FIFO dont plus personne ne lit BLOQUE indéfiniment
+# (serveur figé ou tué entre le test -p ci-dessus et ici). Sans borne, un préavis
+# joueur en plein compte à rebours pouvait rester coincé là pour toujours.
+# C'est aussi ce qui avait poussé dataBackup.sh à réécrire sa propre écriture FIFO
+# sous `timeout 10` au lieu d'appeler ce script.
+if ! timeout "${PZ_PIPE_WRITE_TIMEOUT:-10}" bash -c 'printf "%s\n" "$1" > "$2"' _ "$CMD" "${PZ_CONTROL_PIPE}"; then
+    echo "Erreur: écriture dans ${PZ_CONTROL_PIPE} impossible (serveur figé ?)" >&2
+    exit 1
+fi
 
 if [[ "$NO_OUTPUT" == true ]]; then
     echo "Commande envoyée: $CMD"
@@ -70,8 +78,14 @@ OUTPUT=$(journalctl --user -u "${PZ_SERVICE_NAME}" \
     awk -v cmd="$CMD" '
         BEGIN { capture=0 }
 
-        # Start capturing when we find our command
-        /command entered via server console/ && $0 ~ cmd {
+        # Start capturing when we find our command.
+        # index() plutot que $0 ~ cmd : cmd vient de la ligne de commande (pzm
+        # rcon, champ libre du bot) et etait donc interprete comme EXPRESSION
+        # REGULIERE. Un servermsg contenant une parenthese ouvrante tuait awk
+        # (regex non terminee), le pipeline echouait sous pipefail et aucune
+        # sortie n etait affichee.
+        # NB : pas d apostrophe dans ce bloc, il est lui-meme entre quotes simples.
+        /command entered via server console/ && index($0, cmd) > 0 {
             capture=1
             next
         }

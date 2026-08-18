@@ -46,6 +46,15 @@ validate_backup_path() {
 backup_current_zomboid() {
     [[ -d "${PZ_SOURCE_DIR}" ]] || return 0
 
+    # Garde ajoutée le 2026-08-18 : ce chemin DÉPLACE le monde live (mv) puis
+    # rsync par-dessus. Fait serveur allumé, la JVM continue d'écrire dans ses
+    # descripteurs déjà ouverts — donc dans l'arbre RENOMMÉ — et sauvegarde son
+    # état dedans à l'arrêt : la restauration est écrasée en silence, les deux
+    # mondes se mélangent. Les autres écrivains du monde (restore-character,
+    # map wipe, remove-account) avaient déjà cette garde, pas celui-ci, qui est
+    # pourtant le plus destructeur.
+    require_server_stopped "Restauration d'une sauvegarde"
+
     local backup_name="${PZ_HOME}/OLD/ZomboidBROKEN_$(date +"%Y-%m-%d_%Hh%Mm%Ss")"
 
     echo "Création backup de sécurité..."
@@ -60,7 +69,12 @@ restore_zomboid_data() {
 
     rsync -a --info=progress2 "${BACKUP_PATH}/" "${PZ_SOURCE_DIR}/"
 
-    chown -R "${PZ_USER}:${PZ_USER}" "${PZ_SOURCE_DIR}"
+    # || true : `pzm backup restore` tourne en utilisateur non privilégié, un
+    # seul fichier au propriétaire inattendu faisait échouer chown et, sous
+    # `set -e`, interrompait la restauration à mi-parcours — pire que de laisser
+    # un fichier mal possédé.
+    chown -R "${PZ_USER}:${PZ_USER}" "${PZ_SOURCE_DIR}" 2>/dev/null || \
+        echo "  (chown partiel : certains fichiers gardent leur propriétaire d'origine)"
 
     echo "✓ Restauration terminée: $BACKUP_PATH → ${PZ_SOURCE_DIR}"
 }

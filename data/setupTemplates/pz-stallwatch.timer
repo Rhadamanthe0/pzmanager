@@ -1,0 +1,13 @@
+[Unit]
+Description=Project Zomboid - Timer détection de gel (toutes les minutes)
+
+[Timer]
+OnBootSec=3min
+# OnUnitInactiveSec : jamais deux exécutions en parallèle (une capture dure ~30 s).
+OnUnitInactiveSec=1min
+# AccuracySec=1s : par défaut systemd regroupe les réveils à la minute près, ce
+# qui donnait une cadence réelle de 1 à 2 min et retardait d'autant la détection.
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

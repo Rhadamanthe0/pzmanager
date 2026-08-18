@@ -161,11 +161,10 @@ log "Snapshot de sécurité (normal) avant wipe..."
 "${SCRIPT_DIR}/../backup/dataBackup.sh" --snapshot-only \
     || die "Snapshot de sécurité échoué — wipe annulé (rien supprimé)."
 
-deleted=0
-for rel in "${targets[@]}"; do
-    rm -f "${SAVE_DIR}/${rel}"
-    (( deleted++ )) || true
-done
+# Un seul rm pour tout le lot : un wipe de 2x2 cellules atteint ~4 000 fichiers,
+# soit autant de processus lancés là où un seul suffit. Le compteur séparé était
+# de toute façon toujours égal à ${#targets[@]} (rm -f n'échoue pas ici).
+rm -f -- "${targets[@]/#/${SAVE_DIR}/}"
 
-log "Supprime: ${deleted} fichier(s). Filet = dernier snapshot normal (pzm backup list)."
+log "Supprime: ${#targets[@]} fichier(s). Filet = dernier snapshot normal (pzm backup list)."
 echo "Terminez par: pzm server start  (la zone se regenerera au prochain passage d'un joueur)."

@@ -611,18 +611,23 @@ DISCONNECT_RE = re.compile(r'(?P<sid>\d{17}) "(?P<user>.+?)" disconnected player
 
 class _Tail:
     """Suit un fichier de log tournant (glob), en gérant rotation de session,
-    troncature et reliquat de ligne partielle. read() renvoie (lignes_complètes,
-    emit) : emit vaut False uniquement pour l'historique du fichier DÉJÀ présent au
-    tout premier read (au boot on saute l'historique). Un fichier qui apparaît
-    ENSUITE (ex. pzmanager.txt créé à la 1re incapacité, ou rotation de session) est
-    du live -> emit True. L'appelant met TOUJOURS à jour son état, mais n'émet que si emit."""
+    troncature et reliquat de ligne partielle. read() renvoie les lignes complètes
+    lues depuis le dernier appel, et expose le fichier courant via `path`.
+
+    Le drapeau `emit` d'autrefois (sauter l'historique au premier read) servait au
+    death-watcher, retiré en août 2026 ; l'unique appelant restant — le comptage de
+    joueurs — le jetait. Supprimé avec `_initialized`."""
 
     def __init__(self, pattern: str):
         self._pattern = pattern
         self._path: Optional[str] = None
         self._offset = 0
         self._buffer = b""
-        self._initialized = False
+
+    @property
+    def path(self) -> Optional[str]:
+        """Fichier actuellement suivi (None tant qu'aucun read n'a abouti)."""
+        return self._path
 
     def _newest(self) -> Optional[str]:
         try:
@@ -635,12 +640,10 @@ class _Tail:
         *lines, self._buffer = (self._buffer + data).split(b"\n")
         return [ln.decode("utf-8", "replace") for ln in lines]
 
-    def read(self) -> tuple[list[str], bool]:
-        first_read = not self._initialized
-        self._initialized = True
+    def read(self) -> list[str]:
         newest = self._newest()
         if newest is None:
-            return [], True
+            return []
         if newest != self._path:               # boot ou rotation -> relire tout
             self._path, self._buffer = newest, b""
             try:
@@ -649,26 +652,23 @@ class _Tail:
             except OSError:
                 data = b""
             self._offset = len(data)
-            # Historique sauté seulement pour le fichier déjà là au 1er read (boot) ;
-            # un fichier apparu ensuite est du live.
-            emit = not first_read
-            return self._decode(data), emit
+            return self._decode(data)
         try:
             fsize = os.path.getsize(self._path)
         except OSError:
-            return [], True
+            return []
         if fsize < self._offset:               # tronqué/remplacé en place
             self._offset, self._buffer = 0, b""
         if fsize <= self._offset:
-            return [], True
+            return []
         try:
             with open(self._path, "rb") as f:
                 f.seek(self._offset)
                 data = f.read()
         except OSError:
-            return [], True
+            return []
         self._offset += len(data)
-        return self._decode(data), True
+        return self._decode(data)
 
 
 # --- Monitoring : collecte des métriques -------------------------------------
@@ -891,7 +891,13 @@ def _server_ini_path(prev: dict):
     """Chemin du .ini serveur (servertest.ini par défaut), mis en cache dans prev."""
     if "ini_path" in prev:
         return prev["ini_path"]
+    # PZ_INI_PATH est exporté par source_env (run-bot.sh source le .env) pour que
+    # personne n'ait à recomposer le nom du monde ; on ne recompose qu'à défaut.
     path = ""
+    env_ini = os.environ.get("PZ_INI_PATH", "")
+    if env_ini and os.path.isfile(env_ini):
+        prev["ini_path"] = env_ini
+        return env_ini
     if PZ_SOURCE_DIR:
         cand = f"{PZ_SOURCE_DIR}/Server/servertest.ini"
         if os.path.isfile(cand):
@@ -1020,8 +1026,10 @@ def collect_stats(prev: dict) -> dict:
     s["heapdump"] = _recent_heapdump()
     s["players"] = _online_players(prev)
     # Débit réseau sur l'interface de la route par défaut (delta entre cycles).
-    # PZ n'expose pas son compteur interne paquets/s -> on mesure au niveau NIC
-    # (PZ domine ce trafic ; inclut aussi le reste de la box = proxy, pas exact).
+    # C'est le REPLI : PZ expose ses propres compteurs via son exporteur Prometheus
+    # (lu plus bas, et préféré par l'embed) ; le NIC ne sert que si l'exporteur
+    # n'est pas exposé. Il inclut tout le trafic de la box (Docker, Pi-hole...),
+    # donc c'est une approximation, pas la mesure du serveur de jeu.
     s["net"] = None
     iface = prev.get("iface")
     if not iface:
@@ -1089,16 +1097,14 @@ def _online_players(prev: dict):
         prev["online"], prev["user_path"] = set(), None
     online = prev["online"]
     # Nouvelle session (restart serveur) -> le fichier change : on repart de zéro
-    # (le _Tail rejoue alors tout le nouveau fichier ci-dessous).
-    try:
-        files = glob.glob(os.path.join(PZ_LOGS_DIR, "*_user.txt"))
-        newest = max(files, key=os.path.getmtime) if files else None
-    except OSError:
-        newest = None
-    if newest != prev["user_path"]:
+    # (le _Tail rejoue alors tout le nouveau fichier).
+    # On lit le fichier retenu par _Tail au lieu de refaire ici le même
+    # glob + max(getmtime) : les deux devaient rester d'accord, sans quoi le set
+    # des connectés était vidé au mauvais cycle.
+    lines = tail.read()
+    if tail.path != prev["user_path"]:
         online.clear()
-        prev["user_path"] = newest
-    lines, _ = tail.read()
+        prev["user_path"] = tail.path
     for line in lines:
         m = CONNECT_RE.search(line)
         if m:
@@ -1428,12 +1434,21 @@ async def monitoring_loop():
     log.info("Monitoring actif : salon=%s intervalle=%ss", MONITORING_CHANNEL_ID, MONITORING_INTERVAL)
 
     prev = {}
-    collect_stats(prev)                      # amorce le delta CPU sans poster
+    # Amorce le delta CPU sans poster — dans un thread, comme les cycles suivants.
+    await asyncio.get_running_loop().run_in_executor(None, collect_stats, prev)
     await asyncio.sleep(min(MONITORING_INTERVAL, 5))
     while not bot.is_closed():
         try:
-            s = collect_stats(prev)
-            _csv_log(s)                      # boîte noire disque (avant l'envoi Discord)
+            # Exécuté dans un thread : collect_stats fait de l'I/O BLOQUANTE
+            # (urlopen sur l'exporteur avec timeout 4 s, scan complet de /proc,
+            # lecture de gc.log, et une réécriture intégrale du CSV une fois par
+            # heure). Sur la boucle, tout le bot gelait pendant ce temps —
+            # commandes slash, batch et heartbeat Discord compris — précisément
+            # quand l'exporteur ne répond plus, c'est-à-dire pendant un gel du
+            # serveur : le moment où un admin tape justement /pzm server restart.
+            loop = asyncio.get_running_loop()
+            s = await loop.run_in_executor(None, collect_stats, prev)
+            await loop.run_in_executor(None, _csv_log, s)
             await channel.send(embed=_monitoring_embed(s))
         except discord.HTTPException as e:
             log.warning("Monitoring : envoi Discord échoué (%s)", e)

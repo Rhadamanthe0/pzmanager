@@ -1,0 +1,11 @@
+[Unit]
+Description=Project Zomboid - Détection de gel du thread principal (capture thread dump)
+
+[Service]
+Type=oneshot
+# 900s : la capture (~30 s) PUIS un redémarrage complet (SIGKILL à
+# TimeoutStopSec=120 + boot du serveur) tiennent dans ce budget.
+TimeoutStartSec=900
+ExecStart=%h/pzmanager/data/scripts/internal/watchServerStall.sh
+StandardOutput=journal
+StandardError=journal

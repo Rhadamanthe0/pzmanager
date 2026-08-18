@@ -174,11 +174,27 @@ trigger_restart() {
 trigger_maintenance() {
     local reason="$1"
     log_event "Triggering maintenance (5m delay, service restart only) - reason: ${reason}"
-    flock -u 200
+    # Le fd 200 est un détail interne de try_acquire_maintenance_lock : le
+    # manipuler ici marchait par coïncidence et aurait déverrouillé dans le vide
+    # le jour où il change (la maintenance appelée juste après se serait alors
+    # crue déjà en cours et se serait auto-ignorée).
+    release_maintenance_lock
     # --no-reboot : redémarrage du service seul, pas de reboot machine (une MAJ de
     # build PZ = steamcmd validate + re-tune JVM, aucune raison de rebooter la box).
     "${SCRIPT_DIR}/performFullMaintenance.sh" "5m" --reason "$reason" --automatic --no-reboot
     log_event "Maintenance completed"
+}
+
+# Vrai au plus une fois par SERVER_UPDATE_CHECK_INTERVAL (défaut 1 h). Le marqueur
+# n'est touché que si le délai est écoulé : un échec de steamcmd ne fait donc pas
+# perdre le créneau suivant.
+readonly SERVER_UPDATE_MARKER="/tmp/pzmanager-server-update-check-$(id -un).stamp"
+readonly SERVER_UPDATE_CHECK_INTERVAL="${SERVER_UPDATE_CHECK_INTERVAL:-3600}"
+server_update_check_due() {
+    local age=$(( $(date +%s) - $(stat -c %Y "$SERVER_UPDATE_MARKER" 2>/dev/null || echo 0) ))
+    (( age < SERVER_UPDATE_CHECK_INTERVAL )) && return 1
+    touch "$SERVER_UPDATE_MARKER"
+    return 0
 }
 
 main() {
@@ -195,7 +211,14 @@ main() {
         exit 0
     fi
 
-    if check_server_update; then
+    # La requête de build passe par un lancement complet de steamcmd : mesuré à
+    # ~0,73 s de CPU et 230 Mo de pic (jusqu'à 1 Go sur un run), 288 fois par jour,
+    # sur une machine qui n'a qu'~1,3 Gio de marge avant l'OOM-killer. Or un build
+    # PZ sort environ une fois par semaine, et la maintenance quotidienne fait de
+    # toute façon un `app_update ... validate`. On espace donc à une vérification
+    # par heure — la détection des MODS (checkModsNeedUpdate, gratuite via la FIFO)
+    # reste, elle, toutes les 5 minutes.
+    if server_update_check_due && check_server_update; then
         trigger_maintenance "Mise à jour serveur disponible"
         exit 0
     fi

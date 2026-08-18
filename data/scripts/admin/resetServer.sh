@@ -75,7 +75,13 @@ stop_server() {
     echo "=== 1. Arrêt du serveur ==="
 
     if server_is_active; then
-        systemctl --user stop "${PZ_SERVICE_NAME}"
+        # Passer par pz.sh et non `systemctl stop` : le stop direct sautait le
+        # verrou serverctl, le préavis joueurs, la notification Discord ET
+        # surtout wait_for_server_ready. Or un `quit` envoyé pendant que B42
+        # charge encore la map plante le boot (NPE IsoMetaGrid.save) en
+        # crash-loop — la commande la plus destructive du produit était la seule
+        # à ne pas avoir ce garde-fou.
+        "${SCRIPT_DIR}/../core/pz.sh" stop --reason "Reset du monde"
         echo "✓ Serveur arrêté"
     else
         echo "✓ Serveur déjà arrêté"
@@ -258,7 +264,7 @@ finalize() {
     echo ""
     echo "=== Démarrage du serveur ==="
 
-    systemctl --user start "${PZ_SERVICE_NAME}"
+    "${SCRIPT_DIR}/../core/pz.sh" start now --reason "Nouveau monde après reset"
 
     echo "✓ Serveur démarré"
     echo ""
