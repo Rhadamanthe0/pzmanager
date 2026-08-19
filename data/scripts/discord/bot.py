@@ -851,11 +851,32 @@ def _recent_heapdump():
     return os.path.basename(newest), time.time() - os.path.getmtime(newest)
 
 
-def _xmx_gb() -> int:
+# Capacité max du heap telle que la JVM la journalise elle-même au démarrage
+# ET à chaque GC ("Max Capacity: 20480M"). Le négatif-lookbehind écarte la ligne
+# "Soft Max Capacity", qui peut différer (SoftMaxHeapSize).
+_GC_MAXCAP_RE = re.compile(r"(?<!Soft )Max Capacity: (\d+)M")
+
+
+def _xmx_gb() -> float:
+    """Plafond du heap EN VIGUEUR, en Go.
+
+    Source de vérité : gc.log, écrit par la JVM en cours d'exécution. .env n'est
+    qu'un repli, car il décrit le PROCHAIN démarrage, pas celui qui tourne : le
+    19/07/2026, PZ_XMX_GB avait été passé de 9 à 8 mais la JVM tournait toujours
+    en 9g (le JSON n'est relu qu'au lancement, et le restart avait été différé
+    pour ne pas éjecter 29 joueurs). Pendant ces heures-là, l'embed aurait
+    affiché « 8,7 / 8 Go » — un dénominateur faux, précisément la nuit où on
+    surveillait la mémoire. Les pourcentages, eux, viennent déjà de la JVM.
+    """
+    txt = _tail_text(GC_LOG_PATH)
+    if txt:
+        caps = _GC_MAXCAP_RE.findall(txt)
+        if caps:
+            return int(caps[-1]) / 1024
     if _PZ_XMX_RAW.isdigit():
-        return int(_PZ_XMX_RAW)
+        return float(_PZ_XMX_RAW)
     total = _meminfo().get("MemTotal", 0)
-    return max(2, total // 1024 // 1024 // 2)
+    return float(max(2, total // 1024 // 1024 // 2))
 
 
 def _default_iface():
@@ -1226,7 +1247,7 @@ def _monitoring_embed(s: dict) -> discord.Embed:
     # pas heap vs natif : avec AlwaysPreTouch le heap réservé fausse le découpage.
     if gc:
         used_g, pct = gc[0] / 1024, gc[1]
-        heap_line = f"Jeu (heap) **{used_g:.1f} / {xmx} Go**  `{_bar(pct)}`  **{pct}%**"
+        heap_line = f"Jeu (heap) **{used_g:.1f} / {xmx:g} Go**  `{_bar(pct)}`  **{pct}%**"
     else:
         heap_line = "Jeu (heap) —"
     if s["rss_kb"]:
