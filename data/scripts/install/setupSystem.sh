@@ -67,15 +67,19 @@ configure_firewall() {
     # Charger les ports depuis .env si disponible, sinon utiliser les défauts
     local port_game="${PZ_PORT_GAME:-16261}"
     local port_game2="${PZ_PORT_GAME2:-16262}"
-    local port_rcon="${PZ_PORT_RCON:-27015}"
-    local port_steam="${PZ_PORT_STEAM:-8766}"
-
-    # Le protocole suit le RÔLE du port, pas sa position dans la liste : RCON est
-    # du TCP, le port de requête Steam de l'UDP. L'ancienne forme ouvrait
-    # "${port_rcon}/udp" et "${port_steam}/tcp", ce qui ne tombait juste que parce
-    # que .env.example intervertissait aussi les deux noms — et devenait faux dès
-    # qu'un .env les nommait correctement, comme celui de cette machine.
-    local -a rules=("${port_game}/udp" "${port_game2}/udp" "${port_steam}/udp" "${port_rcon}/tcp")
+    # On n'ouvre QUE les deux ports de jeu. Vérifié le 19/08/2026 sur le serveur en
+    # production (ss -lnup/-lntp sur le pid de la JVM) : PZ B42 n'écoute que sur
+    # 16261/udp et 16262/udp.
+    #   - RCON (27015) : jamais ouvert par le serveur ici, RCONPassword est vide et
+    #     le pilotage passe par la FIFO zomboid.control, pas par RCON-sur-TCP.
+    #     L'exposer serait une surface d'attaque pour une fonction inutilisée.
+    #   - Port Steam (8766) : hérité de B41 ; aucun socket ne l'utilise en B42,
+    #     la découverte se fait via le port de jeu.
+    # L'ancienne liste ouvrait "${PZ_PORT_RCON}/udp" et "${PZ_PORT_STEAM}/tcp",
+    # c'est-à-dire deux ports morts, avec en prime le protocole lié à la POSITION
+    # de la variable et non au rôle du port : .env.example intervertissait les deux
+    # noms, ce qui compensait l'erreur, et tout .env correct la révélait.
+    local -a rules=("${port_game}/udp" "${port_game2}/udp")
     for r in "${rules[@]}"; do
         ufw allow "$r"
     done
