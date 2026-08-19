@@ -23,7 +23,9 @@ webhook=""
 webhook_set=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --webhook)   webhook="${2:-}"; webhook_set=true; shift 2 ;;
+        # shift 2 échouerait (et sortirait, sous set -e) sur un « --webhook »
+        # final sans URL : on ne consomme que ce qui existe.
+        --webhook)   webhook="${2:-}"; webhook_set=true; shift; shift 2>/dev/null || true ;;
         --webhook=*) webhook="${1#--webhook=}"; webhook_set=true; shift ;;
         *)           [[ -n "$message" ]] || message="$1"; shift ;;
     esac

@@ -8,6 +8,9 @@ Type=oneshot
 # lents. Le prune est plafonné par run (BACKUP_PRUNE_MAX_DELETE) pour tenir dans ce
 # timeout ; 2400s = marge confortable pour save+rsync+un lot de suppressions, sans
 # jamais tuer un run (ce qui le marquerait failed et laisserait un prune partiel).
+# C'est un plafond CHOISI : un Type=oneshot n'a pas de timeout par défaut. La
+# valeur a été montée de 600 à 2400 le 25/07/2026, après des runs tués en plein
+# prune qui spammaient une alerte Discord « failed » toutes les heures.
 TimeoutStartSec=2400
 ExecStart=%h/pzmanager/data/scripts/backup/dataBackup.sh
 StandardOutput=journal

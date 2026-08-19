@@ -139,17 +139,26 @@ serving the cached chunks and the old version stays on screen. Deleting that
 area's save files makes the game regenerate it from the mod on next visit.
 
 ```bash
-pzm map wipe <x> <y>                 # One tile (regenerates its 10×10 chunk)
+pzm map wipe <x> <y>                 # One tile (regenerates its 8×8 chunk)
 pzm map wipe <x1> <y1> <x2> <y2>     # A rectangle of tiles
-pzm map wipe <x> <y> --cell          # Also wipe cell-level data (see below)
 ```
 
 Coordinates are in-game tile coordinates. `pzm map wipe --help` documents the
-Build 42 save layout it relies on (chunks of 10 tiles, cells of 300).
+Build 42 save layout it relies on.
 
-`--cell` additionally deletes zombie/animal population and metadata, which are
-stored per **300×300 cell** — so it affects the whole cell, not just the tiles
-you asked for. Use it only when the cell-level data is what is stale.
+> ⚠️ **Build 42 grid: a chunk is 8 tiles and a cell is 256 tiles** — *not* the
+> 10 / 300 of Build 41. `wipeMapTile.sh` was hard-coded to the B41 values until
+> 2026-07-23, and with the wrong constants a wipe deleted the cell-level files
+> while clearing **zero** terrain chunks: the cached terrain survived and the map
+> kept rendering the old version even though the mod itself was fine. A wipe that
+> reports only a handful of deleted files (no `map/**.bin`) is the tell.
+
+The wipe **always** clears both levels: the terrain chunks (8×8) *and* the
+cell-level data — `chunkdata`, `metagrid` (room definitions), `zpop` (zombies)
+and `apop` (animals), stored per **256×256 cell**. So it affects the whole cell,
+not just the tiles you asked for. This is unconditional: the old `--cell` /
+`--no-cell` flags were removed, because the cell level has to be cleared
+whenever a mod changes buildings or rooms — which is the normal case.
 
 > ⚠️ **Deletion is immediate — there is no dry-run.** The server must be stopped
 > (the command refuses to run otherwise). A **normal snapshot** of the world
