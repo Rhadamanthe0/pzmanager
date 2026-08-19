@@ -58,7 +58,13 @@ main() {
     # Lecture seule : sur une base tenue ouverte par le jeu, un SQLITE_BUSY est
     # possible — on abandonne proprement, le prochain passage rattrapera.
     local -a rows=()
-    if ! mapfile -t rows < <(sqlite3 -separator '|' "$DB_PATH" \
+# Séparateur : caractère de contrôle US (0x1f), jamais un | .
+# Un joueur s'appelle littéralement « MabEira | Hannibal » (constaté le
+# 19/08/2026) : avec -separator '|' ses champs débordaient les uns sur les
+# autres, ce qui a produit une ligne de registre corrompue (pseudo tronqué à
+# « MabEira », steamid « Hannibal », date = un SteamID). Un pseudo ne peut pas
+# contenir 0x1f.
+    if ! mapfile -t rows < <(sqlite3 -separator $'\x1f' "$DB_PATH" \
         "SELECT username, COALESCE(steamid,''), COALESCE(lastConnection,'') FROM whitelist;" 2>/dev/null); then
         log "Base illisible pour l'instant (verrou ?) — registre inchangé."
         exit 0
@@ -67,7 +73,7 @@ main() {
     local added=0 uname sid lastconn created now
     now="$(date '+%F %T')"
     for line in "${rows[@]}"; do
-        IFS='|' read -r uname sid lastconn <<< "$line"
+        IFS=$'\x1f' read -r uname sid lastconn <<< "$line"
         [[ -n "$uname" ]] || continue
         [[ -n "${known[$uname]:-}" ]] && continue
 
