@@ -91,23 +91,13 @@ Trouver sur le profil Steam ou via https://steamid.xyz/"
     fi
 }
 
+# Colonnes affichées pour un compte. La table whitelist de B42 n'a PAS de
+# created_at (schéma vérifié en production le 19/08/2026) : l'ancienneté vit
+# désormais dans le registre CSV, hors base — cf. common.sh. L'ancienne détection
+# conditionnelle d'une colonne created_at portait donc sur une colonne qui
+# n'existe nulle part.
 detect_schema() {
-    local columns
-    columns=$(sqlite3 "$DB_PATH" "PRAGMA table_info(whitelist)" 2>/dev/null)
-
-    HAS_CREATED_AT=false
-    # grep -cF et non grep -q : sous `set -o pipefail`, grep -q sort à la 1re
-    # occurrence, le producteur meurt en SIGPIPE (141) et le test devient faux
-    # alors que la colonne existe. Ici le faux négatif bascule la purge sur la
-    # branche dégradée — le même piège est documenté dans common.sh.
-    [[ "$(echo "$columns" | grep -cF '|created_at|' || true)" -gt 0 ]] && HAS_CREATED_AT=true
-
-    local created_col=""
-    if [[ "$HAS_CREATED_AT" == true ]]; then
-        created_col="created_at, "
-    fi
-
-    WHITELIST_COLUMNS="id, username, ${created_col}lastConnection, steamid, role, displayName"
+    WHITELIST_COLUMNS="id, username, lastConnection, steamid, role, displayName"
 }
 
 list_whitelist() {
@@ -320,7 +310,10 @@ purge_whitelist() {
     esac
 
     # Comptes inactifs (prédicat partagé avec la purge auto — cf. common.sh).
-    local where_clause; where_clause="$(inactive_where_clause "$days" "$HAS_CREATED_AT")"
+    # Registre à jour avant de lister, pour que la purge interactive montre
+    # exactement ce que la purge automatique retirerait.
+    "${SCRIPT_DIR}/creationDateInit.sh" >/dev/null 2>&1 || true
+    local where_clause; where_clause="$(inactive_where_clause "$days")"
     local description="Comptes inactifs depuis $num $unit_label"
 
     # Lister les comptes concernés
