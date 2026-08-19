@@ -50,6 +50,12 @@ readonly DIRS_TO_SYNC=(
     "${PZ_SCRIPTS_DIR}"
     "${PZ_MANAGER_DIR}/.env"
     "${PZ_MANAGER_DIR}/versionning"
+    # Registre des dates de création des comptes : non reconstructible (il EST la
+    # mémoire de l'ancienneté des comptes) et absent des snapshots incrémentaux,
+    # qui ne couvrent que Zomboid/. Sans lui dans le ZIP hors-site, une
+    # restauration de machine repartirait avec tous les comptes « vus
+    # aujourd'hui ».
+    "${WHITELIST_LEDGER}"
 )
 
 # Reconstructible, exclu de la sauvegarde des scripts : le venv se rebâtit via

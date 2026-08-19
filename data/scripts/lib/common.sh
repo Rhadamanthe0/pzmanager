@@ -46,7 +46,12 @@ apply_env_defaults() {
     # autre machine faisait alors pointer les deux moitiés sur des arbres différents,
     # et l'écart ne se voyait que dans les chemins de redémarrage automatique.
     : "${PZ_MANAGER_DIR:=${PZ_MANAGER_ROOT}}"
-    export PZ_SERVER_NAME PZ_DB_PATH PZ_INI_PATH PZ_MANAGER_DIR
+    # Registre des dates de création des comptes. Vit DANS data/ et non dans
+    # Zomboid/ : c'est justement ce qui lui permet de survivre à `pzm admin reset`
+    # (qui ne déplace que Zomboid/) et donc de garder l'ancienneté des comptes au
+    # travers d'un wipe, sans toucher au schéma de la base du monde.
+    : "${WHITELIST_LEDGER:=${PZ_DATA_DIR}/whitelistLedger.csv}"
+    export PZ_SERVER_NAME PZ_DB_PATH PZ_INI_PATH PZ_MANAGER_DIR WHITELIST_LEDGER
 }
 
 # Arrêt avec message d'erreur
@@ -79,31 +84,62 @@ sql_escape() { printf "%s" "${1//\'/\'\'}"; }
 # Vrai (code 0) si l'argument est un SteamID64 (17 chiffres commençant par 7656119).
 is_steamid64() { [[ "$1" =~ ^7656119[0-9]{10}$ ]]; }
 
-# Clause SQL WHERE identifiant les comptes `whitelist` inactifs depuis >= <days>
-# jours (jamais connectés & créés il y a plus de <days> jours, OU dernière
-# connexion antérieure à <days> jours), le compte interne 'admin' toujours exclu.
-# <has_created_at> ("true"/"false") = présence de la colonne created_at (ajoutée
-# par creationDateInit.sh). Partagée par la purge auto (purgeInactivePlayers.sh)
-# et la purge interactive (manageWhitelist.sh) pour qu'elles ciblent EXACTEMENT
-# les mêmes comptes — ce prédicat ne doit exister qu'à un seul endroit.
+# --- Registre des dates de création (CSV hors base du monde) ------------------
+# Format : username;steamid;created_at   (created_at = "YYYY-MM-DD HH:MM:SS")
 #
-# ATTENTION (corrigé le 2026-08-18) : SANS created_at on ne connaît PAS l'âge d'un
-# compte jamais connecté, donc on ne peut pas le déclarer inactif — la branche
-# `false` les épargne désormais. Avant, elle les supprimait TOUS quel que soit leur
-# âge : un joueur inscrit le jour même dont la déconnexion n'avait pas encore écrit
-# `lastConnection` perdait son accès au démarrage suivant (la purge tourne dans
-# l'ExecStartPre de zomboid.service). Et comme AUCUN script ne crée la colonne
-# (`ALTER TABLE` absent du dépôt), cette branche est la seule qui s'exécute jamais.
-# Le prix : un compte jamais connecté n'est plus purgé automatiquement — il se
-# retire à la main (`pzm whitelist remove-account <pseudo>`), ce qui est le bon
-# arbitrage face à une révocation d'accès injustifiée.
+# Pourquoi un fichier plutôt qu'une colonne : la base du monde est RECRÉÉE à
+# chaque wipe. Une colonne created_at y disparaîtrait à chaque fois (et le code
+# qui prétendait la remplir ne l'a jamais créée — elle n'a jamais existé). Le CSV
+# vit dans data/, que le reset ne touche pas, donc l'ancienneté des comptes
+# traverse les wipes. lastConnection, lui, n'est PAS dupliqué ici : resetServer.sh
+# le réinjecte déjà dans la nouvelle base (vérifié le 19/08/2026 — la plus
+# ancienne date en base, 2026-06-19, précède la recréation du monde du 05/08).
+#
+# Règles (voulues par l'admin) : created_at n'est écrit qu'à la PREMIÈRE
+# apparition d'un compte et n'est jamais modifié ensuite ; aucune ligne n'est
+# jamais supprimée, y compris après une purge — si le joueur revient, il retrouve
+# son ancienneté réelle.
+
+# Pseudos des comptes JAMAIS CONNECTÉS dont le registre dit qu'ils datent de plus
+# de <days> jours. Comparaison lexicographique : le format ISO se trie comme une
+# date, donc pas d'arithmétique d'époques.
+ledger_stale_usernames() {
+    local days="$1" cutoff
+    cutoff="$(date -d "-${days} days" '+%F %T')"
+    [[ -f "${WHITELIST_LEDGER}" ]] || return 0
+    awk -F';' -v cutoff="$cutoff" '
+        /^#/ { next }
+        NF >= 3 && $3 != "" && $3 < cutoff { print $1 }
+    ' "${WHITELIST_LEDGER}"
+}
+
+# Clause SQL WHERE identifiant les comptes `whitelist` inactifs depuis >= <days>
+# jours, le compte interne 'admin' toujours exclu. Deux cas réunis :
+#   - dernière connexion antérieure à <days> jours ;
+#   - JAMAIS connecté ET inscrit au registre depuis plus de <days> jours.
+# Partagée par la purge auto (purgeInactivePlayers.sh) et la purge interactive
+# (manageWhitelist.sh) pour qu'elles ciblent EXACTEMENT les mêmes comptes — ce
+# prédicat ne doit exister qu'à un seul endroit.
+#
+# Un compte jamais connecté ET absent du registre n'est JAMAIS purgé : on ignore
+# son âge, donc on s'abstient. C'est ce qui manquait avant le 18/08/2026, où la
+# clause déclarait inactif tout compte sans lastConnection quel que soit son âge —
+# un joueur inscrit le jour même perdait son accès au démarrage suivant.
 inactive_where_clause() {
-    local days="$1" has_created_at="$2"
-    if [[ "$has_created_at" == true ]]; then
-        echo "(((lastConnection IS NULL OR lastConnection = '') AND (created_at IS NULL OR created_at < date('now', '-${days} days'))) OR (lastConnection < date('now', '-${days} days') AND lastConnection <> '')) AND username <> 'admin'"
-    else
-        echo "(lastConnection < date('now', '-${days} days') AND lastConnection IS NOT NULL AND lastConnection <> '' AND username <> 'admin')"
+    local days="$1"
+    local clause="(lastConnection < date('now', '-${days} days') AND lastConnection IS NOT NULL AND lastConnection <> '')"
+
+    local -a stale=()
+    local u
+    while IFS= read -r u; do
+        [[ -n "$u" ]] && stale+=("'$(sql_escape "$u")'")
+    done < <(ledger_stale_usernames "$days")
+
+    if (( ${#stale[@]} > 0 )); then
+        local list; list="$(IFS=,; echo "${stale[*]}")"
+        clause="${clause} OR ((lastConnection IS NULL OR lastConnection = '') AND username IN (${list}))"
     fi
+    echo "(( ${clause} ) AND username <> 'admin')"
 }
 
 # Vrai (code 0) si le service serveur Zomboid tourne actuellement.

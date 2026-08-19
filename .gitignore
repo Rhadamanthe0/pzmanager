@@ -33,3 +33,7 @@ CLAUDE.md
 # OS files
 .DS_Store
 Thumbs.db
+
+# Registre des dates de création des comptes : données joueurs (pseudos +
+# SteamID), propres à une installation. Sauvegardé par fullBackup.sh, pas par git.
+data/whitelistLedger.csv
