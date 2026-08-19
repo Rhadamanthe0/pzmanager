@@ -4,8 +4,10 @@ Description=Project Zomboid - Surveillance mémoire heap (redémarrage adaptatif
 [Service]
 Type=oneshot
 # checkHeapAndRestart.sh bloque le temps du préavis quand il déclenche un
-# `restart <délai>` (jusqu'à 15m + arrêt) : sans ce timeout large, systemd
-# tuerait le service à DefaultTimeoutStartSec (90s) en plein préavis joueurs.
+# `restart <délai>` (jusqu'à 15m + arrêt). Ce timeout est un PLAFOND de sécurité,
+# pas une rallonge : un Type=oneshot n'a AUCUN timeout de démarrage par défaut
+# (TimeoutStartUSec=infinity, vérifié via `systemctl --user show`). Il borne donc
+# un script resté coincé, tout en laissant passer le plus long préavis (15m).
 TimeoutStartSec=1500
 ExecStart=%h/pzmanager/data/scripts/internal/checkHeapAndRestart.sh
 StandardOutput=journal

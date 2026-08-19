@@ -124,11 +124,12 @@ restore_sudoers() {
     if [[ -d "$backup_path/etc/sudoers.d" ]]; then
         for sudoers_file in "$backup_path"/etc/sudoers.d/*; do
             [[ -f "$sudoers_file" ]] || continue
-            local filename=$(basename "$sudoers_file")
-            cp "$sudoers_file" "/etc/sudoers.d/$filename"
-            chmod 440 "/etc/sudoers.d/$filename"
-            chown root:root "/etc/sudoers.d/$filename"
-            visudo -cf "/etc/sudoers.d/$filename" || die "Fichier sudoers invalide: $filename"
+            local filename; filename="$(basename "$sudoers_file")"
+            # Valider AVANT d'installer. L'ordre inverse mettait le fichier en
+            # place puis mourait dessus : un sudoers invalide restait dans
+            # /etc/sudoers.d/ et cassait sudo pour toute la machine.
+            visudo -cf "$sudoers_file" || die "Fichier sudoers invalide: $filename"
+            install -o root -g root -m 440 "$sudoers_file" "/etc/sudoers.d/$filename"
         done
     fi
 
@@ -265,10 +266,14 @@ configure_zomboid_jvm() {
 }
 
 configure_user_environment() {
-    grep -q "XDG_RUNTIME_DIR" "$PZ_HOME/.bashrc" && return 0
+    local bashrc="$PZ_HOME/.bashrc"
+    grep -q "XDG_RUNTIME_DIR" "$bashrc" 2>/dev/null && return 0
 
     echo "Configuration environnement utilisateur..."
-    echo 'export XDG_RUNTIME_DIR=/run/user/$(id -u)' >> "$PZ_HOME/.bashrc"
+    echo 'export XDG_RUNTIME_DIR=/run/user/$(id -u)' >> "$bashrc"
+    # On tourne en root : sans ce chown, un .bashrc créé par cette redirection
+    # appartient à root et l'utilisateur ne peut plus le modifier.
+    chown "$PZ_USER:$PZ_USER" "$bashrc"
 }
 
 install_systemd_services() {
