@@ -170,8 +170,14 @@ done
 
 log "Purge terminée : ${removed_accounts} compte(s) retiré(s), ${removed_steamids} SteamID désautorisé(s). Personnages conservés."
 
-# Notification Discord (non bloquant)
-if [[ "$removed_accounts" -gt 0 && -x "${SCRIPT_DIR}/../internal/sendDiscord.sh" ]]; then
-    msg="🧹 Purge whitelist (inactifs >= ${DAYS}j) : ${removed_accounts} accès retiré(s), personnages conservés."$'\n'"$(printf '• %s\n' "${SUMMARY[@]}")"
-    "${SCRIPT_DIR}/../internal/sendDiscord.sh" "$msg" || true
+# PAS de notification Discord (décision admin, 19/08/2026).
+# sendDiscord.sh poste sur le canal PUBLIC des annonces joueurs : la purge y
+# affichait la liste NOMINATIVE des comptes retirés, ce qui n'a aucun intérêt
+# pour les joueurs et expose inutilement des pseudos. Le détail reste dans le
+# journal de l'unité (journalctl --user -u zomboid.service), qui est de toute
+# façon le seul endroit consulté pour ce genre d'opération.
+if [[ "$removed_accounts" -gt 0 ]]; then
+    for local_label in "${SUMMARY[@]}"; do
+        log "  • ${local_label}"
+    done
 fi
