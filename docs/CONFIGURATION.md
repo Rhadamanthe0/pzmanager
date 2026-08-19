@@ -194,12 +194,10 @@ export DISCORD_BOT_GUILD_ID=""         # server ID (instant command sync)
 export DISCORD_BOT_CHANNEL_ID=""       # allowed channel ID(s), comma-separated
 export DISCORD_BOT_ADMIN_ROLE_ID=""    # role allowed to run commands
 export DISCORD_BOT_CMD_TIMEOUT=2400    # per-command timeout (seconds)
-export DISCORD_BOT_DEATH_CHANNEL_ID="" # channel for death / PvP notifications (empty = off)
 ```
 
 Runs `pzm` commands from Discord via `/pzm …` slash commands. Leave
 `DISCORD_BOT_TOKEN` empty to keep it disabled. Install with `pzm install discord`.
-Set `DISCORD_BOT_DEATH_CHANNEL_ID` to also post player-death and PvP embeds.
 Full guide: [DISCORD_BOT.md](DISCORD_BOT.md).
 
 ## Backups Configuration

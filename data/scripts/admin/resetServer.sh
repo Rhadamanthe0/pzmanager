@@ -58,6 +58,24 @@ readonly CONFIG_FILES=(
     "${PZ_SERVER_NAME}_spawnregions.lua"
 )
 
+# Numérotation des étapes. Elle était écrite en dur dans chaque en-tête, avec un
+# if/else dans generate_world pour choisir « 3. » ou « 4. » selon --keep-config —
+# et restore_whitelist annonçait « 5. » même quand elle était la 4e (sans
+# --keep-config). Un compteur rend le numéro dérivé de l'ordre réel d'exécution.
+STEP=0
+step() {
+    STEP=$(( STEP + 1 ))
+    echo ""
+    echo "=== ${STEP}. $* ==="
+}
+
+# Arrête le serveur de génération lancé en tâche de fond (TERM puis KILL).
+kill_world_generator() {
+    pkill -f "ProjectZomboid64.*-cachedir=${1}" 2>/dev/null || true
+    sleep 2
+    pkill -9 -f "ProjectZomboid64.*-cachedir=${1}" 2>/dev/null || true
+}
+
 # Bannière d'annonce. PAS de confirmation interactive : le reset est exécutable
 # directement (y compris via le bot Discord, dont le stdin est fermé). La seule
 # barrière restante est l'accès à `pzm` / au salon+rôle admin du bot.
@@ -71,8 +89,7 @@ announce_reset() {
 }
 
 stop_server() {
-    echo ""
-    echo "=== 1. Arrêt du serveur ==="
+    step "Arrêt du serveur"
 
     if server_is_active; then
         # Passer par pz.sh et non `systemctl stop` : le stop direct sautait le
@@ -89,8 +106,7 @@ stop_server() {
 }
 
 backup_current() {
-    echo ""
-    echo "=== 2. Backup des données actuelles ==="
+    step "Backup des données actuelles"
 
     if [[ -d "${PZ_SOURCE_DIR}" ]]; then
         mkdir -p "${PZ_HOME}/OLD"
@@ -102,8 +118,7 @@ backup_current() {
 }
 
 restore_configs() {
-    echo ""
-    echo "=== 3. Restauration configs avant génération ==="
+    step "Restauration configs avant génération"
 
     mkdir -p "${PZ_SOURCE_DIR}/Server" "${PZ_SOURCE_DIR}/mods"
 
@@ -148,13 +163,10 @@ restore_configs() {
 }
 
 generate_world() {
-    echo ""
-    if $OPT_KEEP_CONFIG; then
-        echo "=== 4. Génération nouveau monde ==="
-    else
-        echo "=== 3. Génération nouveau monde ==="
-        mkdir -p "${PZ_SOURCE_DIR}/Server" "${PZ_SOURCE_DIR}/mods"
-    fi
+    step "Génération nouveau monde"
+    # Sans --keep-config, restore_configs n'a pas tourné : c'est ici que
+    # l'arborescence minimale doit être créée.
+    $OPT_KEEP_CONFIG || mkdir -p "${PZ_SOURCE_DIR}/Server" "${PZ_SOURCE_DIR}/mods"
 
     local password
     password=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 24)
@@ -186,9 +198,7 @@ generate_world() {
     done
 
     if [[ $waited -ge $max_wait ]]; then
-        pkill -f "ProjectZomboid64.*-cachedir=${cachedir}" 2>/dev/null || true
-        sleep 2
-        pkill -9 -f "ProjectZomboid64.*-cachedir=${cachedir}" 2>/dev/null || true
+        kill_world_generator "$cachedir"
         die "Timeout: monde non généré après ${max_wait}s"
     fi
 
@@ -206,9 +216,7 @@ generate_world() {
     done
     echo ""
 
-    pkill -f "ProjectZomboid64.*-cachedir=${cachedir}" 2>/dev/null || true
-    sleep 2
-    pkill -9 -f "ProjectZomboid64.*-cachedir=${cachedir}" 2>/dev/null || true
+    kill_world_generator "$cachedir"
 
     if [[ $admin_wait -ge 60 ]]; then
         echo "⚠ Admin non créé en DB (timeout). Le serveur demandera le mot de passe au démarrage."
@@ -222,8 +230,7 @@ generate_world() {
 }
 
 restore_whitelist() {
-    echo ""
-    echo "=== 5. Restauration whitelist ==="
+    step "Restauration whitelist"
 
     local old_db="${OLD_DIR}/db/${PZ_SERVER_NAME}.db"
     local new_db="${PZ_DB_PATH}"
@@ -261,8 +268,7 @@ restore_whitelist() {
 }
 
 finalize() {
-    echo ""
-    echo "=== Démarrage du serveur ==="
+    step "Démarrage du serveur"
 
     "${SCRIPT_DIR}/../core/pz.sh" start now --reason "Nouveau monde après reset"
 

@@ -22,11 +22,8 @@ if [[ -f "$SILENT_FLAG" ]]; then
 fi
 
 # Prevent duplicate notifications (lock for 5 minutes)
-if [[ -f "$NOTIFY_LOCK" ]]; then
-    lock_age=$(( $(date +%s) - $(stat -c %Y "$NOTIFY_LOCK" 2>/dev/null || echo 0) ))
-    if (( lock_age < 300 )); then
-        exit 0
-    fi
+if (( $(marker_age_seconds "$NOTIFY_LOCK") < 300 )); then
+    exit 0
 fi
 touch "$NOTIFY_LOCK"
 

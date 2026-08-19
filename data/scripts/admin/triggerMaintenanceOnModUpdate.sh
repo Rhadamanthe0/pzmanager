@@ -191,8 +191,7 @@ trigger_maintenance() {
 readonly SERVER_UPDATE_MARKER="/tmp/pzmanager-server-update-check-$(id -un).stamp"
 readonly SERVER_UPDATE_CHECK_INTERVAL="${SERVER_UPDATE_CHECK_INTERVAL:-3600}"
 server_update_check_due() {
-    local age=$(( $(date +%s) - $(stat -c %Y "$SERVER_UPDATE_MARKER" 2>/dev/null || echo 0) ))
-    (( age < SERVER_UPDATE_CHECK_INTERVAL )) && return 1
+    (( $(marker_age_seconds "$SERVER_UPDATE_MARKER") < SERVER_UPDATE_CHECK_INTERVAL )) && return 1
     touch "$SERVER_UPDATE_MARKER"
     return 0
 }

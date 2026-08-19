@@ -67,12 +67,15 @@ ensure_directory "${LOG_MAINTENANCE_DIR}"
 exec > >(tee -a "${MAINT_LOG}") 2>&1
 
 stop_server() {
-    local silent_opt=""
-    local automatic_opt=""
-    [[ "$SILENT_MODE" == true ]] && silent_opt="--silent"
-    [[ "$AUTOMATIC_MODE" == true ]] && automatic_opt="--automatic"
+    # Tableau et non chaînes non quotées : même raison que dans main() plus bas —
+    # `$automatic_opt $silent_opt` reposait sur le word-splitting de variables
+    # vides, et les quoter (le réflexe naturel) aurait passé des arguments vides
+    # à pz.sh. Les deux appels à pz.sh du fichier utilisent désormais la même forme.
+    local -a opts=()
+    [[ "$AUTOMATIC_MODE" == true ]] && opts+=(--automatic)
+    [[ "$SILENT_MODE" == true ]] && opts+=(--silent)
     log "Arrêt du serveur ($DELAY) pour maintenance..."
-    "${SCRIPT_DIR}/../core/pz.sh" stop "$DELAY" --maintenance --reason "$MAINTENANCE_REASON" $automatic_opt $silent_opt
+    "${SCRIPT_DIR}/../core/pz.sh" stop "$DELAY" --maintenance --reason "$MAINTENANCE_REASON" "${opts[@]}"
 }
 
 # NB : la rotation des backups locaux n'est plus faite ici. Elle est gérée par la
@@ -224,9 +227,6 @@ main() {
         sudo /sbin/reboot
     else
         log "Maintenance terminée, redémarrage du service..."
-        # Tableau plutôt qu'une chaîne non quotée : `$automatic_opt` reposait sur
-        # le word-splitting d'une variable vide, et la quoter — le réflexe naturel
-        # — aurait passé un argument vide à pz.sh.
         local -a opts=()
         [[ "$AUTOMATIC_MODE" == true ]] && opts+=(--automatic)
         "${SCRIPT_DIR}/../core/pz.sh" start --reason "$MAINTENANCE_REASON" "${opts[@]}"

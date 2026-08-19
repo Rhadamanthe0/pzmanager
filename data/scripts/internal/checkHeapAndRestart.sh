@@ -51,12 +51,10 @@ log "heapcheck: heap post-GC ${pct}% (seuil ${PCT_THRESHOLD}%)"
 (( pct >= PCT_THRESHOLD )) || exit 0
 
 # Anti-empilement : un restart vient-il d'être déclenché ?
-if [[ -f "$COOLDOWN_MARKER" ]]; then
-    age=$(( $(date +%s) - $(stat -c %Y "$COOLDOWN_MARKER" 2>/dev/null || echo 0) ))
-    if (( age < COOLDOWN_SECONDS )); then
-        log "heapcheck: restart déjà déclenché il y a ${age}s (<${COOLDOWN_SECONDS}s) — on attend."
-        exit 0
-    fi
+age="$(marker_age_seconds "$COOLDOWN_MARKER")"
+if (( age < COOLDOWN_SECONDS )); then
+    log "heapcheck: restart déjà déclenché il y a ${age}s (<${COOLDOWN_SECONDS}s) — on attend."
+    exit 0
 fi
 : > "$COOLDOWN_MARKER"
 

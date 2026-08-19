@@ -61,10 +61,6 @@ readonly DB_PATH="${PZ_DB_PATH}"
 readonly SEND_COMMAND="${SCRIPT_DIR}/../internal/sendCommand.sh"
 readonly ACTION="${1:-}"
 
-check_sqlite() {
-    command -v sqlite3 &>/dev/null || die "sqlite3 non installé. Installer avec: sudo apt install sqlite3"
-}
-
 check_database() {
     [[ -f "$DB_PATH" ]] || die "Base de données introuvable: $DB_PATH"
 }
@@ -95,10 +91,9 @@ Trouver sur le profil Steam ou via https://steamid.xyz/"
 # created_at (schéma vérifié en production le 19/08/2026) : l'ancienneté vit
 # désormais dans le registre CSV, hors base — cf. common.sh. L'ancienne détection
 # conditionnelle d'une colonne created_at portait donc sur une colonne qui
-# n'existe nulle part.
-detect_schema() {
-    WHITELIST_COLUMNS="id, username, lastConnection, steamid, role, displayName"
-}
+# n'existe nulle part — d'où une CONSTANTE et non plus une fonction `detect_schema`
+# qu'il fallait penser à appeler dans chaque branche (et qui manquait dans deux).
+readonly WHITELIST_COLUMNS="id, username, lastConnection, steamid, role, displayName"
 
 list_whitelist() {
     echo "=== Liste blanche SteamID (autorisations d'accès) ==="
@@ -358,13 +353,6 @@ purge_whitelist() {
 # elle était recopiée dans quatre scripts avec quatre messages différents, et
 # manquait justement là où on écrivait dans le monde (backup restore, resetpassword).
 
-# Localise le players.db live (perso multijoueur, table networkPlayers).
-# -maxdepth 2 : le fichier est toujours à Saves/Multiplayer/<monde>/players.db,
-# alors qu'un find non borné parcourt ~578 000 entrées de l'arbre de sauvegarde.
-locate_players_db() {
-    PLAYERS_DB="$(find "${PZ_SOURCE_DIR}/Saves/Multiplayer" -maxdepth 2 -name 'players.db' 2>/dev/null | head -1)"
-}
-
 # remove-account <pseudo|steamID64>... [--dry-run]
 # Supprime des COMPTES précis (par pseudo) ou tous les comptes d'un SteamID.
 # Retire l'autorisation `allowedsteamid` uniquement si plus aucun compte restant
@@ -379,8 +367,6 @@ remove_accounts() {
         esac
     done
     [[ "${#targets[@]}" -gt 0 ]] || die "Usage: $0 remove-account <pseudo|steamID64> [...] [--dry-run]"
-
-    detect_schema
 
     # Construire la liste des id de comptes à supprimer + SteamID orphelins.
     local -a del_ids=() del_sids=() plan=()
@@ -507,9 +493,9 @@ rename_account() {
     local clash; clash=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE username='${esc_new}'" 2>/dev/null || echo 0)
     [[ "$clash" -eq 0 ]] || die "Un compte '${new}' existe déjà : renommage refusé (collision)."
 
-    locate_players_db
-    local char_count=0
-    if [[ -n "${PLAYERS_DB:-}" && -f "${PLAYERS_DB:-}" ]]; then
+    local PLAYERS_DB char_count=0
+    PLAYERS_DB="$(find_players_db "${PZ_SOURCE_DIR}")"
+    if [[ -f "$PLAYERS_DB" ]]; then
         char_count=$(sqlite3 "$PLAYERS_DB" "SELECT COUNT(*) FROM networkPlayers WHERE username='${esc_old}'" 2>/dev/null || echo 0)
     fi
 
@@ -583,48 +569,49 @@ HELPEOF
 }
 
 main() {
-    check_sqlite
-
+    # Toutes les commandes réelles lisent la base : les prérequis sont vérifiés
+    # une fois ici plutôt que recopiés dans chacune des sept branches. L'aide et
+    # une commande inconnue doivent répondre AVANT ces prérequis : sinon un appel
+    # direct avec un monde non généré répondrait « base introuvable » là où le
+    # vrai problème est le nom de la commande.
     case "$ACTION" in
-        list)
-            check_database
-            detect_schema
-            list_whitelist
-            ;;
-        add)
-            check_database
-            add_to_whitelist "${@:2}"
-            ;;
-        remove)
-            check_database
-            remove_from_whitelist "${@:2}"
-            ;;
-        remove-account)
-            check_database
-            remove_accounts "${@:2}"
-            ;;
-        rename-account)
-            check_database
-            rename_account "${@:2}"
-            ;;
-        resetpassword)
-            check_database
-            detect_schema
-            reset_password "${*:2}"
-            ;;
-        purge)
-            check_database
-            detect_schema
-            purge_whitelist "${2:-}" "${3:-}"
-            ;;
         help|--help|-h|"")
             show_help
+            return 0
             ;;
+        list|add|remove|remove-account|rename-account|resetpassword|purge) ;;
         *)
             echo "Commande inconnue: $ACTION"
             echo ""
             show_help
             exit 1
+            ;;
+    esac
+
+    require_sqlite
+    check_database
+
+    case "$ACTION" in
+        list)
+            list_whitelist
+            ;;
+        add)
+            add_to_whitelist "${@:2}"
+            ;;
+        remove)
+            remove_from_whitelist "${@:2}"
+            ;;
+        remove-account)
+            remove_accounts "${@:2}"
+            ;;
+        rename-account)
+            rename_account "${@:2}"
+            ;;
+        resetpassword)
+            reset_password "${*:2}"
+            ;;
+        purge)
+            purge_whitelist "${2:-}" "${3:-}"
             ;;
     esac
 }

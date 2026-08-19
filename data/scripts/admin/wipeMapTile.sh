@@ -88,9 +88,7 @@ done
 (( Y1 <= Y2 )) || { t=$Y1; Y1=$Y2; Y2=$t; }
 
 # --- Serveur doit etre arrete ------------------------------------------------
-if server_is_active; then
-    die "Le serveur est actif. Arretez-le d'abord: pzm server stop"
-fi
+require_server_stopped "Wipe de zone carte"
 
 # --- Localise la sauvegarde MP -----------------------------------------------
 readonly MP_DIR="${PZ_SOURCE_DIR}/Saves/Multiplayer"

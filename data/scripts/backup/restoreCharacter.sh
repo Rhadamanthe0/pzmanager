@@ -27,7 +27,7 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
 source_env
 
-command -v sqlite3 &>/dev/null || die "sqlite3 non installé."
+require_sqlite
 
 # --- Parsing des arguments --------------------------------------------------
 USERNAME=""
@@ -59,16 +59,13 @@ else
 fi
 
 # --- Serveur arrêté obligatoire ---------------------------------------------
-if server_is_active; then
-    die "Le serveur est actif : la restauration écrit dans players.db et doit se faire serveur arrêté.
-Arrête-le d'abord :  pzm server stop 2m --reason \"Restauration personnage\""
-fi
+require_server_stopped "Restauration personnage"
 
 # --- Localiser players.db (live + backup) -----------------------------------
-LIVE_DB=$(find "${PZ_SOURCE_DIR}/Saves/Multiplayer" -maxdepth 2 -name 'players.db' 2>/dev/null | head -1)
+LIVE_DB=$(find_players_db "${PZ_SOURCE_DIR}")
 [[ -f "$LIVE_DB" ]] || die "players.db live introuvable sous ${PZ_SOURCE_DIR}/Saves/Multiplayer"
 
-BK_DB=$(find "${BACKUP_PATH}/Saves/Multiplayer" -maxdepth 2 -name 'players.db' 2>/dev/null | head -1)
+BK_DB=$(find_players_db "${BACKUP_PATH}")
 [[ -f "$BK_DB" ]] || die "players.db introuvable dans le backup: ${BACKUP_PATH}/Saves/Multiplayer"
 
 # sql_escape vient de lib/common.sh
