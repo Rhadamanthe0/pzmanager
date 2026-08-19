@@ -81,6 +81,28 @@ ensure_directory() {
 # Échappe une chaîne pour une string SQL sqlite3 (double les apostrophes)
 sql_escape() { printf "%s" "${1//\'/\'\'}"; }
 
+# Toute opération qui lit ou écrit la base du monde passe par ici : le message
+# d'installation était recopié à l'identique dans quatre scripts.
+require_sqlite() {
+    command -v sqlite3 &>/dev/null || die "sqlite3 non installé. Installer avec: sudo apt install sqlite3"
+}
+
+# Chemin du players.db (personnages multijoueur) sous une racine Zomboid donnée
+# — le monde live (PZ_SOURCE_DIR) comme un dossier de backup, d'où le paramètre.
+# -maxdepth 2 : le fichier est toujours à Saves/Multiplayer/<monde>/players.db,
+# alors qu'un find non borné parcourt ~578 000 entrées de l'arbre de sauvegarde.
+find_players_db() {
+    find "${1}/Saves/Multiplayer" -maxdepth 2 -name 'players.db' 2>/dev/null | head -1
+}
+
+# Âge en secondes d'un fichier-marqueur (verrou de notification, cooldown,
+# horodatage de dernier passage). Un marqueur ABSENT vaut « très vieux » (epoch 0)
+# : c'est ce que veulent les quatre appelants, qui traitent tous l'absence comme
+# « le délai est écoulé, vas-y ».
+marker_age_seconds() {
+    echo $(( $(date +%s) - $(stat -c %Y "$1" 2>/dev/null || echo 0) ))
+}
+
 # Vrai (code 0) si l'argument est un SteamID64 (17 chiffres commençant par 7656119).
 is_steamid64() { [[ "$1" =~ ^7656119[0-9]{10}$ ]]; }
 
@@ -252,8 +274,7 @@ try_acquire_maintenance_lock() {
 
     # Clean stale lock (>max_age old)
     if [[ -f "$lock_file" ]]; then
-        local age=$(( $(date +%s) - $(stat -c %Y "$lock_file" 2>/dev/null || echo 0) ))
-        (( age > max_age )) && rm -f "$lock_file"
+        (( $(marker_age_seconds "$lock_file") > max_age )) && rm -f "$lock_file"
     fi
 
     exec 200>"$lock_file"

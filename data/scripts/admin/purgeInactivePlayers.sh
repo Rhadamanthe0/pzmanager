@@ -58,7 +58,7 @@ if [[ -n "$DAYS_OVERRIDE" ]]; then
     [[ "$DAYS_OVERRIDE" =~ ^[0-9]+$ ]] || die "--days attend un nombre de jours (reçu: '${DAYS_OVERRIDE}')"
 fi
 
-command -v sqlite3 &>/dev/null || die "sqlite3 non installé."
+require_sqlite
 [[ -f "$DB_PATH" ]] || { log "Base introuvable: $DB_PATH (purge ignorée)"; exit 0; }
 
 # Refuser si le serveur tourne (écriture DB live dangereuse), sauf --force.
@@ -103,7 +103,12 @@ fi
 # porte. On l'annonce dès le plan : c'est la question qu'on se pose devant une
 # purge (« est-ce que je coupe l'accès du copain qui partage le SteamID ? »), et
 # le dry-run doit pouvoir y répondre sans rien supprimer.
-VICTIM_IDS="$(printf '%s\n' "${VICTIMS[@]}" | cut -d'|' -f1 | paste -sd,)"
+# cut sur 0x1f, comme le -separator de la requête ci-dessus. Le `-d'|'` d'origine
+# est un reste d'avant le changement de séparateur : sur des lignes sans « | » il
+# renvoyait la LIGNE ENTIÈRE, donc un `id NOT IN (...)` invalide -> sqlite en
+# erreur -> `|| echo 1` -> aucun SteamID n'était jamais annoncé comme désautorisé
+# dans le plan/dry-run (toujours « CONSERVÉ, encore utilisé »).
+VICTIM_IDS="$(printf '%s\n' "${VICTIMS[@]}" | cut -d$'\x1f' -f1 | paste -sd,)"
 
 steamid_becomes_orphan() {
     local sid="$1" esc kept

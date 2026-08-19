@@ -36,7 +36,7 @@ readonly DB_PATH="${PZ_DB_PATH}"
 readonly LEDGER="${WHITELIST_LEDGER}"
 
 main() {
-    command -v sqlite3 &>/dev/null || die "sqlite3 non installé."
+    require_sqlite
     [[ -f "$DB_PATH" ]] || { log "Base de données introuvable: $DB_PATH (registre inchangé)"; exit 0; }
 
     ensure_directory "$(dirname "$LEDGER")"

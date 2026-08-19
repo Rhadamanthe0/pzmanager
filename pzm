@@ -77,6 +77,22 @@ Documentation: docs/QUICKSTART.md
 EOF
 }
 
+# Les huit routeurs ci-dessous répétaient mot pour mot le même bloc d'erreur.
+# Le centraliser garantit qu'un ajout de sous-commande ne laisse pas une liste
+# « Actions: » périmée dans un coin du fichier.
+invalid_action() {
+    local kind="$1" action="$2"; shift 2
+    echo "Erreur: Action ${kind} invalide: ${action}"
+    echo "Actions: $*"
+    exit 1
+}
+
+usage_error() {
+    echo "Erreur: $1"
+    echo "Usage: $2"
+    exit 1
+}
+
 # Routage commande server
 cmd_server() {
     local action="${1:-}"
@@ -87,9 +103,7 @@ cmd_server() {
             exec "${SCRIPT_DIR}/data/scripts/core/pz.sh" "$action" "$@"
             ;;
         *)
-            echo "Erreur: Action serveur invalide: $action"
-            echo "Actions: start, stop, restart, status"
-            exit 1
+            invalid_action "serveur" "$action" "start, stop, restart, status"
             ;;
     esac
 }
@@ -107,28 +121,18 @@ cmd_backup() {
             exec "${SCRIPT_DIR}/data/scripts/backup/fullBackup.sh"
             ;;
         restore)
-            if [[ $# -eq 0 ]]; then
-                echo "Erreur: Chemin backup requis"
-                echo "Usage: pzm backup restore <chemin>"
-                exit 1
-            fi
+            [[ $# -gt 0 ]] || usage_error "Chemin backup requis" "pzm backup restore <chemin>"
             exec "${SCRIPT_DIR}/data/scripts/backup/restoreZomboidData.sh" "$@"
             ;;
         restore-character)
-            if [[ $# -lt 2 ]]; then
-                echo "Erreur: pseudo et backup requis"
-                echo "Usage: pzm backup restore-character <pseudo> <backup>"
-                exit 1
-            fi
+            [[ $# -ge 2 ]] || usage_error "pseudo et backup requis" "pzm backup restore-character <pseudo> <backup>"
             exec "${SCRIPT_DIR}/data/scripts/backup/restoreCharacter.sh" "$@"
             ;;
         list)
             exec "${SCRIPT_DIR}/data/scripts/backup/listBackups.sh"
             ;;
         *)
-            echo "Erreur: Action backup invalide: $action"
-            echo "Actions: create, full, restore, restore-character, list"
-            exit 1
+            invalid_action "backup" "$action" "create, full, restore, restore-character, list"
             ;;
     esac
 }
@@ -143,9 +147,7 @@ cmd_whitelist() {
             exec "${SCRIPT_DIR}/data/scripts/admin/manageWhitelist.sh" "$action" "$@"
             ;;
         *)
-            echo "Erreur: Action whitelist invalide: $action"
-            echo "Actions: list, add, remove, remove-account, rename-account, resetpassword, purge, help"
-            exit 1
+            invalid_action "whitelist" "$action" "list, add, remove, remove-account, rename-account, resetpassword, purge, help"
             ;;
     esac
 }
@@ -163,9 +165,7 @@ cmd_admin() {
             exec "${SCRIPT_DIR}/data/scripts/admin/performFullMaintenance.sh" "$@"
             ;;
         *)
-            echo "Erreur: Action admin invalide: $action"
-            echo "Actions: reset, maintenance"
-            exit 1
+            invalid_action "admin" "$action" "reset, maintenance"
             ;;
     esac
 }
@@ -186,9 +186,7 @@ cmd_install() {
             exec "${SCRIPT_DIR}/data/scripts/install/setupDiscordBot.sh"
             ;;
         *)
-            echo "Erreur: Action install invalide: $action"
-            echo "Actions: system, zomboid, discord"
-            exit 1
+            invalid_action "install" "$action" "system, zomboid, discord"
             ;;
     esac
 }
@@ -203,30 +201,20 @@ cmd_map() {
             exec "${SCRIPT_DIR}/data/scripts/admin/wipeMapTile.sh" "$@"
             ;;
         *)
-            echo "Erreur: Action map invalide: $action"
-            echo "Actions: wipe"
-            exit 1
+            invalid_action "map" "$action" "wipe"
             ;;
     esac
 }
 
 # Routage commande rcon
 cmd_rcon() {
-    if [[ $# -eq 0 ]]; then
-        echo "Erreur: Commande RCON requise"
-        echo "Usage: pzm rcon <commande>"
-        exit 1
-    fi
+    [[ $# -gt 0 ]] || usage_error "Commande RCON requise" "pzm rcon <commande>"
     exec "${SCRIPT_DIR}/data/scripts/internal/sendCommand.sh" "$@"
 }
 
 # Routage commande discord
 cmd_discord() {
-    if [[ $# -eq 0 ]]; then
-        echo "Erreur: Message requis"
-        echo "Usage: pzm discord <message>"
-        exit 1
-    fi
+    [[ $# -gt 0 ]] || usage_error "Message requis" "pzm discord <message>"
     exec "${SCRIPT_DIR}/data/scripts/internal/sendDiscord.sh" "$*"
 }
 
@@ -241,29 +229,8 @@ main() {
     shift
 
     case "$command" in
-        server)
-            cmd_server "$@"
-            ;;
-        backup)
-            cmd_backup "$@"
-            ;;
-        whitelist)
-            cmd_whitelist "$@"
-            ;;
-        admin)
-            cmd_admin "$@"
-            ;;
-        install)
-            cmd_install "$@"
-            ;;
-        map)
-            cmd_map "$@"
-            ;;
-        rcon)
-            cmd_rcon "$@"
-            ;;
-        discord)
-            cmd_discord "$@"
+        server|backup|whitelist|admin|install|map|rcon|discord)
+            "cmd_${command}" "$@"
             ;;
         help|--help|-h)
             show_help
