@@ -87,6 +87,12 @@ require_sqlite() {
     command -v sqlite3 &>/dev/null || die "sqlite3 non installé. Installer avec: sudo apt install sqlite3"
 }
 
+# Mot de passe admin aléatoire (premier démarrage / nouveau monde). La même
+# ligne vivait dans configurationInitiale.sh et resetServer.sh.
+generate_password() {
+    openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 24
+}
+
 # Chemin du players.db (personnages multijoueur) sous une racine Zomboid donnée
 # — le monde live (PZ_SOURCE_DIR) comme un dossier de backup, d'où le paramètre.
 # -maxdepth 2 : le fichier est toujours à Saves/Multiplayer/<monde>/players.db,

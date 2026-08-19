@@ -325,9 +325,11 @@ generate_admin_password() {
     local password_file="$PZ_MANAGER_DIR/.admin_password"
 
     # Générer un mot de passe admin pour le premier démarrage
-    local password=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 24)
+    local password; password="$(generate_password)"
+    # Créer le fichier DÉJÀ en 600 : un `echo >` suivi d'un chmod le laisse
+    # lisible par tous (umask 022) le temps de l'écriture.
+    install -m 600 /dev/null "$password_file"
     echo "$password" > "$password_file"
-    chmod 600 "$password_file"
 
     echo ""
     echo "  ╔════════════════════════════════════════════════════════╗"

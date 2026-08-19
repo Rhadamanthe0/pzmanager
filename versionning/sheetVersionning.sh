@@ -12,6 +12,12 @@
 #   ./sheetVersionning.sh list            # liste les onglets V* (visibles/masqués)
 #   ./sheetVersionning.sh new [N]         # crée V{N} (N = max+1 si omis), masque les autres
 #   ./sheetVersionning.sh hide-old        # masque tous les V* sauf le plus récent
+#   ./sheetVersionning.sh show <tab> [range]        # affiche des cellules
+#   ./sheetVersionning.sh setcell <tab> <cell> <txt> # écrit une cellule
+#   ./sheetVersionning.sh load <tab> <fichier.tsv>   # peuple l'onglet depuis un TSV
+#
+# `new` ne fait que CLONER l'onglet précédent : sans un `load` derrière, le
+# nouvel onglet reste figé sur l'ancien contenu.
 # ------------------------------------------------------------------------------
 set -euo pipefail
 
@@ -40,7 +46,8 @@ SPREADSHEET_ID="${SHEET_VERSIONNING_ID:-}"
 # sortie quel que soit le code de retour (le JSON porte la clé privée du compte).
 KEY_FILE="$(mktemp)"
 chmod 600 "$KEY_FILE"
-trap 'rm -f "$KEY_FILE"' EXIT
+KEY_PEM=""
+trap 'rm -f "$KEY_FILE" ${KEY_PEM:+"$KEY_PEM"}' EXIT
 printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON_B64" | base64 -d > "$KEY_FILE" \
     || die "GOOGLE_SERVICE_ACCOUNT_JSON_B64 n'est pas du base64 valide."
 jq -e '.client_email and .private_key' "$KEY_FILE" >/dev/null 2>&1 \
@@ -50,18 +57,20 @@ jq -e '.client_email and .private_key' "$KEY_FILE" >/dev/null 2>&1 \
 b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
 
 get_access_token() {
-    local email key_pem now exp header claim signing_input sig jwt resp tok
+    local email now exp header claim signing_input sig jwt resp tok
     email="$(jq -r '.client_email' "$KEY_FILE")"
-    key_pem="$(mktemp)"; chmod 600 "$key_pem"
-    jq -r '.private_key' "$KEY_FILE" > "$key_pem"
+    # Variable GLOBALE (pas `local`) : c'est ce qui permet au trap EXIT de
+    # l'effacer si openssl échoue en route.
+    KEY_PEM="$(mktemp)"; chmod 600 "$KEY_PEM"
+    jq -r '.private_key' "$KEY_FILE" > "$KEY_PEM"
 
     now="$(date +%s)"; exp="$((now + 3600))"
     header='{"alg":"RS256","typ":"JWT"}'
     claim="$(jq -nc --arg iss "$email" --arg scope "$SCOPE" --argjson iat "$now" --argjson exp "$exp" \
         '{iss:$iss,scope:$scope,aud:"https://oauth2.googleapis.com/token",iat:$iat,exp:$exp}')"
     signing_input="$(printf '%s' "$header" | b64url).$(printf '%s' "$claim" | b64url)"
-    sig="$(printf '%s' "$signing_input" | openssl dgst -sha256 -sign "$key_pem" -binary | b64url)"
-    rm -f "$key_pem"
+    sig="$(printf '%s' "$signing_input" | openssl dgst -sha256 -sign "$KEY_PEM" -binary | b64url)"
+    rm -f "$KEY_PEM"; KEY_PEM=""
     jwt="${signing_input}.${sig}"
 
     resp="$(curl -s -X POST https://oauth2.googleapis.com/token \

@@ -128,17 +128,20 @@ install_sudoers() {
         return
     fi
 
-    # Générer le sudoers avec les bonnes valeurs
-    sed -e "s|__PZ_USER__|${PZ_USER}|g" -e "s|__PZ_HOME__|${PZ_HOME}|g" "$template" > "/tmp/${PZ_USER}-sudoers"
+    # Générer le sudoers avec les bonnes valeurs. mktemp et non un
+    # /tmp/<user>-sudoers prévisible : ce fichier est écrit par root, donc un lien
+    # symbolique déposé d'avance à ce chemin connu ferait écrire root à la place
+    # visée par le lien.
+    local staged
+    staged="$(mktemp)"
+    # shellcheck disable=SC2064
+    trap "rm -f '${staged}'" RETURN
+    sed -e "s|__PZ_USER__|${PZ_USER}|g" -e "s|__PZ_HOME__|${PZ_HOME}|g" "$template" > "$staged"
 
-    if visudo -cf "/tmp/${PZ_USER}-sudoers"; then
-        cp "/tmp/${PZ_USER}-sudoers" "$dest"
-        chmod 440 "$dest"
-        chown root:root "$dest"
-        rm -f "/tmp/${PZ_USER}-sudoers"
+    if visudo -cf "$staged"; then
+        install -o root -g root -m 440 "$staged" "$dest"
         echo "[INFO] Sudoers installé: $dest"
     else
-        rm -f "/tmp/${PZ_USER}-sudoers"
         echo "[ERROR] Fichier sudoers invalide, installation annulée" >&2
     fi
 }
@@ -151,10 +154,14 @@ main() {
 
     echo "[INFO] Configuration pour l'utilisateur: $PZ_USER"
 
-    # Charger les ports depuis .env si disponible
+    # Charger les ports depuis .env si disponible. Le filtre couvre AUSSI
+    # PZ_PROMETHEUS_PORT : il ne matchait que « PZ_PORT_ », si bien que
+    # configure_firewall retombait toujours sur son défaut codé en dur (9110) et
+    # posait la règle `deny` sur un port qui n'était pas celui du serveur dès que
+    # .env en définissait un autre.
     local env_file="${PZ_HOME}/pzmanager/.env"
     if [[ -f "$env_file" ]]; then
-        eval "$(grep -E '^export PZ_PORT_' "$env_file")" 2>/dev/null || true
+        eval "$(grep -E '^export (PZ_PORT_|PZ_PROMETHEUS_PORT)' "$env_file")" 2>/dev/null || true
         echo "[INFO] Ports chargés depuis $env_file"
     fi
 

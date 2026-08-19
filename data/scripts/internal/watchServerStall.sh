@@ -220,12 +220,13 @@ log "stallwatch: gel confirmé (main runnable ${runnable_count}/${#main_lines[@]
 
 # Détail technique (chemin du dump) : réservé à l'admin. Sur
 # DISCORD_ADMIN_WEBHOOK si défini dans .env, sinon journal seul — jamais sur le
-# canal public.
+# canal public. Passe par sendDiscord.sh --webhook plutôt que par un jq|curl
+# recopié : celui-ci n'avait pas le repli sans jq du script partagé, donc le
+# message admin disparaissait en silence sur une machine sans jq.
 if [[ -n "${DISCORD_ADMIN_WEBHOOK:-}" ]]; then
-    jq -n --arg content "🧊 Gel confirmé (main RUNNABLE, ${clients} joueur(s), compteur figé ~$(( STALL_SAMPLES + 1 )) min). Thread dump : \`logs/zomboid/stall_${ts}.txt\`" '{content: $content}' \
-        | curl -s --connect-timeout 5 --max-time 10 \
-               -H "Content-Type: application/json" -d @- "${DISCORD_ADMIN_WEBHOOK}" \
-               > /dev/null 2>&1 || true
+    "${SCRIPT_DIR}/sendDiscord.sh" \
+        "🧊 Gel confirmé (main RUNNABLE, ${clients} joueur(s), compteur figé ~$(( STALL_SAMPLES + 1 )) min). Thread dump : \`logs/zomboid/stall_${ts}.txt\`" \
+        --webhook "${DISCORD_ADMIN_WEBHOOK}" || true
 fi
 
 # --- Redémarrage automatique --------------------------------------------------
@@ -253,5 +254,5 @@ for _ in $(seq 30); do
 done
 
 log "stallwatch: redémarrage automatique du serveur."
-"${PZ_MANAGER_ROOT}/pzm" server restart now --silent --reason "Gel du thread principal (redémarrage automatique)" \
+"${PZ_MANAGER_DIR}/pzm" server restart now --silent --reason "Gel du thread principal (redémarrage automatique)" \
     || log "stallwatch: le redémarrage automatique a échoué — intervention manuelle nécessaire."

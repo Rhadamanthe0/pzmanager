@@ -34,7 +34,7 @@ check_os() {
     if [[ ! -f /etc/debian_version ]]; then
         error "This script only supports Debian/Ubuntu"
     fi
-    log "OS: $(cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '"')"
+    log "OS: $(. /etc/os-release && echo "${PRETTY_NAME}")"
 }
 
 check_dependencies() {

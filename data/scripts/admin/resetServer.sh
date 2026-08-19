@@ -169,7 +169,7 @@ generate_world() {
     $OPT_KEEP_CONFIG || mkdir -p "${PZ_SOURCE_DIR}/Server" "${PZ_SOURCE_DIR}/mods"
 
     local password
-    password=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 24)
+    password="$(generate_password)"
     local cachedir="${PZ_SOURCE_DIR}"
 
     echo "Démarrage du serveur pour génération..."
