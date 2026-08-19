@@ -389,7 +389,7 @@ remove_accounts() {
         if is_steamid64 "$t"; then
             local esc_sid; esc_sid="$(sql_escape "$t")"
             local -a rows=()
-            mapfile -t rows < <(sqlite3 -separator '|' "$DB_PATH" "SELECT id, username FROM whitelist WHERE steamid='${esc_sid}'" 2>/dev/null)
+            mapfile -t rows < <(sqlite3 -separator $'\x1f' "$DB_PATH" "SELECT id, username FROM whitelist WHERE steamid='${esc_sid}'" 2>/dev/null)
             if [[ "${#rows[@]}" -eq 0 ]]; then
                 local exists; exists=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM allowedsteamid WHERE steamid='${esc_sid}'" 2>/dev/null || echo 0)
                 if [[ "$exists" -ge 1 ]]; then
@@ -400,7 +400,7 @@ remove_accounts() {
             else
                 local r rid runame
                 for r in "${rows[@]}"; do
-                    IFS='|' read -r rid runame <<< "$r"
+                    IFS=$'\x1f' read -r rid runame <<< "$r"
                     [[ "$runame" == "admin" ]] && { plan+=("compte 'admin' : protégé, ignoré"); continue; }
                     del_ids+=("$rid"); plan+=("compte '${runame}' (id ${rid}, steamid ${t}) -> supprimé")
                 done
@@ -409,13 +409,13 @@ remove_accounts() {
             [[ "$t" == "admin" ]] && { plan+=("compte 'admin' : protégé, ignoré"); continue; }
             local esc_u; esc_u="$(sql_escape "$t")"
             local -a rows=()
-            mapfile -t rows < <(sqlite3 -separator '|' "$DB_PATH" "SELECT id, COALESCE(steamid,'') FROM whitelist WHERE username='${esc_u}'" 2>/dev/null)
+            mapfile -t rows < <(sqlite3 -separator $'\x1f' "$DB_PATH" "SELECT id, COALESCE(steamid,'') FROM whitelist WHERE username='${esc_u}'" 2>/dev/null)
             if [[ "${#rows[@]}" -eq 0 ]]; then
                 plan+=("compte '${t}' : introuvable, ignoré"); continue
             fi
             local r rid rsid
             for r in "${rows[@]}"; do
-                IFS='|' read -r rid rsid <<< "$r"
+                IFS=$'\x1f' read -r rid rsid <<< "$r"
                 del_ids+=("$rid"); plan+=("compte '${t}' (id ${rid}, steamid ${rsid:-aucun}) -> supprimé")
             done
         fi

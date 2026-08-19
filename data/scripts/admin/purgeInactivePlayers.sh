@@ -85,7 +85,13 @@ WHERE="$(inactive_where_clause "$DAYS")"
 log "=== Purge des accès inactifs (>= ${DAYS} jours) ==="
 
 # Récupérer les victimes : id|username|steamid
-mapfile -t VICTIMS < <(sqlite3 -separator '|' "$DB_PATH" \
+# Séparateur : caractère de contrôle US (0x1f), jamais un | .
+# Un joueur s'appelle littéralement « MabEira | Hannibal » (constaté le
+# 19/08/2026) : avec -separator '|' ses champs débordaient les uns sur les
+# autres, ce qui a produit une ligne de registre corrompue (pseudo tronqué à
+# « MabEira », steamid « Hannibal », date = un SteamID). Un pseudo ne peut pas
+# contenir 0x1f.
+mapfile -t VICTIMS < <(sqlite3 -separator $'\x1f' "$DB_PATH" \
     "SELECT id, username, COALESCE(steamid,'') FROM whitelist WHERE $WHERE ORDER BY lastConnection" 2>/dev/null)
 
 if [[ "${#VICTIMS[@]}" -eq 0 ]]; then
@@ -111,7 +117,7 @@ steamid_becomes_orphan() {
 
 log "${#VICTIMS[@]} compte(s) inactif(s) détecté(s) :"
 for row in "${VICTIMS[@]}"; do
-    IFS='|' read -r id uname sid <<< "$row"
+    IFS=$'\x1f' read -r id uname sid <<< "$row"
     if [[ -z "$sid" ]]; then
         log "  - ${uname} : compte supprimé (aucun steamid)"
     elif steamid_becomes_orphan "$sid"; then
@@ -141,7 +147,7 @@ removed_steamids=0
 declare -a SUMMARY=()
 
 for row in "${VICTIMS[@]}"; do
-    IFS='|' read -r id uname sid <<< "$row"
+    IFS=$'\x1f' read -r id uname sid <<< "$row"
     local_label="$uname"
 
     # 1) Retirer le compte de la liste blanche
