@@ -35,7 +35,10 @@ create_user() {
 
 install_packages() {
     require_command apt-get
-    local -a needed=(sudo rsync unzip zip ufw curl sqlite3 python3-venv)
+    # network-manager + ethtool : requis par configure_network(). ethtool reste
+    # utile seul (lecture de l'état Wake-on-LAN, `ethtool <iface> | grep Wake-on`),
+    # NetworkManager ne l'appelant pas pour poser son propre réglage.
+    local -a needed=(sudo rsync unzip zip ufw curl sqlite3 python3-venv network-manager ethtool)
     local -a to_install=()
     for pkg in "${needed[@]}"; do
         if ! dpkg -s "$pkg" >/dev/null 2>&1; then
@@ -49,6 +52,85 @@ install_packages() {
     echo "[INFO] Installation des paquets: ${to_install[*]}"
     apt-get update -qq
     DEBIAN_FRONTEND=noninteractive apt-get install -yqq "${to_install[@]}"
+}
+
+configure_network() {
+    # Pose le profil NetworkManager de l'interface principale.
+    #
+    # OPT-IN : sans NET_INTERFACE dans .env, la fonction ne touche à rien. Une
+    # machine en DHCP ne doit pas se voir imposer une IP statique par un script
+    # d'installation ; seule une box dont l'adresse est fixée par convention
+    # (réservation DHCP, services LAN pointant dessus) renseigne ces variables.
+    local iface="${NET_INTERFACE:-}"
+    if [[ -z "$iface" ]]; then
+        echo "[INFO] NET_INTERFACE non défini, configuration réseau ignorée"
+        return
+    fi
+
+    require_command nmcli
+
+    local con_name="${NET_CONNECTION_NAME:-static-${iface}}"
+    local address="${NET_ADDRESS_CIDR:-}"
+    local gateway="${NET_GATEWAY:-}"
+    local dns="${NET_DNS:-}"
+    local wol="${NET_WOL:-magic}"
+
+    if [[ -z "$address" || -z "$gateway" ]]; then
+        echo "[WARN] NET_ADDRESS_CIDR et NET_GATEWAY sont requis avec NET_INTERFACE ; profil non posé" >&2
+        return
+    fi
+
+    if nmcli -g connection.id connection show "$con_name" >/dev/null 2>&1; then
+        echo "[INFO] Profil réseau $con_name déjà présent, réalignement sur .env"
+    else
+        nmcli connection add type ethernet con-name "$con_name" ifname "$iface" >/dev/null
+        echo "[INFO] Profil réseau $con_name créé"
+    fi
+
+    # `nmcli connection modify` écrase les propriétés visées et laisse le reste :
+    # rejouer le script réaligne simplement le profil sur .env, d'où l'idempotence.
+    #
+    # ipv6.method=auto et NON `disabled` : cette box reçoit une IPv6 publique par
+    # RA/SLAAC, la désactiver la lui retirerait silencieusement. `ignore-auto-dns`
+    # des deux côtés parce que le résolveur est fixé ci-dessous, pas négocié — sans
+    # ça un RDNSS annoncé par le routeur s'ajouterait à /etc/resolv.conf, que
+    # NetworkManager réécrit dès qu'il gère l'interface.
+    #
+    # wake-on-lan : le gain de NetworkManager sur ifupdown, qui exigeait un
+    # `post-up ethtool -s <iface> wol g`. Le pilote écrit ce masque dans le
+    # contrôleur à l'extinction, donc APRÈS le firmware : le poser explicitement
+    # écrase un masque large armé par le BIOS (réveil sur tout paquet entrant).
+    nmcli connection modify "$con_name" \
+        connection.interface-name "$iface" \
+        ipv4.method manual \
+        ipv4.addresses "$address" \
+        ipv4.gateway "$gateway" \
+        ipv4.ignore-auto-dns yes \
+        ipv6.method auto \
+        ipv6.ignore-auto-dns yes \
+        802-3-ethernet.wake-on-lan "$wol"
+
+    if [[ -n "$dns" ]]; then
+        nmcli connection modify "$con_name" ipv4.dns "$dns"
+    fi
+    echo "[INFO] Profil $con_name: $address via $gateway, DNS ${dns:-<hérités>}, WoL $wol"
+
+    # On n'ACTIVE PAS le profil ici. `nmcli connection up` coupe la session en
+    # cours sur un serveur administré à distance, et tant que l'interface est
+    # encore décrite dans /etc/network/interfaces, ifupdown et NetworkManager se
+    # disputent la même carte. La bascule reste un geste manuel, fait avec un
+    # accès physique ou un filet de sécurité (cf. CLAUDE.md).
+    local active
+    active="$(nmcli -g GENERAL.CONNECTION device show "$iface" 2>/dev/null || true)"
+    if [[ "$active" == "$con_name" ]]; then
+        echo "[INFO] Profil $con_name déjà actif sur $iface"
+    else
+        echo "[WARN] Profil posé mais NON activé : $iface n'est pas géré par NetworkManager" >&2
+        echo "[WARN] Pour basculer (COUPE LE RÉSEAU, prévoir un accès physique) :" >&2
+        echo "[WARN]   1. retirer la strophe '$iface' de /etc/network/interfaces" >&2
+        echo "[WARN]   2. systemctl reload NetworkManager" >&2
+        echo "[WARN]   3. nmcli connection up '$con_name'" >&2
+    fi
 }
 
 configure_firewall() {
@@ -154,19 +236,21 @@ main() {
 
     echo "[INFO] Configuration pour l'utilisateur: $PZ_USER"
 
-    # Charger les ports depuis .env si disponible. Le filtre couvre AUSSI
-    # PZ_PROMETHEUS_PORT : il ne matchait que « PZ_PORT_ », si bien que
+    # Charger les ports et le réseau depuis .env si disponible. Le filtre couvre
+    # AUSSI PZ_PROMETHEUS_PORT : il ne matchait que « PZ_PORT_ », si bien que
     # configure_firewall retombait toujours sur son défaut codé en dur (9110) et
     # posait la règle `deny` sur un port qui n'était pas celui du serveur dès que
-    # .env en définissait un autre.
+    # .env en définissait un autre. « NET_ » alimente configure_network, qui reste
+    # inerte tant que NET_INTERFACE n'est pas renseigné.
     local env_file="${PZ_HOME}/pzmanager/.env"
     if [[ -f "$env_file" ]]; then
-        eval "$(grep -E '^export (PZ_PORT_|PZ_PROMETHEUS_PORT)' "$env_file")" 2>/dev/null || true
-        echo "[INFO] Ports chargés depuis $env_file"
+        eval "$(grep -E '^export (PZ_PORT_|PZ_PROMETHEUS_PORT|NET_)' "$env_file")" 2>/dev/null || true
+        echo "[INFO] Ports et réseau chargés depuis $env_file"
     fi
 
     create_user
     install_packages
+    configure_network
     configure_firewall
     configure_path
     install_sudoers
