@@ -18,7 +18,7 @@ Point the agent at this file and give it the URLs:
 > Read `docs/MOD_UPDATES.md` and follow it to add these mods:
 > https://steamcommunity.com/sharedfiles/filedetails/?id=…
 
-Two rules make the difference between an agent that helps and one that takes the
+Three rules make the difference between an agent that helps and one that takes the
 server down:
 
 - **Follow every step, every time, in order.** Steps 3 and 5 (pre-download and
@@ -26,6 +26,13 @@ server down:
 - **Never conclude from a failed page fetch.** See [Pitfalls](#pitfalls) — the
   common failure mode is an agent confidently reporting a mod as deleted when it
   is fine. When a fetch is unclear, stop and ask the operator to paste the page.
+- **Deploy in batches of five mods maximum, dependencies included.** A long list
+  of URLs is not one version: split it into successive versions of at most five
+  `Mods=` entries each — a required library counts against the five. One batch =
+  one `V[N].txt` = one restart = one boot you can read. When a batch breaks, the
+  five candidates are the whole search space; a twenty-mod deploy that
+  crash-loops is a bisection on a live server. Group each batch by family so a
+  mod ships with its dependencies and the load order stays reviewable.
 
 ## The version ledger
 
@@ -123,10 +130,24 @@ site uses (this server syncs a spreadsheet via `versionning/sheetVersionning.sh`
 A `V[N].txt` without
 its tracker entry means the procedure was not finished.
 
-Announce to players what landed:
+Announce to players what landed, on every add **and** every removal, one bullet
+per mod — the mod's name in bold, then what it changes *for the player*, in
+plain language. No Mod IDs, no Workshop IDs, no version numbers: a bullet is
+useful when someone who has never opened the Workshop knows what to do with it.
+Group the bullets under their version heading when several versions ship at
+once, fold the libraries into a single bullet that says they add nothing on
+their own, and put any catch (a vehicle that barely spawns, an option left off,
+a window that replaces a vanilla one) at the end of that mod's own bullet:
 
-> Beta V[N+1] is live, with these mods:
-> - [Mod]: [what it does]
+> **V66**
+> - **that DAMN Library + Military Tool Kit** — bibliothèques techniques, aucun
+>   contenu en jeu, requises par les deux véhicules ci-dessous.
+> - **U.S. M998 Humvee** — Humvee à portes animées avec tourelle .50
+>   fonctionnelle (place de tireur + boîte de munitions 12.7x99mm à charger).
+> - **'97 ADI Bushmaster** — blindé australien, 2 châssis (utilitaire 10 places /
+>   ambulance). ATTENTION : il ne spawne PAS dans les zones normales, uniquement
+>   et rarement sur certaines barricades du comté et quelques emplacements
+>   secrets.
 
 ## Load order
 
@@ -155,6 +176,31 @@ reliably mistake it for a real takedown.
 **Never conclude a mod is deleted or incompatible from a page fetch.** If the
 fetch shows that banner, or fails to give you the Mod ID or the dependencies,
 **stop and ask the operator to paste the page contents.**
+
+### "This mod does not exist" is a rate limit
+
+Fetching several Workshop pages in a row gets the fetcher rate-limited, and Steam
+answers *"You've made too many requests recently"* — which a summarising model
+relays as **the mod not existing**. Never delete an ID from the list on that
+evidence.
+
+The way through is not to wait: the public **`ISteamRemoteStorage/GetPublishedFileDetails`**
+endpoint needs no API key, takes N ids in a single POST, and returns the title,
+the full description (so the `Mod ID:` / `Workshop ID:` lines authors put at the
+bottom), the file size and `time_updated`:
+
+```bash
+curl -s -X POST "https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/" \
+  -d "itemcount=2" -d "publishedfileids[0]=<id1>" -d "publishedfileids[1]=<id2>"
+```
+
+`result=1` means the item exists (`result=9` = genuinely unknown). The returned
+`file_size` doubles as the check for step 3 — compare it against SteamCMD's
+`Success. Downloaded ... (N bytes)`.
+
+This gives you the author's *prose*. The authority on `id=`, `require=` and
+`versionMin` remains the `mod.info` on disk once the item is downloaded — pages
+routinely announce a Mod ID the versioned subfolder contradicts.
 
 ### `No Connection` / `result=3` on a new mod
 
