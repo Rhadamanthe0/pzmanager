@@ -180,12 +180,16 @@ server_is_active() {
 # monde (<world>.db, players.db, fichiers de save) DOIT passer par ici : le jeu
 # garde ces fichiers ouverts et réécrit son état depuis sa mémoire, donc une
 # modification faite à chaud est au mieux perdue, au pire corrompue.
-# Usage: require_server_stopped [contexte affiché dans le --reason suggéré]
+# Usage: require_server_stopped [contexte du --reason suggéré] [commande d'aperçu]
+# Le 2e argument, quand la commande a un --dry-run, donne la ligne exacte pour
+# voir ce qui serait fait sans arrêter le serveur : le refus seul laissait
+# l'appelant sans aucune façon d'inspecter.
 require_server_stopped() {
-    local context="${1:-Maintenance}"
+    local context="${1:-Maintenance}" preview="${2:-}"
     if server_is_active; then
         die "Le serveur est actif : cette opération écrit dans le monde et doit se faire SERVEUR ARRÊTÉ.
-Arrête-le d'abord :  pzm server stop 2m --reason \"${context}\""
+Arrête-le d'abord :  pzm server stop 2m --reason \"${context}\"${preview:+
+Voir ce qui serait fait, sans rien changer :  ${preview}}"
     fi
 }
 
