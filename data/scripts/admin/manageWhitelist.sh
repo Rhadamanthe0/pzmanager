@@ -57,6 +57,14 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # dessus), donc des commandes suggérées impossibles à recopier.
 readonly CMD="pzm whitelist"
 
+# Rejoue les arguments reçus entre guillemets, pour proposer une commande
+# copiable telle quelle (les pseudos contiennent des espaces).
+quote_args() {
+    local a out=""
+    for a in "$@"; do out+=" \"${a}\""; done
+    printf '%s' "${out# }"
+}
+
 source "${SCRIPT_DIR}/../lib/common.sh"
 source_env
 
@@ -300,8 +308,10 @@ purge_whitelist() {
         delay="${WHITELIST_PURGE_DAYS}d"
     fi
 
-    # Refuser AVANT de lister (cf. remove-account).
-    [[ "$do_delete" != "--delete" ]] || require_server_stopped "Purge whitelist"
+    # Refuser AVANT de lister (cf. remove-account). purge n'a pas de --dry-run :
+    # l'aperçu, c'est la même commande sans --delete.
+    [[ "$do_delete" != "--delete" ]] || require_server_stopped "Purge whitelist" \
+        "${CMD} purge ${delay}"
 
     # Parser le format (ex: 3m pour 3 mois, 60d pour 60 jours)
     local num="${delay%[mMjJdD]}"
@@ -380,7 +390,8 @@ remove_accounts() {
 
     # Garde AVANT le plan : l'afficher puis refuser se lit comme « c'est fait,
     # mais en fait non ». --dry-run passe serveur démarré, c'est son intérêt.
-    [[ "$dry_run" == true ]] || require_server_stopped "Nettoyage whitelist"
+    [[ "$dry_run" == true ]] || require_server_stopped "Nettoyage whitelist" \
+        "${CMD} remove-account $(quote_args "${targets[@]}") --dry-run"
 
     # Construire la liste des id de comptes à supprimer + SteamID orphelins.
     local -a del_ids=() del_sids=() plan=()
@@ -500,7 +511,8 @@ rename_account() {
     [[ "$old" != "admin" ]] || die "Le compte 'admin' ne peut pas être renommé."
 
     # Refuser AVANT d'afficher le plan (cf. remove-account).
-    [[ "$dry_run" == true ]] || require_server_stopped "Renommage de compte"
+    [[ "$dry_run" == true ]] || require_server_stopped "Renommage de compte" \
+        "${CMD} rename-account $(quote_args "$old" "$new") --dry-run"
 
     local esc_old esc_new
     esc_old="$(sql_escape "$old")"; esc_new="$(sql_escape "$new")"

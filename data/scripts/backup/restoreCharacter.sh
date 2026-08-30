@@ -59,7 +59,10 @@ else
 fi
 
 # --- Serveur arrêté obligatoire ---------------------------------------------
-require_server_stopped "Restauration personnage"
+# Sauf --dry-run : il ne fait qu'afficher, et le refuser serveur démarré privait
+# de tout moyen d'inspecter avant de couper.
+[[ "$DRY_RUN" == true ]] || require_server_stopped "Restauration personnage" \
+    "pzm backup restore-character \"${USERNAME}\" \"${BACKUP_ARG}\" --dry-run"
 
 # --- Localiser players.db (live + backup) -----------------------------------
 LIVE_DB=$(find_players_db "${PZ_SOURCE_DIR}")
