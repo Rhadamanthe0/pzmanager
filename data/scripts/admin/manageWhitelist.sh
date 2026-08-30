@@ -53,10 +53,8 @@
 set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# Nom affiché dans les usages et les suggestions de correction. $0 vaut le
-# chemin absolu du script (le dispatcher `pzm` fait un exec dessus), ce qui
-# donnait à l'utilisateur — et au bot Discord — des commandes à rallonge
-# impossibles à recopier telles quelles.
+# Nom affiché dans les usages : $0 vaut le chemin absolu (`pzm` fait un exec
+# dessus), donc des commandes suggérées impossibles à recopier.
 readonly CMD="pzm whitelist"
 
 source "${SCRIPT_DIR}/../lib/common.sh"
@@ -286,10 +284,8 @@ reset_password() {
 }
 
 purge_whitelist() {
-    # Arguments positionnels à l'origine ("$2" = délai, "$3" = --delete) : le
-    # délai étant documenté comme facultatif, « purge --delete » atterrissait
-    # dans $delay et mourait sur « Format invalide: --delete ». On parse donc
-    # par forme : le drapeau où qu'il soit, le reste = délai.
+    # Parsé par forme, pas par position : le délai étant facultatif,
+    # « purge --delete » atterrissait dans $delay -> « Format invalide ».
     local delay="" do_delete="" a
     for a in "$@"; do
         case "$a" in
@@ -304,8 +300,7 @@ purge_whitelist() {
         delay="${WHITELIST_PURGE_DAYS}d"
     fi
 
-    # Refuser AVANT de lister : sinon on déroulait tout le tableau des comptes
-    # concernés pour refuser juste après, comme s'il avait été traité.
+    # Refuser AVANT de lister (cf. remove-account).
     [[ "$do_delete" != "--delete" ]] || require_server_stopped "Purge whitelist"
 
     # Parser le format (ex: 3m pour 3 mois, 60d pour 60 jours)
@@ -349,9 +344,6 @@ purge_whitelist() {
 
     # Suppression si demandée
     if [[ "$do_delete" == "--delete" ]]; then
-        # Même contrainte que remove-account/rename-account : on écrit directement
-        # dans servertest.db, que le serveur tient ouverte tant qu'il tourne.
-        # Garde déjà passée en haut de la fonction.
         echo ""
         read -p "Supprimer ces $count compte(s) ? [oui/NON]: " confirm
         if [[ "$confirm" == "oui" ]]; then
@@ -386,10 +378,8 @@ remove_accounts() {
     done
     [[ "${#targets[@]}" -gt 0 ]] || die "Usage: ${CMD} remove-account <pseudo|steamID64> [...] [--dry-run]"
 
-    # Garde AVANT le plan, pas après : sinon on affichait tout le détail de ce
-    # qui allait être supprimé puis on refusait, ce qui se lisait comme « c'est
-    # fait, mais en fait non ». En --dry-run on laisse passer serveur démarré :
-    # c'est justement l'intérêt (inspecter sans rien couper).
+    # Garde AVANT le plan : l'afficher puis refuser se lit comme « c'est fait,
+    # mais en fait non ». --dry-run passe serveur démarré, c'est son intérêt.
     [[ "$dry_run" == true ]] || require_server_stopped "Nettoyage whitelist"
 
     # Construire la liste des id de comptes à supprimer + SteamID orphelins.
@@ -403,7 +393,7 @@ remove_accounts() {
             if [[ "${#rows[@]}" -eq 0 ]]; then
                 local exists; exists=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM allowedsteamid WHERE steamid='${esc_sid}'" 2>/dev/null || echo 0)
                 if [[ "$exists" -ge 1 ]]; then
-                    del_sids+=("$t"); plan+=("SteamID ${t} (aucun compte) -> autorisation À RETIRER")
+                    del_sids+=("$t"); plan+=("SteamID ${t} (aucun compte) -> autorisation serait retirée")
                 else
                     plan+=("SteamID ${t} : introuvable, ignoré")
                 fi
@@ -412,7 +402,7 @@ remove_accounts() {
                 for r in "${rows[@]}"; do
                     IFS=$'\x1f' read -r rid runame <<< "$r"
                     [[ "$runame" == "admin" ]] && { plan+=("compte 'admin' : protégé, ignoré"); continue; }
-                    del_ids+=("$rid"); plan+=("compte '${runame}' (id ${rid}, steamid ${t}) -> À SUPPRIMER")
+                    del_ids+=("$rid"); plan+=("compte '${runame}' (id ${rid}, steamid ${t}) -> serait supprimé")
                 done
             fi
         else
@@ -426,14 +416,14 @@ remove_accounts() {
             local r rid rsid
             for r in "${rows[@]}"; do
                 IFS=$'\x1f' read -r rid rsid <<< "$r"
-                del_ids+=("$rid"); plan+=("compte '${t}' (id ${rid}, steamid ${rsid:-aucun}) -> À SUPPRIMER")
+                del_ids+=("$rid"); plan+=("compte '${t}' (id ${rid}, steamid ${rsid:-aucun}) -> serait supprimé")
             done
         fi
     done
 
-    # Libellés au futur : ce bloc n'est qu'une PRÉVISION. Au passé
-    # (« -> supprimé »), il se lisait comme un compte rendu d'exécution.
-    echo "=== remove-account : ce qui SERA fait (rien n'est encore modifié) ==="
+    # Conditionnel : ce bloc est une prévision. Au passé (« -> supprimé »),
+    # il se lisait comme un compte rendu d'exécution.
+    echo "=== remove-account : plan ==="
     local line; for line in "${plan[@]}"; do echo "  - $line"; done
     echo ""
 
@@ -442,7 +432,7 @@ remove_accounts() {
     fi
 
     if [[ "$dry_run" == true ]]; then
-        echo "[dry-run] Aucune modification effectuée."; return 0
+        echo "[dry-run] Rien n'a été modifié."; return 0
     fi
 
     # Mémoriser les SteamID des comptes qu'on s'apprête à supprimer : après le
@@ -509,7 +499,7 @@ rename_account() {
     [[ -n "$old" && -n "$new" ]] || die "Usage: ${CMD} rename-account <ancien_pseudo> <nouveau_pseudo> [--dry-run]"
     [[ "$old" != "admin" ]] || die "Le compte 'admin' ne peut pas être renommé."
 
-    # Même raison que remove-account : refuser AVANT d'afficher le plan.
+    # Refuser AVANT d'afficher le plan (cf. remove-account).
     [[ "$dry_run" == true ]] || require_server_stopped "Renommage de compte"
 
     local esc_old esc_new
@@ -526,14 +516,14 @@ rename_account() {
         char_count=$(sqlite3 "$PLAYERS_DB" "SELECT COUNT(*) FROM networkPlayers WHERE username='${esc_old}'" 2>/dev/null || echo 0)
     fi
 
-    echo "=== rename-account : ce qui SERA fait ('${old}' -> '${new}') ==="
-    echo "  whitelist : ${exists} compte(s) à renommer (mot de passe conservé)"
-    echo "  players.db: ${char_count} personnage(s) networkPlayers à réattacher"
+    echo "=== rename-account : plan ('${old}' -> '${new}') ==="
+    echo "  whitelist : ${exists} compte(s) seraient renommés (mot de passe conservé)"
+    echo "  players.db: ${char_count} personnage(s) networkPlayers seraient réattachés"
     echo "  ⚠ Le joueur devra désormais se connecter avec le login '${new}'."
     echo ""
 
     if [[ "$dry_run" == true ]]; then
-        echo "[dry-run] Aucune modification effectuée."; return 0
+        echo "[dry-run] Rien n'a été modifié."; return 0
     fi
 
     sqlite3 "$DB_PATH" "UPDATE whitelist SET username='${esc_new}' WHERE username='${esc_old}';" \
