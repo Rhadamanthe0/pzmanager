@@ -282,7 +282,7 @@ show_help() {
     cat <<HELPEOF
 Reset complet du serveur Project Zomboid
 
-Usage: $0 [OPTIONS]
+Usage: pzm admin reset [OPTIONS]
 
 Options:
   --keep-whitelist    Restaurer whitelist depuis backup
@@ -298,9 +298,9 @@ Les options sont combinables.
 ATTENTION: Supprime toutes les données ! Backup créé dans \$PZ_HOME/OLD/
 
 Exemples:
-  $0                                    # Reset complet, serveur vierge
-  $0 --keep-config                      # Reset monde, garde configs/mods
-  $0 --keep-config --keep-whitelist     # Reset monde, garde tout
+  pzm admin reset                                 # Reset complet, serveur vierge
+  pzm admin reset --keep-config                   # Reset monde, garde configs/mods
+  pzm admin reset --keep-config --keep-whitelist  # Reset monde, garde tout
 HELPEOF
 }
 

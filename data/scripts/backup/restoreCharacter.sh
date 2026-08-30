@@ -46,7 +46,7 @@ for arg in "$@"; do
     esac
 done
 
-[[ -n "$USERNAME" && -n "$BACKUP_ARG" ]] || die "Usage: $0 <pseudo> <backup> [--dry-run]
+[[ -n "$USERNAME" && -n "$BACKUP_ARG" ]] || die "Usage: pzm backup restore-character <pseudo> <backup> [--dry-run]
 Le backup est OBLIGATOIRE : nom du dossier (ex: backup_2026-06-23_23h15m29s) ou chemin complet."
 
 # --- Résoudre le backup : nom sous ${BACKUP_DIR} OU chemin -------------------
