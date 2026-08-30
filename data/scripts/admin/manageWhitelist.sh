@@ -57,14 +57,6 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # dessus), donc des commandes suggérées impossibles à recopier.
 readonly CMD="pzm whitelist"
 
-# Rejoue les arguments reçus entre guillemets, pour proposer une commande
-# copiable telle quelle (les pseudos contiennent des espaces).
-quote_args() {
-    local a out=""
-    for a in "$@"; do out+=" \"${a}\""; done
-    printf '%s' "${out# }"
-}
-
 source "${SCRIPT_DIR}/../lib/common.sh"
 source_env
 
@@ -308,10 +300,6 @@ purge_whitelist() {
         delay="${WHITELIST_PURGE_DAYS}d"
     fi
 
-    # Refuser AVANT de lister (cf. remove-account). purge n'a pas de --dry-run :
-    # l'aperçu, c'est la même commande sans --delete.
-    [[ "$do_delete" != "--delete" ]] || require_server_stopped "Purge whitelist" \
-        "${CMD} purge ${delay}"
 
     # Parser le format (ex: 3m pour 3 mois, 60d pour 60 jours)
     local num="${delay%[mMjJdD]}"
@@ -354,6 +342,10 @@ purge_whitelist() {
 
     # Suppression si demandée
     if [[ "$do_delete" == "--delete" ]]; then
+        # La liste ci-dessus EST l'aperçu : on refuse seulement maintenant.
+        # `if` et non `&&` : sous set -e, un `&&` faux en tête de bloc sort du script.
+        if server_is_active; then die_server_active "Purge whitelist"; fi
+
         echo ""
         read -p "Supprimer ces $count compte(s) ? [oui/NON]: " confirm
         if [[ "$confirm" == "oui" ]]; then
@@ -388,10 +380,13 @@ remove_accounts() {
     done
     [[ "${#targets[@]}" -gt 0 ]] || die "Usage: ${CMD} remove-account <pseudo|steamID64> [...] [--dry-run]"
 
-    # Garde AVANT le plan : l'afficher puis refuser se lit comme « c'est fait,
-    # mais en fait non ». --dry-run passe serveur démarré, c'est son intérêt.
-    [[ "$dry_run" == true ]] || require_server_stopped "Nettoyage whitelist" \
-        "${CMD} remove-account $(quote_args "${targets[@]}") --dry-run"
+    # Serveur actif sans --dry-run : on bascule en aperçu au lieu de refuser
+    # sèchement. L'utilisateur voit ce que la commande aurait fait, et le refus
+    # est donné à la fin — sinon il fallait couper le serveur pour le savoir.
+    local refused=false
+    if [[ "$dry_run" != true ]] && server_is_active; then
+        dry_run=true; refused=true
+    fi
 
     # Construire la liste des id de comptes à supprimer + SteamID orphelins.
     local -a del_ids=() del_sids=() plan=()
@@ -443,6 +438,7 @@ remove_accounts() {
     fi
 
     if [[ "$dry_run" == true ]]; then
+        [[ "$refused" == false ]] || die_server_active "Nettoyage whitelist"
         echo "[dry-run] Rien n'a été modifié."; return 0
     fi
 
@@ -510,9 +506,11 @@ rename_account() {
     [[ -n "$old" && -n "$new" ]] || die "Usage: ${CMD} rename-account <ancien_pseudo> <nouveau_pseudo> [--dry-run]"
     [[ "$old" != "admin" ]] || die "Le compte 'admin' ne peut pas être renommé."
 
-    # Refuser AVANT d'afficher le plan (cf. remove-account).
-    [[ "$dry_run" == true ]] || require_server_stopped "Renommage de compte" \
-        "${CMD} rename-account $(quote_args "$old" "$new") --dry-run"
+    # Bascule en aperçu plutôt qu'un refus nu (cf. remove-account).
+    local refused=false
+    if [[ "$dry_run" != true ]] && server_is_active; then
+        dry_run=true; refused=true
+    fi
 
     local esc_old esc_new
     esc_old="$(sql_escape "$old")"; esc_new="$(sql_escape "$new")"
@@ -535,6 +533,7 @@ rename_account() {
     echo ""
 
     if [[ "$dry_run" == true ]]; then
+        [[ "$refused" == false ]] || die_server_active "Renommage de compte"
         echo "[dry-run] Rien n'a été modifié."; return 0
     fi
 

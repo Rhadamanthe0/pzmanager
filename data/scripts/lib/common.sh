@@ -180,17 +180,23 @@ server_is_active() {
 # monde (<world>.db, players.db, fichiers de save) DOIT passer par ici : le jeu
 # garde ces fichiers ouverts et réécrit son état depuis sa mémoire, donc une
 # modification faite à chaud est au mieux perdue, au pire corrompue.
-# Usage: require_server_stopped [contexte du --reason suggéré] [commande d'aperçu]
-# Le 2e argument, quand la commande a un --dry-run, donne la ligne exacte pour
-# voir ce qui serait fait sans arrêter le serveur : le refus seul laissait
-# l'appelant sans aucune façon d'inspecter.
+# Usage: require_server_stopped [contexte affiché dans le --reason suggéré]
+# Pour une commande qui a un --dry-run, ne PAS appeler ceci : basculer en aperçu,
+# afficher le plan, puis terminer par die_server_active — un refus nu oblige
+# sinon à couper le serveur juste pour savoir ce que la commande aurait fait.
 require_server_stopped() {
-    local context="${1:-Maintenance}" preview="${2:-}"
+    local context="${1:-Maintenance}"
     if server_is_active; then
         die "Le serveur est actif : cette opération écrit dans le monde et doit se faire SERVEUR ARRÊTÉ.
-Arrête-le d'abord :  pzm server stop 2m --reason \"${context}\"${preview:+
-Voir ce qui serait fait, sans rien changer :  ${preview}}"
+Arrête-le d'abord :  pzm server stop 2m --reason \"${context}\""
     fi
+}
+
+# Refus « serveur actif », à émettre APRÈS avoir affiché l'aperçu.
+die_server_active() {
+    local context="${1:-Maintenance}"
+    die "Rien n'a été modifié : le serveur est actif et cette opération écrit dans le monde.
+Arrête-le puis relance la commande :  pzm server stop 2m --reason \"${context}\""
 }
 
 # Marqueur journald émis à la toute fin du boot PZ (map chargée, serveur prêt).

@@ -59,10 +59,13 @@ else
 fi
 
 # --- Serveur arrêté obligatoire ---------------------------------------------
-# Sauf --dry-run : il ne fait qu'afficher, et le refuser serveur démarré privait
-# de tout moyen d'inspecter avant de couper.
-[[ "$DRY_RUN" == true ]] || require_server_stopped "Restauration personnage" \
-    "pzm backup restore-character \"${USERNAME}\" \"${BACKUP_ARG}\" --dry-run"
+# Serveur actif sans --dry-run : on bascule en aperçu et on refuse à la fin,
+# une fois le perso concerné affiché — refuser d'emblée obligeait à couper le
+# serveur juste pour savoir quel personnage aurait été remplacé.
+REFUSED=false
+if [[ "$DRY_RUN" != true ]] && server_is_active; then
+    DRY_RUN=true; REFUSED=true
+fi
 
 # --- Localiser players.db (live + backup) -----------------------------------
 LIVE_DB=$(find_players_db "${PZ_SOURCE_DIR}")
@@ -93,7 +96,10 @@ show_char "$BK_DB"
 
 if [[ "$DRY_RUN" == true ]]; then
     in_live=$(sqlite3 "$LIVE_DB" "SELECT COUNT(*) FROM networkPlayers WHERE username='${ESC_USER}';" 2>/dev/null || echo "0")
-    log "[dry-run] Remplacerait ${in_live} perso(s) live de '${USERNAME}' par celui du backup. Rien modifié."
+    log "Remplacerait ${in_live} perso(s) live de '${USERNAME}' par celui du backup."
+    # Le refus dit déjà « rien n'a été modifié » : ne pas le répéter ici.
+    [[ "$REFUSED" == false ]] || die_server_active "Restauration personnage"
+    log "[dry-run] Rien n'a été modifié."
     exit 0
 fi
 
