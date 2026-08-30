@@ -107,8 +107,7 @@ send_msg() {
 }
 
 # L'origine (manuelle/automatique) est TOUJOURS affichée, motif ou pas : sans
-# elle, un arrêt lancé à la main sans --reason arrivait nu sur Discord et les
-# joueurs ne pouvaient pas le distinguer d'un redémarrage programmé.
+# elle, un arrêt manuel sans --reason est indistinguable d'un arrêt programmé.
 format_context() {
     local action="$1"
     local msg="$action"
@@ -151,9 +150,8 @@ warn_players() {
         local simple_msg="ATTENTION : ${display_action} DANS ${label//_/ } !"
 
         if $first; then
-            # Premier avertissement : @here + le motif. format_context "" rend
-            # le suffixe seul, toujours non vide (au minimum « (Lancé
-            # manuellement) », qui distingue l'action d'un arrêt programmé).
+            # Premier avertissement : @here + le motif. format_context ""
+            # rend le suffixe seul (jamais vide, cf. plus haut).
             send_msg "${simple_msg}$(format_context "")" "@here "
             first=false
         else
