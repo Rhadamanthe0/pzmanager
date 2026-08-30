@@ -19,11 +19,11 @@ source_env
 readonly BACKUP_PATH="${1:-}"
 
 show_usage() {
-    echo "Usage: $0 <chemin_backup>"
+    echo "Usage: pzm backup restore <chemin_backup>"
     echo ""
     echo "Exemples:"
-    echo "  $0 ${BACKUP_DIR}/backup_2026-01-11_14h15m00s"
-    echo "  $0 ${BACKUP_DIR}/latest"
+    echo "  pzm backup restore ${BACKUP_DIR}/backup_2026-01-11_14h15m00s"
+    echo "  pzm backup restore ${BACKUP_DIR}/latest"
     echo ""
     echo "Backups disponibles (10 plus récents):"
     if [[ -d "${BACKUP_DIR}" ]]; then

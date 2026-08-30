@@ -41,7 +41,7 @@ done
 readonly CMD="${CMD_PARTS[*]}"
 
 if [[ -z "$CMD" ]]; then
-    echo "Usage: $0 <commande> [--no-output]"
+    echo "Usage: pzm rcon <commande> [--no-output]"
     exit 1
 fi
 

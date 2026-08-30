@@ -2,7 +2,7 @@
 # ------------------------------------------------------------------------------
 # manageWhitelist.sh - Gestion de la whitelist du serveur (B42 par SteamID)
 # ------------------------------------------------------------------------------
-# Usage: ./manageWhitelist.sh <list|add|remove|remove-account|rename-account|resetpassword|purge> [arguments]
+# Usage: pzm whitelist <list|add|remove|remove-account|rename-account|resetpassword|purge> [arguments]
 #
 # Modèle B42 (>= 42.13.2) : le serveur tourne en Open=false et autorise les
 # joueurs via une LISTE BLANCHE DE STEAMID (table `allowedsteamid`). Le joueur
@@ -39,12 +39,12 @@
 # GFS (pzm backup list) sont là -> restauration via pzm backup restore.
 #
 # Exemples:
-#   ./manageWhitelist.sh list
-#   ./manageWhitelist.sh add "76561198012345678" "PlayerName"
-#   ./manageWhitelist.sh remove "76561198012345678" --ban
-#   ./manageWhitelist.sh remove-account "PlayerName"
-#   ./manageWhitelist.sh resetpassword "PlayerName"
-#   ./manageWhitelist.sh purge 3m --delete
+#   pzm whitelist list
+#   pzm whitelist add "76561198012345678" "PlayerName"
+#   pzm whitelist remove "76561198012345678" --ban
+#   pzm whitelist remove-account "PlayerName"
+#   pzm whitelist resetpassword "PlayerName"
+#   pzm whitelist purge 3m --delete
 #
 # Note: Utiliser Steam ID 64 (17 chiffres, commence par 7656119...)
 #       Trouver sur le profil Steam ou via https://steamid.xyz/
@@ -53,6 +53,11 @@
 set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Nom affiché dans les usages et les suggestions de correction. $0 vaut le
+# chemin absolu du script (le dispatcher `pzm` fait un exec dessus), ce qui
+# donnait à l'utilisateur — et au bot Discord — des commandes à rallonge
+# impossibles à recopier telles quelles.
+readonly CMD="pzm whitelist"
 
 source "${SCRIPT_DIR}/../lib/common.sh"
 source_env
@@ -149,8 +154,8 @@ add_to_whitelist() {
         fi
     done
 
-    [[ -n "$steamid" ]] || die "Usage: $0 add <steamID64> [pseudo]
-Exemple: $0 add \"76561198012345678\" \"PlayerName\"
+    [[ -n "$steamid" ]] || die "Usage: ${CMD} add <steamID64> [pseudo]
+Exemple: ${CMD} add \"76561198012345678\" \"PlayerName\"
 Le SteamID64 fait 17 chiffres et commence par 7656119 (https://steamid.xyz/)."
     validate_steamid "$steamid"
 
@@ -181,8 +186,8 @@ reject_name_for_remove() {
 
     if [[ -z "$sid" ]]; then
         die "'${name}' n'est pas un SteamID64, et aucun compte de ce nom n'existe.
-  remove attend un SteamID64 (17 chiffres) : $0 remove <steamID64> [--ban]
-  Pour supprimer un COMPTE par son pseudo :  $0 remove-account <pseudo>"
+  remove attend un SteamID64 (17 chiffres) : ${CMD} remove <steamID64> [--ban]
+  Pour supprimer un COMPTE par son pseudo :  ${CMD} remove-account <pseudo>"
     fi
 
     shared=$(sqlite3 "$DB_PATH" "SELECT GROUP_CONCAT(username, ', ') FROM whitelist WHERE steamid = '$(sql_escape "$sid")'" 2>/dev/null || echo "$name")
@@ -192,9 +197,9 @@ reject_name_for_remove() {
   '${name}' utilise le SteamID ${sid}, porté par : ${shared}
 
   Retirer l'ACCÈS de ce SteamID (donc TOUS les comptes ci-dessus, serveur démarré) :
-      $0 remove ${sid}
+      ${CMD} remove ${sid}
   Supprimer le seul compte '${name}' (garde les autres et le perso, serveur arrêté) :
-      $0 remove-account \"${name}\""
+      ${CMD} remove-account \"${name}\""
 }
 
 remove_from_whitelist() {
@@ -207,8 +212,8 @@ remove_from_whitelist() {
         fi
     done
 
-    [[ -n "$identifier" ]] || die "Usage: $0 remove <steamID64> [--ban]
-Exemple: $0 remove \"76561198012345678\" --ban"
+    [[ -n "$identifier" ]] || die "Usage: ${CMD} remove <steamID64> [--ban]
+Exemple: ${CMD} remove \"76561198012345678\" --ban"
 
     # remove n'accepte QUE le SteamID64. Accepter un pseudo ici brouillait la
     # frontière avec remove-account : « remove <pseudo> » ressemble à « retirer
@@ -248,7 +253,7 @@ Exemple: $0 remove \"76561198012345678\" --ban"
 reset_password() {
     local username="${1:-}"
 
-    [[ -n "$username" ]] || die "Usage: $0 resetpassword <username>"
+    [[ -n "$username" ]] || die "Usage: ${CMD} resetpassword <username>"
 
     # Écriture directe dans <world>.db : le serveur doit être arrêté, comme
     # remove-account/rename-account. L'en-tête du fichier prétendait que ce chemin
@@ -281,13 +286,27 @@ reset_password() {
 }
 
 purge_whitelist() {
-    local delay="${1:-}"
-    local do_delete="${2:-}"
+    # Arguments positionnels à l'origine ("$2" = délai, "$3" = --delete) : le
+    # délai étant documenté comme facultatif, « purge --delete » atterrissait
+    # dans $delay et mourait sur « Format invalide: --delete ». On parse donc
+    # par forme : le drapeau où qu'il soit, le reste = délai.
+    local delay="" do_delete="" a
+    for a in "$@"; do
+        case "$a" in
+            --delete) do_delete="--delete" ;;
+            "") ;;
+            *) delay="$a" ;;
+        esac
+    done
 
     # Utiliser le délai par défaut si non spécifié
     if [[ -z "$delay" ]]; then
         delay="${WHITELIST_PURGE_DAYS}d"
     fi
+
+    # Refuser AVANT de lister : sinon on déroulait tout le tableau des comptes
+    # concernés pour refuser juste après, comme s'il avait été traité.
+    [[ "$do_delete" != "--delete" ]] || require_server_stopped "Purge whitelist"
 
     # Parser le format (ex: 3m pour 3 mois, 60d pour 60 jours)
     local num="${delay%[mMjJdD]}"
@@ -330,10 +349,9 @@ purge_whitelist() {
 
     # Suppression si demandée
     if [[ "$do_delete" == "--delete" ]]; then
-        # Même contrainte que remove-account/rename-account : on écrit directement dans
-        # servertest.db, que le serveur tient ouverte tant qu'il tourne.
-        require_server_stopped
-
+        # Même contrainte que remove-account/rename-account : on écrit directement
+        # dans servertest.db, que le serveur tient ouverte tant qu'il tourne.
+        # Garde déjà passée en haut de la fonction.
         echo ""
         read -p "Supprimer ces $count compte(s) ? [oui/NON]: " confirm
         if [[ "$confirm" == "oui" ]]; then
@@ -341,7 +359,7 @@ purge_whitelist() {
                 die "Échec de la suppression"
             echo "✓ $count compte(s) supprimé(s)"
             echo "Note: cela supprime le compte, pas l'autorisation SteamID."
-            echo "      Pour bloquer le retour, utilise: $0 remove <steamID64> --ban"
+            echo "      Pour bloquer le retour, utilise: ${CMD} remove <steamID64> --ban"
         else
             echo "Suppression annulée."
         fi
@@ -366,7 +384,13 @@ remove_accounts() {
             *) [[ -n "$a" ]] && targets+=("$a") ;;
         esac
     done
-    [[ "${#targets[@]}" -gt 0 ]] || die "Usage: $0 remove-account <pseudo|steamID64> [...] [--dry-run]"
+    [[ "${#targets[@]}" -gt 0 ]] || die "Usage: ${CMD} remove-account <pseudo|steamID64> [...] [--dry-run]"
+
+    # Garde AVANT le plan, pas après : sinon on affichait tout le détail de ce
+    # qui allait être supprimé puis on refusait, ce qui se lisait comme « c'est
+    # fait, mais en fait non ». En --dry-run on laisse passer serveur démarré :
+    # c'est justement l'intérêt (inspecter sans rien couper).
+    [[ "$dry_run" == true ]] || require_server_stopped "Nettoyage whitelist"
 
     # Construire la liste des id de comptes à supprimer + SteamID orphelins.
     local -a del_ids=() del_sids=() plan=()
@@ -379,7 +403,7 @@ remove_accounts() {
             if [[ "${#rows[@]}" -eq 0 ]]; then
                 local exists; exists=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM allowedsteamid WHERE steamid='${esc_sid}'" 2>/dev/null || echo 0)
                 if [[ "$exists" -ge 1 ]]; then
-                    del_sids+=("$t"); plan+=("SteamID ${t} (aucun compte) -> autorisation retirée")
+                    del_sids+=("$t"); plan+=("SteamID ${t} (aucun compte) -> autorisation À RETIRER")
                 else
                     plan+=("SteamID ${t} : introuvable, ignoré")
                 fi
@@ -388,7 +412,7 @@ remove_accounts() {
                 for r in "${rows[@]}"; do
                     IFS=$'\x1f' read -r rid runame <<< "$r"
                     [[ "$runame" == "admin" ]] && { plan+=("compte 'admin' : protégé, ignoré"); continue; }
-                    del_ids+=("$rid"); plan+=("compte '${runame}' (id ${rid}, steamid ${t}) -> supprimé")
+                    del_ids+=("$rid"); plan+=("compte '${runame}' (id ${rid}, steamid ${t}) -> À SUPPRIMER")
                 done
             fi
         else
@@ -402,12 +426,14 @@ remove_accounts() {
             local r rid rsid
             for r in "${rows[@]}"; do
                 IFS=$'\x1f' read -r rid rsid <<< "$r"
-                del_ids+=("$rid"); plan+=("compte '${t}' (id ${rid}, steamid ${rsid:-aucun}) -> supprimé")
+                del_ids+=("$rid"); plan+=("compte '${t}' (id ${rid}, steamid ${rsid:-aucun}) -> À SUPPRIMER")
             done
         fi
     done
 
-    echo "=== remove-account : plan ==="
+    # Libellés au futur : ce bloc n'est qu'une PRÉVISION. Au passé
+    # (« -> supprimé »), il se lisait comme un compte rendu d'exécution.
+    echo "=== remove-account : ce qui SERA fait (rien n'est encore modifié) ==="
     local line; for line in "${plan[@]}"; do echo "  - $line"; done
     echo ""
 
@@ -418,8 +444,6 @@ remove_accounts() {
     if [[ "$dry_run" == true ]]; then
         echo "[dry-run] Aucune modification effectuée."; return 0
     fi
-
-    require_server_stopped "Nettoyage whitelist"
 
     # Mémoriser les SteamID des comptes qu'on s'apprête à supprimer : après le
     # DELETE ils ne sont plus retrouvables, et ce sont les SEULS dont l'autorisation
@@ -482,8 +506,11 @@ rename_account() {
         esac
     done
     local old="${pos[0]:-}" new="${pos[1]:-}"
-    [[ -n "$old" && -n "$new" ]] || die "Usage: $0 rename-account <ancien_pseudo> <nouveau_pseudo> [--dry-run]"
+    [[ -n "$old" && -n "$new" ]] || die "Usage: ${CMD} rename-account <ancien_pseudo> <nouveau_pseudo> [--dry-run]"
     [[ "$old" != "admin" ]] || die "Le compte 'admin' ne peut pas être renommé."
+
+    # Même raison que remove-account : refuser AVANT d'afficher le plan.
+    [[ "$dry_run" == true ]] || require_server_stopped "Renommage de compte"
 
     local esc_old esc_new
     esc_old="$(sql_escape "$old")"; esc_new="$(sql_escape "$new")"
@@ -499,7 +526,7 @@ rename_account() {
         char_count=$(sqlite3 "$PLAYERS_DB" "SELECT COUNT(*) FROM networkPlayers WHERE username='${esc_old}'" 2>/dev/null || echo 0)
     fi
 
-    echo "=== rename-account : '${old}' -> '${new}' ==="
+    echo "=== rename-account : ce qui SERA fait ('${old}' -> '${new}') ==="
     echo "  whitelist : ${exists} compte(s) à renommer (mot de passe conservé)"
     echo "  players.db: ${char_count} personnage(s) networkPlayers à réattacher"
     echo "  ⚠ Le joueur devra désormais se connecter avec le login '${new}'."
@@ -508,8 +535,6 @@ rename_account() {
     if [[ "$dry_run" == true ]]; then
         echo "[dry-run] Aucune modification effectuée."; return 0
     fi
-
-    require_server_stopped
 
     sqlite3 "$DB_PATH" "UPDATE whitelist SET username='${esc_new}' WHERE username='${esc_old}';" \
         || die "Échec du renommage dans whitelist"
@@ -525,7 +550,7 @@ show_help() {
     cat <<HELPEOF
 Gestion de la whitelist du serveur Project Zomboid (B42, par SteamID)
 
-Usage: $0 <commande> [arguments]
+Usage: ${CMD} <commande> [arguments]
 
 Commandes agissant sur le STEAMID (l'autorisation d'accès) :
   list                              Liste blanche SteamID + comptes + bannis
@@ -543,14 +568,14 @@ Commandes agissant sur un COMPTE (le pseudo de connexion) :
   purge [delay] [--delete]          Lister/supprimer les comptes inactifs
 
 Exemples:
-  $0 list
-  $0 add "76561198012345678" "PlayerName"
-  $0 remove "76561198012345678" --ban
-  $0 remove-account "PlayerName" --dry-run
-  $0 rename-account "AncienPseudo" "NouveauPseudo"
-  $0 resetpassword "PlayerName"
-  $0 purge                          # Inactifs depuis ${WHITELIST_PURGE_DAYS}j (défaut)
-  $0 purge 3m --delete              # Supprime après confirmation
+  ${CMD} list
+  ${CMD} add "76561198012345678" "PlayerName"
+  ${CMD} remove "76561198012345678" --ban
+  ${CMD} remove-account "PlayerName" --dry-run
+  ${CMD} rename-account "AncienPseudo" "NouveauPseudo"
+  ${CMD} resetpassword "PlayerName"
+  ${CMD} purge                          # Inactifs depuis ${WHITELIST_PURGE_DAYS}j (défaut)
+  ${CMD} purge 3m --delete              # Supprime après confirmation
 
 Notes:
   - Serveur en Open=false : seuls les SteamID autorisés peuvent se connecter.
@@ -611,7 +636,7 @@ main() {
             reset_password "${*:2}"
             ;;
         purge)
-            purge_whitelist "${2:-}" "${3:-}"
+            purge_whitelist "${@:2}"
             ;;
     esac
 }

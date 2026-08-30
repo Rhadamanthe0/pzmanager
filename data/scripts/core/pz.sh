@@ -106,18 +106,20 @@ send_msg() {
     send_discord "${discord_prefix}${msg}"
 }
 
+# L'origine (manuelle/automatique) est TOUJOURS affichée, motif ou pas : sans
+# elle, un arrêt lancé à la main sans --reason arrivait nu sur Discord et les
+# joueurs ne pouvaient pas le distinguer d'un redémarrage programmé.
 format_context() {
     local action="$1"
     local msg="$action"
+    local origin="Lancé manuellement"
+
+    [[ "$IS_AUTOMATIC" == true ]] && origin="Lancé automatiquement"
 
     if [[ -n "$REASON" ]]; then
-        if [[ "$IS_AUTOMATIC" == true ]]; then
-            msg="$msg (Lancé automatiquement - $REASON)"
-        else
-            msg="$msg (Lancé manuellement - $REASON)"
-        fi
-    elif [[ "$IS_AUTOMATIC" == true ]]; then
-        msg="$msg (Lancé automatiquement)"
+        msg="$msg ($origin - $REASON)"
+    else
+        msg="$msg ($origin)"
     fi
     echo "$msg"
 }
@@ -150,7 +152,8 @@ warn_players() {
 
         if $first; then
             # Premier avertissement : @here + le motif. format_context "" rend
-            # le suffixe seul (vide si ni motif ni --automatic).
+            # le suffixe seul, toujours non vide (au minimum « (Lancé
+            # manuellement) », qui distingue l'action d'un arrêt programmé).
             send_msg "${simple_msg}$(format_context "")" "@here "
             first=false
         else
@@ -266,7 +269,7 @@ case "$ACTION" in
     restart) do_restart ;;
     status)  do_status ;;
     *)
-        echo "Usage: $0 <start|stop|restart|status> [délai] [options]"
+        echo "Usage: pzm server <start|stop|restart|status> [délai] [options]"
         echo "Délais: 30m|15m|5m|2m|30s|now|auto (défaut: auto)"
         echo "  auto = 5m si >=2 joueurs, 2m si 1 joueur, now si 0 joueur"
         echo "Options:"

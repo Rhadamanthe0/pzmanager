@@ -37,7 +37,7 @@ $webhook_set || webhook="${DISCORD_WEBHOOK:-}"
 [[ -n "$webhook" ]] || exit 0
 
 if [[ -z "$message" ]]; then
-    echo "Usage: $0 \"message\" [--webhook URL]" >&2
+    echo "Usage: pzm discord \"message\" [--webhook URL]" >&2
     exit 1
 fi
 
