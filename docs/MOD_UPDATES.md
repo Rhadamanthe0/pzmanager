@@ -164,7 +164,120 @@ a window that replaces a vanilla one) at the end of that mod's own bullet:
 9. UI
 10. **Maps — always last**
 
+### `Map=` precedence is FIRST-wins
+
+`Map=` is a separate, independently ordered list, and its rule is the **opposite**
+of what most people assume: for a cell claimed by two maps, the one listed
+**earlier** wins. Vanilla **`Muldraugh, KY` must therefore come LAST**, after every
+custom map.
+
+This cost a full diagnosis cycle: the config had Muldraugh 2nd with the custom
+maps *after* it, so **none of them rendered** — Muldraugh (and WPExpansion) won
+every shared cell and left vanilla forest. Only `ChateauEkron` showed up, purely
+because it happened to sit before Muldraugh. The maps work fine in the creator's
+single-player because nothing precedes them there.
+
+The fix (V35) was to reorder all customs first, then WPExpansion, then vanilla:
+
+```ini
+Map=ChateauEkron;fort régulateur;Fort Sokolov;Ekron castle;West Point Expansion_B42;Muldraugh, KY
+```
+
+Reordering alone is not enough — **re-wipe the affected cells** afterwards
+(see [Map mods](#map-mods)) so they regenerate from the mod instead of serving
+the cached vanilla terrain.
+
+## Map mods
+
+Adding *or updating* a map mod requires regenerating its cells, otherwise PZ keeps
+serving the cached chunks and you see the old (or vanilla) version. The mechanics
+of the wipe — the Build 42 8/256 grid, the safety snapshot, what gets deleted —
+are in [ADVANCED.md § Regenerating a Map Area](ADVANCED.md#regenerating-a-map-area).
+What follows is what bites you *around* the wipe.
+
+### Find the real location: compiled `.lotheader` cells, not the Steam page
+
+**A map mod's real location is its compiled `.lotheader` cell numbers, not the
+"tile" announced on its Steam page.** Read them from:
+
+```
+data/pzserver/steamapps/workshop/content/108600/<id>/mods/<folder>/**/media/maps/<folder>/*.lotheader
+```
+
+and multiply by **256** to get the tile range to wipe. The `worldOrigin` in the
+`.pzw` is only an editor setting — ignore it.
+
+Gojira.exe's community maps **systematically mislabel the announced tile**:
+
+| Map | Steam says | Really compiles to | Tiles to wipe |
+|---|---|---|---|
+| Fort Régulateur (#3767253287) | tile 43,22 | cells 50-51 × 25-26 | 12800-13311 × 6400-6911 |
+| Fort Sokolov (#3769251473) | tile 24,26 | cells 28-29 × 30-31 | — |
+| Ekron castle (#3769266734) | tile 01,30 | cells 1-2 × 35-36 | — |
+| ChateauEkron (#3757414909) | — | cells 1-2 × 41-42 | — |
+
+Wiping the announced tile does nothing at all.
+
+### Mod IDs and map folders get renamed between uploads
+
+Gojira renames them inconsistently, so **always read the real names from
+`mod.info` and from the physical directories on disk — never from the Steam page
+or description, which lag**:
+
+- Fort Régulateur's `id` became `fortrégulateur` (no space) while its physical map
+  folder stayed `fort régulateur` (with a space).
+- Ekron castle ships `id=EkronCastle` (camelCase) with the folder `Ekroncastle`.
+- Fort Sokolov's `id` became `FortSokolov` while the folder stayed `Fort Sokolov`.
+
+`Mods=` takes the **`id`**. `Map=` takes the **physical folder that actually holds
+the `.lotpack`** — and the `mapFolder=` field inside `mod.info` can itself be wrong
+(Fort Régulateur's says `fortrégulateur`; the real folder has a space). A rename
+therefore means editing **both** lines, and a mismatch throws
+`required mod "X" not found` at boot, with the mod silently not loaded.
+
+When an update ships **two** map folders (the Ekron castle update shipped
+`Ekron castle` *and* a stale `Ekroncastle`), point `Map=` at the one that actually
+contains the biomemap, verified on disk.
+
+### Verifying the render: three false negatives
+
+1. **Check at the map's real build tile, not the cell centre or announced tile.**
+   A map covers a 2×2-cell (512×512-tile) footprint, but the *built* village is a
+   small patch inside it. Teleporting even ~120 tiles off lands you in the mod's
+   own forest fringe, and a working map looks broken. The exact build tile is the
+   `SpawnPoint x=… y=…` in the map folder's **`objects.lua`** (absolute tile) — for
+   Fort Sokolov, `x=7346 y=8000`. Teleporting to 7400,7900 is what made Sokolov
+   look dead; 7346,8000 shows the village.
+2. **A black/void screenshot is almost always mid-load.** The in-game "please wait
+   two seconds to show the map" means the first capture is partial. Ekron castle
+   looked like pure void at 500,9200 and rendered the full castle a moment later.
+3. **`ERROR … invalid building metaID #… in cell X,Y while reading map_meta.bin`
+   at boot is NOISE, not the render blocker.** These accumulate in the world's
+   single global `map_meta.bin` on every map add or change (227 of them across
+   cells 1-56 on 2026-07-24) **while every map rendered fine**. Do **not**
+   regenerate or delete `map_meta.bin` on that evidence alone: it is a disruptive
+   global-metagrid rebuild on a live world, for a cosmetic log error.
+   `wipeMapTile.sh` deliberately leaves it untouched.
+
+A biomemap sitting in a nested `.../media/maps/<folder>/maps/biomemap_*.png`
+subfolder is **normal** — the working ChateauEkron has it too. Don't misdiagnose it.
+
 ## Pitfalls
+
+### Some mods break only on a Linux dedicated server
+
+A mod can load cleanly server-side and still be broken. **Before adding a weapon
+or framework mod, check its Steam Discussions for a "Linux dedicated server"
+thread.**
+
+Example (removed 2026-07-23, V35): **Gunworks Framework** (`SWMG`, #3722064198)
+and its dependent **Black Powder Gunsmithing** (`BlackPowderGunsmithing`,
+#3766140920). Both *loaded* at boot — no crash, no `required-mod-not-found` — but
+the framework showed **`[ERRORS]` in the in-game Mods menu**, matching its known
+"unable to load on Linux dedicated Server" discussion.
+
+**A clean server-side boot log is not proof a mod works.** The in-game
+`Esc → Mods` check for `[ERRORS]` (step 5 of the procedure above) is the real gate.
 
 ### "Removed from the community" is a lie
 

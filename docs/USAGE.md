@@ -21,10 +21,38 @@ pzm server status             # Status + logs
 **5m** if 2 or more, **2m** if 1, **now** if none — so an empty server restarts
 without a pointless countdown.
 
+**Always pass `--reason`** on `start`/`stop`/`restart`: the text is shown to
+players in the in-game warning and on Discord. Without it the message only says
+whether the action was manual or automatic. A delay token must come *before* it:
+
+```bash
+pzm server restart 5m --reason "Adding mods"
+pzm server stop now --reason "Emergency" --silent   # --silent = no Discord post
+```
+
 **Send a message to connected players**:
 ```bash
 pzm rcon servermsg "Message to players"
 ```
+
+### Never double-issue a stop or restart
+
+A second `stop`/`restart` launched while one is already running is **refused** —
+an `flock` (`acquire_serverctl_lock_or_die` in `pz.sh`) holds for the whole
+operation, warnings included. Two reasons this matters:
+
+- A `quit` sent while B42 is still **loading the map** crashes the boot
+  (`NullPointerException zombie.iso.IsoMetaGrid.save`, grid = null) and leaves the
+  server in a crash-loop. That is the 2026-07-20 incident: a second restart issued
+  during the first one's boot.
+- Before acting, the shutdown path waits for the end-of-boot marker
+  (`LuaNet: Initialization [DONE]`) in journald.
+
+That wait **short-circuits once the service has been active longer than 240 s**.
+On a long-uptime server, scanning the whole journal since `ActiveEnterTimestamp`
+(hours of it, ~GB) proved unreliable and made every stop appear to hang silently
+for 300 s. While it genuinely waits, it prints progress, so a stop issued during a
+boot no longer looks frozen.
 
 ## Backups
 
@@ -257,6 +285,9 @@ pzm --help
 
 ## Documentation
 
+Full index and topic ownership: [README.md](README.md).
+
 - [QUICKSTART.md](QUICKSTART.md) - Installation
+- [ARCHITECTURE.md](ARCHITECTURE.md) - How the code is organised
 - [SERVER_CONFIG.md](SERVER_CONFIG.md) - Game configuration
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Problem solving
