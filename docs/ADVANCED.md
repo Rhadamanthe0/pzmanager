@@ -120,6 +120,28 @@ backstop if the monitor never fires.
 Tuning: if a crash ever happens *during* the warning countdown, lower
 `HEAP_RESTART_PERCENT` to 90 or shorten `HEAP_RESTART_DELAY`.
 
+### Inspecting the running JVM without jcmd
+
+The bundled JRE ships no `jcmd`/`jmap`, so to diagnose a *live* server you drive
+the HotSpot attach protocol by hand. The unit sets `PrivateTmp=true`, so the
+socket lives under the process's own `/tmp`:
+
+```bash
+pid=$(pgrep -f ProjectZomboid64 | head -1)
+touch /proc/$pid/root/tmp/.attach_pid$pid
+kill -QUIT $pid                       # makes the JVM create the attach socket
+# then, over /proc/$pid/root/tmp/.java_pid$pid, send:  1\0jcmd\0<dcmd>\0\0\0
+```
+
+Useful `<dcmd>` values: `GC.heap_info`, `GC.class_histogram`,
+`GC.heap_dump <path>`.
+
+> ⚠️ A full heap dump is roughly `-Xmx` GB on disk and **freezes players for
+> ~25 s**. Analyse the resulting `.hprof` with Eclipse MAT.
+
+Installing GraalVM (see above) is the easier route: it *does* ship `jcmd`, and
+`watchServerStall.sh` uses it for thread dumps.
+
 ## RCON Commands
 
 ```bash

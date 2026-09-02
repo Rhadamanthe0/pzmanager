@@ -58,9 +58,13 @@ command bot: [docs/DISCORD_BOT.md](docs/DISCORD_BOT.md).
 
 ## Documentation
 
+Full index, including which document owns which topic:
+**[docs/README.md](docs/README.md)**.
+
 | Guide | Description |
 |-------|-------------|
 | [QUICKSTART](docs/QUICKSTART.md) | 10-minute setup guide |
+| [ARCHITECTURE](docs/ARCHITECTURE.md) | How the code is organised, control-FIFO design |
 | [USAGE](docs/USAGE.md) | All commands explained |
 | [CONFIGURATION](docs/CONFIGURATION.md) | Environment variables |
 | [DISCORD_BOT](docs/DISCORD_BOT.md) | Run pzm from Discord (/pzm bot) |
@@ -69,6 +73,8 @@ command bot: [docs/DISCORD_BOT.md](docs/DISCORD_BOT.md).
 | [ADVANCED](docs/ADVANCED.md) | RAM/JVM tuning & server reset |
 | [TROUBLESHOOTING](docs/TROUBLESHOOTING.md) | Common issues |
 | [WHAT_IS_INSTALLED](docs/WHAT_IS_INSTALLED.md) | Full system details |
+| [HOST_ENVIRONMENT](docs/HOST_ENVIRONMENT.md) | The machine itself: RAM budget, freezes, networking |
+| [INCIDENTS](docs/INCIDENTS.md) | Post-mortems |
 | [PROCEDURE_JOUEURS](docs/PROCEDURE_JOUEURS.md) | Player connection guide (FR) |
 
 ## License

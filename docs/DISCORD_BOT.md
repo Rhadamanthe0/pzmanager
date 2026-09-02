@@ -157,6 +157,52 @@ Rules:
 
 ## Server monitoring
 
+### Where the network numbers come from: PZ's built-in Prometheus exporter
+
+PZ B42 ships its own Prometheus client (`zombie.network.statistics.StatisticManager`,
+`io.prometheus.metrics…` inside `projectzomboid.jar`). It is the **exact** source
+of the game server's own traffic — free of the Docker / Pi-hole / WireGuard noise
+that a NIC-level measurement carries.
+
+It is **off by default**: the HTTP exporter starts only if the JVM system
+properties `prometheusEnabled` and `prometheusPort` are set, which
+`configureJvm.sh` does when `PZ_PROMETHEUS_PORT` is set in `.env` (idempotent, so
+it survives every `steamcmd … validate`). It also needs
+`MultiplayerStatisticsPeriod>0` in `servertest.ini` (default 1) and **a restart**.
+Boot then logs `Prometheus HTTPServer listening on port http://localhost:<port>/metrics`.
+
+At `http://127.0.0.1:<port>/metrics` you get:
+
+- `packet_send_bytes` / `packet_receive_bytes` — histograms **per client and per
+  packet type**; `_count` is the packet count, `_sum` the bytes. Summed and
+  differentiated over time, that is exact packets/s and KB/s.
+- `performance{fps}` — the server tick (~100 when healthy; it drops under load).
+- `network{packet-loss-last-second, voip-sent, voip-received, sent-packets…}`.
+- `player_x/y/lat/lon{name=…}` — **player positions**.
+
+The console command `statistic` exists but is **not** wired to the FIFO console
+(`Unknown command`), so scraping `/metrics` is the only route. The bot scrapes it
+each monitoring cycle and **falls back to the NIC proxy** if the exporter is not
+exposed. `watchServerStall.sh` uses the same counters to detect a frozen main loop.
+
+> ⚠️ **Security.** The exporter binds `0.0.0.0` — PZ offers no localhost-bind
+> option — and the metrics include **player coordinates**. `setupSystem.sh`
+> therefore adds `ufw deny <port>/tcp` (redundant with the default deny-incoming,
+> but explicit and maintained; loopback stays open so the bot still reads it).
+> **Never forward this port on the router.**
+
+#### `MaxPacketsPerSecond` is a per-client inbound cap
+
+`MaxPacketsPerSecond` in `servertest.ini` (`Min=100 Max=1000 Def=300`; 1000 here)
+is a **per-client anti-flood on INCOMING packets only**. `PacketsCache.isLimitExceeded`
+keeps a per-client counter and logs `Packets limit has exceeded for <client>`.
+
+It does **not** cap outgoing (server → client) traffic and it is **not** global.
+So the honest "% of cap" is the busiest client's *received* pps ÷
+`MaxPacketsPerSecond` — which is what the bot shows (`recv_cap_pct`), not the
+aggregate.
+
+
 Optional. Set `DISCORD_BOT_MONITORING_CHANNEL_ID` and the bot posts a **health
 embed every minute** (`DISCORD_BOT_MONITORING_INTERVAL`, default 60s) to that
 channel — a rolling **black box** so that when the server crashes you can scroll
