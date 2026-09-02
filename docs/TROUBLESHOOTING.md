@@ -101,6 +101,58 @@ nc -vuz YOUR_SERVER_IP 16261
 - Use direct IP in Project Zomboid
 - No need to be in the server browser
 
+## Stop ends in `Failed with result 'timeout'`
+
+The server did not exit on its own and systemd SIGKILLed it after
+`TimeoutStopSec` (120 s). **The usual cause is not a slow save — it is a `quit`
+that was never read.**
+
+Server control is a FIFO: `ExecStop` writes `quit` into
+`data/pzserver/zomboid.control` and the game's console thread reads it.
+`KillSignal=SIGCONT` is deliberate — systemd never sends SIGTERM, so if that
+`quit` is not processed there is **nothing else** that will stop the server, and
+the 120 s wait always ends in a SIGKILL. Raising `TimeoutStopSec` does not help;
+it only makes the wait longer.
+
+Note that writing to the FIFO **succeeds** even when nobody is reading: a pipe
+accepts data into its 64 KB buffer regardless. So "the command was sent" tells you
+nothing.
+
+### Telling the two apart
+
+```bash
+# Did the game acknowledge ANY console command during the stop?
+journalctl --user -u zomboid.service --since "<stop>" --until "<sigkill>" \
+  | grep -c 'command entered via server console'
+```
+
+- **≥ 1, plus `QueuedQuit` / `Shutdown handling finished`** → the quit *was*
+  received and the save genuinely ran long. That is the case where a longer
+  timeout would help.
+- **0, and no game output at all** → the console reader was not consuming the
+  FIFO. The stop was never going to work.
+
+Cross-check the black box (`logs/zomboid/monitoring.csv`): a real save burns CPU
+and logs; a dead console shows an idle process writing nothing.
+
+### Catching it before you need the stop
+
+`pz-modcheck` writes a command into the FIFO every 5 minutes and waits for the
+answer — a free liveness probe. When the console stops answering,
+`logs/mod_checks/mod_checks_<date>.log` records `console muette`, and after
+`CONSOLE_SILENT_ALERT_AFTER` consecutive silent passes (default 3, ~15 min) the
+Discord webhook is warned that a clean stop is no longer possible.
+
+`pzm server stop|restart` also probes the console before acting and says so
+explicitly when it is unresponsive — including that the in-game warnings will not
+reach anyone either, since they travel through the same channel.
+
+### Recovering
+
+The SIGKILL means no final save. The hourly snapshot is your restore point
+(`pzm backup list`), and with `SaveWorldEveryMinutes=0` that is up to one hour of
+world state. Player characters are written more often and usually survive.
+
 ## Server Crashes Regularly
 
 ### Check Resources
