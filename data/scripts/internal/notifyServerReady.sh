@@ -49,7 +49,7 @@ hits="$( { timeout "$TIMEOUT" journalctl --user -u "${PZ_SERVICE_NAME}" \
           | grep -cFm1 "$SERVER_READY_MARKER" || true )"
 
 if (( hits > 0 )); then
-    "${SCRIPT_DIR}/sendDiscord.sh" "Le serveur Project Zomboid est en ligne !"
+    notify "Le serveur Project Zomboid est en ligne !"
 fi
 
 exit 0

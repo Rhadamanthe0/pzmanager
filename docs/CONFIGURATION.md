@@ -74,9 +74,12 @@ These ports must match the values in the server's `.ini`.
 ```bash
 export PZ_PORT_GAME=16261             # DefaultPort in servertest.ini
 export PZ_PORT_GAME2=16262            # UDPPort in servertest.ini
-export PZ_PORT_RCON=8766              # RCON
-export PZ_PORT_STEAM=27015            # Steam query
 ```
+
+`PZ_PORT_RCON` and `PZ_PORT_STEAM` were removed: no script read them, and B42
+binds neither port. Note the two names were also **swapped** here relative to
+`.env.example` (8766 is the Steam port, 27015 the RCON one) — an inversion that
+cancelled itself out only because both values were unused.
 
 ### SteamCMD
 
@@ -110,7 +113,6 @@ export JAVA_PATH="/usr/lib/jvm/java-${JAVA_VERSION}-openjdk-amd64"
 ```bash
 export BACKUP_DIR="${PZ_DATA_DIR}/dataBackups"
 export BACKUP_LATEST_LINK="${BACKUP_DIR}/latest"
-export BACKUP_RETENTION_DAYS=14
 
 # Rétention GFS (grand-père/père/fils) des snapshots hardlinkés locaux
 export BACKUP_GFS_HOURLY_HOURS=24
@@ -126,7 +128,7 @@ Local hourly snapshots use **GFS retention** (`prune_gfs` in `dataBackup.sh`), n
 - **BACKUP_GFS_DAILY_DAYS**: then keep 1 per day up to this many days (default 30); older is deleted
 - **BACKUP_PRUNE_MAX_DELETE**: max snapshots deleted per run (default 15; 0 = unlimited). Deleting a hardlinked snapshot is hundreds of thousands of `unlink()`, slow under the unit's 20% CPU cap — bounding it per run lets a large backlog drain over several hourly runs without exceeding `TimeoutStartSec` (2400s). The run is also single-instance (`flock`), so a long prune never overlaps the next hourly trigger.
 
-`BACKUP_PRUNE_DRY_RUN=1 data/scripts/backup/dataBackup.sh` previews what would be pruned without deleting. `BACKUP_RETENTION_DAYS` is now legacy (kept for reference; the GFS variables above drive local retention).
+`BACKUP_PRUNE_DRY_RUN=1 data/scripts/backup/dataBackup.sh` previews what would be pruned without deleting. `BACKUP_RETENTION_DAYS` no longer exists: it was read by nothing once GFS retention landed, and has been dropped from `.env.example`.
 
 ### External Synchronization
 

@@ -23,6 +23,8 @@ versionning/Mods bugués*.csv
 
 # Temporary files
 temp/
+# Sortie de session laissée à la racine par un `nohup` (agent, script lancé à la main)
+nohup.out
 
 # IDE configuration
 .vscode/

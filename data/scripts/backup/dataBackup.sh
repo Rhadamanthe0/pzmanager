@@ -38,11 +38,11 @@ ensure_directory "${BACKUP_DIR}"
 # le timer horaire pourrait relancer un backup alors que le précédent tourne
 # encore — ou un lancement manuel se superposer. flock non-bloquant : si un backup
 # tient déjà le verrou, on skippe proprement ce run (exit 0) au lieu de paralléliser
-# deux rsync/rm sur le même arbre. Le verrou est tenu (fd 201) jusqu'à la fin du
-# script ; libéré automatiquement si le process est tué (timeout systemd inclus).
+# deux rsync/rm sur le même arbre. Le verrou est tenu jusqu'à la fin du script ;
+# libéré automatiquement par le noyau si le process est tué (timeout systemd inclus).
 readonly BACKUP_LOCK_FILE="/tmp/pzmanager-backup-$(id -un).lock"
-exec 201>"${BACKUP_LOCK_FILE}"
-if ! flock -n 201; then
+BACKUP_LOCK_FD=""
+if ! try_lock "${BACKUP_LOCK_FILE}" BACKUP_LOCK_FD; then
     echo "Un backup est déjà en cours (${BACKUP_LOCK_FILE}) — run ignoré."
     exit 0
 fi

@@ -14,12 +14,19 @@ Usage: pzm <commande> <sous-commande> [arguments]
 
 Commandes disponibles:
 
-  server <action> [délai]
-    start              Démarrer le serveur
+  server <action> [délai] [options]
+    start [délai]      Démarrer le serveur
     stop [délai]       Arrêter (30m|15m|5m|2m|30s|now|auto, défaut: auto)
     restart [délai]    Redémarrer
     status             Statut + logs récents
                        délai auto = 5m si >=2 joueurs, 2m si 1, now si 0
+    Options communes à start/stop/restart :
+      --reason TEXT       Motif affiché AUX JOUEURS (en jeu) et sur Discord.
+                          À renseigner systématiquement : sans lui, le message
+                          n'indique que l'origine (manuelle/automatique).
+      --silent            Aucune annonce Discord (redémarrage de debug)
+      --automatic         Marque l'action comme déclenchée automatiquement
+    Un délai doit précéder --reason : `server start now --reason "..."`.
 
   backup <action> [arguments]
     create             Backup incrémental horaire
@@ -65,7 +72,7 @@ Commandes disponibles:
 
 Exemples:
   pzm server start
-  pzm server restart 5m
+  pzm server restart 5m --reason "Ajout de mods"
   pzm backup restore data/dataBackups/backup_2026-01-11_14h30m00s
   pzm whitelist add "76561198012345678" "PlayerName"
   pzm admin reset --keep-config --keep-whitelist

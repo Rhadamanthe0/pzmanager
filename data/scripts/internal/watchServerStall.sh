@@ -215,8 +215,7 @@ log "stallwatch: gel confirmé (main runnable ${runnable_count}/${#main_lines[@]
 # --- Notifications ------------------------------------------------------------
 # Canal public (annonces joueurs) : une seule ligne, lisible, sans jargon — les
 # joueurs ont juste besoin de savoir pourquoi ça coupe et que ça repart seul.
-"${SCRIPT_DIR}/sendDiscord.sh" \
-    "🧊 Gel du serveur détecté — redémarrage automatique en cours." || true
+notify "🧊 Gel du serveur détecté — redémarrage automatique en cours."
 
 # Détail technique (chemin du dump) : réservé à l'admin. Sur
 # DISCORD_ADMIN_WEBHOOK si défini dans .env, sinon journal seul — jamais sur le
@@ -224,9 +223,8 @@ log "stallwatch: gel confirmé (main runnable ${runnable_count}/${#main_lines[@]
 # recopié : celui-ci n'avait pas le repli sans jq du script partagé, donc le
 # message admin disparaissait en silence sur une machine sans jq.
 if [[ -n "${DISCORD_ADMIN_WEBHOOK:-}" ]]; then
-    "${SCRIPT_DIR}/sendDiscord.sh" \
-        "🧊 Gel confirmé (main RUNNABLE, ${clients} joueur(s), compteur figé ~$(( STALL_SAMPLES + 1 )) min). Thread dump : \`logs/zomboid/stall_${ts}.txt\`" \
-        --webhook "${DISCORD_ADMIN_WEBHOOK}" || true
+    notify "🧊 Gel confirmé (main RUNNABLE, ${clients} joueur(s), compteur figé ~$(( STALL_SAMPLES + 1 )) min). Thread dump : \`logs/zomboid/stall_${ts}.txt\`" \
+        --webhook "${DISCORD_ADMIN_WEBHOOK}"
 fi
 
 # --- Redémarrage automatique --------------------------------------------------

@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # setupSystem.sh - Configuration système initiale
 # Crée l'utilisateur, installe les paquets requis et configure le pare-feu.
-# Usage: sudo ./setupSystem.sh [nom_utilisateur]
-# Par défaut, l'utilisateur est "pzuser"
+# Usage: sudo ./setupSystem.sh [nom_utilisateur] [chemin_du_.env]
+# Par défaut, l'utilisateur est "pzuser" et le .env est cherché dans son home.
+# Le 2e argument sert à l'installateur, qui prépare le .env dans un dossier
+# temporaire AVANT que le home ne soit peuplé.
 
 set -euo pipefail
 trap 'on_error $LINENO' ERR
@@ -10,6 +12,7 @@ trap 'on_error $LINENO' ERR
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 readonly PZ_USER="${1:-pzuser}"
 readonly PZ_HOME="/home/${PZ_USER}"
+readonly ENV_FILE="${2:-${PZ_HOME}/pzmanager/.env}"
 
 on_error() {
     local lineno=${1:-?}
@@ -49,6 +52,28 @@ install_packages() {
     echo "[INFO] Installation des paquets: ${to_install[*]}"
     apt-get update -qq
     DEBIAN_FRONTEND=noninteractive apt-get install -yqq "${to_install[@]}"
+}
+
+# Lit les numéros de port du .env SANS l'exécuter.
+#
+# Ce script tourne en ROOT, alors que le .env appartient à l'utilisateur du
+# serveur (non privilégié) et est écrit par lui. L'ancienne forme
+# `eval "$(grep ... "$env_file")"` donnait donc à quiconque peut écrire dans ce
+# fichier une exécution de code arbitraire en root — il suffisait d'y glisser
+# `export PZ_PORT_GAME=1; <commande>` et d'attendre le prochain
+# `pzm install system`. On extrait maintenant la valeur par une expression
+# régulière et on n'accepte QUE des entiers : un contenu inattendu est ignoré et
+# le défaut s'applique, plutôt que d'être exécuté.
+read_ports_from_env() {
+    local env_file="$1" key value
+    for key in PZ_PORT_GAME PZ_PORT_GAME2 PZ_PROMETHEUS_PORT; do
+        value="$(sed -n -E "s/^[[:space:]]*export[[:space:]]+${key}=[\"']?([0-9]+)[\"']?.*/\\1/p" \
+                 "$env_file" | tail -1)"
+        # Port TCP/UDP valide uniquement ; sinon on garde le défaut du script.
+        if [[ "$value" =~ ^[0-9]+$ ]] && (( value > 0 && value < 65536 )); then
+            printf -v "$key" '%s' "$value"
+        fi
+    done
 }
 
 configure_firewall() {
@@ -159,10 +184,9 @@ main() {
     # configure_firewall retombait toujours sur son défaut codé en dur (9110) et
     # posait la règle `deny` sur un port qui n'était pas celui du serveur dès que
     # .env en définissait un autre.
-    local env_file="${PZ_HOME}/pzmanager/.env"
-    if [[ -f "$env_file" ]]; then
-        eval "$(grep -E '^export (PZ_PORT_|PZ_PROMETHEUS_PORT)' "$env_file")" 2>/dev/null || true
-        echo "[INFO] Ports chargés depuis $env_file"
+    if [[ -f "$ENV_FILE" ]]; then
+        read_ports_from_env "$ENV_FILE"
+        echo "[INFO] Ports chargés depuis $ENV_FILE"
     fi
 
     create_user

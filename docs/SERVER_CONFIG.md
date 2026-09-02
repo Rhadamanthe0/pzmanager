@@ -113,8 +113,10 @@ dependencies, load order, pre-download, deploy, verification and rollback.
 Default ports (automatically configured by pzmanager):
 - **16261/UDP** - Main game
 - **16262/UDP** - Secondary game
-- **8766/UDP** - RCON
-- **27015/TCP** - Steam query
+
+These are the only two ports PZ B42 listens on, and the only two `setupSystem.sh`
+opens. The old 8766 (RCON) and 27015 (Steam query) entries were B41 leftovers: no
+socket uses them in B42, so they are deliberately left closed.
 
 Modification (only if conflict):
 ```ini
