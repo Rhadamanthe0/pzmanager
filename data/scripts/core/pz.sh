@@ -42,6 +42,10 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --reason)
+            # Garde explicite : sous set -u, un « --reason » final sans texte
+            # sortait sur un message bash brut (« $2 : variable sans liaison »),
+            # illisible pour qui tape la commande depuis Discord.
+            [[ $# -ge 2 ]] || die "--reason attend un texte (ex: --reason \"Ajout de mods\")"
             REASON="$2"
             shift 2
             ;;
@@ -57,19 +61,22 @@ done
 
 send_discord() {
     [[ "$SILENT_MODE" == true ]] && return 0
-    "${SCRIPT_DIR}/../internal/sendDiscord.sh" "$1"
+    notify "$1"
 }
 
 # Verrou d'opération stop/restart : interdit deux arrêts/redémarrages simultanés.
 # C'est le garde-fou contre l'incident du 2026-07-20 (un 2e `pzm server restart`
 # lancé pendant le 1er -> `quit` en plein chargement de map -> crash-loop B42).
-# flock est lié au fd 201 : le verrou est libéré automatiquement à la mort du
-# process (pas de verrou fantôme, contrairement à un lock basé sur l'mtime).
-# Tenu pour TOUTE la durée de pz.sh (préavis + arrêt + backup + démarrage).
+# Le verrou est libéré automatiquement par le noyau à la mort du process (pas de
+# verrou fantôme). Tenu pour TOUTE la durée de pz.sh (préavis + arrêt + backup +
+# démarrage). try_lock (common.sh) alloue le descripteur : le numéro codé en dur
+# valait aussi 201 dans dataBackup.sh, que ce script APPELLE — ça marchait, mais
+# par chance, et la lecture laissait croire à un conflit.
 readonly SERVERCTL_LOCK_FILE="/tmp/pzmanager-serverctl-$(id -un).lock"
+SERVERCTL_LOCK_FD=""
 acquire_serverctl_lock_or_die() {
-    exec 201>"$SERVERCTL_LOCK_FILE"
-    flock -n 201 || die "Un arrêt/redémarrage est déjà en cours. Attends qu'il se termine (le serveur doit être « en ligne » avant toute nouvelle action)."
+    try_lock "$SERVERCTL_LOCK_FILE" SERVERCTL_LOCK_FD \
+        || die "Un arrêt/redémarrage est déjà en cours. Attends qu'il se termine (le serveur doit être « en ligne » avant toute nouvelle action)."
 }
 
 # Nombre de joueurs actuellement connectés.
@@ -198,7 +205,7 @@ shutdown_server() {
     fi
 
     if [[ "$DELAY" == "now" ]]; then
-        local context_msg=$(format_context "$action IMMÉDIAT")
+        local context_msg; context_msg="$(format_context "$action IMMÉDIAT")"
         send_discord "@here $context_msg"
     else
         warn_players "$action"
@@ -220,7 +227,7 @@ do_start() {
     # Only send message if started with reason but NOT a maintenance
     # (maintenance already sends DÉBUT MAINTENANCE before shutdown)
     if [[ -n "$REASON" ]] && [[ "$IS_MAINTENANCE" != true ]]; then
-        local context_msg=$(format_context "Serveur démarré")
+        local context_msg; context_msg="$(format_context "Serveur démarré")"
         send_discord "$context_msg"
     fi
     echo "Terminé."
@@ -250,7 +257,7 @@ do_status() {
         [[ -p "${PZ_CONTROL_PIPE}" ]] && echo "Control pipe: Available" || echo "Control pipe: Not available"
     else
         echo "Status: STOPPED"
-        local result=$(systemctl --user show "${PZ_SERVICE_NAME}" -p Result --value)
+        local result; result="$(systemctl --user show "${PZ_SERVICE_NAME}" -p Result --value)"
         [[ "$result" != "success" ]] && echo "Last exit: $result"
     fi
 

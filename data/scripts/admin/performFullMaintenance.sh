@@ -43,6 +43,9 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --reason)
+            # Garde explicite : sans elle, un « --reason » final sans texte sortait
+            # sur « $2 : variable sans liaison » (set -u) au lieu d'un message utile.
+            [[ $# -ge 2 ]] || die "--reason attend un texte (ex: --reason \"Montée de RAM\")"
             MAINTENANCE_REASON="$2"
             shift 2
             ;;
@@ -127,7 +130,7 @@ update_game_server() {
     # alors que public était 24574884). "public" est le nom interne Valve de la
     # branche par défaut ; -beta "" reste proscrit (steamcmd avalerait le token
     # suivant comme nom de branche).
-    local beta_branch="${STEAM_BETA_BRANCH:-public}"
+    local beta_branch; beta_branch="$(steam_beta_branch)"
     "${STEAMCMD_PATH}" +force_install_dir "${PZ_INSTALL_DIR}" +login "${STEAM_LOGIN:-anonymous}" \
         +app_update "${STEAM_APP_ID}" -beta "${beta_branch}" validate +quit
 
@@ -196,7 +199,7 @@ restart_server_on_failure() {
     log "ÉCHEC de la maintenance (code ${rc}) — redémarrage du serveur pour ne pas le laisser hors ligne."
     "${SCRIPT_DIR}/../core/pz.sh" start now --reason "Reprise après échec de la maintenance" --automatic || \
         log "ERREUR: le redémarrage de secours a lui aussi échoué — intervention manuelle requise."
-    "${SCRIPT_DIR}/../internal/sendDiscord.sh" "Maintenance interrompue par une erreur — le serveur a été redémarré." || true
+    notify "Maintenance interrompue par une erreur — le serveur a été redémarré."
     return $rc
 }
 trap restart_server_on_failure EXIT
@@ -223,7 +226,7 @@ main() {
 
     if [[ "$NO_REBOOT" != true && "${REBOOT_ON_MAINTENANCE:-true}" == true ]]; then
         log "Maintenance terminée, redémarrage machine..."
-        [[ "$SILENT_MODE" != true ]] && "${SCRIPT_DIR}/../internal/sendDiscord.sh" "Maintenance terminée - Redémarrage machine" || true
+        [[ "$SILENT_MODE" == true ]] || notify "Maintenance terminée - Redémarrage machine"
         sudo /sbin/reboot
     else
         log "Maintenance terminée, redémarrage du service..."

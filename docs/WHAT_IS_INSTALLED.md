@@ -109,8 +109,11 @@ present.
 | 22/TCP | SSH | Server administration |
 | 16261/UDP | Game | Main Project Zomboid port |
 | 16262/UDP | Game | Secondary Project Zomboid port |
-| 8766/UDP | RCON | Administrative commands |
-| 27015/TCP | Steam | Steam query port |
+
+Only those are opened. 8766/27015 are B41 leftovers that B42 never binds, and the
+Prometheus metrics port (`PZ_PROMETHEUS_PORT`, default 9110) is explicitly
+**denied** from outside — it binds `0.0.0.0` and exposes player coordinates, so it
+must stay reachable on loopback only and must never be forwarded on the router.
 
 **Check**: `sudo ufw status`
 

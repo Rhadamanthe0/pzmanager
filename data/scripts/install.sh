@@ -54,7 +54,11 @@ clone_repo() {
 
 run_setup() {
     log "Running system setup for user: ${PZ_USER}..."
-    bash "${TMP_DIR}/data/scripts/install/setupSystem.sh" "${PZ_USER}"
+    # Le .env est encore dans TMP_DIR à ce stade (move_to_home n'a pas eu lieu) :
+    # on le passe explicitement, sinon setupSystem.sh cherche dans un home pas
+    # encore peuplé, ne trouve rien, et pose les règles UFW sur les ports codés en
+    # dur en ignorant silencieusement PZ_PORT_* / PZ_PROMETHEUS_PORT.
+    bash "${TMP_DIR}/data/scripts/install/setupSystem.sh" "${PZ_USER}" "${TMP_DIR}/.env"
 }
 
 configure_env() {
@@ -63,6 +67,10 @@ configure_env() {
     local env_example="${TMP_DIR}/data/setupTemplates/.env.example"
 
     if [[ -f "$env_example" ]]; then
+        # Créé en 600 AVANT d'écrire : le .env reçoit ensuite webhook, token de bot
+        # et clé de compte de service, qu'une redirection sous umask 022 exposerait
+        # en lecture à toute la machine.
+        install -m 600 /dev/null "$env_file"
         sed "s|pzuser|${PZ_USER}|g" "$env_example" > "$env_file"
     fi
 }
@@ -115,8 +123,11 @@ main() {
     check_os
     check_dependencies
     clone_repo
-    run_setup
+    # configure_env AVANT run_setup (qui lit les ports du .env), et run_setup
+    # avant move_to_home (dont le chown a besoin de l'utilisateur créé par
+    # create_user).
     configure_env
+    run_setup
     move_to_home
     run_initial_config
     print_success

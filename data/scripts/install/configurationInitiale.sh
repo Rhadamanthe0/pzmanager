@@ -250,8 +250,9 @@ download_zomboid_server() {
     # de mises à jour du 05/08/2026. performFullMaintenance.sh le documente et le
     # fait déjà ; l'installation faisait l'inverse et rejouait donc le bug sur une
     # machine neuve. Tableau plutôt que chaîne : plus de word-splitting implicite.
-    local -a beta_args=(-beta "${STEAM_BETA_BRANCH:-public}")
-    echo "  → Branche Steam: ${STEAM_BETA_BRANCH:-public}"
+    local branch; branch="$(steam_beta_branch)"
+    local -a beta_args=(-beta "$branch")
+    echo "  → Branche Steam: ${branch}"
 
     # STEAMCMD_PATH / STEAM_APP_ID viennent du .env comme partout ailleurs, au
     # lieu d'être écrits en dur ici seulement.

@@ -61,22 +61,27 @@ sudo kill <PID>
 
 ```bash
 sudo ufw status verbose
-# Should show: 16261/udp, 16262/udp, 8766/udp, 27015/tcp ALLOW
+# Should show: 16261/udp, 16262/udp ALLOW  — and nothing else for the game
 ```
 
 **Open ports manually**
 ```bash
 sudo ufw allow 16261/udp
 sudo ufw allow 16262/udp
-sudo ufw allow 8766/udp
-sudo ufw allow 27015/tcp
 ```
+
+> **Do not open 8766 or 27015.** Those are B41-era leftovers. Verified in
+> production on B42 (`ss -lnup` on the JVM's pid): the server listens on
+> **16261/udp and 16262/udp only**. RCON-over-TCP is unused here (`RCONPassword`
+> is empty — control goes through the `zomboid.control` FIFO), and Steam
+> discovery happens over the game port. Opening them adds attack surface for
+> services that do not exist.
 
 ### Check Server Listening
 
 ```bash
-sudo netstat -tulpn | grep java
-# Should show java on ports 16261, 8766, 27015
+ss -lnup | grep -i java     # or: sudo netstat -tulpn | grep java
+# Should show java on 16261/udp and 16262/udp only
 ```
 
 ### External Network Test

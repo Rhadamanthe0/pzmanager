@@ -40,7 +40,7 @@ check_mods() {
 
     if [[ $exit_code -ne 0 ]]; then
         log_event "ERROR: RCON failed - ${output}"
-        "${SCRIPT_DIR}/../internal/sendDiscord.sh" "ERROR: Mod check failed" || true
+        notify "ERROR: Mod check failed"
         return 1
     fi
 
@@ -95,7 +95,7 @@ check_server_update() {
     # The manifest structure has: "branches" { "<branch>" { "buildid" "<id>" } }
     # STEAM_BETA_BRANCH vide = branche publique (stable) : dans app_info elle
     # s'appelle "public" -> matcher ce nom, sinon awk ne trouve aucun buildid.
-    local branch_name="${STEAM_BETA_BRANCH:-public}"
+    local branch_name; branch_name="$(steam_beta_branch)"
     local remote_buildid
     remote_buildid=$(echo "$steam_output" | awk -v branch="${branch_name}" '
         /"branches"/ { in_branches=1 }

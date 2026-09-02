@@ -16,7 +16,11 @@ source_env() {
     local env_example="${root}/data/setupTemplates/.env.example"
 
     if [[ ! -f "$env_file" ]] && [[ -f "$env_example" ]]; then
-        cp "$env_example" "$env_file"
+        # install -m 600 et non `cp` : le .env porte le webhook Discord, le token
+        # du bot et la clé privée du compte de service Google (base64). Un `cp`
+        # applique l'umask (022 par défaut) et publiait donc ces trois secrets en
+        # lecture à tout le monde sur la machine dès la première exécution.
+        install -m 600 "$env_example" "$env_file"
         echo "Fichier .env créé depuis .env.example. Éditez-le pour configurer votre installation."
     fi
 
@@ -25,34 +29,108 @@ source_env() {
         exit 1
     }
 
+    # Rattrapage pour les installations créées avant le install -m 600 ci-dessus :
+    # on resserre un .env trop ouvert au lieu de se contenter de le signaler.
+    # Silencieux si on n'en est pas propriétaire (rien à rattraper de toute façon).
+    if [[ -O "$env_file" && "$(stat -c %a "$env_file" 2>/dev/null || echo 600)" != "600" ]]; then
+        chmod 600 "$env_file" 2>/dev/null || true
+    fi
+
     source "$env_file"
     apply_env_defaults
 }
 
-# Valeurs par défaut des variables introduites après la création du .env.
+# Valeurs par défaut de TOUTE la configuration.
 #
 # source_env ne copie .env.example que si .env est ABSENT : il ne fusionne jamais
-# les nouvelles clés dans un .env existant. Sans ces défauts, toute installation
-# antérieure casserait sur "variable sans liaison" (set -u) après une mise à jour
-# qui ajoute une variable. `:=` n'écrase rien : un .env qui définit la clé gagne.
+# les nouvelles clés dans un .env existant. Sans défaut, toute clé ajoutée par une
+# mise à jour casse les installations antérieures sur « variable sans liaison »
+# (set -u) — et pas au même endroit pour tout le monde : WHITELIST_PURGE_DAYS,
+# par exemple, avait un `:-90` dans purgeInactivePlayers.sh mais pas dans
+# manageWhitelist.sh, où `pzm whitelist help` mourait sur un message bash brut.
+#
+# On couvre donc ici la totalité des clés de .env.example, dérivées de la racine
+# déduite (PZ_MANAGER_ROOT) exactement comme le fait le gabarit. Conséquence utile :
+# .env redevient un fichier de SURCHARGE — `:=` n'écrase jamais une valeur définie.
 apply_env_defaults() {
-    # Nom du monde PZ ; "servertest" est le défaut du jeu. Voir .env.example.
-    : "${PZ_SERVER_NAME:=servertest}"
-    : "${PZ_DB_PATH:=${PZ_SOURCE_DIR}/db/${PZ_SERVER_NAME}.db}"
-    : "${PZ_INI_PATH:=${PZ_SOURCE_DIR}/Server/${PZ_SERVER_NAME}.ini}"
+    # --- Utilisateur et chemins de base ---
+    : "${PZ_USER:=$(id -un)}"
     # PZ_MANAGER_DIR est un ALIAS de la racine déduite, pas une seconde source de
     # vérité : la moitié des scripts l'utilisaient (checkHeapAndRestart, fullBackup,
     # notifyServerReady...) et l'autre PZ_MANAGER_ROOT. Un .env recopié depuis une
     # autre machine faisait alors pointer les deux moitiés sur des arbres différents,
     # et l'écart ne se voyait que dans les chemins de redémarrage automatique.
     : "${PZ_MANAGER_DIR:=${PZ_MANAGER_ROOT}}"
+    : "${PZ_HOME:=$(dirname "${PZ_MANAGER_DIR}")}"
+    : "${PZ_DATA_DIR:=${PZ_MANAGER_DIR}/data}"
+    : "${PZ_SCRIPTS_DIR:=${PZ_DATA_DIR}/scripts}"
+
+    # --- Serveur Project Zomboid ---
+    : "${PZ_INSTALL_DIR:=${PZ_DATA_DIR}/pzserver}"
+    : "${PZ_CONTROL_PIPE:=${PZ_INSTALL_DIR}/zomboid.control}"
+    : "${PZ_SERVICE_NAME:=zomboid.service}"
+    : "${PZ_SOURCE_DIR:=${PZ_MANAGER_DIR}/Zomboid}"
+    # Nom du monde PZ ; "servertest" est le défaut du jeu. Voir .env.example.
+    : "${PZ_SERVER_NAME:=servertest}"
+    : "${PZ_DB_PATH:=${PZ_SOURCE_DIR}/db/${PZ_SERVER_NAME}.db}"
+    : "${PZ_INI_PATH:=${PZ_SOURCE_DIR}/Server/${PZ_SERVER_NAME}.ini}"
+
+    # --- SteamCMD ---
+    : "${STEAMCMD_PATH:=/usr/games/steamcmd}"
+    : "${STEAM_APP_ID:=380870}"
+    # Vide = branche publique (stable). Voir steam_beta_branch() plus bas : le nom
+    # interne Valve de cette branche est "public", et il doit être passé
+    # EXPLICITEMENT à steamcmd.
+    : "${STEAM_BETA_BRANCH:=}"
+    : "${STEAM_LOGIN:=}"
+
+    # --- Java ---
+    : "${JAVA_VERSION:=25}"
+    : "${JAVA_PACKAGE:=openjdk-${JAVA_VERSION}-jre-headless}"
+    : "${JAVA_PATH:=/usr/lib/jvm/java-${JAVA_VERSION}-openjdk-amd64}"
+
+    # --- Sauvegardes ---
+    : "${BACKUP_DIR:=${PZ_DATA_DIR}/dataBackups}"
+    : "${BACKUP_LATEST_LINK:=${BACKUP_DIR}/latest}"
+    : "${SYNC_BACKUPS_DIR:=${PZ_DATA_DIR}/fullBackups}"
+
+    # --- Journaux ---
+    : "${LOG_BASE_DIR:=${PZ_MANAGER_DIR}/logs}"
+    : "${LOG_ZOMBOID_DIR:=${LOG_BASE_DIR}/zomboid}"
+    : "${LOG_MAINTENANCE_DIR:=${LOG_BASE_DIR}/maintenance}"
+    : "${LOG_RETENTION_DAYS:=30}"
+
+    # --- Liste blanche ---
+    : "${WHITELIST_PURGE_DAYS:=90}"
     # Registre des dates de création des comptes. Vit DANS data/ et non dans
     # Zomboid/ : c'est justement ce qui lui permet de survivre à `pzm admin reset`
     # (qui ne déplace que Zomboid/) et donc de garder l'ancienneté des comptes au
     # travers d'un wipe, sans toucher au schéma de la base du monde.
     : "${WHITELIST_LEDGER:=${PZ_DATA_DIR}/whitelistLedger.csv}"
-    export PZ_SERVER_NAME PZ_DB_PATH PZ_INI_PATH PZ_MANAGER_DIR WHITELIST_LEDGER
+
+    export PZ_USER PZ_HOME PZ_MANAGER_DIR PZ_DATA_DIR PZ_SCRIPTS_DIR \
+           PZ_INSTALL_DIR PZ_CONTROL_PIPE PZ_SERVICE_NAME PZ_SOURCE_DIR \
+           PZ_SERVER_NAME PZ_DB_PATH PZ_INI_PATH \
+           STEAMCMD_PATH STEAM_APP_ID STEAM_BETA_BRANCH STEAM_LOGIN \
+           JAVA_VERSION JAVA_PACKAGE JAVA_PATH \
+           BACKUP_DIR BACKUP_LATEST_LINK SYNC_BACKUPS_DIR \
+           LOG_BASE_DIR LOG_ZOMBOID_DIR LOG_MAINTENANCE_DIR LOG_RETENTION_DAYS \
+           WHITELIST_PURGE_DAYS WHITELIST_LEDGER
 }
+
+# Nom de branche Steam à passer à `steamcmd -beta`. STEAM_BETA_BRANCH vide = la
+# branche par défaut, dont le nom interne Valve est "public".
+#
+# Il FAUT passer -beta EXPLICITEMENT : ne rien passer n'efface PAS une beta déjà
+# gravée dans le manifeste (UserConfig/MountedConfig "BetaKey"), donc app_update
+# revalide l'ancienne beta au lieu de basculer sur public. C'est ce qui a causé la
+# boucle « Mise à jour serveur disponible » -> maintenance -> reboot toutes les
+# ~10 min au passage 42.19 -> stable le 05/08/2026. `-beta ""` reste proscrit :
+# steamcmd avalerait le token suivant comme nom de branche.
+#
+# Les trois appelants (maintenance, modcheck, installation) recopiaient la même
+# expression `${STEAM_BETA_BRANCH:-public}` avec le même paragraphe d'explication.
+steam_beta_branch() { echo "${STEAM_BETA_BRANCH:-public}"; }
 
 # Arrêt avec message d'erreur
 die() {
@@ -278,29 +356,67 @@ wait_for_server_ready() {
     return 1
 }
 
-# Acquire maintenance lock (non-blocking, shared between pz.sh/modcheck/maintenance)
-# Usage: try_acquire_maintenance_lock [lock_file] [max_age_seconds]
-# Returns: 0 if acquired, 1 if already held
+# --- Verrous d'exclusion mutuelle ---------------------------------------------
+# Tous les verrous du produit passent par flock. Deux propriétés en découlent, et
+# c'est tout ce qu'il faut savoir : le verrou est pris atomiquement (pas de fenêtre
+# entre « tester » et « créer »), et il est RELÂCHÉ PAR LE NOYAU à la mort du
+# process, quelle qu'en soit la cause (kill, timeout systemd, panne). Il ne peut
+# donc pas exister de verrou fantôme.
+#
+# Corollaire, et c'est ce qui a été retiré ici : le nettoyage « si le fichier a
+# plus d'une heure, je le supprime » ne servait à rien et CASSAIT la garantie
+# ci-dessus. Le mtime du fichier date de sa CRÉATION et n'est jamais rafraîchi ;
+# une maintenance légitimement longue (apt + steamcmd validate + backup hors-site)
+# se faisait donc supprimer son fichier de verrou sous les pieds, après quoi
+# l'exécution suivante en créait un nouveau et démarrait EN PARALLÈLE — exactement
+# la collision que le verrou existait pour empêcher.
+#
+# Le descripteur est alloué dynamiquement (`exec {var}>`) plutôt que codé en dur :
+# les numéros 200/201 étaient écrits en clair dans trois fichiers, et un appelant
+# qui devinait « 200 » se retrouvait à déverrouiller dans le vide le jour où il
+# changeait (la maintenance suivante se croyait alors déjà en cours et s'auto-ignorait).
 readonly MAINTENANCE_LOCK_FILE="/tmp/pzmanager-maintenance-$(id -un).lock"
-readonly LOCK_MAX_AGE=3600
+MAINTENANCE_LOCK_FD=""
 
-try_acquire_maintenance_lock() {
-    local lock_file="${1:-$MAINTENANCE_LOCK_FILE}"
-    local max_age="${2:-$LOCK_MAX_AGE}"
-
-    # Clean stale lock (>max_age old)
-    if [[ -f "$lock_file" ]]; then
-        (( $(marker_age_seconds "$lock_file") > max_age )) && rm -f "$lock_file"
+# Prend un verrou flock NON BLOQUANT sur $1 et publie le fd dans la variable
+# nommée $2. Retour 0 si acquis, 1 si déjà tenu par quelqu'un d'autre.
+# Usage: try_lock /chemin/du.lock NOM_DE_VARIABLE_FD
+try_lock() {
+    local lock_file="$1" fd_var="$2" fd
+    exec {fd}>"$lock_file" || return 1
+    if flock -n "$fd"; then
+        printf -v "$fd_var" '%s' "$fd"
+        return 0
     fi
+    exec {fd}>&-
+    return 1
+}
 
-    exec 200>"$lock_file"
-    flock -n 200
+# Verrou de maintenance, partagé par pz.sh / modcheck / performFullMaintenance.
+# Usage: try_acquire_maintenance_lock [lock_file]
+# Returns: 0 si acquis, 1 s'il est déjà tenu.
+try_acquire_maintenance_lock() {
+    try_lock "${1:-$MAINTENANCE_LOCK_FILE}" MAINTENANCE_LOCK_FD
 }
 
 # Libère le verrou pris par try_acquire_maintenance_lock. Passe par ici plutôt que
-# par un `flock -u 200` chez l'appelant : le numéro de fd est un détail interne, et
-# un appelant qui le devine se retrouve à déverrouiller dans le vide le jour où il
-# change (la maintenance suivante se croirait alors déjà en cours et s'auto-skipperait).
+# par un `flock -u` chez l'appelant : le descripteur est un détail interne.
+# No-op si le verrou n'a jamais été pris.
 release_maintenance_lock() {
-    flock -u 200 2>/dev/null || true
+    [[ -n "$MAINTENANCE_LOCK_FD" ]] || return 0
+    flock -u "$MAINTENANCE_LOCK_FD" 2>/dev/null || true
+    exec {MAINTENANCE_LOCK_FD}>&- 2>/dev/null || true
+    MAINTENANCE_LOCK_FD=""
+}
+
+# --- Notification Discord ------------------------------------------------------
+# Six scripts appelaient sendDiscord.sh par un chemin relatif recompté à la main
+# ("${SCRIPT_DIR}/../internal/sendDiscord.sh" ici, "${SCRIPT_DIR}/sendDiscord.sh"
+# là) : autant d'occasions de se tromper de nombre de "..", et une notification
+# qui disparaît en silence quand on déplace un script d'un niveau.
+# Toujours non bloquant : Discord est optionnel, une panne de webhook ne doit
+# jamais faire échouer un arrêt de serveur ou une maintenance.
+# Usage: notify "message" [--webhook URL]
+notify() {
+    "${PZ_MANAGER_ROOT}/data/scripts/internal/sendDiscord.sh" "$@" || true
 }
