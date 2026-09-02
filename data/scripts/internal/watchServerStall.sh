@@ -60,6 +60,12 @@ readonly COOLDOWN_FILE="/tmp/pzmanager-stallwatch-$(id -un).cooldown"
 # jcmd) chaque minute tant que la cause bénigne dure.
 readonly FALSE_POSITIVE_COOLDOWN=600
 
+# Les captures sont désormais conservées (voir le verdict NON CONCLUANT plus
+# bas) : on les fait vieillir comme les autres journaux plutôt que de les
+# laisser s'accumuler indéfiniment.
+find "${LOG_ZOMBOID_DIR}" -maxdepth 1 -name 'stall_*.txt' -type f \
+     -mtime "+${LOG_RETENTION_DAYS}" -delete 2>/dev/null || true
+
 server_is_active || { rm -f "$STATE_FILE" "$COOLDOWN_FILE"; exit 0; }
 [[ -n "$PORT" ]] || exit 0
 
@@ -73,26 +79,30 @@ fi
 pid="$(pgrep -f 'ProjectZomboid64' | head -1 || true)"
 [[ -n "$pid" ]] || exit 0
 
-# Somme des octets envoyés (avance à chaque tick tant que la main loop tourne)
-# et nombre de clients connectés (labels client="..." non vides), en UN SEUL
-# passage awk directement sur le flux curl.
+# Deux valeurs en UN SEUL passage awk sur le flux curl :
+#   - la somme des paquets envoyés (avance à chaque tick tant que la main loop
+#     tourne) : c'est le signal de progression ;
+#   - le nombre de joueurs RÉELLEMENT connectés.
 #
 # $NF et non $2 : la valeur Prometheus est le DERNIER champ, et les pseudos
 # contiennent des espaces (« Allan Faroweit », « Jeff Pessos »), ce qui décalait
-# les champs. Ces clients comptaient donc pour 0 dans la somme — 26 % du trafic
-# perdu sur un relevé du 18/08. Conséquence : avec uniquement des pseudos à
-# espace connectés, le compteur paraissait figé et le détecteur criait au gel
-# sur un serveur sain (seul le filtre CPU évitait le SIGKILL).
+# les champs.
+#
+# Le compte de joueurs vient de la jauge `game{parameter="players"}`, PAS d'un
+# décompte des étiquettes client="..." comme avant. C'était le bug central de ce
+# détecteur : une série Prometheus n'est jamais retirée quand un client se
+# déconnecte, donc `client=` comptait tous les joueurs vus depuis le démarrage de
+# la JVM (35 séries pour 29 connectés, mesuré le 02/09). Sur un serveur qui se
+# vide, le compteur de paquets s'arrête donc LÉGITIMEMENT alors que le détecteur
+# croit encore avoir des joueurs -> il criait au gel à chaque fin de cooldown.
+# Bilan avant correction : 294 détections en 30 jours, dont 292 écartées avec le
+# même message. Le garde-fou « aucun joueur, on ne conclut pas » ci-dessous ne se
+# déclenchait plus jamais après la première connexion.
 read -r sent clients < <(
     curl -s --max-time 5 "http://127.0.0.1:${PORT}/metrics" 2>/dev/null |
-    awk '/^packet_send_bytes_count/ {
-             s += $NF
-             if (match($0, /client="[^"]*"/)) {
-                 c = substr($0, RSTART + 8, RLENGTH - 9)
-                 if (c != "") seen[c] = 1
-             }
-         }
-         END { printf "%.0f %d\n", s + 0, length(seen) }'
+    awk '/^packet_send_bytes_count/            { s += $NF }
+         /^game\{parameter="players"\}/        { p = $NF }
+         END { printf "%.0f %d\n", s + 0, p + 0 }'
 ) || true   # read renvoie 1 sur une dernière ligne sans \n — ne pas tuer le script
 [[ -n "${sent:-}" ]] || exit 0   # exporteur muet (boot en cours) -> on ne conclut rien
 
@@ -201,8 +211,20 @@ if (( ${#main_lines[@]} == 0 )); then
 fi
 
 if (( runnable_count < ${#main_lines[@]} )) || (( burn_pct < BURN_MIN_PCT )); then
-    log "stallwatch: faux positif (main runnable ${runnable_count}/${#main_lines[@]}, CPU brûlé ${burn_pct}% < ${BURN_MIN_PCT}%) — capture supprimée, pause ${FALSE_POSITIVE_COOLDOWN}s."
-    rm -f "$out"
+    # Pas de redémarrage automatique : ce profil est celui d'une main loop
+    # BLOQUÉE (en attente d'E/S, d'un verrou), pas d'une boucle infinie. Une
+    # sauvegarde du monde le produit légitimement, et on ne SIGKILL pas là-dessus.
+    #
+    # En revanche la capture est CONSERVÉE. Elle était supprimée jusqu'ici, ce qui
+    # a coûté cher le 02/09 : ce jour-là la console avait réellement cessé de
+    # consommer le FIFO (deux `checkModsNeedUpdate` sans accusé de réception, puis
+    # un `quit` jamais traité -> SIGKILL au bout de 120 s), et le seul document qui
+    # aurait dit sur QUOI la main loop était bloquée venait d'être effacé.
+    log "stallwatch: NON CONCLUANT (main runnable ${runnable_count}/${#main_lines[@]}, CPU brûlé ${burn_pct}% < ${BURN_MIN_PCT}%) — pas de redémarrage ; capture CONSERVÉE dans ${out} ; pause ${FALSE_POSITIVE_COOLDOWN}s."
+    if [[ -n "${DISCORD_ADMIN_WEBHOOK:-}" ]]; then
+        notify "⚠️ Boucle principale bloquée ${clients} joueur(s), sans consommer de CPU — pas un gel actif, aucun redémarrage. Dump : \`logs/zomboid/$(basename "$out")\`" \
+            --webhook "${DISCORD_ADMIN_WEBHOOK}"
+    fi
     # Réarmer : sans ça, `strikes` continuait de grimper et le script répondait
     # « dump déjà pris » sans plus rien vérifier — 40 min d'aveuglement le 14/08
     # à 04h12. Le cooldown évite de re-dumper chaque minute entre-temps.

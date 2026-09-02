@@ -190,9 +190,36 @@ shutdown_server() {
         log "AVERTISSEMENT : fin de boot non signalée (timeout) ; on poursuit l'arrêt (systemd récupérera un boot bloqué)."
     fi
 
+    # Sonde de vivacité de la console, faite UNE fois puis réutilisée pour le
+    # délai auto. Elle était jusqu'ici lancée UNIQUEMENT en délai auto, et son
+    # résultat « indéterminé » servait seulement à choisir un préavis prudent.
+    #
+    # Or une console muette veut dire quelque chose de bien plus grave : l'arrêt
+    # repose ENTIÈREMENT sur le `quit` que l'ExecStop écrit dans le même FIFO.
+    # Si la console ne lit plus, le `quit` reste dans le tampon du tube, le
+    # service ne s'arrête jamais de lui-même, et systemd finit par le SIGKILL au
+    # bout de TimeoutStopSec (120 s) — sans sauvegarde. C'est exactement le
+    # déroulé du 02/09/2026 à 13:45. Les avertissements en jeu passent d'ailleurs
+    # par ce même canal : ils ne seraient lus par personne non plus.
+    #
+    # On ne peut pas y remédier ici, mais on peut le DIRE, au lieu de laisser
+    # l'opérateur découvrir un « Failed with result 'timeout' » deux minutes plus
+    # tard sans explication.
+    local players=""
+    if server_is_active; then
+        players="$(count_connected_players)"
+        if [[ -z "$players" ]]; then
+            log "AVERTISSEMENT : la console du serveur ne répond pas."
+            log "  Le 'quit' d'arrêt passe par ce même canal : il a de fortes chances"
+            log "  de ne pas être traité, auquel cas systemd tuera le serveur au bout"
+            log "  de 120 s (arrêt brutal, sans sauvegarde finale)."
+            log "  Le dernier backup horaire reste le point de restauration."
+            send_discord "⚠️ Console du serveur muette avant l'arrêt — le redémarrage risque de se terminer par un arrêt brutal (sans sauvegarde finale)."
+        fi
+    fi
+
     # Délai automatique selon le nombre de joueurs connectés
     if [[ "$DELAY" == "auto" ]]; then
-        local players; players="$(count_connected_players)"
         if [[ -z "$players" ]]; then
             # Comptage impossible : on ne sait pas si la salle est vide ou pleine,
             # donc on préavise comme s'il y avait du monde.

@@ -51,16 +51,65 @@ check_mods() {
 
     if echo "${status}" | grep -iq "need.*update\|outdated"; then
         log_event "MOD UPDATES DETECTED (status: ${status})"
+        note_console_silence 0
         return 0
     fi
 
     if echo "${status}" | grep -iq "mods updated\|up.*to.*date"; then
         log_event "OK - mods up to date"
+        note_console_silence 0
+        return 1
+    fi
+
+    # Message exact émis par sendCommand.sh quand le scrape journald n'a rien
+    # trouvé : la commande est bien partie dans le FIFO, mais le serveur n'a pas
+    # accusé réception -> la console ne consomme plus le tube.
+    if [[ "$output" == *"aucune sortie capturée"* ]]; then
+        note_console_silence 1
         return 1
     fi
 
     log_event "OK - no updates (response: ${output:0:100})"
     return 1
+}
+
+# --- Vivacité de la console ---------------------------------------------------
+# check_mods écrit dans le FIFO toutes les 5 min et attend une réponse : c'est,
+# gratuitement, la meilleure sonde de vivacité de la console qu'on ait. Elle
+# était jusqu'ici jetée — un « aucune sortie capturée » était journalisé comme
+# « OK - no updates » et personne n'en entendait parler.
+#
+# Ça compte, parce qu'une console qui ne lit plus le FIFO rend l'arrêt impossible :
+# le `quit` de l'ExecStop part dans le même tube, n'est jamais consommé, et
+# systemd finit par SIGKILL le serveur au bout de 120 s, sans sauvegarde finale.
+# Le 02/09/2026 la console s'est tue à 13:38 puis 13:43 ; l'arrêt demandé à 13:45
+# s'est terminé exactement comme ça. Le silence avait été vu deux fois, et écrit
+# deux fois dans ce journal, sans jamais remonter.
+#
+# On alerte après CONSOLE_SILENT_ALERT_AFTER passages muets consécutifs (défaut 3,
+# soit ~15 min) : un serveur qui vient de démarrer est légitimement muet une ou
+# deux minutes, il ne faut pas crier pour ça.
+readonly CONSOLE_SILENT_MARKER="/tmp/pzmanager-console-silence-$(id -un).count"
+readonly CONSOLE_SILENT_ALERT_AFTER="${CONSOLE_SILENT_ALERT_AFTER:-3}"
+
+note_console_silence() {
+    local silent="$1" n=0
+    if [[ "$silent" != "1" ]]; then
+        rm -f "$CONSOLE_SILENT_MARKER"
+        return 0
+    fi
+    [[ -f "$CONSOLE_SILENT_MARKER" ]] && n="$(cat "$CONSOLE_SILENT_MARKER" 2>/dev/null || echo 0)"
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    n=$(( n + 1 ))
+    echo "$n" > "$CONSOLE_SILENT_MARKER"
+    log_event "WARNING: console muette (${n} passage(s) consécutif(s))"
+
+    # Une seule alerte, au franchissement du seuil : au-delà on continue de
+    # compter en silence pour ne pas spammer toutes les 5 minutes.
+    if (( n == CONSOLE_SILENT_ALERT_AFTER )); then
+        log_event "ALERTE: console muette depuis ${n} passages — arrêt propre compromis"
+        notify "⚠️ La console du serveur ne répond plus depuis ~$(( n * 5 )) min. Un arrêt/redémarrage ne pourra pas être traité proprement et finirait par un arrêt brutal (sans sauvegarde finale). Le backup horaire reste le point de restauration."
+    fi
 }
 
 # Returns: 0=server update available, 1=up to date or error
