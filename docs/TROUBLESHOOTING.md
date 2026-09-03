@@ -135,6 +135,33 @@ journalctl --user -u zomboid.service --since "<stop>" --until "<sigkill>" \
 Cross-check the black box (`logs/zomboid/monitoring.csv`): a real save burns CPU
 and logs; a dead console shows an idle process writing nothing.
 
+### Third case: the server never finished booting
+
+Before concluding "the console died", check the **frame counter** `f:` that
+prefixes every game log line. It stays at `f:0` for the whole startup and only
+reaches `f:1` when the game loop actually begins:
+
+```bash
+# Did this session ever reach its first frame?
+journalctl --user -u zomboid.service --since "<Started>" | grep -m1 'f:1 st:'
+```
+
+No `f:1` means the game loop never started — the server was still loading, and a
+`quit` sent then cannot be executed no matter how long you wait. The startup
+phase that immediately precedes `f:1` is a burst of
+`SpriteConfig.initObjectInfo` lines; if the session has none, it never got that
+far. This is what actually happened on 2026-09-02
+(see [INCIDENTS.md](INCIDENTS.md#2026-09-02--a-stop-that-could-not-be-executed)).
+
+**Do not add a boot-duration timer for this.** Healthy boots on this machine
+range from **79 s to 44 min** — the long ones follow a SteamCMD update, and they
+are indistinguishable from a hung one by duration alone. What *does* separate
+them is the console: across a healthy 44-minute boot the game acknowledged
+**every one** of `pz-modcheck`'s nine probes, while the hung boot answered once
+and then went silent. Console silence, not elapsed time, is the signal — and it
+is already covered by the alert described below, which is not gated on the
+server being ready.
+
 ### Catching it before you need the stop
 
 `pz-modcheck` writes a command into the FIFO every 5 minutes and waits for the
