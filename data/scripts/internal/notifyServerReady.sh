@@ -44,9 +44,15 @@ start_time=$(date +%s)
 # pipeline. Vérifié le 18/08 sur le journal réel — mettre `grep -qFm1` en bout de
 # pipeline ne suffit PAS : journalctl -f meurt quand même en SIGPIPE, pipefail
 # remonte 141 et le test reste faux alors que le marqueur a bien été vu.
+# On attend la PREMIÈRE FRAME (`f:1`), pas $SERVER_READY_MARKER : ce dernier est
+# émis à `f:0`, donc avant que la boucle de jeu ne tourne (2 min 22 s d'avance
+# mesurées le 02/09/2026, et il est tombé aussi dans la session du 13:31 dont la
+# boucle n'a jamais démarré — trois joueurs s'y sont connectés). Annoncer « en
+# ligne » sur ce marqueur, c'est inviter les joueurs sur un serveur qui ne tourne
+# pas encore. Voir common.sh pour le détail.
 hits="$( { timeout "$TIMEOUT" journalctl --user -u "${PZ_SERVICE_NAME}" \
             --since "@${start_time}" --no-pager -f 2>/dev/null || true; } \
-          | grep -cFm1 "$SERVER_READY_MARKER" || true )"
+          | grep -cEm1 'f:[1-9][0-9]* st:' || true )"
 
 if (( hits > 0 )); then
     notify "Le serveur Project Zomboid est en ligne !"

@@ -187,7 +187,11 @@ shutdown_server() {
     # crash-loop. On attend la fin du boot courant AVANT préavis, comptage et
     # arrêt. Cas normal (serveur déjà prêt) : retour immédiat.
     if server_is_active && ! wait_for_server_ready; then
-        log "AVERTISSEMENT : fin de boot non signalée (timeout) ; on poursuit l'arrêt (systemd récupérera un boot bloqué)."
+        log "AVERTISSEMENT : la boucle de jeu n'a toujours pas démarré (timeout)."
+        log "  Le serveur charge encore, ou son chargement est bloqué (cas du 02/09/2026)."
+        log "  On poursuit l'arrêt, mais le \`quit\` ne peut pas être exécuté dans cet état :"
+        log "  systemd attendra 120 s (TimeoutStopSec) puis fera un SIGKILL, SANS sauvegarde finale."
+        log "  Le dernier backup horaire reste le point de restauration (\`pzm backup list\`)."
     fi
 
     # Sonde de vivacité de la console, faite UNE fois puis réutilisée pour le
