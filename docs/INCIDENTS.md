@@ -46,11 +46,10 @@ of `TimeoutStopSec`" — was wrong, and acting on it (raising the timeout) would
 have changed nothing.
 
 **What the evidence actually showed.** During the whole 120 s the game emitted
-**zero log lines**, used **13 % CPU**, and had **no players**. A save that slow
-would log and burn CPU. Cross-checking the console marker
-(`command entered via server console`) settled it: the game acknowledged a command
-on every *successful* stop, and **none at all** on the failed one. The `quit` was
-never read.
+**zero log lines** and used **13 % CPU**. A save that slow would log and burn CPU.
+Cross-checking the console marker (`command entered via server console`) settled
+it: the game acknowledged a command on every *successful* stop, and **none at
+all** on the failed one. The `quit` was never read.
 
 It had been broken for a while. Between that session's boot and the failed stop,
 the console acknowledged exactly **one** command — at 13:33 — while `pz-modcheck`
@@ -80,5 +79,45 @@ The verdict logic itself is not wrong — a main thread that is *not* runnable a
 burns ~1 % CPU is what a world save looks like, and SIGKILLing on that would be
 reckless. It just must not be silent about it.
 
-**Still unexplained**: *why* the console reader stopped consuming the FIFO. The
-evidence was deleted. The next occurrence will keep its dump.
+**Resolved (2026-09-03): the server had never finished booting.** The question
+left open above — why the console reader stopped consuming the FIFO — was the
+wrong question. Every log line of that session, from the 13:31:33 boot to the
+SIGKILL, is prefixed `f:0`: the frame counter never reached 1, so the game loop
+**never started**. The session was still in `GameServer.main`'s startup path
+after fourteen minutes; its last main-thread trace is at `GameServer.java:876`
+(`LuaManager.refreshAnimSets`, on a mod animset XML that does not exist), and the
+`SpriteConfig.initObjectInfo` burst that immediately precedes `f:1` in every
+healthy boot never appears — 0 such lines, against 30 in the boot that replaced
+it five minutes later. The only activity after 13:33 came from the network thread
+accepting Steam connections, which is why the server still looked alive.
+
+So the console did not mysteriously die mid-session: it was answering from a
+server that was still loading, and it stopped once loading wedged. A `quit` sent
+to a booting B42 server cannot be executed — the same rule as
+[never double-issuing a stop](USAGE.md#never-double-issue-a-stop-or-restart),
+reached from the other direction.
+
+**Duration is not the discriminator; the console is.** Healthy boots here run
+from 79 s to 44 minutes (the long ones follow a SteamCMD update), so no boot
+timer can separate a slow boot from a wedged one. The console can: across the
+healthy 44-minute boot of 2026-08-30 the game acknowledged **all nine** of
+`pz-modcheck`'s probes, while this session answered one and then nothing. The
+console-silence alert shipped with this incident is therefore the right detector
+and needs no companion boot watchdog — it is not gated on the server being
+ready, and on 2026-09-02 it would have fired at 13:43:55, ninety seconds before
+the stop was requested.
+
+**What the retained dumps say about the *other* failure mode.** The dump-deletion
+fix was still worth making: seven captures that survived from August now document
+what a genuine main-loop stall looks like, and it is not this. Both confirmed
+stalls (2026-08-11 20:40, 2026-08-17 19:52) show `main` **RUNNABLE** and burning
+~80 % of a core in the identical path —
+`RBTrashed.trashHouse` → `IsoWindow.smashWindow` →
+`IsoGridSquare.removeGlassAttachments` — i.e. randomized-building generation on
+chunk load, single-threaded. Stallwatch caught the 08-17 one and restarted the
+server within about a minute, which is the path working as intended. A third
+capture (2026-08-14 12:14) shows `main` inside `IsoMetaGrid.save` → `Zone.save`:
+a genuinely long world save, correctly left non-conclusive. The remaining four
+all show `main` merely *sleeping* at `GameServer.java:959` with the process at
+0 % CPU and a header reading `clients=1` — an idle server, and exactly the false
+positive the player-count fix eliminates.
