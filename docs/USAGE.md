@@ -45,14 +45,27 @@ operation, warnings included. Two reasons this matters:
   (`NullPointerException zombie.iso.IsoMetaGrid.save`, grid = null) and leaves the
   server in a crash-loop. That is the 2026-07-20 incident: a second restart issued
   during the first one's boot.
-- Before acting, the shutdown path waits for the end-of-boot marker
-  (`LuaNet: Initialization [DONE]`) in journald.
+- Before acting, the shutdown path waits until the **game loop is actually
+  running**, which it reads from the frame counter `f:` that prefixes every game
+  log line: `f:0` for the whole startup, `f:1` at the first tick.
 
-That wait **short-circuits once the service has been active longer than 240 s**.
-On a long-uptime server, scanning the whole journal since `ActiveEnterTimestamp`
-(hours of it, ~GB) proved unreliable and made every stop appear to hang silently
-for 300 s. While it genuinely waits, it prints progress, so a stop issued during a
-boot no longer looks frozen.
+Two earlier versions of that wait were wrong, both discovered on 2026-09-02:
+
+- It watched `LuaNet: Initialization [DONE]`, which the game emits **at `f:0`** —
+  2 min 22 s before the first frame on one measured boot, and even in a session
+  whose game loop never started at all. That is precisely the window where a
+  `quit` crashes B42, so the marker could never have guarded it.
+- It **short-circuited once the service had been active longer than 240 s**, on
+  the assumption that anything older than that must be booted. Healthy boots here
+  run from 79 s to 44 min, and the 2026-09-02 stop went out after 829 s to a
+  server that had never ticked. Reading the frame counter with `journalctl -n`
+  costs the same on a four-hour uptime as on a fresh boot (measured: 60 ms), so
+  the shortcut is gone rather than retuned.
+
+While it genuinely waits, it prints progress, so a stop issued during a boot does
+not look frozen. If the game loop still has not started after 300 s, the stop
+proceeds anyway — but it now says plainly that the `quit` cannot be executed in
+that state and that systemd will SIGKILL without a final save.
 
 ## Backups
 

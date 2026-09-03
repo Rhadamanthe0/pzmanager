@@ -277,17 +277,46 @@ die_server_active() {
 Arrête-le puis relance la commande :  pzm server stop 2m --reason \"${context}\""
 }
 
-# Marqueur journald émis à la toute fin du boot PZ (map chargée, serveur prêt).
-# Dernière étape d'init, 1 seule fois par boot ; source unique partagée avec
-# notifyServerReady.sh et wait_for_server_ready. B42 n'imprime plus
+# Marqueur journald de fin d'initialisation Lua. B42 n'imprime plus
 # "*** SERVER STARTED ****" (disparu vers la 42.x de juin 2026).
+#
+# ⚠️ Il est PRÉMATURÉ : il est émis à `f:0`, donc AVANT que la boucle de jeu ne
+# tourne. Mesuré le 02/09/2026 : 2 min 22 s avant la première frame sur le boot
+# de 13:48, et présent dès 13:32:13 dans la session de 13:31 dont la boucle de
+# jeu n'a JAMAIS démarré. Il ne prouve donc pas qu'un `quit` est sûr — c'est
+# exactement la fenêtre où il fait planter B42. Ne pas s'en servir pour décider
+# d'un arrêt : utiliser game_loop_started() ci-dessous.
 readonly SERVER_READY_MARKER="LuaNet: Initialization [DONE]"
+
+# Preuve que la boucle de jeu du boot COURANT tourne : le compteur de frames que
+# le jeu préfixe à chaque ligne de log. Il reste à `f:0` pendant tout le
+# chargement et ne passe à `f:1` qu'au premier tour de boucle. C'est le seul
+# signal qui distingue « chargé » de « en train de charger ».
+#
+# `-n` lit le journal à l'envers : le coût ne dépend pas de l'uptime, ce qui
+# permet de supprimer l'ancien raccourci « actif depuis > 240 s donc forcément
+# booté ». Cette inférence était fausse — le 02/09 l'arrêt est parti après 829 s
+# sur un serveur qui n'avait jamais démarré sa boucle — et elle l'est d'autant
+# plus que les boots sains vont ici de 79 s à 44 min (les longs suivent une mise
+# à jour SteamCMD).
+#
+# Retour : 0 = boucle démarrée, 1 = encore en boot, 2 = indéterminé (aucune ligne
+# horodatée `f:` dans la fenêtre — l'appelant retombe sur le marqueur Lua).
+# grep -c plutôt que grep -q : -q sort à la 1re occurrence et peut SIGPIPE
+# journalctl, ce qui sous `set -o pipefail` fausserait le test.
+game_loop_started() {
+    local since_epoch="$1" lines
+    lines="$(journalctl --user -u "${PZ_SERVICE_NAME}" --since "@${since_epoch}" \
+        -n 400 --no-pager 2>/dev/null | grep -oE 'f:[0-9]+ st:' || true)"
+    [[ -n "$lines" ]] || return 2
+    grep -qE 'f:[1-9][0-9]* st:' <<< "$lines"
+}
 
 # Attend que le serveur ait FINI de booter (map chargée) avant de rendre la main.
 # CRUCIAL : un `quit`/stop envoyé pendant le chargement de la map fait planter
 # B42 (NullPointerException zombie.iso.IsoMetaGrid.save, grid=null) -> crash-loop
 # (incident du 2026-07-20 : un 2e restart lancé pendant le boot du 1er). Tant que
-# le marqueur de fin de boot n'est pas vu, il ne faut jamais arrêter le serveur.
+# la boucle de jeu n'a pas démarré, il ne faut jamais arrêter le serveur.
 # Retour 0 dès que le boot courant est terminé (ou si le serveur n'est pas actif :
 # rien à attendre). Retour 1 sur timeout (actif mais fin de boot jamais signalée)
 # -> l'appelant décide (pz.sh arrête quand même : systemd récupère un boot bloqué
@@ -306,19 +335,6 @@ wait_for_server_ready() {
     # historique (pas d'attente) plutôt que de bloquer ou de fausser la détection.
     (( since_epoch > 0 )) || return 0
 
-    # Robustesse (bug 2026-07-20 : boucle de 300s sur un serveur POURTANT prêt).
-    # Le marqueur ne sert qu'à distinguer un boot EN COURS d'un serveur prêt, ce qui
-    # n'a d'intérêt que dans les premières minutes après un démarrage. Si le service
-    # est actif depuis plus longtemps qu'un boot (BOOT_GRACE), il est FORCÉMENT
-    # booté -> on rend la main sans scanner le journal. Raison : sur un long uptime,
-    # scanner tout le journal depuis ActiveEnterTimestamp (des heures, des dizaines de
-    # milliers de lignes, ~Go) est lourd et s'est révélé non fiable sous pression
-    # mémoire (journalctl renvoyait vide -> marqueur jamais vu -> boucle 300s muette,
-    # aucun message envoyé). On ne garde le scan (fenêtre alors petite) que pendant la
-    # fenêtre de boot, seul moment où un `quit` prématuré fait planter B42.
-    local BOOT_GRACE=240
-    (( $(date +%s) - since_epoch > BOOT_GRACE )) && return 0
-
     # Feedback : le chemin rapide (marqueur déjà présent) reste MUET. On n'affiche
     # quelque chose que si on doit réellement patienter, pour qu'un stop/restart
     # lancé pendant un boot n'ait plus l'air gelé (aucun message n'est envoyé aux
@@ -333,12 +349,29 @@ wait_for_server_ready() {
         # SIGPIPE) ; `|| true` absorbe le retour 1 quand il n'y a aucune occurrence.
         # NB : la VRAIE cause du blocage 300s du 2026-07-20 était le scan géant du
         # journal sur long uptime (corrigé par BOOT_GRACE ci-dessus), pas ce point.
-        local hits
-        hits="$(journalctl --user -u "${PZ_SERVICE_NAME}" --since "@${since_epoch}" \
-            --no-pager 2>/dev/null | grep -cF "$SERVER_READY_MARKER" || true)"
-        if (( hits > 0 )); then
-            $announced && echo "Boot du serveur terminé — poursuite de l'opération."
+        # Signal primaire : la boucle de jeu tourne-t-elle ? Coût indépendant de
+        # l'uptime, donc utilisable aussi bien sur un serveur qui vient de démarrer
+        # que sur un qui tourne depuis des jours.
+        local probe=0
+        game_loop_started "$since_epoch" || probe=$?
+        if (( probe == 0 )); then
+            $announced && echo "Boucle de jeu démarrée — poursuite de l'opération."
             return 0
+        fi
+
+        # probe == 2 : aucune ligne `f:` dans la fenêtre (log inhabituellement
+        # muet). On retombe alors sur le marqueur Lua, prématuré mais meilleur que
+        # rien. Sur probe == 1 (f:0 vu) on sait que le boot est EN COURS : le
+        # marqueur, qui tombe avant la première frame, ne doit surtout pas
+        # court-circuiter l'attente.
+        if (( probe == 2 )); then
+            local hits
+            hits="$(journalctl --user -u "${PZ_SERVICE_NAME}" --since "@${since_epoch}" \
+                -n 2000 --no-pager 2>/dev/null | grep -cF "$SERVER_READY_MARKER" || true)"
+            if (( hits > 0 )); then
+                $announced && echo "Boot du serveur terminé — poursuite de l'opération."
+                return 0
+            fi
         fi
         if ! $announced; then
             echo "Le serveur est encore en train de booter (chargement de la map) ;"
