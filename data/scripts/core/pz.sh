@@ -79,6 +79,29 @@ acquire_serverctl_lock_or_die() {
         || die "Un arrêt/redémarrage est déjà en cours. Attends qu'il se termine (le serveur doit être « en ligne » avant toute nouvelle action)."
 }
 
+# La console a-t-elle CONSOMMÉ la dernière commande envoyée ?
+#
+# Le jeu émet « command entered via server console » depuis le thread console,
+# indépendamment de la boucle principale. D'où deux pannes très différentes qui
+# donnaient jusqu'ici le même message « console muette » :
+#   - pas d'écho  -> la console ne lit plus le FIFO (vraie console morte) ;
+#   - écho mais pas de résultat -> la console lit, mais la BOUCLE DE JEU est
+#     gelée et n'exécute jamais la commande.
+# Le 03/09/2026 à 19:08 c'était le second cas : le `quit` a bien été accusé
+# réception, la frame était figée à f:88543 depuis 18:59. Le pronostic (arrêt
+# brutal) était bon, le diagnostic affiché était faux.
+console_echoed_recently() {
+    local since="${1:-60}"
+    journalctl --user -u "${PZ_SERVICE_NAME}" --since "-${since}s" --no-pager 2>/dev/null \
+        | grep -cF "command entered via server console" | grep -qvx 0
+}
+
+# Dernière frame connue du log de jeu (vide si aucune).
+last_game_frame() {
+    journalctl --user -u "${PZ_SERVICE_NAME}" -n 400 --no-pager 2>/dev/null \
+        | grep -oE 'f:[0-9]+ st:' | tail -1 | sed -E 's/^f:([0-9]+) st:$/\1/'
+}
+
 # Nombre de joueurs actuellement connectés.
 #   "0"     = serveur arrêté, ou serveur qui répond « 0 joueur »
 #   ""      = INDÉTERMINÉ (la console n'a rien renvoyé d'exploitable)
@@ -213,12 +236,23 @@ shutdown_server() {
     if server_is_active; then
         players="$(count_connected_players)"
         if [[ -z "$players" ]]; then
-            log "AVERTISSEMENT : la console du serveur ne répond pas."
+            # Même pronostic dans les deux cas (le quit ne sera pas exécuté), mais
+            # pas le même diagnostic : le dire exactement évite de chercher au
+            # mauvais endroit ensuite.
+            local frame; frame="$(last_game_frame)"
+            if console_echoed_recently 60; then
+                log "AVERTISSEMENT : la console répond, mais la BOUCLE DE JEU est gelée."
+                log "  La commande a bien été accusée réception ; c'est son exécution"
+                log "  qui n'arrive jamais${frame:+ (compteur de frames figé à f:${frame})}."
+                send_discord "⚠️ Boucle de jeu gelée avant l'arrêt${frame:+ (frame figée à f:${frame})} — la console répond mais n'exécute plus rien ; le redémarrage risque de se terminer par un arrêt brutal (sans sauvegarde finale)."
+            else
+                log "AVERTISSEMENT : la console du serveur ne répond pas (aucun accusé de réception)."
+                send_discord "⚠️ Console du serveur muette avant l'arrêt — le redémarrage risque de se terminer par un arrêt brutal (sans sauvegarde finale)."
+            fi
             log "  Le 'quit' d'arrêt passe par ce même canal : il a de fortes chances"
             log "  de ne pas être traité, auquel cas systemd tuera le serveur au bout"
             log "  de 120 s (arrêt brutal, sans sauvegarde finale)."
             log "  Le dernier backup horaire reste le point de restauration."
-            send_discord "⚠️ Console du serveur muette avant l'arrêt — le redémarrage risque de se terminer par un arrêt brutal (sans sauvegarde finale)."
         fi
     fi
 

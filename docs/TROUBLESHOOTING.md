@@ -162,6 +162,23 @@ and then went silent. Console silence, not elapsed time, is the signal — and i
 is already covered by the alert described below, which is not gated on the
 server being ready.
 
+### A mute console and a frozen game loop are not the same failure
+
+The game echoes `command entered via server console` from its **console thread**,
+which keeps running while the main loop is stuck. So a probe that gets no answer
+has two very different causes, and the echo tells them apart:
+
+| Echo present? | Result returned? | Diagnosis |
+|---|---|---|
+| no | no | the console is not reading the FIFO — a genuinely dead console |
+| **yes** | no | the console reads fine; the **game loop** is frozen and never executes the command |
+
+Both end the same way — the `quit` is not executed and systemd SIGKILLs at 120 s —
+but they point at different things to investigate. On 2026-09-03 at 19:08 it was
+the second case: the `quit` *was* acknowledged, while the frame counter had been
+pinned at `f:88543` since 18:59. `pzm server stop|restart` now names whichever it
+actually is, and prints the frozen frame number.
+
 ### Catching it before you need the stop
 
 `pz-modcheck` writes a command into the FIFO every 5 minutes and waits for the

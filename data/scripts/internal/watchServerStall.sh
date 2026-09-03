@@ -18,9 +18,9 @@
 # seule preuve exploitable est un THREAD DUMP pris PENDANT le gel. C'est le rôle
 # de ce script — il ne répare rien, il capture.
 #
-# Détection : somme des compteurs `packet_send_bytes_count` de l'exporteur
-# Prometheus interne (incrémentés par la main loop). Inchangée sur STALL_SAMPLES
-# relevés consécutifs alors que des clients sont connectés = gel.
+# Détection : compteur de frames `f:` du log de jeu — la seule grandeur qui
+# reflète la boucle principale. Inchangé sur STALL_SAMPLES relevés consécutifs,
+# alors que des clients sont connectés ET que le jeu continue d'écrire = gel.
 # Capture : 3 x `jcmd Thread.print` + `top -H` (pour identifier le thread qui
 # brûle le cœur via son TID -> nid hexa dans le dump) dans
 # logs/zomboid/stall_<ts>.txt, puis alerte Discord.
@@ -79,57 +79,83 @@ fi
 pid="$(pgrep -f 'ProjectZomboid64' | head -1 || true)"
 [[ -n "$pid" ]] || exit 0
 
-# Deux valeurs en UN SEUL passage awk sur le flux curl :
-#   - la somme des paquets envoyés (avance à chaque tick tant que la main loop
-#     tourne) : c'est le signal de progression ;
-#   - le nombre de joueurs RÉELLEMENT connectés.
+# SIGNAL DE PROGRESSION : le COMPTEUR DE FRAMES du log de jeu, pas les octets
+# réseau.
 #
-# $NF et non $2 : la valeur Prometheus est le DERNIER champ, et les pseudos
-# contiennent des espaces (« Allan Faroweit », « Jeff Pessos »), ce qui décalait
-# les champs.
+# Le détecteur suivait `packet_send_bytes_count`. Le 03/09/2026 il a laissé
+# passer un gel de 8 minutes avec 11 joueurs : la boucle principale était figée à
+# `f:88543` depuis 18:59, mais les paquets continuaient de partir à ~450/s
+# (UdpEngine et les threads réseau sont vivants pendant un gel de la main loop).
+# Le trafic réseau ne prouve donc RIEN sur l'état de la boucle de jeu. Le seul
+# signal qui la reflète est le compteur de frames que le jeu préfixe à chacune de
+# ses lignes — c'est d'ailleurs lui qui a servi à diagnostiquer les deux incidents.
 #
+# Lu par `journalctl -n` : lecture à l'envers, donc coût indépendant de l'uptime
+# (~60 ms mesuré sur 4 h) et surtout indépendant de l'exporteur Prometheus, qui
+# peut lui-même être affecté par le gel.
+#
+# On relève DEUX choses en un passage : la dernière frame, et l'HORODATAGE de la
+# ligne qui la porte.
+#
+# La frame ne bouge que quand le jeu écrit. Entre deux relevés rapprochés il peut
+# n'avoir rien écrit du tout : la frame paraît alors figée sans qu'il y ait de gel.
+# Le discriminant exact n'est donc pas « le log est-il actif ? » mais « le jeu
+# a-t-il écrit une ligne NOUVELLE depuis le relevé précédent, en gardant la même
+# frame ? ». D'où l'horodatage, comparé d'un passage à l'autre.
+read -r frame stamp < <(
+    journalctl --user -u "${PZ_SERVICE_NAME:-zomboid.service}" -n 400 --no-pager -o short-unix 2>/dev/null |
+    awk 'match($0, /f:[0-9]+ st:/) {
+             t = $1; sub(/\..*$/, "", t)
+             f = substr($0, RSTART + 2, RLENGTH - 6)
+             last_f = f; last_t = t
+         }
+         END { if (last_f != "") printf "%s %s\n", last_f, last_t }'
+) || true   # read renvoie 1 sur une dernière ligne sans \n — ne pas tuer le script
+[[ -n "${frame:-}" && -n "${stamp:-}" ]] || exit 0   # aucune ligne `f:` -> indéterminé
+
 # Le compte de joueurs vient de la jauge `game{parameter="players"}`, PAS d'un
-# décompte des étiquettes client="..." comme avant. C'était le bug central de ce
+# décompte des étiquettes client="..." comme avant. C'était un bug central de ce
 # détecteur : une série Prometheus n'est jamais retirée quand un client se
 # déconnecte, donc `client=` comptait tous les joueurs vus depuis le démarrage de
-# la JVM (35 séries pour 29 connectés, mesuré le 02/09). Sur un serveur qui se
-# vide, le compteur de paquets s'arrête donc LÉGITIMEMENT alors que le détecteur
-# croit encore avoir des joueurs -> il criait au gel à chaque fin de cooldown.
-# Bilan avant correction : 294 détections en 30 jours, dont 292 écartées avec le
-# même message. Le garde-fou « aucun joueur, on ne conclut pas » ci-dessous ne se
-# déclenchait plus jamais après la première connexion.
-read -r sent clients < <(
-    curl -s --max-time 5 "http://127.0.0.1:${PORT}/metrics" 2>/dev/null |
-    awk '/^packet_send_bytes_count/            { s += $NF }
-         /^game\{parameter="players"\}/        { p = $NF }
-         END { printf "%.0f %d\n", s + 0, p + 0 }'
-) || true   # read renvoie 1 sur une dernière ligne sans \n — ne pas tuer le script
-[[ -n "${sent:-}" ]] || exit 0   # exporteur muet (boot en cours) -> on ne conclut rien
+# la JVM (35 séries pour 29 connectés, mesuré le 02/09). Le garde-fou « aucun
+# joueur, on ne conclut pas » ne se déclenchait donc plus jamais après la première
+# connexion. Bilan avant correction : 294 détections en 30 jours, dont 292
+# écartées avec le même message.
+#
+# `-n` non vide mais valeur vide = exporteur injoignable : on NE conclut PAS
+# « 0 joueur » (l'ancien awk imprimait 0 dans ce cas, ce qui faisait sortir le
+# script en silence par le garde-fou ci-dessous).
+metrics="$(curl -s --max-time 5 "http://127.0.0.1:${PORT}/metrics" 2>/dev/null || true)"
+[[ -n "$metrics" ]] || exit 0
+clients="$(awk '/^game\{parameter="players"\}/ { p = $NF } END { printf "%d\n", p + 0 }' <<< "$metrics")"
 
 # Aucun joueur : la main loop tourne au ralenti, les compteurs peuvent stagner
 # légitimement -> on ne peut pas conclure, on repart de zéro.
 if (( clients == 0 )); then
-    printf '%s %s 0\n' "$pid" "$sent" > "$STATE_FILE"
+    printf '%s %s %s 0\n' "$pid" "$frame" "$stamp" > "$STATE_FILE"
     exit 0
 fi
 
-prev_pid=""; prev_sent=""; strikes=0
+prev_pid=""; prev_frame=""; prev_stamp=""; strikes=0
 if [[ -f "$STATE_FILE" ]]; then
-    read -r prev_pid prev_sent strikes < "$STATE_FILE" || true
+    read -r prev_pid prev_frame prev_stamp strikes < "$STATE_FILE" || true
 fi
 
 # Redémarrage entre deux passages -> compteurs remis à zéro, on réinitialise.
 if [[ "$prev_pid" != "$pid" ]]; then
-    printf '%s %s 0\n' "$pid" "$sent" > "$STATE_FILE"
+    printf '%s %s %s 0\n' "$pid" "$frame" "$stamp" > "$STATE_FILE"
     exit 0
 fi
 
-if [[ "$sent" == "$prev_sent" ]]; then
+# Gel = même frame ALORS QUE le jeu a écrit une ligne plus récente qu'au relevé
+# précédent. Si l'horodatage n'a pas bougé non plus, le jeu n'a simplement rien
+# écrit : indéterminé, on ne compte pas.
+if [[ "$frame" == "$prev_frame" ]] && [[ "$stamp" != "$prev_stamp" ]]; then
     strikes=$(( strikes + 1 ))
 else
     strikes=0
 fi
-printf '%s %s %s\n' "$pid" "$sent" "$strikes" > "$STATE_FILE"
+printf '%s %s %s %s\n' "$pid" "$frame" "$stamp" "$strikes" > "$STATE_FILE"
 
 (( strikes >= STALL_SAMPLES )) || exit 0
 
@@ -143,10 +169,10 @@ fi
 
 ts="$(date +%Y-%m-%d_%Hh%Mm%Ss)"
 out="${LOG_ZOMBOID_DIR}/stall_${ts}.txt"
-log "stallwatch: GEL DÉTECTÉ (pid ${pid}, ${clients} client(s), compteur figé à ${sent}) — capture -> ${out}"
+log "stallwatch: GEL DÉTECTÉ (pid ${pid}, ${clients} client(s), frame figée à f:${frame}) — capture -> ${out}"
 
 {
-    echo "=== stallwatch ${ts} — pid ${pid}, clients=${clients}, packet_send_bytes_count figé à ${sent} ==="
+    echo "=== stallwatch ${ts} — pid ${pid}, clients=${clients}, compteur de frames figé à f:${frame} ==="
     echo
 } > "$out"
 
@@ -205,7 +231,7 @@ fi
 # n'en ont pas) : un rollback GraalVM rend donc l'arbitrage impossible.
 if (( ${#main_lines[@]} == 0 )); then
     log "stallwatch: ARBITRAGE IMPOSSIBLE (aucune ligne \"main\" dans le dump — jcmd absent ?). Capture conservée dans ${out} ; aucun redémarrage déclenché. Vérifier PZ_GRAALVM_HOME."
-    printf '%s %s 0\n' "$pid" "$sent" > "$STATE_FILE"
+    printf '%s %s %s 0\n' "$pid" "$frame" "$stamp" > "$STATE_FILE"
     date -d "+${FALSE_POSITIVE_COOLDOWN} seconds" +%s > "$COOLDOWN_FILE"
     exit 0
 fi
@@ -228,7 +254,7 @@ if (( runnable_count < ${#main_lines[@]} )) || (( burn_pct < BURN_MIN_PCT )); th
     # Réarmer : sans ça, `strikes` continuait de grimper et le script répondait
     # « dump déjà pris » sans plus rien vérifier — 40 min d'aveuglement le 14/08
     # à 04h12. Le cooldown évite de re-dumper chaque minute entre-temps.
-    printf '%s %s 0\n' "$pid" "$sent" > "$STATE_FILE"
+    printf '%s %s %s 0\n' "$pid" "$frame" "$stamp" > "$STATE_FILE"
     date -d "+${FALSE_POSITIVE_COOLDOWN} seconds" +%s > "$COOLDOWN_FILE"
     exit 0
 fi
