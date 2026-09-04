@@ -280,12 +280,17 @@ Arrête-le puis relance la commande :  pzm server stop 2m --reason \"${context}\
 # Marqueur journald de fin d'initialisation Lua. B42 n'imprime plus
 # "*** SERVER STARTED ****" (disparu vers la 42.x de juin 2026).
 #
-# ⚠️ Il est PRÉMATURÉ : il est émis à `f:0`, donc AVANT que la boucle de jeu ne
-# tourne. Mesuré le 02/09/2026 : 2 min 22 s avant la première frame sur le boot
-# de 13:48, et présent dès 13:32:13 dans la session de 13:31 dont la boucle de
-# jeu n'a JAMAIS démarré. Il ne prouve donc pas qu'un `quit` est sûr — c'est
-# exactement la fenêtre où il fait planter B42. Ne pas s'en servir pour décider
-# d'un arrêt : utiliser game_loop_started() ci-dessous.
+# ⚠️ Il est émis à `f:0`, donc AVANT le premier tour de boucle : il ne prouve pas
+# à lui seul qu'un `quit` est sûr. Il était présent dès 13:32:13 le 02/09/2026
+# dans la session de 13:31 dont la boucle n'a jamais démarré, 3 joueurs connectés
+# et 0 frame en 15 min — c'est exactement la fenêtre où le `quit` fait planter
+# B42. Ne pas s'en servir seul : utiliser game_loop_started() ci-dessous.
+#
+# En revanche l'écart marqueur -> première frame (2 min 22 s mesurées sur le boot
+# du 02/09 à 13:48) n'est PAS du temps de chargement : le compteur de frames
+# n'avance qu'une fois des joueurs connectés. Sur un serveur vide le marqueur est
+# le seul signal de fin de boot disponible, d'où son usage dans
+# wait_for_server_ready() quand la jauge `players` vaut 0.
 readonly SERVER_READY_MARKER="LuaNet: Initialization [DONE]"
 
 # Preuve que la boucle de jeu du boot COURANT tourne : le compteur de frames que
@@ -310,6 +315,33 @@ game_loop_started() {
         -n 400 --no-pager 2>/dev/null | grep -oE 'f:[0-9]+ st:' || true)"
     [[ -n "$lines" ]] || return 2
     grep -qE 'f:[1-9][0-9]* st:' <<< "$lines"
+}
+
+# Nombre de joueurs connectés d'après l'exporteur Prometheus interne de PZ.
+# Affiche un entier, ou RIEN (retour 1) si le port n'est pas configuré ou si
+# l'exporteur ne répond pas : l'appelant DOIT distinguer « 0 joueur » de « je ne
+# sais pas ». La jauge `game{parameter="players"}` est la seule fiable — les
+# séries étiquetées client="..." ne sont jamais retirées à la déconnexion.
+prometheus_player_count() {
+    local port="${PZ_PROMETHEUS_PORT:-}" metrics
+    [[ -n "$port" ]] || return 1
+    metrics="$(curl -s --max-time 3 "http://127.0.0.1:${port}/metrics" 2>/dev/null || true)"
+    [[ -n "$metrics" ]] || return 1
+    awk '/^game\{parameter="players"\}/ { p = $NF; seen = 1 }
+         END { if (!seen) exit 1; printf "%d\n", p + 0 }' <<< "$metrics"
+}
+
+# Le marqueur de fin d'init Lua est-il présent depuis l'instant donné (epoch) ?
+# Filtrage par journald (--grep), pas par un `-n N | grep` : le marqueur tombe au
+# DÉBUT du boot et sortait donc du tampon des N dernières lignes dès que le
+# serveur avait un peu écrit. `--grep` est une regex -> on cherche la partie sans
+# crochets ([DONE] serait une classe de caractères) puis on confirme en littéral.
+marker_seen_since() {
+    local since_epoch="$1" hits
+    hits="$(journalctl --user -u "${PZ_SERVICE_NAME}" --since "@${since_epoch}" \
+        --grep 'LuaNet: Initialization' -n 1 --no-pager 2>/dev/null \
+        | grep -cF "$SERVER_READY_MARKER" || true)"
+    (( hits > 0 ))
 }
 
 # Attend que le serveur ait FINI de booter (map chargée) avant de rendre la main.
@@ -359,17 +391,38 @@ wait_for_server_ready() {
             return 0
         fi
 
-        # probe == 2 : aucune ligne `f:` dans la fenêtre (log inhabituellement
-        # muet). On retombe alors sur le marqueur Lua, prématuré mais meilleur que
-        # rien. Sur probe == 1 (f:0 vu) on sait que le boot est EN COURS : le
-        # marqueur, qui tombe avant la première frame, ne doit surtout pas
-        # court-circuiter l'attente.
-        if (( probe == 2 )); then
-            local hits
-            hits="$(journalctl --user -u "${PZ_SERVICE_NAME}" --since "@${since_epoch}" \
-                -n 2000 --no-pager 2>/dev/null | grep -cF "$SERVER_READY_MARKER" || true)"
-            if (( hits > 0 )); then
-                $announced && echo "Boot du serveur terminé — poursuite de l'opération."
+        # LE COMPTEUR DE FRAMES N'AVANCE QUE S'IL Y A DES JOUEURS. Sur un serveur
+        # vide il reste à f:0 indéfiniment (mesuré le 04/09/2026 : 4 h et 8 819
+        # lignes à f:0, zéro connexion depuis le boot). Exiger f:1 dans ce cas,
+        # c'est attendre le timeout entier avant CHAQUE stop/restart d'un serveur
+        # vide, puis annoncer à tort un boot bloqué et un SIGKILL sans sauvegarde.
+        #
+        # Le discriminant du 02/09 reste intact : ce jour-là 3 clients étaient
+        # connectés et la frame n'a pas bougé en 15 min. C'est donc le couple
+        # (frame figée à 0, joueurs > 0) qui signe un boot réellement bloqué.
+        #
+        # probe == 2 : aucune ligne `f:` du tout (log muet) -> le marqueur Lua,
+        # prématuré mais meilleur que rien.
+        # probe == 1 : que du f:0 -> le marqueur ne tranche QUE si personne n'est
+        # connecté. Exporteur injoignable = on ne sait pas : on continue
+        # d'attendre (l'appelant arrête quand même après le timeout).
+        local nplayers
+        nplayers="$(prometheus_player_count || true)"
+        if (( probe == 2 )) || [[ "$nplayers" == "0" ]]; then
+            # marker_seen_since : filtrage par journald. L'ancienne forme
+            # `--since @boot -n 2000 | grep` ne trouvait plus rien dès que le
+            # serveur avait écrit plus de 2000 lignes depuis le marqueur — celui-ci
+            # tombe au DÉBUT du boot et `-n` garde les DERNIÈRES lignes (constaté
+            # ici après 4 h à f:0 et 8 819 lignes : le repli ne s'armait jamais).
+            if marker_seen_since "$since_epoch"; then
+                if $announced; then
+                    if [[ "$nplayers" == "0" ]]; then
+                        echo "Boot terminé (serveur vide : le compteur de frames reste à f:0)"
+                        echo "— poursuite de l'opération."
+                    else
+                        echo "Boot du serveur terminé — poursuite de l'opération."
+                    fi
+                fi
                 return 0
             fi
         fi
