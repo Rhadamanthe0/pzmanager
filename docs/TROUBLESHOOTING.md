@@ -153,6 +153,18 @@ phase that immediately precedes `f:1` is a burst of
 far. This is what actually happened on 2026-09-02
 (see [INCIDENTS.md](INCIDENTS.md#2026-09-02--a-stop-that-could-not-be-executed)).
 
+**Check the player count before concluding.** The frame counter only moves while
+someone is connected: an empty server sits at `f:0` for as long as it stays empty
+(measured 2026-09-04: 4 h, 8 819 lines, all `f:0`, on a perfectly healthy
+server). So `f:0` alone proves nothing —
+
+```bash
+curl -s "http://127.0.0.1:${PZ_PROMETHEUS_PORT}/metrics" | grep '^game{parameter="players"}'
+```
+
+`f:0` **with players connected** is a stuck boot. `f:0` **with zero players** is
+an idle server, and the end-of-boot evidence is the Lua marker instead.
+
 **Do not add a boot-duration timer for this.** Healthy boots on this machine
 range from **79 s to 44 min** — the long ones follow a SteamCMD update, and they
 are indistinguishable from a hung one by duration alone. What *does* separate

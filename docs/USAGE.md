@@ -51,16 +51,32 @@ operation, warnings included. Two reasons this matters:
 
 Two earlier versions of that wait were wrong, both discovered on 2026-09-02:
 
-- It watched `LuaNet: Initialization [DONE]`, which the game emits **at `f:0`** —
-  2 min 22 s before the first frame on one measured boot, and even in a session
-  whose game loop never started at all. That is precisely the window where a
-  `quit` crashes B42, so the marker could never have guarded it.
+- It watched `LuaNet: Initialization [DONE]`, which the game emits **at `f:0`**,
+  before the first tick — it was present in a session whose game loop never
+  started at all, with three players connected. That is precisely the window
+  where a `quit` crashes B42, so the marker alone could never have guarded it.
 - It **short-circuited once the service had been active longer than 240 s**, on
   the assumption that anything older than that must be booted. Healthy boots here
   run from 79 s to 44 min, and the 2026-09-02 stop went out after 829 s to a
   server that had never ticked. Reading the frame counter with `journalctl -n`
   costs the same on a four-hour uptime as on a fresh boot (measured: 60 ms), so
   the shortcut is gone rather than retuned.
+
+**The frame counter only advances while players are connected.** On an empty
+server it stays at `f:0` indefinitely — measured on 2026-09-04: four hours and
+8 819 log lines, all at `f:0`, with no connection since boot. Waiting for `f:1`
+there means waiting out the whole timeout before every stop or restart, then
+announcing a stuck boot that is not stuck. So when the `players` gauge of the
+Prometheus exporter reads exactly **0**, the wait falls back to the Lua marker.
+The 2026-09-02 guard is untouched: that day three clients were connected and the
+frame never moved in 15 minutes, so it is the pair *(frame stuck at 0, players >
+0)* that means a genuinely stuck boot. If the exporter does not answer, the
+count is unknown and the wait continues as before.
+
+The same rule governs the "server is online" announcement: it waits for `f:1`,
+and falls back to the marker only if no one is connected once the wait expires.
+Without that fallback the announcement was never sent on an empty server —
+which kept the server empty, which kept the frame at `f:0`.
 
 While it genuinely waits, it prints progress, so a stop issued during a boot does
 not look frozen. If the game loop still has not started after 300 s, the stop
