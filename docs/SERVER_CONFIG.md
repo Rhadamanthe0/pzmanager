@@ -8,6 +8,7 @@ Configuration of game server parameters.
 - [pzmanager Specifics](#pzmanager-specifics)
   - [Configuration Files](#configuration-files)
   - [Apply Changes](#apply-changes)
+  - [Options Present in Both Files](#options-present-in-both-files)
   - [Important Parameters](#important-parameters)
   - [Whitelist Management](#whitelist-management)
   - [Mods](#mods)
@@ -38,6 +39,27 @@ Main files:
 # After modification, restart with player warning
 pzm server restart 5m
 ```
+
+### Options Present in Both Files
+
+One option name exists in **both** `servertest.ini` (as a server option) and
+`servertest_SandboxVars.lua` (as a sandbox option): `BloodSplatLifespanDays`.
+
+**The sandbox value wins — the `.ini` copy is dead config.** The removal code
+(`IsoObject`, `IsoChunk`) reads `SandboxOptions.bloodSplatLifespanDays`, and
+`ServerOptions` never references `SandboxOptions`, so nothing propagates the
+`.ini` value into the sandbox. The `.ini` entry is a B41 leftover the B42 server
+parses and ignores.
+
+Keep the two values identical anyway, so a future reader is not misled. Do not
+just delete the `.ini` line: the server rewrites `servertest.ini` in full at
+boot and the key would come back at its server-option default (`0` = blood never
+disappears), which reads as an even more misleading value. Custom comments added
+to the `.ini` are wiped by that same rewrite.
+
+Checked on build 42.20.4: this is the only name shared by the two files, every
+key in our `.ini` is a valid server option, and our sandbox file carries every
+vanilla var of its `VERSION` (6).
 
 ### Important Parameters
 
