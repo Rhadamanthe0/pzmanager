@@ -34,7 +34,8 @@ source "${SCRIPT_DIR}/../lib/common.sh"
 source_env
 
 readonly PORT="${PZ_PROMETHEUS_PORT:-}"
-readonly STATE_FILE="/tmp/pzmanager-stallwatch-$(id -un).state"
+readonly RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+readonly STATE_FILE="${RUNTIME_DIR}/pzmanager-stallwatch.state"
 # 1 seul relevé figé suffit à déclencher la CAPTURE : ce n'est pas elle qui
 # tranche, c'est le dump (main RUNNABLE ou non). Exiger 2 relevés ne fiabilisait
 # rien et coûtait ~1 min 30 de gel supplémentaire.
@@ -55,10 +56,18 @@ resolve_jcmd() {
 }
 JCMD="$(resolve_jcmd || true)"
 readonly JCMD
-readonly COOLDOWN_FILE="/tmp/pzmanager-stallwatch-$(id -un).cooldown"
+readonly COOLDOWN_FILE="${RUNTIME_DIR}/pzmanager-stallwatch.cooldown"
 # Après un faux positif, on se tait ce temps-là : inutile de re-dumper (30 s de
 # jcmd) chaque minute tant que la cause bénigne dure.
 readonly FALSE_POSITIVE_COOLDOWN=600
+
+# Les fichiers d'état ne doivent jamais être créés dans /tmp : un autre compte
+# local pourrait les prépositionner. XDG_RUNTIME_DIR appartient au compte du
+# service et doit, conformément à sa spécification, être privé (mode 0700).
+[[ -d "$RUNTIME_DIR" && ! -L "$RUNTIME_DIR" ]] || exit 0
+read -r runtime_uid runtime_mode < <(stat -c '%u %a' "$RUNTIME_DIR" 2>/dev/null) || exit 0
+[[ "$runtime_uid" == "$(id -u)" && "$runtime_mode" == "700" ]] || exit 0
+umask 077
 
 # Les captures sont désormais conservées (voir le verdict NON CONCLUANT plus
 # bas) : on les fait vieillir comme les autres journaux plutôt que de les
@@ -70,7 +79,9 @@ server_is_active || { rm -f "$STATE_FILE" "$COOLDOWN_FILE"; exit 0; }
 [[ -n "$PORT" ]] || exit 0
 
 if [[ -f "$COOLDOWN_FILE" ]]; then
-    if (( $(date +%s) < $(cat "$COOLDOWN_FILE" 2>/dev/null || echo 0) )); then
+    cooldown_until="$(cat "$COOLDOWN_FILE" 2>/dev/null || true)"
+    [[ "$cooldown_until" =~ ^[0-9]+$ ]] || cooldown_until=0
+    if (( $(date +%s) < cooldown_until )); then
         exit 0
     fi
     rm -f "$COOLDOWN_FILE"
@@ -139,6 +150,10 @@ fi
 prev_pid=""; prev_frame=""; prev_stamp=""; strikes=0
 if [[ -f "$STATE_FILE" ]]; then
     read -r prev_pid prev_frame prev_stamp strikes < "$STATE_FILE" || true
+    if [[ ! "$prev_pid" =~ ^[0-9]+$ || ! "$prev_frame" =~ ^[0-9]+$ ||
+          ! "$prev_stamp" =~ ^[0-9]+$ || ! "$strikes" =~ ^[0-9]+$ ]]; then
+        prev_pid=""; prev_frame=""; prev_stamp=""; strikes=0
+    fi
 fi
 
 # Redémarrage entre deux passages -> compteurs remis à zéro, on réinitialise.
