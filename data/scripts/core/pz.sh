@@ -72,13 +72,6 @@ send_discord() {
 # démarrage). try_lock (common.sh) alloue le descripteur : le numéro codé en dur
 # valait aussi 201 dans dataBackup.sh, que ce script APPELLE — ça marchait, mais
 # par chance, et la lecture laissait croire à un conflit.
-readonly SERVERCTL_LOCK_FILE="/tmp/pzmanager-serverctl-$(id -un).lock"
-SERVERCTL_LOCK_FD=""
-acquire_serverctl_lock_or_die() {
-    try_lock "$SERVERCTL_LOCK_FILE" SERVERCTL_LOCK_FD \
-        || die "Un arrêt/redémarrage est déjà en cours. Attends qu'il se termine (le serveur doit être « en ligne » avant toute nouvelle action)."
-}
-
 # La console a-t-elle CONSOMMÉ la dernière commande envoyée ?
 #
 # Le jeu émet « command entered via server console » depuis le thread console,
@@ -287,6 +280,7 @@ shutdown_server() {
 }
 
 do_start() {
+    acquire_serverctl_lock_or_die
     echo "Démarrage du service..."
     systemctl --user start "${PZ_SERVICE_NAME}"
     # Only send message if started with reason but NOT a maintenance
