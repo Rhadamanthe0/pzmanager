@@ -32,7 +32,7 @@ log() { printf '%s\\n' "$*"; }
         commands.mkdir()
         for name, body in {
             'pgrep': 'echo 123',
-            'journalctl': "echo '2000.000 f:42 st:ready'",
+            'journalctl': 'echo "2000.000 f:${TEST_FRAME:-42} st:ready"' ,
             'curl': "echo 'game{parameter=\"players\"} 1'",
         }.items():
             command = commands / name
@@ -72,6 +72,14 @@ log() { printf '%s\\n' "$*"; }
         state.unlink()
         self.assertEqual(self.run_watch().returncode, 0)
         self.assertEqual(state.stat().st_mode & 0o777, 0o600)
+
+    def test_startup_frame_zero_never_counts_as_a_stall(self):
+        self.env['TEST_FRAME'] = '0'
+        state = self.state_dir / 'stallwatch.state'
+        state.write_text('123 0 1999 99\n')
+        result = self.run_watch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(state.read_text(), '123 0 2000 0\n')
 
     def test_nonprivate_runtime_is_refused(self):
         self.runtime.chmod(0o755)
