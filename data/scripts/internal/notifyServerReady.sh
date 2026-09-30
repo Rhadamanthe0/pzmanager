@@ -53,23 +53,6 @@ hits="$( { timeout "$TIMEOUT" journalctl --user -u "${PZ_SERVICE_NAME}" \
             --since "@${start_time}" --no-pager -f 2>/dev/null || true; } \
           | grep -cEm1 'f:[1-9][0-9]* st:' || true )"
 
-# REPLI SERVEUR VIDE. Le compteur de frames n'avance QUE si des joueurs sont
-# connectés : sur un serveur que personne ne rejoint, `f:1` n'arrive jamais et
-# l'annonce n'était donc JAMAIS envoyée. Constaté le 04/09/2026 : boot à 05:07,
-# 4 h à `f:0`, aucune annonce — personne ne pouvait savoir que le serveur était
-# revenu, ce qui garantit qu'aucun joueur ne vient... donc qu'aucune frame ne
-# tourne. Le repli casse cette boucle.
-#
-# Il n'affaiblit pas le garde-fou : on n'y arrive qu'après les $TIMEOUT secondes
-# d'attente de la frame, et on exige que la jauge `players` réponde EXACTEMENT 0.
-# Dans le cas du 13:31 des joueurs s'étaient connectés 25 s après le marqueur :
-# la jauge aurait valu 3, et l'annonce serait restée bloquée, comme voulu.
-if (( hits == 0 )) && marker_seen_since "$start_time" \
-   && [[ "$(prometheus_player_count || true)" == "0" ]]; then
-    log "notifyServerReady: aucune frame (serveur vide) mais boot terminé — annonce sur le marqueur."
-    hits=1
-fi
-
 if (( hits > 0 )); then
     notify "Le serveur Project Zomboid est en ligne !"
 fi

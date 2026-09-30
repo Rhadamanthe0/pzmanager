@@ -162,8 +162,11 @@ server). So `f:0` alone proves nothing —
 curl -s "http://127.0.0.1:${PZ_PROMETHEUS_PORT}/metrics" | grep '^game{parameter="players"}'
 ```
 
-`f:0` **with players connected** is a stuck boot. `f:0` **with zero players** is
-an idle server, and the end-of-boot evidence is the Lua marker instead.
+`f:0` **with players connected** is strong evidence of a stuck boot. With zero
+players it is ambiguous: the server may be idle, but it may also be stuck before
+anyone connects or after players disconnect. The Lua marker does not resolve
+that ambiguity because it is emitted before the first frame, including on a
+known stuck boot.
 
 **Do not add a boot-duration timer for this.** Healthy boots on this machine
 range from **79 s to 44 min** — the long ones follow a SteamCMD update, and they
