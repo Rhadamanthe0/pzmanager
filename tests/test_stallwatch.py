@@ -81,6 +81,24 @@ log() { printf '%s\\n' "$*"; }
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(state.read_text(), '123 0 2000 0\n')
 
+    def test_unproven_readiness_refuses_shutdown(self):
+        # Extract only the function into a scratch shell: no production setup.
+        source = (Path(__file__).resolve().parents[1] /
+                  'data/scripts/core/pz.sh').read_text()
+        function = source.split('shutdown_server() {', 1)[1].split('\n}', 1)[0]
+        harness = ('shutdown_server() {' + function + '\n}\n' +
+                   'try_acquire_maintenance_lock() { :; }\n'
+                   'server_is_active() { return 0; }\n'
+                   'wait_for_server_ready() { return 1; }\n'
+                   'log() { :; }\n'
+                   'systemctl() { echo unexpected-systemctl; }\n'
+                   'shutdown_server stop\n')
+        result = subprocess.run(['bash', '-eu', '-c', harness],
+                                capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertNotIn('unexpected-systemctl', result.stdout)
+        self.assertEqual(result.stderr, '')
+
     def test_nonprivate_runtime_is_refused(self):
         self.runtime.chmod(0o755)
         self.assertNotEqual(self.run_watch().returncode, 0)

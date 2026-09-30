@@ -205,9 +205,9 @@ shutdown_server() {
     if server_is_active && ! wait_for_server_ready; then
         log "AVERTISSEMENT : la boucle de jeu n'a toujours pas démarré (timeout)."
         log "  Le serveur charge encore, ou son chargement est bloqué (cas du 02/09/2026)."
-        log "  On poursuit l'arrêt, mais le \`quit\` ne peut pas être exécuté dans cet état :"
-        log "  systemd attendra 120 s (TimeoutStopSec) puis fera un SIGKILL, SANS sauvegarde finale."
-        log "  Le dernier backup horaire reste le point de restauration (\`pzm backup list\`)."
+        log "  Arrêt annulé : aucune preuve que le serveur peut sauvegarder."
+        log "  Vérifie le journal avant de décider d'un arrêt forcé avec systemctl."
+        return 1
     fi
 
     # Sonde de vivacité de la console, faite UNE fois puis réutilisée pour le

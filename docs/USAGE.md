@@ -63,25 +63,19 @@ Two earlier versions of that wait were wrong, both discovered on 2026-09-02:
   the shortcut is gone rather than retuned.
 
 **The frame counter only advances while players are connected.** On an empty
-server it stays at `f:0` indefinitely — measured on 2026-09-04: four hours and
-8 819 log lines, all at `f:0`, with no connection since boot. Waiting for `f:1`
-there means waiting out the whole timeout before every stop or restart, then
-announcing a stuck boot that is not stuck. So when the `players` gauge of the
-Prometheus exporter reads exactly **0**, the wait falls back to the Lua marker.
-The 2026-09-02 guard is untouched: that day three clients were connected and the
-frame never moved in 15 minutes, so it is the pair *(frame stuck at 0, players >
-0)* that means a genuinely stuck boot. If the exporter does not answer, the
-count is unknown and the wait continues as before.
-
-The same rule governs the "server is online" announcement: it waits for `f:1`,
-and falls back to the marker only if no one is connected once the wait expires.
-Without that fallback the announcement was never sent on an empty server —
-which kept the server empty, which kept the frame at `f:0`.
+server it can stay at `f:0` indefinitely. This makes readiness conservative: the
+wait may time out on a healthy empty server, and the online announcement is not
+sent until a frame advances. The instantaneous player count cannot safely
+resolve that ambiguity because a stuck boot can also have zero players, or can
+become empty after players disconnect. The premature Lua marker is therefore
+never combined with the player count as proof that the loop started.
 
 While it genuinely waits, it prints progress, so a stop issued during a boot does
-not look frozen. If the game loop still has not started after 300 s, the stop
-proceeds anyway — but it now says plainly that the `quit` cannot be executed in
-that state and that systemd will SIGKILL without a final save.
+not look frozen. If the game loop still has not started after 300 s, the stop or restart is
+refused. A healthy empty server and a stuck boot cannot be distinguished by
+`f:0` alone; timing out must not turn that uncertainty into an automatic kill.
+Inspect the journal before deciding whether a direct systemd stop is appropriate
+(it may end in SIGKILL without a final save).
 
 ## Backups
 
