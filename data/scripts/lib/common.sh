@@ -464,6 +464,13 @@ wait_for_server_ready() {
 readonly MAINTENANCE_LOCK_FILE="/tmp/pzmanager-maintenance-$(id -un).lock"
 MAINTENANCE_LOCK_FD=""
 
+# Verrou de cycle de vie partagé par les commandes `pzm server` et les écritures
+# directes dans les bases du monde. Une commande qui exige un serveur arrêté le
+# conserve de sa vérification jusqu'à sa dernière écriture : `pzm server start`
+# ne peut donc pas s'intercaler entre les deux.
+readonly SERVERCTL_LOCK_FILE="/tmp/pzmanager-serverctl-$(id -un).lock"
+SERVERCTL_LOCK_FD=""
+
 # Prend un verrou flock NON BLOQUANT sur $1 et publie le fd dans la variable
 # nommée $2. Retour 0 si acquis, 1 si déjà tenu par quelqu'un d'autre.
 # Usage: try_lock /chemin/du.lock NOM_DE_VARIABLE_FD
@@ -476,6 +483,13 @@ try_lock() {
     fi
     exec {fd}>&-
     return 1
+}
+
+# Usage: acquire_serverctl_lock_or_die [message si le verrou est occupé]
+acquire_serverctl_lock_or_die() {
+    local message="${1:-}"
+    [[ -n "$message" ]] || message="Une opération serveur ou une écriture dans le monde est déjà en cours. Attends qu'elle se termine."
+    try_lock "$SERVERCTL_LOCK_FILE" SERVERCTL_LOCK_FD || die "$message"
 }
 
 # Verrou de maintenance, partagé par pz.sh / modcheck / performFullMaintenance.
