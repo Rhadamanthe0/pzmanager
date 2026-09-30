@@ -113,6 +113,14 @@ read -r frame stamp < <(
 ) || true   # read renvoie 1 sur une dernière ligne sans \n — ne pas tuer le script
 [[ -n "${frame:-}" && -n "${stamp:-}" ]] || exit 0   # aucune ligne `f:` -> indéterminé
 
+# `f:0` couvre toute l'initialisation, y compris une phase où des joueurs peuvent
+# déjà se connecter. Ce n'est donc jamais la preuve d'une boucle de jeu figée :
+# réinitialiser l'état afin qu'un boot long ne puisse pas atteindre le SIGKILL.
+if [[ "$frame" == "0" ]]; then
+    printf '%s %s %s 0\n' "$pid" "$frame" "$stamp" > "$STATE_FILE"
+    exit 0
+fi
+
 # Le compte de joueurs vient de la jauge `game{parameter="players"}`, PAS d'un
 # décompte des étiquettes client="..." comme avant. C'était un bug central de ce
 # détecteur : une série Prometheus n'est jamais retirée quand un client se
