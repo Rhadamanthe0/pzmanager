@@ -1,7 +1,7 @@
-# Installer sur la branche par défaut avant de rendre le statut obligatoire.
-# Exiger le STATUT « Codex review gate », distinct du job de mise à jour.
-# Course du 30/09/2026 : aucune discussion ne prouve pas la fin de la revue.
-# Adaptateur du résumé observé ; tout format inconnu reste bloquant.
+# Install on the default branch before requiring the status.
+# Require the commit status "Codex review gate", separately from the updater job.
+# No unresolved conversations does not establish that the review is complete.
+# This adapter reads the observed summary format; unknown formats remain blocked.
 name: Codex review gate updater
 
 'on':
@@ -25,7 +25,7 @@ permissions:
 jobs:
   update-gate:
     name: Update Codex review gate
-    # Filtrer sur l’auteur : une édition par un tiers doit aussi invalider le statut.
+    # Filter on the author so that third-party edits also invalidate the status.
     if: >-
       github.event_name != 'issue_comment' ||
       (github.event.issue.pull_request && github.event.comment.user.id == 199175422)
@@ -35,14 +35,14 @@ jobs:
       group: codex-review-gate-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
       cancel-in-progress: false
     env:
-      # La fin de Security et son approbation restent vérifiées par l’automate.
+      # The automation separately requires Security completion and approval.
       REQUIRED_REVIEWS: Code Review
     steps:
-      # Action épinglée ; ne jamais récupérer ni exécuter le code de la PR ici.
+      # Pinned action; never check out or execute pull request code here.
       - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         with:
           script: |
-            // Métadonnées uniquement : pull_request_target possède un jeton privilégié.
+            // Read metadata only: pull_request_target has a privileged token.
             const BOT_LOGIN = 'chatgpt-codex-connector[bot]';
             const BOT_ID = 199175422;
             const MARKER = '<!-- codex-pull-request-review-summary -->';
@@ -72,9 +72,26 @@ jobs:
               });
               core.info(`${STATUS_CONTEXT}: ${state} - ${description}`);
             }
-            // Publier sur le HEAD de la PR : le workflow peut tourner sur la branche par défaut.
+            // Publish on the PR head: this workflow can run on the default branch.
             await publish('pending', 'Awaiting a completed Codex review for this commit.');
             try {
+              const peers = await github.paginate(github.rest.pulls.list, {
+                owner, repo, state: 'open', per_page: 100,
+              });
+              // A status is shared by SHA: another PR must never reuse this success.
+              if (peers.filter(p => p.head.sha === head).length !== 1) {
+                core.info('Commit partagé par plusieurs PR ouvertes ; statut bloqué.');
+                return;
+              }
+              const timeline = await github.paginate(github.rest.issues.listEventsForTimeline, {
+                owner, repo, issue_number: pull_number, per_page: 100,
+              });
+              const retargets = timeline.filter(e => e.event === 'base_ref_changed');
+              const retargetedAt = Math.max(0, ...retargets.map(e => {
+                const date = Date.parse(e.created_at);
+                if (!Number.isFinite(date)) throw new Error('Date de changement de cible illisible.');
+                return date;
+              }));
               if (pr.draft) {
                 core.info('Draft PR: gate remains pending.');
                 return;
@@ -99,7 +116,7 @@ jobs:
               if (summaries.length !== 1) throw new Error('Multiple Codex summaries; refusing an ambiguous result.');
               const summary = summaries[0];
 
-              // Un contributeur peut éditer le résumé du bot : vérifier aussi le dernier éditeur.
+              // A writer can edit the bot summary; verify its last editor as well.
               const { node } = await github.graphql(`
                 query($id: ID!) {
                   node(id: $id) {
@@ -112,7 +129,7 @@ jobs:
                 throw new Error('The latest summary editor is not the Codex bot.');
               }
 
-              // Format observé, sans contrat stable : refuser les lignes inconnues ou ambiguës.
+              // The observed format has no stable contract; reject unknown or ambiguous rows.
               const rows = summary.body.split(/\r?\n/)
                 .filter(line => line.trimStart().startsWith('|'))
                 .map(line => line.split('|').map(cell => cell.trim()));
@@ -134,20 +151,27 @@ jobs:
                   return;
                 }
                 if (state !== 'Completed') throw new Error(`${name}: missing, failed, or unsupported completion state.`);
+                if (retargetedAt) {
+                  const completedAt = Date.parse(cells[2]?.match(/datetime="([^"]+)"/)?.[1] || '');
+                  if (!Number.isFinite(completedAt) || completedAt <= retargetedAt) {
+                    core.info('Revue antérieure au changement de cible ; statut bloqué.');
+                    return;
+                  }
+                }
                 const reviewedRef = cells[3]?.match(/^`([0-9a-f]{7,40})`$/)?.[1];
                 if (!reviewedRef) throw new Error(`${name}: missing or malformed reviewed commit.`);
                 if (!head.startsWith(reviewedRef)) {
                   core.info(`${name} belongs to a different commit; gate remains pending.`);
                   return;
                 }
-                // Résoudre le SHA abrégé : un préfixe seul ne prouve pas le commit analysé.
+                // Resolve the abbreviated SHA: a prefix alone does not prove the reviewed commit.
                 const { data: reviewedCommit } = await github.rest.repos.getCommit({
                   owner, repo, ref: reviewedRef,
                 });
                 if (reviewedCommit.sha !== head) throw new Error(`${name}: reviewed SHA does not resolve to the PR head.`);
               }
 
-              // Relire les données avant le feu vert : ne pas valider un HEAD devenu obsolète.
+              // Reread mutable data before success; never validate an obsolete head.
               const { data: latestSummary } = await github.rest.issues.getComment({
                 owner, repo, comment_id: summary.id,
               });
@@ -169,7 +193,18 @@ jobs:
                 core.info('PR or summary changed during evaluation; gate remains pending.');
                 return;
               }
-              // GitHub impose séparément la résolution des discussions de revue.
+              const latestPeers = await github.paginate(github.rest.pulls.list, {
+                owner, repo, state: 'open', per_page: 100,
+              });
+              const latestTimeline = await github.paginate(github.rest.issues.listEventsForTimeline, {
+                owner, repo, issue_number: pull_number, per_page: 100,
+              });
+              if (latestPeers.filter(p => p.head.sha === head).length !== 1
+                  || JSON.stringify(latestTimeline.filter(e => e.event === 'base_ref_changed')) !== JSON.stringify(retargets)) {
+                core.info('Contexte de PR modifié pendant la lecture ; statut bloqué.');
+                return;
+              }
+              // GitHub separately enforces review conversation resolution.
               await publish('success', 'Codex review completed for this commit; conversation rules still apply.');
             } catch (error) {
               core.setFailed(error instanceof Error ? error.message : String(error));
