@@ -380,6 +380,10 @@ remove_accounts() {
     done
     [[ "${#targets[@]}" -gt 0 ]] || die "Usage: ${CMD} remove-account <pseudo|steamID64> [...] [--dry-run]"
 
+    # Conservé jusqu'à la fin du process : un `pzm server start` concurrent ne
+    # peut pas rendre obsolète le contrôle d'état pendant la construction du plan.
+    [[ "$dry_run" == true ]] || acquire_serverctl_lock_or_die
+
     # Serveur actif sans --dry-run : on bascule en aperçu au lieu de refuser
     # sèchement. L'utilisateur voit ce que la commande aurait fait, et le refus
     # est donné à la fin — sinon il fallait couper le serveur pour le savoir.
@@ -441,6 +445,9 @@ remove_accounts() {
         [[ "$refused" == false ]] || die_server_active "Nettoyage whitelist"
         echo "[dry-run] Rien n'a été modifié."; return 0
     fi
+
+    # Défense supplémentaire contre un démarrage extérieur à `pzm`.
+    require_server_stopped "Nettoyage whitelist"
 
     # Mémoriser les SteamID des comptes qu'on s'apprête à supprimer : après le
     # DELETE ils ne sont plus retrouvables, et ce sont les SEULS dont l'autorisation
@@ -506,6 +513,9 @@ rename_account() {
     [[ -n "$old" && -n "$new" ]] || die "Usage: ${CMD} rename-account <ancien_pseudo> <nouveau_pseudo> [--dry-run]"
     [[ "$old" != "admin" ]] || die "Le compte 'admin' ne peut pas être renommé."
 
+    # Même verrou que `pzm server start`, tenu pendant le plan et les deux UPDATE.
+    [[ "$dry_run" == true ]] || acquire_serverctl_lock_or_die
+
     # Bascule en aperçu plutôt qu'un refus nu (cf. remove-account).
     local refused=false
     if [[ "$dry_run" != true ]] && server_is_active; then
@@ -536,6 +546,9 @@ rename_account() {
         [[ "$refused" == false ]] || die_server_active "Renommage de compte"
         echo "[dry-run] Rien n'a été modifié."; return 0
     fi
+
+    # Défense supplémentaire contre un démarrage extérieur à `pzm`.
+    require_server_stopped "Renommage de compte"
 
     sqlite3 "$DB_PATH" "UPDATE whitelist SET username='${esc_new}' WHERE username='${esc_old}';" \
         || die "Échec du renommage dans whitelist"
