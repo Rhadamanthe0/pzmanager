@@ -332,8 +332,8 @@ marker_seen_since() {
 # la boucle de jeu n'a pas démarré, il ne faut jamais arrêter le serveur.
 # Retour 0 dès que le boot courant est terminé (ou si le serveur n'est pas actif :
 # rien à attendre). Retour 1 sur timeout (actif mais fin de boot jamais signalée)
-# -> l'appelant décide (pz.sh arrête quand même : systemd récupère un boot bloqué
-# via ExecStop/SIGKILL). On ne scanne QUE le boot courant (depuis
+# -> pz.sh refuse l'arrêt : un timeout ne prouve pas qu'un SIGKILL est sûr.
+# On ne scanne QUE le boot courant (depuis
 # ActiveEnterTimestamp) pour ne pas confondre avec le marqueur d'un boot antérieur.
 # Usage: wait_for_server_ready [timeout_seconds]
 wait_for_server_ready() {

@@ -71,9 +71,11 @@ become empty after players disconnect. The premature Lua marker is therefore
 never combined with the player count as proof that the loop started.
 
 While it genuinely waits, it prints progress, so a stop issued during a boot does
-not look frozen. If the game loop still has not started after 300 s, the stop
-proceeds anyway — but it now says plainly that the `quit` cannot be executed in
-that state and that systemd will SIGKILL without a final save.
+not look frozen. If the game loop still has not started after 300 s, the stop or restart is
+refused. A healthy empty server and a stuck boot cannot be distinguished by
+`f:0` alone; timing out must not turn that uncertainty into an automatic kill.
+Inspect the journal before deciding whether a direct systemd stop is appropriate
+(it may end in SIGKILL without a final save).
 
 ## Backups
 
