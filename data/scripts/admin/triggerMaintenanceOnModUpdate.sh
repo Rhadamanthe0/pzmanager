@@ -89,7 +89,9 @@ check_mods() {
 # On alerte après CONSOLE_SILENT_ALERT_AFTER passages muets consécutifs (défaut 3,
 # soit ~15 min) : un serveur qui vient de démarrer est légitimement muet une ou
 # deux minutes, il ne faut pas crier pour ça.
-readonly CONSOLE_SILENT_MARKER="/tmp/pzmanager-console-silence-$(id -un).count"
+readonly CONSOLE_SILENT_STATE_DIR="${XDG_RUNTIME_DIR}/pzmanager"
+install -d -m 700 "${CONSOLE_SILENT_STATE_DIR}"
+readonly CONSOLE_SILENT_MARKER="${CONSOLE_SILENT_STATE_DIR}/console-silence.count"
 readonly CONSOLE_SILENT_ALERT_AFTER="${CONSOLE_SILENT_ALERT_AFTER:-3}"
 
 note_console_silence() {
