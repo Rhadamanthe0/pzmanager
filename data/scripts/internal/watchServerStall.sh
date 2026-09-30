@@ -34,7 +34,17 @@ source "${SCRIPT_DIR}/../lib/common.sh"
 source_env
 
 readonly PORT="${PZ_PROMETHEUS_PORT:-}"
-readonly STATE_FILE="/tmp/pzmanager-stallwatch-$(id -un).state"
+# Les fichiers d'état ne doivent pas vivre sous un nom prévisible dans /tmp : un
+# autre compte local pourrait les créer avant nous, puis faire interpréter leur
+# contenu par les expressions arithmétiques ci-dessous. XDG_RUNTIME_DIR est
+# privé au compte ; le repli reste dans l'installation, elle aussi privée.
+readonly STALLWATCH_RUNTIME_DIR="${XDG_RUNTIME_DIR:-${PZ_MANAGER_DIR}/.runtime}/pzmanager"
+install -d -m 700 "$STALLWATCH_RUNTIME_DIR"
+[[ -d "$STALLWATCH_RUNTIME_DIR" && ! -L "$STALLWATCH_RUNTIME_DIR" && -O "$STALLWATCH_RUNTIME_DIR" ]] || {
+    log "stallwatch: répertoire d'état non sûr : ${STALLWATCH_RUNTIME_DIR}"
+    exit 1
+}
+readonly STATE_FILE="${STALLWATCH_RUNTIME_DIR}/stallwatch.state"
 # 1 seul relevé figé suffit à déclencher la CAPTURE : ce n'est pas elle qui
 # tranche, c'est le dump (main RUNNABLE ou non). Exiger 2 relevés ne fiabilisait
 # rien et coûtait ~1 min 30 de gel supplémentaire.
@@ -55,10 +65,20 @@ resolve_jcmd() {
 }
 JCMD="$(resolve_jcmd || true)"
 readonly JCMD
-readonly COOLDOWN_FILE="/tmp/pzmanager-stallwatch-$(id -un).cooldown"
+readonly COOLDOWN_FILE="${STALLWATCH_RUNTIME_DIR}/stallwatch.cooldown"
 # Après un faux positif, on se tait ce temps-là : inutile de re-dumper (30 s de
 # jcmd) chaque minute tant que la cause bénigne dure.
 readonly FALSE_POSITIVE_COOLDOWN=600
+
+write_cooldown() {
+    local tmp
+    tmp="$(mktemp "${STALLWATCH_RUNTIME_DIR}/stallwatch.cooldown.XXXXXX")"
+    printf '%s\n' "$(( $(date +%s) + FALSE_POSITIVE_COOLDOWN ))" > "$tmp"
+    chmod 600 "$tmp"
+    # Le renommage remplace une éventuelle entrée existante sans jamais suivre
+    # un lien symbolique placé à l'emplacement final.
+    mv -fT -- "$tmp" "$COOLDOWN_FILE"
+}
 
 # Les captures sont désormais conservées (voir le verdict NON CONCLUANT plus
 # bas) : on les fait vieillir comme les autres journaux plutôt que de les
@@ -69,8 +89,13 @@ find "${LOG_ZOMBOID_DIR}" -maxdepth 1 -name 'stall_*.txt' -type f \
 server_is_active || { rm -f "$STATE_FILE" "$COOLDOWN_FILE"; exit 0; }
 [[ -n "$PORT" ]] || exit 0
 
-if [[ -f "$COOLDOWN_FILE" ]]; then
-    if (( $(date +%s) < $(cat "$COOLDOWN_FILE" 2>/dev/null || echo 0) )); then
+if [[ -f "$COOLDOWN_FILE" && ! -L "$COOLDOWN_FILE" ]]; then
+    cooldown_until=""
+    IFS= read -r cooldown_until < "$COOLDOWN_FILE" || true
+    # Une valeur bornée et strictement décimale empêche toute réévaluation de
+    # syntaxe Bash (substitution de commande via un indice de tableau, etc.).
+    if [[ "$cooldown_until" =~ ^[0-9]{1,12}$ ]] &&
+       (( $(date +%s) < 10#$cooldown_until )); then
         exit 0
     fi
     rm -f "$COOLDOWN_FILE"
@@ -232,7 +257,7 @@ fi
 if (( ${#main_lines[@]} == 0 )); then
     log "stallwatch: ARBITRAGE IMPOSSIBLE (aucune ligne \"main\" dans le dump — jcmd absent ?). Capture conservée dans ${out} ; aucun redémarrage déclenché. Vérifier PZ_GRAALVM_HOME."
     printf '%s %s %s 0\n' "$pid" "$frame" "$stamp" > "$STATE_FILE"
-    date -d "+${FALSE_POSITIVE_COOLDOWN} seconds" +%s > "$COOLDOWN_FILE"
+    write_cooldown
     exit 0
 fi
 
@@ -255,7 +280,7 @@ if (( runnable_count < ${#main_lines[@]} )) || (( burn_pct < BURN_MIN_PCT )); th
     # « dump déjà pris » sans plus rien vérifier — 40 min d'aveuglement le 14/08
     # à 04h12. Le cooldown évite de re-dumper chaque minute entre-temps.
     printf '%s %s %s 0\n' "$pid" "$frame" "$stamp" > "$STATE_FILE"
-    date -d "+${FALSE_POSITIVE_COOLDOWN} seconds" +%s > "$COOLDOWN_FILE"
+    write_cooldown
     exit 0
 fi
 log "stallwatch: gel confirmé (main runnable ${runnable_count}/${#main_lines[@]}, CPU brûlé ${burn_pct}%)."
