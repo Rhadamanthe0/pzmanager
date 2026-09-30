@@ -268,13 +268,11 @@ configure_zomboid_jvm() {
 
 configure_user_environment() {
     local bashrc="$PZ_HOME/.bashrc"
-    grep -q "XDG_RUNTIME_DIR" "$bashrc" 2>/dev/null && return 0
+    sudo -u "$PZ_USER" grep -q "XDG_RUNTIME_DIR" "$bashrc" 2>/dev/null && return 0
 
     echo "Configuration environnement utilisateur..."
-    echo 'export XDG_RUNTIME_DIR=/run/user/$(id -u)' >> "$bashrc"
-    # On tourne en root : sans ce chown, un .bashrc créé par cette redirection
-    # appartient à root et l'utilisateur ne peut plus le modifier.
-    chown "$PZ_USER:$PZ_USER" "$bashrc"
+    printf '%s\n' 'export XDG_RUNTIME_DIR=/run/user/$(id -u)' \
+        | sudo -u "$PZ_USER" tee -a -- "$bashrc" >/dev/null
 }
 
 install_systemd_services() {
