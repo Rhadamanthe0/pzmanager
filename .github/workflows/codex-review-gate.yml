@@ -1,0 +1,353 @@
+# Install on the default branch before requiring the status.
+# Require the "Codex review gate" check, separate from the updater job.
+# No unresolved conversations does not establish that the review is complete.
+# This adapter reads the observed summary format; unknown formats remain blocked.
+name: Codex review gate updater
+
+'on':
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, edited, closed]
+  issue_comment:
+    types: [created, edited, deleted]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to re-evaluate
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+  checks: write
+
+jobs:
+  update-gate:
+    name: Update Codex review gate
+    # Filter on the author so that third-party edits also invalidate the status.
+    if: >-
+      github.event_name != 'issue_comment' ||
+      (github.event.issue.pull_request &&
+       (github.event.comment.user.id == 199175422 ||
+        contains(github.event.comment.body, '@codex')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: codex-review-gate-${{ github.repository }}
+      cancel-in-progress: false
+      queue: max
+    env:
+      # The automation separately requires Security completion and approval.
+      REQUIRED_REVIEWS: Code Review
+    steps:
+      # Pinned action; never check out or execute pull request code here.
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        with:
+          script: |
+            // Read metadata only: pull_request_target has a privileged token.
+            const BOT_LOGIN = 'chatgpt-codex-connector[bot]';
+            const BOT_ID = 199175422;
+            const MARKER = '<!-- codex-pull-request-review-summary -->';
+            const STATUS_CONTEXT = 'Codex review gate';
+            const { owner, repo } = context.repo;
+            const rawNumber = context.payload.pull_request?.number
+              ?? context.payload.issue?.number
+              ?? context.payload.inputs?.pr_number;
+            if (!/^[1-9][0-9]*$/.test(String(rawNumber))) {
+              throw new Error('A positive pull request number is required.');
+            }
+            const triggerNumber = Number(rawNumber);
+            if (!Number.isSafeInteger(triggerNumber)) throw new Error('Invalid PR number.');
+            // Invalidate the triggering PR first so a slow inventory cannot retain its old success.
+            const { data: trigger } = await github.rest.pulls.get({ owner, repo, pull_number: triggerNumber });
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const checks = new Map();
+            const requestWatermarks = new Map();
+            const permissions = new Map();
+            async function authorized(comment) {
+              const user = comment.user;
+              if (!user || user.type === 'Bot' || user.id === BOT_ID) return false;
+              if (user.id === 37266002) return true;
+              if (!user.login) return false;
+              if (!permissions.has(user.login)) {
+                try {
+                  const { data } = await github.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username: user.login });
+                  permissions.set(user.login, ['write', 'maintain', 'admin'].includes(data.permission) && data.user?.id === user.id);
+                } catch (error) {
+                  if (error.status !== 404) throw error;
+                  permissions.set(user.login, false);
+                }
+              }
+              return permissions.get(user.login);
+            }
+            if (context.eventName === 'issue_comment' && context.payload.comment?.user?.id !== BOT_ID
+                && !await authorized(context.payload.comment)) return;
+            async function observeRequests(comments, dates) {
+              for (const comment of comments) {
+                const commands = [...(comment.body || '').matchAll(/@codex\s+(security\s+)?review\b/gi)];
+                if (!commands.length || !await authorized(comment)) continue;
+                for (const command of commands) {
+                  const name = command[1] ? 'Security Review' : 'Code Review';
+                  const date = Date.parse(comment.updated_at || comment.created_at) + 1000;
+                  if (!Number.isFinite(date)) throw new Error('Review request date is unavailable.');
+                  dates.set(name, Math.max(dates.get(name) || 0, date));
+                }
+              }
+            }
+            function emptyState(resetAfter = 0) { return { byPr: new Map(), resetAfter }; }
+            function loadState(text) {
+              const saved = JSON.parse(text);
+              if (saved.schema !== 'codex-review-gate:v2' || !saved.review_requests_by_pr
+                  || typeof saved.review_requests_by_pr !== 'object' || Array.isArray(saved.review_requests_by_pr)
+                  || !Number.isFinite(saved.reset_after) || saved.reset_after < 0) throw new Error('Invalid saved review requests.');
+              const result = emptyState(saved.reset_after);
+              for (const [number, values] of Object.entries(saved.review_requests_by_pr)) {
+                if (!/^[1-9][0-9]*$/.test(number) || !Number.isSafeInteger(Number(number))
+                    || !values || typeof values !== 'object' || Array.isArray(values)) throw new Error('Invalid saved PR context.');
+                const dates = new Map();
+                for (const [name, date] of Object.entries(values)) {
+                  if (!['Code Review', 'Security Review'].includes(name) || !Number.isFinite(date) || date < 0) throw new Error('Invalid saved review date.');
+                  dates.set(name, date);
+                }
+                result.byPr.set(number, dates);
+              }
+              return result;
+            }
+            function rawDates(head, number) { return new Map(requestWatermarks.get(head)?.byPr.get(String(number)) || []); }
+            function effectiveDates(head, number) {
+              const dates = rawDates(head, number);
+              const reset = requestWatermarks.get(head)?.resetAfter || 0;
+              if (reset) for (const name of ['Code Review', 'Security Review']) dates.set(name, Math.max(dates.get(name) || 0, reset));
+              return dates;
+            }
+            async function rememberRequests(head, number, comments) {
+              const dates = rawDates(head, number);
+              const before = JSON.stringify([...dates]);
+              await observeRequests(comments, dates);
+              if (dates.size) requestWatermarks.get(head).byPr.set(String(number), dates);
+              return JSON.stringify([...dates]) !== before;
+            }
+            async function publish(head, state, description, number = triggerNumber) {
+              if (!checks.has(head)) {
+                const existing = await github.paginate(github.rest.checks.listForRef, {
+                  owner, repo, ref: head, filter: 'all', per_page: 100,
+                });
+                const matching = existing.filter(c => c.name === STATUS_CONTEXT && c.app?.id === 15368
+                  && c.external_id === 'codex-review-gate:v1');
+                const previous = matching.sort((a, b) => b.id - a.id)[0];
+                checks.set(head, previous?.id);
+                requestWatermarks.set(head, emptyState());
+                try {
+                  if (previous?.output?.text) requestWatermarks.set(head, loadState(previous.output.text));
+                } catch (error) {
+                  checks.set(head, undefined);
+                  requestWatermarks.set(head, emptyState(Date.now()));
+                  throw error;
+                }
+                if (head === trigger.head.sha && number === triggerNumber && context.payload.comment) {
+                  await rememberRequests(head, number, [context.payload.comment]);
+                }
+              }
+              const saved = requestWatermarks.get(head);
+              const body = { owner, repo, name: STATUS_CONTEXT, details_url: runUrl,
+                external_id: 'codex-review-gate:v1',
+                status: state === 'pending' ? 'in_progress' : 'completed',
+                output: { title: STATUS_CONTEXT, summary: description,
+                  text: JSON.stringify({ schema: 'codex-review-gate:v2', reset_after: saved.resetAfter,
+                    review_requests_by_pr: Object.fromEntries([...saved.byPr].map(([n, dates]) => [n, Object.fromEntries(dates)])) }) } };
+              if (state !== 'pending') body.conclusion = state === 'success' ? 'success' : 'failure';
+              const id = checks.get(head);
+              let result;
+              if (id) {
+                try { result = await github.rest.checks.update({ ...body, check_run_id: id }); }
+                catch (error) {
+                  if (![404, 422].includes(error.status)) throw error;
+                  result = await github.rest.checks.create({ ...body, head_sha: head });
+                }
+              } else result = await github.rest.checks.create({ ...body, head_sha: head });
+              checks.set(head, result.data.id);
+              core.info(`${STATUS_CONTEXT}: ${state} - ${description}`);
+            }
+            if (trigger.state === 'open') {
+              try {
+                await publish(trigger.head.sha, 'pending', 'Awaiting a completed Codex review for this commit.');
+              } catch (error) {
+                await publish(trigger.head.sha, 'error', 'The initial check update failed.');
+                throw error;
+              }
+            }
+            // Share one inventory to avoid quadratic reads on large repositories.
+            const openPrs = await github.paginate(github.rest.pulls.list, {
+              owner, repo, state: 'open', per_page: 100,
+            });
+            const related = new Set([trigger.head.sha, context.payload.before]);
+            openPrs.sort((a, b) => (a.number === triggerNumber ? -1 : b.number === triggerNumber ? 1
+              : Number(related.has(b.head.sha)) - Number(related.has(a.head.sha))));
+            const affected = openPrs.filter(p => related.has(p.head.sha));
+            const seenHeads = new Set();
+            for (const candidate of affected) {
+              if (seenHeads.has(candidate.head.sha)) continue;
+              seenHeads.add(candidate.head.sha);
+              await evaluate(candidate.number);
+            }
+            async function evaluate(pull_number) {
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number });
+            if (pr.state !== 'open') return;
+            const head = pr.head.sha;
+            const base = pr.base.sha;
+            const baseRef = pr.base.ref;
+            const update = (state, description) => publish(head, state, description, pull_number);
+            // Publish on the PR head: this workflow can run on the default branch.
+            try {
+              if (pull_number !== triggerNumber || head !== trigger.head.sha) {
+                await update('pending', 'Awaiting a completed Codex review for this commit.');
+              }
+              const peers = openPrs;
+              // A status is shared by SHA: another PR must never reuse this success.
+              if (peers.filter(p => p.head.sha === head).length !== 1) {
+                core.info('Commit partagé par plusieurs PR ouvertes ; statut bloqué.');
+                return;
+              }
+              const timeline = await github.paginate(github.rest.issues.listEventsForTimeline, {
+                owner, repo, issue_number: pull_number, per_page: 100,
+              });
+              const retargets = timeline.filter(e => e.event === 'base_ref_changed');
+              // The final summary omits review start time: a late completion is insufficient.
+              if (retargets.length) {
+                core.info('Branche cible changée : ouvrir une nouvelle PR pour obtenir une preuve non ambiguë.');
+                return;
+              }
+              if (pr.draft) {
+                core.info('Draft PR: gate remains pending.');
+                return;
+              }
+              const requiredReviews = (process.env.REQUIRED_REVIEWS || 'Code Review')
+                .split(',').map(s => s.trim()).filter(Boolean);
+              if (!requiredReviews.length || requiredReviews.some(
+                name => !['Code Review', 'Security Review'].includes(name)
+              )) throw new Error('Unsupported REQUIRED_REVIEWS configuration.');
+
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number: pull_number, per_page: 100,
+              });
+              const requests = [...comments];
+              if (pull_number === triggerNumber && context.payload.comment) requests.push(context.payload.comment);
+              if (await rememberRequests(head, pull_number, requests)) {
+                await update('pending', 'A newer review request is awaiting authenticated completion.');
+              }
+              const requestedAt = effectiveDates(head, pull_number);
+              for (const name of requestedAt.keys()) if (!requiredReviews.includes(name)) requiredReviews.push(name);
+              const summaries = comments.filter(c =>
+                c.user?.id === BOT_ID && c.user?.login === BOT_LOGIN && c.user?.type === 'Bot'
+                && (c.body || '').trimStart().startsWith(MARKER)
+              );
+              if (!summaries.length) {
+                core.info('No authenticated Codex summary found; gate remains pending.');
+                return;
+              }
+              if (summaries.length !== 1) throw new Error('Multiple Codex summaries; refusing an ambiguous result.');
+              const summary = summaries[0];
+
+              // A writer can edit the bot summary; verify its last editor as well.
+              const { node } = await github.graphql(`
+                query($id: ID!) {
+                  node(id: $id) {
+                    ... on IssueComment { body editor { login ... on Bot { databaseId } } }
+                  }
+                }
+              `, { id: summary.node_id });
+              if (!node || node.body !== summary.body) throw new Error('Summary changed while being read; rerun the workflow.');
+              if (node.editor && node.editor.databaseId !== BOT_ID) {
+                throw new Error('The latest summary editor is not the Codex bot.');
+              }
+
+              // The observed format has no stable contract; reject unknown or ambiguous rows.
+              const rows = summary.body.split(/\r?\n/)
+                .filter(line => line.trimStart().startsWith('|'))
+                .map(line => line.split('|').map(cell => cell.trim()));
+              for (const name of requiredReviews) {
+                const matchingRows = rows.filter(cells => {
+                  const label = cells[1]?.match(/^(?:📝|🔒) \*\*([^*]+)\*\*$/u)?.[1];
+                  return label === name;
+                });
+                if (!matchingRows.length) {
+                  core.info(`${name} is absent; gate remains pending.`);
+                  return;
+                }
+                if (matchingRows.length !== 1) throw new Error(`Ambiguous ${name} row.`);
+                const cells = matchingRows[0];
+                if (cells.length !== 6) throw new Error('Malformed summary table.');
+                const state = cells[2]?.match(/\*\*([^*]+)\*\*/)?.[1];
+                if (['Running', 'Queued', 'Pending', 'Scheduled', 'Not started'].includes(state)) {
+                  core.info(`${name} has not completed; gate remains pending.`);
+                  return;
+                }
+                if (state !== 'Completed') throw new Error(`${name}: missing, failed, or unsupported completion state.`);
+                if (requestedAt.has(name)) {
+                  const finished = Date.parse(cells[2]?.match(/<relative-time datetime="([^"]+)"/u)?.[1]);
+                  if (!Number.isFinite(finished) || finished < requestedAt.get(name)) {
+                    core.info(`${name}: a newer review request is awaiting completion.`);
+                    return;
+                  }
+                }
+                const reviewedRef = cells[3]?.match(/^`([0-9a-f]{7,40})`$/)?.[1];
+                if (!reviewedRef) throw new Error(`${name}: missing or malformed reviewed commit.`);
+                if (!head.startsWith(reviewedRef)) {
+                  core.info(`${name} belongs to a different commit; gate remains pending.`);
+                  return;
+                }
+                // Resolve the abbreviated SHA: a prefix alone does not prove the reviewed commit.
+                const { data: reviewedCommit } = await github.rest.repos.getCommit({
+                  owner, repo, ref: reviewedRef,
+                });
+                if (reviewedCommit.sha !== head) throw new Error(`${name}: reviewed SHA does not resolve to the PR head.`);
+              }
+
+              // Reread mutable data before success; never validate an obsolete head.
+              const { data: latestSummary } = await github.rest.issues.getComment({
+                owner, repo, comment_id: summary.id,
+              });
+              const { data: latestPr } = await github.rest.pulls.get({ owner, repo, pull_number });
+              const { node: latestNode } = await github.graphql(`
+                query($id: ID!) {
+                  node(id: $id) {
+                    ... on IssueComment { body editor { ... on Bot { databaseId } } }
+                  }
+                }
+              `, { id: summary.node_id });
+              if (!latestNode || latestNode.body !== summary.body
+                  || (latestNode.editor && latestNode.editor.databaseId !== BOT_ID)) {
+                throw new Error('Summary authentication changed during evaluation.');
+              }
+              if (latestSummary.body !== summary.body || latestSummary.updated_at !== summary.updated_at
+                  || latestPr.head.sha !== head || latestPr.base.sha !== base || latestPr.base.ref !== baseRef
+                  || latestPr.state !== 'open' || latestPr.draft) {
+                core.info('PR or summary changed during evaluation; gate remains pending.');
+                return;
+              }
+              const latestTimeline = await github.paginate(github.rest.issues.listEventsForTimeline, {
+                owner, repo, issue_number: pull_number, per_page: 100,
+              });
+              // GitHub separately enforces review conversation resolution.
+              const latestRequests = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number: pull_number, per_page: 100,
+              });
+              if (await rememberRequests(head, pull_number, latestRequests)) {
+                await update('pending', 'A newer review request arrived during evaluation.');
+                return;
+              }
+              const latestPeers = await github.paginate(github.rest.pulls.list, {
+                owner, repo, state: 'open', per_page: 100,
+              });
+              if (latestPeers.filter(p => p.head.sha === head).length !== 1
+                  || JSON.stringify(latestTimeline.filter(e => e.event === 'base_ref_changed')) !== JSON.stringify(retargets)) {
+                core.info('Contexte de PR modifié pendant la lecture ; statut bloqué.');
+                return;
+              }
+              await update('success', 'Codex review completed for this commit; conversation rules still apply.');
+            } catch (error) {
+              core.warning(error instanceof Error ? error.message : String(error));
+              await update('error', 'Codex review could not be verified. Inspect this workflow and rerun it.');
+            }
+            }
