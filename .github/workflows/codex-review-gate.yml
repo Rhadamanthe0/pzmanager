@@ -34,6 +34,7 @@ jobs:
     concurrency:
       group: codex-review-gate-${{ github.repository }}
       cancel-in-progress: false
+      queue: max
     env:
       # The automation separately requires Security completion and approval.
       REQUIRED_REVIEWS: Code Review
@@ -73,9 +74,14 @@ jobs:
                 output: { title: STATUS_CONTEXT, summary: description } };
               if (state !== 'pending') body.conclusion = state === 'success' ? 'success' : 'failure';
               const id = checks.get(head);
-              const result = id
-                ? await github.rest.checks.update({ ...body, check_run_id: id })
-                : await github.rest.checks.create({ ...body, head_sha: head });
+              let result;
+              if (id) {
+                try { result = await github.rest.checks.update({ ...body, check_run_id: id }); }
+                catch (error) {
+                  if (![404, 422].includes(error.status)) throw error;
+                  result = await github.rest.checks.create({ ...body, head_sha: head });
+                }
+              } else result = await github.rest.checks.create({ ...body, head_sha: head });
               checks.set(head, result.data.id);
               core.info(`${STATUS_CONTEXT}: ${state} - ${description}`);
             }
@@ -221,10 +227,13 @@ jobs:
                 core.info('PR or summary changed during evaluation; gate remains pending.');
                 return;
               }
+              const latestPeers = await github.paginate(github.rest.pulls.list, {
+                owner, repo, state: 'open', per_page: 100,
+              });
               const latestTimeline = await github.paginate(github.rest.issues.listEventsForTimeline, {
                 owner, repo, issue_number: pull_number, per_page: 100,
               });
-              if (peers.filter(p => p.head.sha === head).length !== 1
+              if (latestPeers.filter(p => p.head.sha === head).length !== 1
                   || JSON.stringify(latestTimeline.filter(e => e.event === 'base_ref_changed')) !== JSON.stringify(retargets)) {
                 core.info('Contexte de PR modifié pendant la lecture ; statut bloqué.');
                 return;
