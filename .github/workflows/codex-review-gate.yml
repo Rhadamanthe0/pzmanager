@@ -30,7 +30,7 @@ jobs:
       github.event_name != 'issue_comment' ||
       (github.event.issue.pull_request &&
        (github.event.comment.user.id == 199175422 ||
-        (github.event.comment.user.id == 37266002 && contains(github.event.comment.body, '@codex'))))
+        contains(github.event.comment.body, '@codex')))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     concurrency:
@@ -64,10 +64,30 @@ jobs:
             const runUrl = `${process.env.GITHUB_SERVER_URL}/${owner}/${repo}/actions/runs/${context.runId}`;
             const checks = new Map();
             const requestWatermarks = new Map();
-            function observeRequests(comments, dates) {
+            const permissions = new Map();
+            async function authorized(comment) {
+              const user = comment.user;
+              if (!user || user.type === 'Bot' || user.id === BOT_ID) return false;
+              if (user.id === 37266002) return true;
+              if (!user.login) return false;
+              if (!permissions.has(user.login)) {
+                try {
+                  const { data } = await github.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username: user.login });
+                  permissions.set(user.login, ['write', 'maintain', 'admin'].includes(data.permission) && data.user?.id === user.id);
+                } catch (error) {
+                  if (error.status !== 404) throw error;
+                  permissions.set(user.login, false);
+                }
+              }
+              return permissions.get(user.login);
+            }
+            if (context.eventName === 'issue_comment' && context.payload.comment?.user?.id !== BOT_ID
+                && !await authorized(context.payload.comment)) return;
+            async function observeRequests(comments, dates) {
               for (const comment of comments) {
-                if (comment.user?.id !== 37266002) continue;
-                for (const command of (comment.body || '').matchAll(/@codex\s+(security\s+)?review\b/gi)) {
+                const commands = [...(comment.body || '').matchAll(/@codex\s+(security\s+)?review\b/gi)];
+                if (!commands.length || !await authorized(comment)) continue;
+                for (const command of commands) {
                   const name = command[1] ? 'Security Review' : 'Code Review';
                   const date = Date.parse(comment.updated_at || comment.created_at) + 1000;
                   if (!Number.isFinite(date)) throw new Error('Review request date is unavailable.');
@@ -101,10 +121,10 @@ jobs:
               if (reset) for (const name of ['Code Review', 'Security Review']) dates.set(name, Math.max(dates.get(name) || 0, reset));
               return dates;
             }
-            function rememberRequests(head, number, comments) {
+            async function rememberRequests(head, number, comments) {
               const dates = rawDates(head, number);
               const before = JSON.stringify([...dates]);
-              observeRequests(comments, dates);
+              await observeRequests(comments, dates);
               if (dates.size) requestWatermarks.get(head).byPr.set(String(number), dates);
               return JSON.stringify([...dates]) !== before;
             }
@@ -126,7 +146,7 @@ jobs:
                   throw error;
                 }
                 if (head === trigger.head.sha && number === triggerNumber && context.payload.comment) {
-                  rememberRequests(head, number, [context.payload.comment]);
+                  await rememberRequests(head, number, [context.payload.comment]);
                 }
               }
               const saved = requestWatermarks.get(head);
@@ -213,7 +233,7 @@ jobs:
               });
               const requests = [...comments];
               if (pull_number === triggerNumber && context.payload.comment) requests.push(context.payload.comment);
-              if (rememberRequests(head, pull_number, requests)) {
+              if (await rememberRequests(head, pull_number, requests)) {
                 await update('pending', 'A newer review request is awaiting authenticated completion.');
               }
               const requestedAt = effectiveDates(head, pull_number);
@@ -306,23 +326,23 @@ jobs:
                 core.info('PR or summary changed during evaluation; gate remains pending.');
                 return;
               }
-              const latestPeers = await github.paginate(github.rest.pulls.list, {
-                owner, repo, state: 'open', per_page: 100,
-              });
               const latestTimeline = await github.paginate(github.rest.issues.listEventsForTimeline, {
                 owner, repo, issue_number: pull_number, per_page: 100,
               });
-              if (latestPeers.filter(p => p.head.sha === head).length !== 1
-                  || JSON.stringify(latestTimeline.filter(e => e.event === 'base_ref_changed')) !== JSON.stringify(retargets)) {
-                core.info('Contexte de PR modifié pendant la lecture ; statut bloqué.');
-                return;
-              }
               // GitHub separately enforces review conversation resolution.
               const latestRequests = await github.paginate(github.rest.issues.listComments, {
                 owner, repo, issue_number: pull_number, per_page: 100,
               });
-              if (rememberRequests(head, pull_number, latestRequests)) {
+              if (await rememberRequests(head, pull_number, latestRequests)) {
                 await update('pending', 'A newer review request arrived during evaluation.');
+                return;
+              }
+              const latestPeers = await github.paginate(github.rest.pulls.list, {
+                owner, repo, state: 'open', per_page: 100,
+              });
+              if (latestPeers.filter(p => p.head.sha === head).length !== 1
+                  || JSON.stringify(latestTimeline.filter(e => e.event === 'base_ref_changed')) !== JSON.stringify(retargets)) {
+                core.info('Contexte de PR modifié pendant la lecture ; statut bloqué.');
                 return;
               }
               await update('success', 'Codex review completed for this commit; conversation rules still apply.');
