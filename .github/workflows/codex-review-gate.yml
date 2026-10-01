@@ -81,8 +81,11 @@ jobs:
               }
               return permissions.get(user.login);
             }
-            if (context.eventName === 'issue_comment' && context.payload.comment?.user?.id !== BOT_ID
-                && !await authorized(context.payload.comment)) return;
+            let authorizationError;
+            if (context.eventName === 'issue_comment' && context.payload.comment?.user?.id !== BOT_ID) {
+              try { if (!await authorized(context.payload.comment)) return; }
+              catch (error) { authorizationError = error; }
+            }
             async function observeRequests(comments, dates) {
               for (const comment of comments) {
                 const commands = [...(comment.body || '').matchAll(/@codex\s+(security\s+)?review\b/gi)];
@@ -140,12 +143,30 @@ jobs:
                 requestWatermarks.set(head, emptyState());
                 try {
                   if (previous?.output?.text) requestWatermarks.set(head, loadState(previous.output.text));
+                  if (head === trigger.head.sha && context.payload.before && context.payload.before !== head) {
+                    const oldRuns = await github.paginate(github.rest.checks.listForRef, {
+                      owner, repo, ref: context.payload.before, filter: 'all', per_page: 100,
+                    });
+                    const old = oldRuns.filter(c => c.name === STATUS_CONTEXT && c.app?.id === 15368
+                      && c.external_id === 'codex-review-gate:v1').sort((a, b) => b.id - a.id)[0];
+                    if (old?.output?.text) {
+                      const prior = loadState(old.output.text);
+                      const dates = rawDates(head, triggerNumber);
+                      for (const [name, date] of prior.byPr.get(String(triggerNumber)) || []) {
+                        dates.set(name, Math.max(dates.get(name) || 0, date));
+                      }
+                      if (prior.resetAfter) for (const name of ['Code Review', 'Security Review']) {
+                        dates.set(name, Math.max(dates.get(name) || 0, prior.resetAfter));
+                      }
+                      if (dates.size) requestWatermarks.get(head).byPr.set(String(triggerNumber), dates);
+                    }
+                  }
                 } catch (error) {
                   checks.set(head, undefined);
                   requestWatermarks.set(head, emptyState(Date.now()));
                   throw error;
                 }
-                if (head === trigger.head.sha && number === triggerNumber && context.payload.comment) {
+                if (!authorizationError && head === trigger.head.sha && number === triggerNumber && context.payload.comment) {
                   await rememberRequests(head, number, [context.payload.comment]);
                 }
               }
@@ -154,7 +175,7 @@ jobs:
                 external_id: 'codex-review-gate:v1',
                 status: state === 'pending' ? 'in_progress' : 'completed',
                 output: { title: STATUS_CONTEXT, summary: description,
-                  text: JSON.stringify({ schema: 'codex-review-gate:v2', reset_after: saved.resetAfter,
+                  text: JSON.stringify({ schema: 'codex-review-gate:v2', publisher_run_id: context.runId, reset_after: saved.resetAfter,
                     review_requests_by_pr: Object.fromEntries([...saved.byPr].map(([n, dates]) => [n, Object.fromEntries(dates)])) }) } };
               if (state !== 'pending') body.conclusion = state === 'success' ? 'success' : 'failure';
               const id = checks.get(head);
@@ -168,6 +189,10 @@ jobs:
               } else result = await github.rest.checks.create({ ...body, head_sha: head });
               checks.set(head, result.data.id);
               core.info(`${STATUS_CONTEXT}: ${state} - ${description}`);
+            }
+            if (authorizationError) {
+              await publish(trigger.head.sha, 'error', 'Review requester authorization could not be verified.');
+              throw authorizationError;
             }
             if (trigger.state === 'open') {
               try {
