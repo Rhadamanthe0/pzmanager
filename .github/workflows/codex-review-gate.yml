@@ -68,7 +68,7 @@ jobs:
                 if (comment.user?.id === BOT_ID) continue;
                 for (const command of (comment.body || '').matchAll(/@codex\s+(security\s+)?review\b/gi)) {
                   const name = command[1] ? 'Security Review' : 'Code Review';
-                  const date = Date.parse(comment.updated_at || comment.created_at);
+                  const date = Date.parse(comment.updated_at || comment.created_at) + 1000;
                   if (!Number.isFinite(date)) throw new Error('Review request date is unavailable.');
                   dates.set(name, Math.max(dates.get(name) || 0, date));
                 }
