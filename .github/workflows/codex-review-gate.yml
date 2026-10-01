@@ -6,7 +6,7 @@ name: Codex review gate updater
 
 'on':
   pull_request_target:
-    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, edited]
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, edited, closed]
   issue_comment:
     types: [created, edited, deleted]
   workflow_dispatch:
@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     concurrency:
-      group: codex-review-gate-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+      group: codex-review-gate-${{ github.repository }}
       cancel-in-progress: false
     env:
       # The automation separately requires Security completion and approval.
@@ -54,13 +54,16 @@ jobs:
             if (!/^[1-9][0-9]*$/.test(String(rawNumber))) {
               throw new Error('A positive pull request number is required.');
             }
-            const pull_number = Number(rawNumber);
-            if (!Number.isSafeInteger(pull_number)) throw new Error('Invalid PR number.');
+            const triggerNumber = Number(rawNumber);
+            if (!Number.isSafeInteger(triggerNumber)) throw new Error('Invalid PR number.');
+            // Each run reevaluates every open PR: GitHub may replace a queued event.
+            const openPrs = await github.paginate(github.rest.pulls.list, {
+              owner, repo, state: 'open', per_page: 100,
+            });
+            for (const candidate of openPrs) await evaluate(candidate.number);
+            async function evaluate(pull_number) {
             const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number });
-            if (pr.state !== 'open') {
-              core.info('PR is closed; no status change.');
-              return;
-            }
+            if (pr.state !== 'open') return;
             const head = pr.head.sha;
             const base = pr.base.sha;
             const baseRef = pr.base.ref;
@@ -73,8 +76,8 @@ jobs:
               core.info(`${STATUS_CONTEXT}: ${state} - ${description}`);
             }
             // Publish on the PR head: this workflow can run on the default branch.
-            await publish('pending', 'Awaiting a completed Codex review for this commit.');
             try {
+              await publish('pending', 'Awaiting a completed Codex review for this commit.');
               const peers = await github.paginate(github.rest.pulls.list, {
                 owner, repo, state: 'open', per_page: 100,
               });
@@ -87,11 +90,11 @@ jobs:
                 owner, repo, issue_number: pull_number, per_page: 100,
               });
               const retargets = timeline.filter(e => e.event === 'base_ref_changed');
-              const retargetedAt = Math.max(0, ...retargets.map(e => {
-                const date = Date.parse(e.created_at);
-                if (!Number.isFinite(date)) throw new Error('Date de changement de cible illisible.');
-                return date;
-              }));
+              // The final summary omits review start time: a late completion is insufficient.
+              if (retargets.length) {
+                core.info('Branche cible changée : ouvrir une nouvelle PR pour obtenir une preuve non ambiguë.');
+                return;
+              }
               if (pr.draft) {
                 core.info('Draft PR: gate remains pending.');
                 return;
@@ -151,13 +154,6 @@ jobs:
                   return;
                 }
                 if (state !== 'Completed') throw new Error(`${name}: missing, failed, or unsupported completion state.`);
-                if (retargetedAt) {
-                  const completedAt = Date.parse(cells[2]?.match(/datetime="([^"]+)"/)?.[1] || '');
-                  if (!Number.isFinite(completedAt) || completedAt <= retargetedAt) {
-                    core.info('Revue antérieure au changement de cible ; statut bloqué.');
-                    return;
-                  }
-                }
                 const reviewedRef = cells[3]?.match(/^`([0-9a-f]{7,40})`$/)?.[1];
                 if (!reviewedRef) throw new Error(`${name}: missing or malformed reviewed commit.`);
                 if (!head.startsWith(reviewedRef)) {
@@ -209,4 +205,5 @@ jobs:
             } catch (error) {
               core.setFailed(error instanceof Error ? error.message : String(error));
               await publish('error', 'Codex review could not be verified. Inspect this workflow and rerun it.');
+            }
             }
