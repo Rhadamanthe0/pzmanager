@@ -175,7 +175,7 @@ jobs:
                 external_id: 'codex-review-gate:v1',
                 status: state === 'pending' ? 'in_progress' : 'completed',
                 output: { title: STATUS_CONTEXT, summary: description,
-                  text: JSON.stringify({ schema: 'codex-review-gate:v2', reset_after: saved.resetAfter,
+                  text: JSON.stringify({ schema: 'codex-review-gate:v2', publisher_run_id: context.runId, reset_after: saved.resetAfter,
                     review_requests_by_pr: Object.fromEntries([...saved.byPr].map(([n, dates]) => [n, Object.fromEntries(dates)])) }) } };
               if (state !== 'pending') body.conclusion = state === 'success' ? 'success' : 'failure';
               const id = checks.get(head);
