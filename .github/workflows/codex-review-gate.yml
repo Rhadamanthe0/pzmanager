@@ -28,7 +28,8 @@ jobs:
     # Filter on the author so that third-party edits also invalidate the status.
     if: >-
       github.event_name != 'issue_comment' ||
-      (github.event.issue.pull_request && github.event.comment.user.id == 199175422)
+      (github.event.issue.pull_request &&
+       (github.event.comment.user.id == 199175422 || contains(github.event.comment.body, '@codex')))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     concurrency:
@@ -149,6 +150,18 @@ jobs:
               const comments = await github.paginate(github.rest.issues.listComments, {
                 owner, repo, issue_number: pull_number, per_page: 100,
               });
+              const requests = [...comments];
+              if (pull_number === triggerNumber && context.payload.comment) requests.push(context.payload.comment);
+              const requestedAt = new Map();
+              for (const comment of requests) {
+                if (comment.user?.id === BOT_ID) continue;
+                for (const command of (comment.body || '').matchAll(/@codex\s+(security\s+)?review\b/gi)) {
+                  const name = command[1] ? 'Security Review' : 'Code Review';
+                  const date = Date.parse(comment.updated_at || comment.created_at);
+                  if (!Number.isFinite(date)) throw new Error('Review request date is unavailable.');
+                  requestedAt.set(name, Math.max(requestedAt.get(name) || 0, date));
+                }
+              }
               const summaries = comments.filter(c =>
                 c.user?.id === BOT_ID && c.user?.login === BOT_LOGIN && c.user?.type === 'Bot'
                 && (c.body || '').trimStart().startsWith(MARKER)
@@ -195,6 +208,13 @@ jobs:
                   return;
                 }
                 if (state !== 'Completed') throw new Error(`${name}: missing, failed, or unsupported completion state.`);
+                if (requestedAt.has(name)) {
+                  const finished = Date.parse(cells[2]?.match(/<relative-time datetime="([^"]+)"/u)?.[1]);
+                  if (!Number.isFinite(finished) || finished < requestedAt.get(name)) {
+                    core.info(`${name}: a newer review request is awaiting completion.`);
+                    return;
+                  }
+                }
                 const reviewedRef = cells[3]?.match(/^`([0-9a-f]{7,40})`$/)?.[1];
                 if (!reviewedRef) throw new Error(`${name}: missing or malformed reviewed commit.`);
                 if (!head.startsWith(reviewedRef)) {
