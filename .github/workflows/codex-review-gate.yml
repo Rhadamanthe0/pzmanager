@@ -1,5 +1,5 @@
 # Install on the default branch before requiring the status.
-# Require the commit status "Codex review gate", separately from the updater job.
+# Require the "Codex review gate" check, separate from the updater job.
 # No unresolved conversations does not establish that the review is complete.
 # This adapter reads the observed summary format; unknown formats remain blocked.
 name: Codex review gate updater
@@ -20,7 +20,7 @@ permissions:
   contents: read
   issues: read
   pull-requests: read
-  statuses: write
+  checks: write
 
 jobs:
   update-gate:
@@ -56,31 +56,63 @@ jobs:
             }
             const triggerNumber = Number(rawNumber);
             if (!Number.isSafeInteger(triggerNumber)) throw new Error('Invalid PR number.');
-            // Each run reevaluates every open PR: GitHub may replace a queued event.
+            // Invalidate the triggering PR first so a slow inventory cannot retain its old success.
+            const { data: trigger } = await github.rest.pulls.get({ owner, repo, pull_number: triggerNumber });
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const checks = new Map();
+            async function publish(head, state, description) {
+              if (!checks.has(head)) {
+                const existing = await github.paginate(github.rest.checks.listForRef, {
+                  owner, repo, ref: head, filter: 'latest', per_page: 100,
+                });
+                const matching = existing.filter(c => c.name === STATUS_CONTEXT && c.app?.id === 15368);
+                checks.set(head, matching.sort((a, b) => b.id - a.id)[0]?.id);
+              }
+              const body = { owner, repo, name: STATUS_CONTEXT, details_url: runUrl,
+                status: state === 'pending' ? 'in_progress' : 'completed',
+                output: { title: STATUS_CONTEXT, summary: description } };
+              if (state !== 'pending') body.conclusion = state === 'success' ? 'success' : 'failure';
+              const id = checks.get(head);
+              const result = id
+                ? await github.rest.checks.update({ ...body, check_run_id: id })
+                : await github.rest.checks.create({ ...body, head_sha: head });
+              checks.set(head, result.data.id);
+              core.info(`${STATUS_CONTEXT}: ${state} - ${description}`);
+            }
+            if (trigger.state === 'open') {
+              try {
+                await publish(trigger.head.sha, 'pending', 'Awaiting a completed Codex review for this commit.');
+              } catch (error) {
+                await publish(trigger.head.sha, 'error', 'The initial check update failed.');
+                throw error;
+              }
+            }
+            // Share one inventory to avoid quadratic reads on large repositories.
             const openPrs = await github.paginate(github.rest.pulls.list, {
               owner, repo, state: 'open', per_page: 100,
             });
-            for (const candidate of openPrs) await evaluate(candidate.number);
+            const related = new Set([trigger.head.sha, context.payload.before]);
+            openPrs.sort((a, b) => (a.number === triggerNumber ? -1 : b.number === triggerNumber ? 1
+              : Number(related.has(b.head.sha)) - Number(related.has(a.head.sha))));
+            const started = Date.now();
+            for (const candidate of openPrs.slice(0, 20)) {
+              if (Date.now() - started > 220000) { core.warning('Sweep time limit reached; dispatch remaining PRs.'); break; }
+              await evaluate(candidate.number);
+            }
+            if (openPrs.length > 20) core.warning('Sweep limited to 20 PRs; dispatch remaining PRs explicitly.');
             async function evaluate(pull_number) {
             const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number });
             if (pr.state !== 'open') return;
             const head = pr.head.sha;
             const base = pr.base.sha;
             const baseRef = pr.base.ref;
-            const runUrl = `${process.env.GITHUB_SERVER_URL}/${owner}/${repo}/actions/runs/${context.runId}`;
-            async function publish(state, description, url = runUrl) {
-              await github.rest.repos.createCommitStatus({
-                owner, repo, sha: head, context: STATUS_CONTEXT,
-                state, description: description.slice(0, 140), target_url: url,
-              });
-              core.info(`${STATUS_CONTEXT}: ${state} - ${description}`);
-            }
+            const update = (state, description) => publish(head, state, description);
             // Publish on the PR head: this workflow can run on the default branch.
             try {
-              await publish('pending', 'Awaiting a completed Codex review for this commit.');
-              const peers = await github.paginate(github.rest.pulls.list, {
-                owner, repo, state: 'open', per_page: 100,
-              });
+              if (pull_number !== triggerNumber || head !== trigger.head.sha) {
+                await update('pending', 'Awaiting a completed Codex review for this commit.');
+              }
+              const peers = openPrs;
               // A status is shared by SHA: another PR must never reuse this success.
               if (peers.filter(p => p.head.sha === head).length !== 1) {
                 core.info('Commit partagé par plusieurs PR ouvertes ; statut bloqué.');
@@ -189,21 +221,18 @@ jobs:
                 core.info('PR or summary changed during evaluation; gate remains pending.');
                 return;
               }
-              const latestPeers = await github.paginate(github.rest.pulls.list, {
-                owner, repo, state: 'open', per_page: 100,
-              });
               const latestTimeline = await github.paginate(github.rest.issues.listEventsForTimeline, {
                 owner, repo, issue_number: pull_number, per_page: 100,
               });
-              if (latestPeers.filter(p => p.head.sha === head).length !== 1
+              if (peers.filter(p => p.head.sha === head).length !== 1
                   || JSON.stringify(latestTimeline.filter(e => e.event === 'base_ref_changed')) !== JSON.stringify(retargets)) {
                 core.info('Contexte de PR modifié pendant la lecture ; statut bloqué.');
                 return;
               }
               // GitHub separately enforces review conversation resolution.
-              await publish('success', 'Codex review completed for this commit; conversation rules still apply.');
+              await update('success', 'Codex review completed for this commit; conversation rules still apply.');
             } catch (error) {
-              core.setFailed(error instanceof Error ? error.message : String(error));
-              await publish('error', 'Codex review could not be verified. Inspect this workflow and rerun it.');
+              core.warning(error instanceof Error ? error.message : String(error));
+              await update('error', 'Codex review could not be verified. Inspect this workflow and rerun it.');
             }
             }
