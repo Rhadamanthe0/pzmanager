@@ -29,7 +29,8 @@ jobs:
     if: >-
       github.event_name != 'issue_comment' ||
       (github.event.issue.pull_request &&
-       (github.event.comment.user.id == 199175422 || contains(github.event.comment.body, '@codex')))
+       (github.event.comment.user.id == 199175422 ||
+        (github.event.comment.user.id == 37266002 && contains(github.event.comment.body, '@codex'))))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     concurrency:
@@ -65,7 +66,7 @@ jobs:
             const requestWatermarks = new Map();
             function observeRequests(comments, dates) {
               for (const comment of comments) {
-                if (comment.user?.id === BOT_ID) continue;
+                if (comment.user?.id !== 37266002) continue;
                 for (const command of (comment.body || '').matchAll(/@codex\s+(security\s+)?review\b/gi)) {
                   const name = command[1] ? 'Security Review' : 'Code Review';
                   const date = Date.parse(comment.updated_at || comment.created_at) + 1000;
@@ -74,7 +75,40 @@ jobs:
                 }
               }
             }
-            async function publish(head, state, description) {
+            function emptyState(resetAfter = 0) { return { byPr: new Map(), resetAfter }; }
+            function loadState(text) {
+              const saved = JSON.parse(text);
+              if (saved.schema !== 'codex-review-gate:v2' || !saved.review_requests_by_pr
+                  || typeof saved.review_requests_by_pr !== 'object' || Array.isArray(saved.review_requests_by_pr)
+                  || !Number.isFinite(saved.reset_after) || saved.reset_after < 0) throw new Error('Invalid saved review requests.');
+              const result = emptyState(saved.reset_after);
+              for (const [number, values] of Object.entries(saved.review_requests_by_pr)) {
+                if (!/^[1-9][0-9]*$/.test(number) || !Number.isSafeInteger(Number(number))
+                    || !values || typeof values !== 'object' || Array.isArray(values)) throw new Error('Invalid saved PR context.');
+                const dates = new Map();
+                for (const [name, date] of Object.entries(values)) {
+                  if (!['Code Review', 'Security Review'].includes(name) || !Number.isFinite(date) || date < 0) throw new Error('Invalid saved review date.');
+                  dates.set(name, date);
+                }
+                result.byPr.set(number, dates);
+              }
+              return result;
+            }
+            function rawDates(head, number) { return new Map(requestWatermarks.get(head)?.byPr.get(String(number)) || []); }
+            function effectiveDates(head, number) {
+              const dates = rawDates(head, number);
+              const reset = requestWatermarks.get(head)?.resetAfter || 0;
+              if (reset) for (const name of ['Code Review', 'Security Review']) dates.set(name, Math.max(dates.get(name) || 0, reset));
+              return dates;
+            }
+            function rememberRequests(head, number, comments) {
+              const dates = rawDates(head, number);
+              const before = JSON.stringify([...dates]);
+              observeRequests(comments, dates);
+              if (dates.size) requestWatermarks.get(head).byPr.set(String(number), dates);
+              return JSON.stringify([...dates]) !== before;
+            }
+            async function publish(head, state, description, number = triggerNumber) {
               if (!checks.has(head)) {
                 const existing = await github.paginate(github.rest.checks.listForRef, {
                   owner, repo, ref: head, filter: 'all', per_page: 100,
@@ -82,28 +116,26 @@ jobs:
                 const matching = existing.filter(c => c.name === STATUS_CONTEXT && c.app?.id === 15368
                   && c.external_id === 'codex-review-gate:v1');
                 const previous = matching.sort((a, b) => b.id - a.id)[0];
-                const dates = new Map();
-                if (previous?.output?.text) {
-                  const saved = JSON.parse(previous.output.text);
-                  if (saved.schema !== 'codex-review-gate:v1' || !saved.review_requests
-                      || typeof saved.review_requests !== 'object') throw new Error('Invalid saved review requests.');
-                  for (const [name, date] of Object.entries(saved.review_requests)) {
-                    if (!['Code Review', 'Security Review'].includes(name) || !Number.isFinite(date) || date < 0) {
-                      throw new Error('Invalid saved review request date.');
-                    }
-                    dates.set(name, date);
-                  }
-                }
-                if (head === trigger.head.sha && context.payload.comment) observeRequests([context.payload.comment], dates);
-                requestWatermarks.set(head, dates);
                 checks.set(head, previous?.id);
+                requestWatermarks.set(head, emptyState());
+                try {
+                  if (previous?.output?.text) requestWatermarks.set(head, loadState(previous.output.text));
+                } catch (error) {
+                  checks.set(head, undefined);
+                  requestWatermarks.set(head, emptyState(Date.now()));
+                  throw error;
+                }
+                if (head === trigger.head.sha && number === triggerNumber && context.payload.comment) {
+                  rememberRequests(head, number, [context.payload.comment]);
+                }
               }
+              const saved = requestWatermarks.get(head);
               const body = { owner, repo, name: STATUS_CONTEXT, details_url: runUrl,
                 external_id: 'codex-review-gate:v1',
                 status: state === 'pending' ? 'in_progress' : 'completed',
                 output: { title: STATUS_CONTEXT, summary: description,
-                  text: JSON.stringify({ schema: 'codex-review-gate:v1',
-                    review_requests: Object.fromEntries(requestWatermarks.get(head) || []) }) } };
+                  text: JSON.stringify({ schema: 'codex-review-gate:v2', reset_after: saved.resetAfter,
+                    review_requests_by_pr: Object.fromEntries([...saved.byPr].map(([n, dates]) => [n, Object.fromEntries(dates)])) }) } };
               if (state !== 'pending') body.conclusion = state === 'success' ? 'success' : 'failure';
               const id = checks.get(head);
               let result;
@@ -145,7 +177,7 @@ jobs:
             const head = pr.head.sha;
             const base = pr.base.sha;
             const baseRef = pr.base.ref;
-            const update = (state, description) => publish(head, state, description);
+            const update = (state, description) => publish(head, state, description, pull_number);
             // Publish on the PR head: this workflow can run on the default branch.
             try {
               if (pull_number !== triggerNumber || head !== trigger.head.sha) {
@@ -181,13 +213,11 @@ jobs:
               });
               const requests = [...comments];
               if (pull_number === triggerNumber && context.payload.comment) requests.push(context.payload.comment);
-              const requestedAt = new Map(requestWatermarks.get(head) || []);
-              const beforeRequests = JSON.stringify([...requestedAt]);
-              observeRequests(requests, requestedAt);
-              requestWatermarks.set(head, requestedAt);
-              if (JSON.stringify([...requestedAt]) !== beforeRequests) {
+              if (rememberRequests(head, pull_number, requests)) {
                 await update('pending', 'A newer review request is awaiting authenticated completion.');
               }
+              const requestedAt = effectiveDates(head, pull_number);
+              for (const name of requestedAt.keys()) if (!requiredReviews.includes(name)) requiredReviews.push(name);
               const summaries = comments.filter(c =>
                 c.user?.id === BOT_ID && c.user?.login === BOT_LOGIN && c.user?.type === 'Bot'
                 && (c.body || '').trimStart().startsWith(MARKER)
@@ -288,6 +318,13 @@ jobs:
                 return;
               }
               // GitHub separately enforces review conversation resolution.
+              const latestRequests = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number: pull_number, per_page: 100,
+              });
+              if (rememberRequests(head, pull_number, latestRequests)) {
+                await update('pending', 'A newer review request arrived during evaluation.');
+                return;
+              }
               await update('success', 'Codex review completed for this commit; conversation rules still apply.');
             } catch (error) {
               core.warning(error instanceof Error ? error.message : String(error));
