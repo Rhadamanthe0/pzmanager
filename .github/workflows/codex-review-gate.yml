@@ -66,10 +66,12 @@ jobs:
                 const existing = await github.paginate(github.rest.checks.listForRef, {
                   owner, repo, ref: head, filter: 'latest', per_page: 100,
                 });
-                const matching = existing.filter(c => c.name === STATUS_CONTEXT && c.app?.id === 15368);
+                const matching = existing.filter(c => c.name === STATUS_CONTEXT && c.app?.id === 15368
+                  && c.external_id === 'codex-review-gate:v1');
                 checks.set(head, matching.sort((a, b) => b.id - a.id)[0]?.id);
               }
               const body = { owner, repo, name: STATUS_CONTEXT, details_url: runUrl,
+                external_id: 'codex-review-gate:v1',
                 status: state === 'pending' ? 'in_progress' : 'completed',
                 output: { title: STATUS_CONTEXT, summary: description } };
               if (state !== 'pending') body.conclusion = state === 'success' ? 'success' : 'failure';
