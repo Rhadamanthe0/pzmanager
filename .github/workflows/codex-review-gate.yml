@@ -191,7 +191,11 @@ jobs:
               core.info(`${STATUS_CONTEXT}: ${state} - ${description}`);
             }
             if (authorizationError) {
-              await publish(trigger.head.sha, 'error', 'Review requester authorization could not be verified.');
+              try { await publish(trigger.head.sha, 'error', 'Review requester authorization could not be verified.'); }
+              catch (error) {
+                await publish(trigger.head.sha, 'error', 'Review authorization or saved state could not be verified.');
+                throw error;
+              }
               throw authorizationError;
             }
             if (trigger.state === 'open') {
@@ -361,6 +365,14 @@ jobs:
               if (await rememberRequests(head, pull_number, latestRequests)) {
                 await update('pending', 'A newer review request arrived during evaluation.');
                 return;
+              }
+              const latestSummaries = latestRequests.filter(c =>
+                c.user?.id === BOT_ID && c.user?.login === BOT_LOGIN && c.user?.type === 'Bot'
+                && (c.body || '').trimStart().startsWith(MARKER));
+              if (latestSummaries.length !== 1 || latestSummaries[0].id !== summary.id
+                  || latestSummaries[0].node_id !== summary.node_id
+                  || latestSummaries[0].body !== summary.body || latestSummaries[0].updated_at !== summary.updated_at) {
+                throw new Error('The final authenticated summary set changed or became ambiguous.');
               }
               const latestPeers = await github.paginate(github.rest.pulls.list, {
                 owner, repo, state: 'open', per_page: 100,
