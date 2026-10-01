@@ -100,12 +100,13 @@ jobs:
             const related = new Set([trigger.head.sha, context.payload.before]);
             openPrs.sort((a, b) => (a.number === triggerNumber ? -1 : b.number === triggerNumber ? 1
               : Number(related.has(b.head.sha)) - Number(related.has(a.head.sha))));
-            const started = Date.now();
-            for (const candidate of openPrs.slice(0, 20)) {
-              if (Date.now() - started > 220000) { core.warning('Sweep time limit reached; dispatch remaining PRs.'); break; }
+            const affected = openPrs.filter(p => related.has(p.head.sha));
+            const seenHeads = new Set();
+            for (const candidate of affected) {
+              if (seenHeads.has(candidate.head.sha)) continue;
+              seenHeads.add(candidate.head.sha);
               await evaluate(candidate.number);
             }
-            if (openPrs.length > 20) core.warning('Sweep limited to 20 PRs; dispatch remaining PRs explicitly.');
             async function evaluate(pull_number) {
             const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number });
             if (pr.state !== 'open') return;
