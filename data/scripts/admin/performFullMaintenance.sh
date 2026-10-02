@@ -188,30 +188,40 @@ sync_external() {
 update_self() {
     # Tire la dernière version de pzmanager lui-même, juste avant le reboot (ou le
     # redémarrage du service) : le boot qui suit tourne sur les scripts à jour,
-    # sans intervention manuelle après la fusion d'une PR. --ff-only : un dépôt
-    # divergé ou modifié localement n'est jamais fusionné ni écrasé, l'échec est
-    # seulement journalisé. Non bloquant — un réseau ou GitHub en panne ne doit
-    # pas annuler la maintenance. Le script en cours n'est pas affecté : git
-    # remplace les fichiers (nouvel inode), bash garde l'ancien ouvert.
-    log "Mise à jour de pzmanager (git pull)..."
-    local branch
-    branch=$(git -C "${PZ_MANAGER_DIR}" symbolic-ref --short -q HEAD || echo "")
+    # sans intervention manuelle après la fusion d'une PR. Même séquence qu'à la
+    # main (fetch -p puis pull). --ff-only : un dépôt divergé ou modifié
+    # localement n'est jamais fusionné ni écrasé, l'échec est seulement journalisé.
+    # Non bloquant — un réseau ou GitHub en panne ne doit pas annuler la
+    # maintenance : chaque commande git est protégée, sinon `set -e` sortirait,
+    # le filet EXIT relancerait le serveur et le reboot n'aurait jamais lieu. Le
+    # script en cours n'est pas affecté : git remplace les fichiers (nouvel
+    # inode), bash garde l'ancien ouvert.
+    log "Mise à jour de pzmanager (git fetch -p + pull)..."
+    local -a git_cmd=(git -C "${PZ_MANAGER_DIR}")
+    local branch before after
+    branch=$("${git_cmd[@]}" symbolic-ref --short -q HEAD) || branch=""
     if [[ "$branch" != "main" ]]; then
-        log "WARNING: pzmanager n'est pas sur main (branche '${branch:-HEAD détachée}'), git pull ignoré."
+        log "WARNING: pzmanager n'est pas sur main (branche '${branch:-HEAD détachée ou dépôt illisible}'), git pull ignoré."
         return 0
     fi
-    local before after
-    before=$(git -C "${PZ_MANAGER_DIR}" rev-parse --short HEAD)
-    if GIT_TERMINAL_PROMPT=0 timeout 120 git -C "${PZ_MANAGER_DIR}" pull --ff-only -q origin main; then
-        after=$(git -C "${PZ_MANAGER_DIR}" rev-parse --short HEAD)
-        if [[ "$before" == "$after" ]]; then
-            log "pzmanager déjà à jour (${after})."
-        else
-            log "pzmanager mis à jour : ${before} -> ${after}"
-            git -C "${PZ_MANAGER_DIR}" log --oneline "${before}..${after}" | sed 's/^/    /'
-        fi
+    if ! before=$("${git_cmd[@]}" rev-parse --short HEAD); then
+        log "WARNING: HEAD de pzmanager illisible, git pull ignoré."
+        return 0
+    fi
+    if ! GIT_TERMINAL_PROMPT=0 timeout 120 "${git_cmd[@]}" fetch -p -q origin; then
+        log "WARNING: git fetch de pzmanager en échec (non bloquant) — réseau ou GitHub ?"
+        return 0
+    fi
+    if ! GIT_TERMINAL_PROMPT=0 timeout 120 "${git_cmd[@]}" pull --ff-only -q origin main; then
+        log "WARNING: git pull de pzmanager en échec (non bloquant) — dépôt divergé ou modifs locales ?"
+        return 0
+    fi
+    after=$("${git_cmd[@]}" rev-parse --short HEAD) || after="?"
+    if [[ "$before" == "$after" ]]; then
+        log "pzmanager déjà à jour (${after})."
     else
-        log "WARNING: git pull de pzmanager en échec (non bloquant) — dépôt divergé, modifs locales ou réseau ?"
+        log "pzmanager mis à jour : ${before} -> ${after}"
+        "${git_cmd[@]}" log --oneline "${before}..${after}" | sed 's/^/    /' || true
     fi
 }
 
