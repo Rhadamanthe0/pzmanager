@@ -1,5 +1,5 @@
 #!/bin/bash
-# performFullMaintenance.sh - Maintenance quotidienne (apt, steamcmd, reboot)
+# performFullMaintenance.sh - Maintenance quotidienne (apt, steamcmd, git pull, reboot)
 # Usage: ./performFullMaintenance.sh [délai] [options]
 # Options: --reason TEXT (raison de maintenance), --automatic (flag si auto), --silent
 # Lock partagé avec pz.sh/triggerMaintenanceOnModUpdate.sh
@@ -185,6 +185,36 @@ sync_external() {
     fi
 }
 
+update_self() {
+    # Tire la dernière version de pzmanager lui-même, juste avant le reboot (ou le
+    # redémarrage du service) : le boot qui suit tourne sur les scripts à jour,
+    # sans intervention manuelle après la fusion d'une PR. --ff-only : un dépôt
+    # divergé ou modifié localement n'est jamais fusionné ni écrasé, l'échec est
+    # seulement journalisé. Non bloquant — un réseau ou GitHub en panne ne doit
+    # pas annuler la maintenance. Le script en cours n'est pas affecté : git
+    # remplace les fichiers (nouvel inode), bash garde l'ancien ouvert.
+    log "Mise à jour de pzmanager (git pull)..."
+    local branch
+    branch=$(git -C "${PZ_MANAGER_DIR}" symbolic-ref --short -q HEAD || echo "")
+    if [[ "$branch" != "main" ]]; then
+        log "WARNING: pzmanager n'est pas sur main (branche '${branch:-HEAD détachée}'), git pull ignoré."
+        return 0
+    fi
+    local before after
+    before=$(git -C "${PZ_MANAGER_DIR}" rev-parse --short HEAD)
+    if GIT_TERMINAL_PROMPT=0 timeout 120 git -C "${PZ_MANAGER_DIR}" pull --ff-only -q origin main; then
+        after=$(git -C "${PZ_MANAGER_DIR}" rev-parse --short HEAD)
+        if [[ "$before" == "$after" ]]; then
+            log "pzmanager déjà à jour (${after})."
+        else
+            log "pzmanager mis à jour : ${before} -> ${after}"
+            git -C "${PZ_MANAGER_DIR}" log --oneline "${before}..${after}" | sed 's/^/    /'
+        fi
+    else
+        log "WARNING: git pull de pzmanager en échec (non bloquant) — dépôt divergé, modifs locales ou réseau ?"
+    fi
+}
+
 # Filet de sécurité : entre stop_server et le redémarrage final, TOUT échec
 # (verrou apt encore tenu après les 300 s, conflit dpkg, steamcmd injoignable,
 # `die "Java non installé"`) faisait sortir le script sous `set -e` — serveur
@@ -217,6 +247,7 @@ main() {
     update_game_server
     download_workshop_mods
     sync_external
+    update_self
 
     [[ "$SILENT_MODE" == true ]] && touch "${SILENT_FLAG_FILE}"
 
