@@ -8,5 +8,10 @@ ListenFIFO=%h/pzmanager/data/pzserver/zomboid.control
 FileDescriptorName=control
 SocketMode=0660
 SocketUser=%u
+# C17 (split-users) : en mode split, la FIFO est contrôlée via le groupe dédié
+# pzgame (le manager en est membre, cf. setupSystem.sh). En unité --user
+# mono-user, SocketUser=%u suffit : ne pas activer SocketGroup ici tant que le
+# groupe n'existe pas (casserait le démarrage).
+# SocketGroup=pzgame
 ExecStartPre=/bin/rm -f %h/pzmanager/data/pzserver/zomboid.control
 RemoveOnStop=true

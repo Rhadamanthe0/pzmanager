@@ -8,6 +8,22 @@
 # indolore (seule cette ligne dépend de la profondeur).
 PZ_MANAGER_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
+# C1 (verrou global + état serveur) : protocole unique partagé par toutes les
+# opérations qui touchent au monde (world_lock.sh) et état prouvé fail-closed
+# (server_state.sh). Sourcing OPTIONNEL : si les libs sont absentes, les
+# gardes ci-dessous dégradent vers l'inspection directe de systemctl (toujours
+# fail-closed sur erreur). Les verrous MAINTENANCE/SERVERCTL historiques sont
+# CONSERVÉS : pour les opérations destructrices, le verrou monde les ENGLOBE
+# (ordre d'acquisition global : WORLD -> SERVERCTL -> verrou spécifique).
+_PZ_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Forme `if` explicite : lib absente = on saute (sourcing optionnel, les
+# gardes ci-dessous dégradent vers l'inspection directe de systemctl, toujours
+# fail-closed). En revanche une lib PRÉSENTE mais en erreur de lecture fait
+# sortir le script aussitôt (fail-closed : pas de garde silencieuse).
+if [[ -f "${_PZ_LIB_DIR}/world_lock.sh" ]]; then source "${_PZ_LIB_DIR}/world_lock.sh"; fi
+if [[ -f "${_PZ_LIB_DIR}/server_state.sh" ]]; then source "${_PZ_LIB_DIR}/server_state.sh"; fi
+unset _PZ_LIB_DIR
+
 # Charge .env avec création automatique depuis .env.example
 # Usage: source_env [racine]   (défaut : PZ_MANAGER_ROOT)
 source_env() {
@@ -55,6 +71,13 @@ source_env() {
 apply_env_defaults() {
     # --- Utilisateur et chemins de base ---
     : "${PZ_USER:=$(id -un)}"
+    # C17 (split-users) : la JVM tourne sous PZ_GAME_USER, l'admin sous
+    # PZ_MANAGER_USER. Défaut = PZ_USER pour les deux : une install existante
+    # mono-user (ou un .env sans ces clés) fonctionne exactement comme avant.
+    : "${PZ_GAME_USER:=${PZ_USER}}"
+    : "${PZ_MANAGER_USER:=${PZ_USER}}"
+    : "${PZ_GAME_HOME:=/home/${PZ_GAME_USER}}"
+    : "${PZ_MANAGER_HOME:=/home/${PZ_MANAGER_USER}}"
     # PZ_MANAGER_DIR est un ALIAS de la racine déduite, pas une seconde source de
     # vérité : la moitié des scripts l'utilisaient (checkHeapAndRestart, fullBackup,
     # notifyServerReady...) et l'autre PZ_MANAGER_ROOT. Un .env recopié depuis une
@@ -88,6 +111,10 @@ apply_env_defaults() {
     : "${JAVA_VERSION:=25}"
     : "${JAVA_PACKAGE:=openjdk-${JAVA_VERSION}-jre-headless}"
     : "${JAVA_PATH:=/usr/lib/jvm/java-${JAVA_VERSION}-openjdk-amd64}"
+    # Source des paquets JDK : "debian" (depots de la distribution, defaut sur)
+    # ou "temurin" (Adoptium, nommage temurin-<v>-jre). Lu par
+    # lib/jdk_matrix.sh (resolve_java_package) a l'installation.
+    : "${PZ_JDK_SOURCE:=debian}"
 
     # --- Sauvegardes ---
     : "${BACKUP_DIR:=${PZ_DATA_DIR}/dataBackups}"
@@ -108,11 +135,11 @@ apply_env_defaults() {
     # travers d'un wipe, sans toucher au schéma de la base du monde.
     : "${WHITELIST_LEDGER:=${PZ_DATA_DIR}/whitelistLedger.csv}"
 
-    export PZ_USER PZ_HOME PZ_MANAGER_DIR PZ_DATA_DIR PZ_SCRIPTS_DIR \
+    export PZ_USER PZ_GAME_USER PZ_MANAGER_USER PZ_GAME_HOME PZ_MANAGER_HOME PZ_HOME PZ_MANAGER_DIR PZ_DATA_DIR PZ_SCRIPTS_DIR \
            PZ_INSTALL_DIR PZ_CONTROL_PIPE PZ_SERVICE_NAME PZ_SOURCE_DIR \
            PZ_SERVER_NAME PZ_DB_PATH PZ_INI_PATH \
            STEAMCMD_PATH STEAM_APP_ID STEAM_BETA_BRANCH STEAM_LOGIN \
-           JAVA_VERSION JAVA_PACKAGE JAVA_PATH \
+            JAVA_VERSION JAVA_PACKAGE JAVA_PATH PZ_JDK_SOURCE \
            BACKUP_DIR BACKUP_LATEST_LINK SYNC_BACKUPS_DIR \
            LOG_BASE_DIR LOG_ZOMBOID_DIR LOG_MAINTENANCE_DIR LOG_RETENTION_DAYS \
            WHITELIST_PURGE_DAYS WHITELIST_LEDGER
@@ -250,23 +277,83 @@ inactive_where_clause() {
 
 # Vrai (code 0) si le service serveur Zomboid tourne actuellement.
 # Requiert que source_env ait été appelé (PZ_SERVICE_NAME).
+# Conservé pour compat (lecture seule : status, délais...) : sur erreur
+# systemd il répond FAUX comme avant — ne jamais s'en servir comme garde
+# d'écriture, utiliser require_server_stopped / server_is_active_strict.
 server_is_active() {
     systemctl --user is-active --quiet "${PZ_SERVICE_NAME}" 2>/dev/null
+}
+
+# C1 : comme server_is_active, mais fail-closed. Meurt au lieu de répondre
+# « arrêté » quand l'état est indéterminé (bus user injoignable, unité
+# inconnue...). `failed` y meurt aussi : un crash ne prouve pas un arrêt
+# propre — les opérations destructrices exigent `inactive` (voir
+# assert_server_stopped_proven dans lib/server_state.sh).
+# `activating`/`deactivating` valent « actif » (démarrage/arrêt en cours).
+server_is_active_strict() {
+    if declare -F server_state >/dev/null 2>&1; then
+        local st
+        st="$(server_state)"
+        case "$st" in
+            active|activating|deactivating) return 0 ;;
+            inactive) return 1 ;;
+            *) die "État serveur indéterminé ('${st}') : refus par sécurité (fail-closed).
+Vérifie l'unité ${PZ_SERVICE_NAME} (bus user : systemctl --user) puis réessaie." ;;
+        esac
+    else
+        local rc=0
+        systemctl --user is-active --quiet "${PZ_SERVICE_NAME}" 2>/dev/null || rc=$?
+        if (( rc == 0 )); then return 0; fi
+        if (( rc == 3 || rc == 4 )); then return 1; fi
+        die "État serveur indéterminé (systemctl is-active exit=${rc}) : refus par sécurité (fail-closed)."
+    fi
 }
 
 # Refuse d'aller plus loin si le serveur tourne. Toute écriture directe dans le
 # monde (<world>.db, players.db, fichiers de save) DOIT passer par ici : le jeu
 # garde ces fichiers ouverts et réécrit son état depuis sa mémoire, donc une
 # modification faite à chaud est au mieux perdue, au pire corrompue.
+# C1 (fail-closed) : une erreur systemd (bus injoignable...) MEURT au lieu de
+# passer comme « arrêté » — `server_is_active` répondait faux sur erreur.
+# Acceptation inchangée par ailleurs : `activating`/`deactivating` passent
+# (la purge tourne en ExecStartPre, où l'unité est « activating ») et `failed`
+# passe (post-crash, process mort). Les opérations destructrices qui exigent
+# un arrêt PROUVÉ utilisent assert_server_stopped_proven (inactive seule).
 # Usage: require_server_stopped [contexte affiché dans le --reason suggéré]
 # Pour une commande qui a un --dry-run, ne PAS appeler ceci : basculer en aperçu,
 # afficher le plan, puis terminer par die_server_active — un refus nu oblige
 # sinon à couper le serveur juste pour savoir ce que la commande aurait fait.
 require_server_stopped() {
     local context="${1:-Maintenance}"
-    if server_is_active; then
-        die "Le serveur est actif : cette opération écrit dans le monde et doit se faire SERVEUR ARRÊTÉ.
+    if declare -F server_state >/dev/null 2>&1; then
+        local st
+        st="$(server_state)"
+        case "$st" in
+            inactive|activating|deactivating|failed)
+                return 0
+                ;;
+            active)
+                die "Le serveur est actif : cette opération écrit dans le monde et doit se faire SERVEUR ARRÊTÉ.
 Arrête-le d'abord :  pzm server stop 2m --reason \"${context}\""
+                ;;
+            *)
+                die "État serveur indéterminé ('${st}') : ${context} refuse de s'exécuter sans preuve d'arrêt (fail-closed).
+Vérifie l'unité ${PZ_SERVICE_NAME} (bus user : systemctl --user) puis réessaie."
+                ;;
+        esac
+    else
+        # Dégradation sans lib/server_state.sh : distingue l'erreur (exit autre
+        # que 0/3/4 = bus ou systemctl en panne) de l'arrêt (3/4).
+        local rc=0
+        systemctl --user is-active --quiet "${PZ_SERVICE_NAME}" 2>/dev/null || rc=$?
+        if (( rc == 0 )); then
+            die "Le serveur est actif : cette opération écrit dans le monde et doit se faire SERVEUR ARRÊTÉ.
+Arrête-le d'abord :  pzm server stop 2m --reason \"${context}\""
+        fi
+        if (( rc == 3 || rc == 4 )); then
+            return 0
+        fi
+        die "État serveur indéterminé (systemctl is-active exit=${rc}) : ${context} refuse de s'exécuter sans preuve d'arrêt (fail-closed)."
     fi
 }
 

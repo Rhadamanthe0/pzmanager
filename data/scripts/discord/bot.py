@@ -36,6 +36,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -185,21 +186,48 @@ async def deliver(send, header: str, output: str, *, filename: str = "pzm-output
         await _send_chunked(send, header, output)
 
 
+# Délai gracieux entre SIGTERM et SIGKILL du groupe (voir _kill_tree).
+_TERM_GRACE = 5.0
+
+
+async def _kill_tree(proc) -> None:
+    """Tue tout le groupe de `proc` (lancé avec start_new_session) : SIGTERM,
+    délai gracieux, puis SIGKILL si toujours vivant. Récolte (wait) le process."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(os.getpgid(proc.pid), sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=_TERM_GRACE)
+            return
+        except asyncio.TimeoutError:
+            pass
+    await proc.wait()
+
+
 async def run_pzm(args: list[str]) -> tuple[int, str]:
-    """Exécute `pzm <args>` sans shell. Retourne (code_retour, sortie_combinée)."""
+    """Exécute `pzm <args>` sans shell. Retourne (code_retour, sortie_combinée).
+
+    La commande tourne dans sa propre session (groupe) : sur timeout ou
+    annulation, SIGTERM puis SIGKILL sont envoyés au GROUPE entier pour ne
+    laisser aucun descendant."""
     proc = await asyncio.create_subprocess_exec(
         PZM, *args,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         cwd=PZ_MANAGER_DIR or None,
+        start_new_session=True,
     )
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=CMD_TIMEOUT)
     except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
+        await _kill_tree(proc)
         return 124, f"⏱️ Commande interrompue après {CMD_TIMEOUT}s (timeout)."
+    except asyncio.CancelledError:
+        await _kill_tree(proc)
+        raise
     return proc.returncode, stdout.decode("utf-8", errors="replace")
 
 
@@ -353,16 +381,24 @@ async def run_single(message: discord.Message, argv: list[str]):
 
 async def run_batch(message: discord.Message, batch: list[list[str]]):
     """Exécute séquentiellement chaque commande, supprime le message source et
-    poste un récap unique (inline, ou en pièce jointe si trop long)."""
+    poste un récap unique (inline, ou en pièce jointe si trop long).
+
+    Fail-fast volontaire (comportement par défaut, sans opt-out) : dès qu'une
+    commande échoue (exit != 0, timeout inclus), la suite n'est PAS exécutée
+    et les commandes restantes sont marquées « non exécutée » dans le récap."""
     n = len(batch)
 
     async def work(channel, author):
         log.info("EXEC BATCH user=%s channel=%s n=%d", author, channel.id, n)
         results = []
-        for argv in batch:
+        failed_at = None
+        for i, argv in enumerate(batch, 1):
             code, output = await run_pzm(argv)
             results.append((argv, code, output))
             log.info("BATCH item cmd=%r exit=%s", argv, code)
+            if code != 0:
+                failed_at = i
+                break
 
         ok = sum(1 for _, code, _ in results if code == 0)
         lines = []
@@ -375,8 +411,15 @@ async def run_batch(message: discord.Message, batch: list[list[str]]):
                 out = output.strip()
                 if out:
                     lines.append("   " + out.replace("\n", "\n   "))
-        header = (f"✅ Lot pzm : {ok}/{n} OK" if ok == n
-                  else f"⚠️ Lot pzm : {ok}/{n} OK, {n - ok} échec(s)")
+        if failed_at is None:
+            header = f"✅ Lot pzm : {ok}/{n} OK"
+        else:
+            rest = n - failed_at
+            header = (f"⚠️ Lot pzm : {ok}/{n} OK, échec à la commande {failed_at}"
+                      f" ({rest} non exécutée(s))")
+            for argv in batch[failed_at:]:
+                lines.append(f"⏭ {pzm_label(argv)} — non exécutée "
+                             f"(échec à la commande {failed_at})")
         header += f" · {author.mention}"
         return header, "\n".join(lines)
 

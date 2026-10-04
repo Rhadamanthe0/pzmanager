@@ -12,9 +12,87 @@ source_env
 
 readonly SILENT_FLAG_FILE="${PZ_MANAGER_DIR}/.silent_next_start"
 
+# C9 : machine à états récupérable (minimum de changements, inline).
+# Fichier d'état : ${XDG_RUNTIME_DIR}/pzmanager/maintenance.state si le runtime
+# existe (partagé, insensible à PrivateTmp comme le verrou monde), sinon repli
+# ${PZ_MANAGER_DIR}/.maintenance.state. PZ_MAINT_STATE_FILE permet aux tests de
+# rediriger l'état vers un sandbox.
+# États : INIT→STOPPED→SYSTEM→STEAM→MODS→BACKUP→SELF→DONE/FAILED. L'état est
+# écrit AVANT chaque phase ; la reprise est armée AVANT le stop (fichier
+# ${STATE}.recovery_armed + trap EXIT déjà posé) et n'est désarmée qu'après la
+# validation finale (service actif + JVM + ready). Une relance qui trouve un
+# état non terminal + reprise armée = crash mid-maintenance -> rollback minimal
+# (redémarrage serveur + message) puis reprise du parcours.
+maint_state_file() {
+    local runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u 2>/dev/null || echo 0)}"
+    if [[ -n "$runtime" && -d "$runtime" ]] && mkdir -p "${runtime}/pzmanager" 2>/dev/null; then
+        printf '%s\n' "${runtime}/pzmanager/maintenance.state"
+    else
+        printf '%s\n' "${PZ_MANAGER_DIR}/.maintenance.state"
+    fi
+}
+readonly MAINT_STATE_FILE="${PZ_MAINT_STATE_FILE:-$(maint_state_file)}"
+readonly MAINT_RECOVERY_FILE="${MAINT_STATE_FILE}.recovery_armed"
+maint_set_state() {
+    printf '%s\n' "$1" > "${MAINT_STATE_FILE}" 2>/dev/null || true
+    log "État maintenance: $1"
+}
+maint_arm_recovery() {
+    : > "${MAINT_RECOVERY_FILE}" 2>/dev/null || true
+}
+maint_disarm_recovery() {
+    rm -f "${MAINT_RECOVERY_FILE}" 2>/dev/null || true
+}
+# Si crash mid-maintenance : état non terminal + reprise armée. Rollback minimal
+# (redémarre le serveur + message) puis la main() en cours reprend à INIT.
+maint_detect_interrupted() {
+    local prev=""
+    [[ -f "${MAINT_STATE_FILE}" ]] && prev="$(cat "${MAINT_STATE_FILE}" 2>/dev/null || true)"
+    case "$prev" in
+        INIT|STOPPED|SYSTEM|STEAM|MODS|BACKUP|SELF)
+            if [[ -f "${MAINT_RECOVERY_FILE}" ]]; then
+                log "Reprise après interruption (état précédent: ${prev}) — redémarrage de sécurité."
+                "${SCRIPT_DIR}/../core/pz.sh" start now --reason "Reprise après interruption de maintenance (${prev})" --automatic 2>&1 || \
+                    log "WARNING: redémarrage de reprise en échec (non bloquant)" || true
+                notify "Maintenance précédente interrompue (${prev}) — serveur redémarré, reprise en cours." || true
+            fi
+            ;;
+    esac
+}
+validate_final_start() {
+    # Différencie 4 niveaux : start DEMANDÉ (pz.sh start a rendu 0, vérifié par
+    # l'appelant) vs ACTIF (systemd) vs JVM (processus) vs READY (boucle de jeu).
+    if ! server_is_active; then
+        log "ERREUR: validation finale — start demandé mais service non actif."
+        return 1
+    fi
+    if ! pgrep -f 'ProjectZomboid64' >/dev/null 2>&1; then
+        log "ERREUR: validation finale — service actif mais JVM ProjectZomboid64 absente."
+        return 1
+    fi
+    # wait_for_server_ready ne consomme PAS le délai joueurs (warn_players) : il
+    # attend le boot COURANT (boucle f:1, repli marqueur Lua), borné ici à 120 s.
+    # Gardé tel quel : un boot long post-validate retombe en FAILED explicite
+    # plutôt qu'en DONE aveugle.
+    if ! wait_for_server_ready 120; then
+        log "ERREUR: validation finale — JVM présente mais boot jamais prêt (timeout 120 s)."
+        return 1
+    fi
+    return 0
+}
+
 # Acquire lock
+# C1 : verrou monde D'ABORD (ordre WORLD -> MAINTENANCE, réentrant pour les
+# enfants pz.sh/dataBackup.sh qui participent au lieu de se bloquer). Tenu
+# pendant TOUTE la maintenance : start/stop, backup --required, wipe, restore
+# ou reset concurrents sont exclus. Sémantique de skip conservée (exit 0).
+if ! acquire_world_lock --try; then
+    echo "[$(date +'%H:%M:%S')] Opération monde déjà en cours, maintenance ignorée."
+    exit 0
+fi
 if ! try_acquire_maintenance_lock; then
     echo "[$(date +'%H:%M:%S')] Maintenance already running, skipping."
+    release_world_lock
     exit 0
 fi
 
@@ -70,6 +148,10 @@ ensure_directory "${LOG_MAINTENANCE_DIR}"
 exec > >(tee -a "${MAINT_LOG}") 2>&1
 
 stop_server() {
+    # NB délai : le wait_for_server_ready de pz.sh attend le boot COURANT (f:1 /
+    # marqueur Lua) AVANT préavis/comptage/arrêt et rend la main aussitôt prêt —
+    # il ne consomme le délai joueurs ($DELAY, warn_players) qu'en cas de boot
+    # bloqué (timeout). Gardé tel quel.
     # Tableau et non chaînes non quotées : même raison que dans main() plus bas —
     # `$automatic_opt $silent_opt` reposait sur le word-splitting de variables
     # vides, et les quoter (le réflexe naturel) aurait passé des arguments vides
@@ -159,7 +241,10 @@ download_workshop_mods() {
         return 0
     fi
     local items
-    items=$(grep -oP '^WorkshopItems=\K.*' "$ini" | tr ';' ' ')
+    # `|| true` : clé WorkshopItems ABSENTE -> grep sort 1, et sous `set -euo
+    # pipefail` la substitution sortait (maintenance annulée pour un serveur
+    # sans mods). Le test vide ci-dessous fait le reste (return 0).
+    items=$(grep -oP '^WorkshopItems=\K.*' "$ini" 2>/dev/null | tr ';' ' ' || true)
     if [[ -z "${items// }" ]]; then
         log "Aucun WorkshopItems à pré-télécharger."
         return 0
@@ -186,6 +271,11 @@ sync_external() {
 }
 
 update_self() {
+    # PZ_MAINT_SELF_UPDATE=0 : opt-out (le code n'est pas modifié mid-maintenance).
+    if [[ "${PZ_MAINT_SELF_UPDATE:-1}" == "0" ]]; then
+        log "Mise à jour de pzmanager ignorée (PZ_MAINT_SELF_UPDATE=0)."
+        return 0
+    fi
     # Tire la dernière version de pzmanager lui-même, juste avant le reboot (ou le
     # redémarrage du service) : le boot qui suit tourne sur les scripts à jour,
     # sans intervention manuelle après la fusion d'une PR. Même séquence qu'à la
@@ -206,6 +296,17 @@ update_self() {
     fi
     if ! before=$("${git_cmd[@]}" rev-parse --short HEAD); then
         log "WARNING: HEAD de pzmanager illisible, git pull ignoré."
+        return 0
+    fi
+    # Dépôt sale -> REFUS sans écraser (jamais de stash mid-maintenance : un stash
+    # modifierait le code en prod au milieu du parcours). Non bloquant.
+    local porcelain
+    if ! porcelain=$("${git_cmd[@]}" status --porcelain 2>/dev/null); then
+        log "WARNING: état git de pzmanager illisible, git pull ignoré (non bloquant)."
+        return 0
+    fi
+    if [[ -n "$porcelain" ]]; then
+        log "WARNING: pzmanager a des modifs locales, git pull refusé sans écraser (non bloquant)."
         return 0
     fi
     if ! GIT_TERMINAL_PROMPT=0 timeout 120 "${git_cmd[@]}" fetch -p -q origin; then
@@ -236,10 +337,13 @@ restart_server_on_failure() {
     local rc=$?
     (( rc == 0 )) && return 0
     [[ "$SERVER_STOPPED_BY_MAINTENANCE" == true ]] || return 0
-    log "ÉCHEC de la maintenance (code ${rc}) — redémarrage du serveur pour ne pas le laisser hors ligne."
+    log "ÉCHEC de la maintenance (code ${rc}) — redémarrage du serveur pour ne pas le laisser hors ligne." || true
+    printf '%s\n' "FAILED" > "${MAINT_STATE_FILE}" 2>/dev/null || true
     "${SCRIPT_DIR}/../core/pz.sh" start now --reason "Reprise après échec de la maintenance" --automatic || \
-        log "ERREUR: le redémarrage de secours a lui aussi échoué — intervention manuelle requise."
-    notify "Maintenance interrompue par une erreur — le serveur a été redémarré."
+        log "ERREUR: le redémarrage de secours a lui aussi échoué — intervention manuelle requise." || true
+    # notify() est déjà non bloquant (sendDiscord.sh ... || true en interne) ;
+    # le `|| true` explicite protège en plus contre `set -e` si le câblage change.
+    notify "Maintenance interrompue par une erreur — le serveur a été redémarré." || true
     return $rc
 }
 trap restart_server_on_failure EXIT
@@ -248,15 +352,30 @@ main() {
     log "=== MAINTENANCE DEMARREE ==="
     [[ -x "${SCRIPT_DIR}/../core/pz.sh" ]] || die "pz.sh introuvable"
 
+    # Crash mid-maintenance précédent ? Rollback minimal (restart + message),
+    # puis reprise du parcours ci-dessous depuis INIT.
+    maint_detect_interrupted || true
+    maint_set_state "INIT"
+
     # La purge des accès inactifs n'est plus déclenchée ici : elle est en
     # ExecStartPre de zomboid.service, donc rejouée à chaque démarrage (dont
     # celui qui suit cette maintenance), toujours monde fermé.
+    # Reprise armée AVANT le stop : le fichier existe dès que le serveur est
+    # arrêté, même si la phase suivante échoue. Le trap EXIT ci-dessus est déjà
+    # posé depuis le chargement du script.
+    maint_arm_recovery
+    maint_set_state "STOPPED"
     stop_server
     SERVER_STOPPED_BY_MAINTENANCE=true
+    maint_set_state "SYSTEM"
     update_system
+    maint_set_state "STEAM"
     update_game_server
+    maint_set_state "MODS"
     download_workshop_mods
+    maint_set_state "BACKUP"
     sync_external
+    maint_set_state "SELF"
     update_self
 
     [[ "$SILENT_MODE" == true ]] && touch "${SILENT_FLAG_FILE}"
@@ -267,13 +386,23 @@ main() {
 
     if [[ "$NO_REBOOT" != true && "${REBOOT_ON_MAINTENANCE:-true}" == true ]]; then
         log "Maintenance terminée, redémarrage machine..."
-        [[ "$SILENT_MODE" == true ]] || notify "Maintenance terminée - Redémarrage machine"
+        maint_set_state "DONE"
+        maint_disarm_recovery
+        [[ "$SILENT_MODE" == true ]] || notify "Maintenance terminée - Redémarrage machine" || true
         sudo /sbin/reboot
     else
         log "Maintenance terminée, redémarrage du service..."
         local -a opts=()
         [[ "$AUTOMATIC_MODE" == true ]] && opts+=(--automatic)
         "${SCRIPT_DIR}/../core/pz.sh" start --reason "$MAINTENANCE_REASON" "${opts[@]}"
+        if validate_final_start; then
+            maint_set_state "DONE"
+            maint_disarm_recovery
+        else
+            maint_set_state "FAILED"
+            notify "Maintenance terminée mais validation finale en échec — intervention manuelle requise." || true
+            return 1
+        fi
     fi
 }
 

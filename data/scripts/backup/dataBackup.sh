@@ -21,17 +21,40 @@ source_env
 # au lieu d'un dossier à part bizarrement nommé. On saute le save (serveur arrêté /
 # en cours de boot dans ces cas) et le prune (laissé au timer horaire, pour ne pas
 # traîner des centaines d'unlink() dans le chemin d'un ExecStartPre / d'un wipe).
+# --required : échoue (exit 1) au lieu de sauter (exit 0) si un verrou est occupé.
+# Sans --required (timer horaire...), un run concurrent est sauté proprement avec
+# le message structuré BACKUP_SKIPPED_LOCK (un `exit 0` silencieux se lisait
+# comme un succès). Avec --required, l'appelant exige la garantie du snapshot.
 SNAPSHOT_ONLY=0
+REQUIRED=0
 for arg in "$@"; do
     case "$arg" in
         --snapshot-only) SNAPSHOT_ONLY=1 ;;
-        *) die "Option inconnue: $arg (seul --snapshot-only est accepté)" ;;
+        --required) REQUIRED=1 ;;
+        *) die "Option inconnue: $arg (seuls --snapshot-only et --required sont acceptés)" ;;
     esac
 done
 
 # Valider répertoires
 validate_directory "${PZ_SOURCE_DIR}" "Répertoire source Zomboid"
 ensure_directory "${BACKUP_DIR}"
+
+# C1 : verrou monde AVANT le verrou backup (ordre WORLD -> spécifique,
+# réentrant : les snapshots --snapshot-only appelés PAR une opération qui
+# tient déjà le monde — purge, wipe — participent au lieu de se bloquer).
+# En mode normal (timer), un monde occupé = run sauté (exit 0,
+# BACKUP_SKIPPED_LOCK) ; en --required, c'est une erreur (exit 1).
+if [[ "$REQUIRED" == "1" ]]; then
+    if ! acquire_world_lock --required; then
+        # C2 : en --required le snapshot est exigé : échec fail-closed (exit 1)
+        # avec message structuré grep-able (pas le skip silencieux du timer).
+        echo "BACKUP_REQUIRED_LOCKED $(world_lock_path) — snapshot exigé mais verrou monde occupé."
+        exit 1
+    fi
+elif ! acquire_world_lock --try; then
+    echo "BACKUP_SKIPPED_LOCK $(world_lock_path) — run ignoré (opération monde en cours)."
+    exit 0
+fi
 
 # Verrou d'instance unique. Un run peut durer longtemps (le prune GFS d'un gros
 # backlog de snapshots hardlinkés se compte en dizaines de minutes/heures), donc
@@ -43,7 +66,14 @@ ensure_directory "${BACKUP_DIR}"
 readonly BACKUP_LOCK_FILE="/tmp/pzmanager-backup-$(id -un).lock"
 BACKUP_LOCK_FD=""
 if ! try_lock "${BACKUP_LOCK_FILE}" BACKUP_LOCK_FD; then
-    echo "Un backup est déjà en cours (${BACKUP_LOCK_FILE}) — run ignoré."
+    # C1 : message structuré (un exit 0 muet se lisait comme un succès).
+    # C2 : en --required, un backup concurrent échoue fail-closed (exit 1 +
+    # BACKUP_REQUIRED_LOCKED) ; sinon le run est sauté (exit 0 + BACKUP_SKIPPED_LOCK).
+    if [[ "$REQUIRED" == "1" ]]; then
+        echo "BACKUP_REQUIRED_LOCKED ${BACKUP_LOCK_FILE} — snapshot exigé mais un backup est déjà en cours."
+        exit 1
+    fi
+    echo "BACKUP_SKIPPED_LOCK ${BACKUP_LOCK_FILE} — run ignoré (un backup est déjà en cours)."
     exit 0
 fi
 
@@ -99,7 +129,25 @@ fi
 readonly TIMESTAMP=$(date +"%Y-%m-%d_%Hh%Mm%Ss")
 readonly BACKUP_PATH="${BACKUP_DIR}/backup_${TIMESTAMP}"
 
-echo "Backing up to ${BACKUP_PATH}..."
+# C2 : staging atomique — rsync n'écrit JAMAIS dans la destination finale.
+# On remplit ${BACKUP_PATH}.tmp, on valide, puis `mv -T tmp final` (atomique :
+# le final n'existe que complet, jamais partiel). Le trap nettoie le staging
+# sur tout échec / interruption (EXIT/INT/TERM). latest suit le même schéma
+# (lien tmp + mv atomique, jamais de rm -rf sur latest).
+readonly STAGING_PATH="${BACKUP_PATH}.tmp"
+readonly LATEST_TMP="${BACKUP_LATEST_LINK}.tmp.$$"
+cleanup_staging() {
+    rm -rf -- "${STAGING_PATH}" "${LATEST_TMP}" 2>/dev/null || true
+}
+trap cleanup_staging EXIT
+trap 'cleanup_staging; exit 143' INT TERM
+# Staging résiduel d'un run tué : on repart de propre (jamais de fusion).
+rm -rf -- "${STAGING_PATH}" "${LATEST_TMP}" 2>/dev/null || true
+# Orphelins d'un run tué -9 / panne (autre timestamp) : sous verrou backup, aucun
+# écrivain concurrent, et ces .tmp ne sont jamais des finals (prune les ignore).
+rm -rf -- "${BACKUP_DIR}"/backup_*.tmp "${BACKUP_LATEST_LINK}".tmp.* 2>/dev/null || true
+
+echo "Backing up to ${BACKUP_PATH} (staging ${STAGING_PATH})..."
 
 rsync_opts=(-a --delete --partial)
 [[ -d "${BACKUP_LATEST_LINK}" ]] && rsync_opts+=(--link-dest="${BACKUP_LATEST_LINK}")
@@ -121,34 +169,63 @@ fi
 # aléa I/O transitoire ne doit pas perdre le snapshot. On retente jusqu'à 3 fois ;
 # --partial (dans rsync_opts) conserve les fichiers déjà transférés d'une tentative
 # à l'autre, donc une reprise ne recopie que ce qui manque.
+# C2 : codes rsync stricts — 0 = succès ; 24 (fichiers disparus, monde vivant)
+# accepté UNIQUEMENT en mode normal (timer horaire tolérant) ; en --required /
+# --snapshot-only (filet de sécurité avant opération destructrice) il est refusé ;
+# 23 (transfert partiel) TOUJOURS échec. Les 23/24 ne se retentent pas (le fichier
+# a disparu à la source) ; les autres codes retentent. RSYNC_RETRY_DELAY surcharge
+# le délai (tests).
 readonly RSYNC_MAX_ATTEMPTS=3
+readonly RSYNC_RETRY_DELAY="${RSYNC_RETRY_DELAY:-5}"
+# Mode safety : snapshot exigé exact (avant purge/wipe...) -> aucune tolérance.
+STRICT=0
+if [[ "$REQUIRED" == "1" || "$SNAPSHOT_ONLY" == "1" ]]; then
+    STRICT=1
+fi
 rsync_status=0
 for (( attempt = 1; attempt <= RSYNC_MAX_ATTEMPTS; attempt++ )); do
     rsync_status=0
-    rsync "${rsync_opts[@]}" --relative "${backup_dirs[@]}" "${BACKUP_PATH}" || rsync_status=$?
+    rsync "${rsync_opts[@]}" --relative "${backup_dirs[@]}" "${STAGING_PATH}" || rsync_status=$?
 
-    # 0 = OK. On sauvegarde un monde VIVANT : PZ écrit/consolide ses chunks de
-    # carte en continu, donc un fichier listé par rsync peut disparaître avant
-    # d'être copié. rsync le signale par le code 24 (fichiers disparus) ou 23
-    # (transfert partiel, ex. « open .../map/NN/NNN.bin: No such file »). Ces
-    # deux cas sont bénins et ne se « réparent » pas par une reprise (le fichier
-    # a disparu à la source) : on les accepte tels quels sans retenter.
-    if (( rsync_status == 0 || rsync_status == 23 || rsync_status == 24 )); then
+    if (( rsync_status == 0 )); then
+        break
+    fi
+    # 24 toléré seulement en mode normal : monde vivant, fichier consolidé
+    # entre le listage et la copie — bénin, pas réparable par reprise.
+    if (( rsync_status == 24 && STRICT == 0 )); then
+        break
+    fi
+    # 23 toujours échec, 24 en safety toujours échec : pas de reprise utile.
+    if (( rsync_status == 23 || rsync_status == 24 )); then
         break
     fi
 
-    echo "Warning: rsync a échoué (code ${rsync_status}), nouvelle tentative ${attempt}/${RSYNC_MAX_ATTEMPTS} dans 5s..."
-    sleep 5
+    echo "Warning: rsync a échoué (code ${rsync_status}), nouvelle tentative ${attempt}/${RSYNC_MAX_ATTEMPTS} dans ${RSYNC_RETRY_DELAY}s..."
+    sleep "${RSYNC_RETRY_DELAY}"
 done
 
-if (( rsync_status == 23 || rsync_status == 24 )); then
-    echo "Warning: rsync a ignoré des fichiers disparus pendant la copie (code ${rsync_status}) — normal sur un monde en cours, snapshot conservé."
+if (( rsync_status == 24 && STRICT == 0 )); then
+    echo "Warning: rsync a ignoré des fichiers disparus pendant la copie (code 24) — normal sur un monde en cours, snapshot conservé."
 elif (( rsync_status != 0 )); then
     die "rsync a échoué après ${RSYNC_MAX_ATTEMPTS} tentatives (code ${rsync_status})."
 fi
 
-rm -rf "${BACKUP_LATEST_LINK}"
-ln -s "${BACKUP_PATH}" "${BACKUP_LATEST_LINK}"
+# Validation du staging AVANT publication : au moins un dir Saves/db/Server.
+if [[ ! -d "${STAGING_PATH}/Saves" && ! -d "${STAGING_PATH}/db" && ! -d "${STAGING_PATH}/Server" ]]; then
+    die "Backup invalide dans ${STAGING_PATH} : aucun répertoire Saves/db/Server — rien n'est publié."
+fi
+
+# Publication atomique : le final n'apparaît que complet. Si la destination
+# existe déjà (collision de timestamp), mv échoue et on refuse (fail-closed).
+mv -T "${STAGING_PATH}" "${BACKUP_PATH}" || die "Impossible de publier ${STAGING_PATH} vers ${BACKUP_PATH}."
+
+# latest atomique : lien tmp puis rename (jamais de rm -rf sur latest).
+# Un répertoire RÉEL nommé latest = anomalie : on refuse sans rien supprimer.
+if [[ -d "${BACKUP_LATEST_LINK}" && ! -L "${BACKUP_LATEST_LINK}" ]]; then
+    die "Refuse de toucher ${BACKUP_LATEST_LINK} : répertoire réel (pas un lien) — intervention manuelle requise."
+fi
+ln -sfnT "${BACKUP_PATH}" "${LATEST_TMP}" || die "Impossible de préparer le lien latest (${LATEST_TMP})."
+mv -Tf "${LATEST_TMP}" "${BACKUP_LATEST_LINK}" || { rm -f -- "${LATEST_TMP}" 2>/dev/null || true; die "Impossible de basculer latest vers ${BACKUP_PATH}."; }
 
 # Rétention grand-père/père/fils (GFS). Remplace l'ancienne rotation plate à N
 # jours. Chaque snapshot étant complet et indépendant (hardlinks --link-dest),
