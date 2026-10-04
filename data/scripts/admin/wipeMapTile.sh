@@ -61,11 +61,14 @@ usage() {
 
 # --- Parse des arguments -----------------------------------------------------
 SAVE_NAME=""
+SAVE_PROVIDED=false
 COORDS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --save)   SAVE_NAME="${2:-}"; shift 2 ;;
+        --save)
+            [[ $# -ge 2 ]] || die "Option --save attend une valeur (--save <nom>, ex: --save servertest)"
+            SAVE_NAME="${2:-}"; SAVE_PROVIDED=true; shift 2 ;;
         -h|--help) usage 0 ;;
         -*)       die "Option inconnue: $1" ;;
         *)        COORDS+=("$1"); shift ;;
@@ -87,8 +90,24 @@ done
 (( X1 <= X2 )) || { t=$X1; X1=$X2; X2=$t; }
 (( Y1 <= Y2 )) || { t=$Y1; Y1=$Y2; Y2=$t; }
 
+# --save : nom simple uniquement (pas de chemin) : traversal (`..`, `/`) ou
+# vide refusé AVANT tout rm (SAVE_DIR est interpolé dans le rm final).
+if [[ "$SAVE_PROVIDED" == true ]]; then
+    [[ -n "$SAVE_NAME" ]] || die "Nom de sauvegarde vide (--save <nom>, ex: --save servertest)"
+    [[ "$SAVE_NAME" != *"/"* && "$SAVE_NAME" != *".."* && "$SAVE_NAME" =~ ^[A-Za-z0-9._-]+$ ]] \
+        || die "Nom de sauvegarde invalide: $SAVE_NAME (attendu: lettres/chiffres/._- sans / ni ..)"
+fi
+
 # --- Serveur doit etre arrete ------------------------------------------------
-require_server_stopped "Wipe de zone carte"
+# C1 : verrou monde (exclut start/stop, backup, restore, 2e wipe, maintenance),
+# puis arrêt PROUVÉ (inactive seule ; failed/unknown/error -> refus fail-closed).
+# Le snapshot --snapshot-only enfant participe au verrou (pas de deadlock).
+acquire_world_lock --required || exit 1
+if declare -F assert_server_stopped_proven >/dev/null 2>&1; then
+    assert_server_stopped_proven "Wipe de zone carte"
+else
+    require_server_stopped "Wipe de zone carte"
+fi
 
 # --- Localise la sauvegarde MP -----------------------------------------------
 readonly MP_DIR="${PZ_SOURCE_DIR}/Saves/Multiplayer"
@@ -144,6 +163,7 @@ printf '  %s\n' "${targets[@]:0:20}"
 
 if (( ${#targets[@]} == 0 )); then
     echo "Rien a supprimer (zone non encore generee sur la sauvegarde -> la maj du mod s'appliquera d'elle-meme)."
+    release_world_lock
     exit 0
 fi
 
@@ -166,3 +186,5 @@ rm -f -- "${targets[@]/#/${SAVE_DIR}/}"
 
 log "Supprime: ${#targets[@]} fichier(s). Filet = dernier snapshot normal (pzm backup list)."
 echo "Terminez par: pzm server start  (la zone se regenerera au prochain passage d'un joueur)."
+# C1 : fin de section critique.
+release_world_lock

@@ -50,6 +50,28 @@ present.
 - `openjdk-25-jre-headless` (`JAVA_PACKAGE` in `.env`), in
   `/usr/lib/jvm/java-25-openjdk-amd64` (`JAVA_PATH`)
 
+### OS / JDK support matrix (C14)
+
+The installer never assumes the requested `JAVA_VERSION` is carried by the
+OS repositories. `install_zomboid_dependencies` calls `resolve_java_package()`
+(`data/scripts/lib/jdk_matrix.sh`), which probes each candidate with
+`apt-cache policy` and installs the first one that has a candidate, logging
+any downgrade. Order is always <requested> → 21 → 17 (deduplicated).
+
+| OS | `openjdk-25-jre-headless` probe | JDK actually installed |
+|---|---|---|
+| Debian 12 (bookworm) | no candidate in the default archive (bookworm carries 17) | 21 when backports/Adoptium expose it, else 17 |
+| Ubuntu 22.04 and newer | installed when the archive offers a candidate | 25 when available, else 21, else 17 |
+| Any OS, `PZ_JDK_SOURCE=temurin` | Adoptium repository (configure its APT source first) | `temurin-<version>-jre`, exactly as requested |
+
+After `apt-get install`, `verify_java_version()` parses the major out of
+`<JAVA_PATH>/bin/java -version` (falling back to `java` on `PATH`) and aborts
+the install on mismatch, so the binary the `zomboid.service` JVM ends up on is
+the one that was proven. Overrides in `.env`: `JAVA_VERSION` (17–25) and
+`PZ_JDK_SOURCE` (`debian`|`temurin`); the sudoers template already permits the
+three `apt-get install … openjdk-{25,21,17}-jre-headless` lines the fallback
+can pick.
+
 ---
 
 ## User and Permissions

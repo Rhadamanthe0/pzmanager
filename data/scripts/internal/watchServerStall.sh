@@ -81,6 +81,43 @@ write_cooldown() {
     mv -fT -- "$tmp" "$COOLDOWN_FILE"
 }
 
+# C13 : lier le watchdog à l'invocation diagnostiquée (anti-PID-reuse).
+#
+# Entre le diagnostic (frame figée) et le SIGKILL s'écoulent ~20 s de captures
+# (3 x jcmd + sleep). Un restart entre-temps (manuel, systemd, crash) recycle
+# le PID : tuer sans revérifier frapperait le NOUVEAU serveur, sain. On capture
+# donc l'identité systemd de l'invocation diagnostiquée (InvocationID + MainPID
+# + ActiveEnterTimestampMonotonic, avec repli epoch de ActiveEnterTimestamp) dans
+# le STATE_FILE, et on la re-vérifie juste avant le SIGKILL sous verrou monde
+# --try. Si elle a changé -> abandon (reset state, exit 0).
+# InvocationID vide (service non démarré, bus partiel) -> repli PID+ActiveEnter.
+read_service_identity() {
+    REQ_INVOCATION=""; REQ_MAINPID=""; REQ_ACTIVE_ENTER=""
+    local svc="${PZ_SERVICE_NAME:-zomboid.service}" v
+    v="$(systemctl --user show -p InvocationID --value "$svc" 2>/dev/null || true)"
+    [[ "$v" =~ ^[0-9a-fA-F]{32}$ ]] && REQ_INVOCATION="$v"
+    v="$(systemctl --user show -p MainPID --value "$svc" 2>/dev/null || true)"
+    [[ "$v" =~ ^[0-9]{1,18}$ ]] && REQ_MAINPID="$v"
+    v="$(systemctl --user show -p ActiveEnterTimestampMonotonic --value "$svc" 2>/dev/null || true)"
+    if [[ "$v" =~ ^[0-9]{1,20}$ ]]; then
+        REQ_ACTIVE_ENTER="$v"
+    else
+        v="$(systemctl --user show -p ActiveEnterTimestamp --value "$svc" 2>/dev/null || true)"
+        [[ -n "$v" ]] && v="$(date -d "$v" +%s 2>/dev/null || true)"
+        [[ "${v:-}" =~ ^[0-9]{1,18}$ ]] && REQ_ACTIVE_ENTER="$v"
+    fi
+    return 0  # identité partielle/vide = repli, jamais une erreur fatale
+}
+
+# Écriture unique du STATE_FILE (7 champs) :
+# pid frame stamp strikes invocation mainpid activeEnter.
+# Inconnu -> "-" (invocation) / "0" (numériques) : format fixe et borné.
+# Ancien format à 4 champs toujours relu (champs manquants = inconnus).
+write_state() {
+    printf '%s %s %s %s %s %s %s\n' "$1" "$2" "$3" "$4" \
+        "${REQ_INVOCATION:--}" "${REQ_MAINPID:-0}" "${REQ_ACTIVE_ENTER:-0}" > "$STATE_FILE"
+}
+
 # Les captures sont désormais conservées (voir le verdict NON CONCLUANT plus
 # bas) : on les fait vieillir comme les autres journaux plutôt que de les
 # laisser s'accumuler indéfiniment.
@@ -104,6 +141,10 @@ fi
 
 pid="$(pgrep -f 'ProjectZomboid64' | head -1 || true)"
 [[ -n "$pid" ]] || exit 0
+
+# Identité de l'invocation courante : sert à tous les write_state de ce passage
+# (diagnostic) ; le pré-SIGKILL la relira pour détecter un restart entre-temps.
+read_service_identity
 
 # SIGNAL DE PROGRESSION : le COMPTEUR DE FRAMES du log de jeu, pas les octets
 # réseau.
@@ -143,7 +184,7 @@ read -r frame stamp < <(
 # déjà se connecter. Ce n'est donc jamais la preuve d'une boucle de jeu figée :
 # réinitialiser l'état afin qu'un boot long ne puisse pas atteindre le SIGKILL.
 if [[ "$frame" == "0" ]]; then
-    printf '%s %s %s 0\n' "$pid" "$frame" "$stamp" > "$STATE_FILE"
+    write_state "$pid" "$frame" "$stamp" 0
     exit 0
 fi
 
@@ -166,25 +207,37 @@ clients="$(awk '/^game\{parameter="players"\}/ { p = $NF } END { printf "%d\n", 
 # Aucun joueur : la main loop tourne au ralenti, les compteurs peuvent stagner
 # légitimement -> on ne peut pas conclure, on repart de zéro.
 if (( clients == 0 )); then
-    printf '%s %s %s 0\n' "$pid" "$frame" "$stamp" > "$STATE_FILE"
+    write_state "$pid" "$frame" "$stamp" 0
     exit 0
 fi
 
-prev_pid=""; prev_frame=""; prev_stamp=""; strikes=0
+prev_pid=""; prev_frame=""; prev_stamp=""; strikes=0; prev_inv="-"; prev_main="0"; prev_enter="0"
 if [[ -f "$STATE_FILE" && ! -L "$STATE_FILE" ]]; then
-    read -r prev_pid prev_frame prev_stamp strikes < "$STATE_FILE" || true
+    read -r prev_pid prev_frame prev_stamp strikes prev_inv prev_main prev_enter < "$STATE_FILE" || true
     # Borner avant toute arithmétique ; 10# empêche l'interprétation octale.
     if [[ "$prev_pid" =~ ^[0-9]{1,18}$ && "$prev_frame" =~ ^[0-9]{1,18}$ &&
           "$prev_stamp" =~ ^[0-9]{1,18}$ && "$strikes" =~ ^[0-9]{1,9}$ ]]; then
         strikes=$((10#$strikes))
+        # Champs C13 absents (ancien format) ou malformés = inconnus.
+        [[ "${prev_inv:-}" =~ ^([0-9a-fA-F]{32}|-)$ ]] || prev_inv="-"
+        [[ "${prev_main:-}" =~ ^[0-9]{1,20}$ ]] || prev_main="0"
+        [[ "${prev_enter:-}" =~ ^[0-9]{1,20}$ ]] || prev_enter="0"
     else
         prev_pid=""; prev_frame=""; prev_stamp=""; strikes=0
+        prev_inv="-"; prev_main="0"; prev_enter="0"
     fi
 fi
 
 # Redémarrage entre deux passages -> compteurs remis à zéro, on réinitialise.
 if [[ "$prev_pid" != "$pid" ]]; then
-    printf '%s %s %s 0\n' "$pid" "$frame" "$stamp" > "$STATE_FILE"
+    write_state "$pid" "$frame" "$stamp" 0
+    exit 0
+fi
+# Même PID mais invocation différente (restart avec recyclage de PID) -> pareil.
+if [[ "$prev_inv" =~ ^[0-9a-fA-F]{32}$ && "$REQ_INVOCATION" =~ ^[0-9a-fA-F]{32}$ &&
+      "$prev_inv" != "$REQ_INVOCATION" ]]; then
+    log "stallwatch: redémarrage détecté entre deux passages (InvocationID changé) — réinitialisation, pas de conclusion."
+    write_state "$pid" "$frame" "$stamp" 0
     exit 0
 fi
 
@@ -196,7 +249,10 @@ if [[ "$frame" == "$prev_frame" ]] && [[ "$stamp" != "$prev_stamp" ]]; then
 else
     strikes=0
 fi
-printf '%s %s %s %s\n' "$pid" "$frame" "$stamp" "$strikes" > "$STATE_FILE"
+write_state "$pid" "$frame" "$stamp" "$strikes"
+# Identité diagnostiquée : le pré-SIGKILL la comparera au live (restart pendant
+# la capture de ~20 s). Ne pas la réécrire d'ici là.
+DIAG_INV="${REQ_INVOCATION}"; DIAG_MAIN="${REQ_MAINPID}"; DIAG_ENTER="${REQ_ACTIVE_ENTER}"
 
 (( strikes >= STALL_SAMPLES )) || exit 0
 
@@ -272,7 +328,7 @@ fi
 # n'en ont pas) : un rollback GraalVM rend donc l'arbitrage impossible.
 if (( ${#main_lines[@]} == 0 )); then
     log "stallwatch: ARBITRAGE IMPOSSIBLE (aucune ligne \"main\" dans le dump — jcmd absent ?). Capture conservée dans ${out} ; aucun redémarrage déclenché. Vérifier PZ_GRAALVM_HOME."
-    printf '%s %s %s 0\n' "$pid" "$frame" "$stamp" > "$STATE_FILE"
+    write_state "$pid" "$frame" "$stamp" 0
     write_cooldown
     exit 0
 fi
@@ -295,7 +351,7 @@ if (( runnable_count < ${#main_lines[@]} )) || (( burn_pct < BURN_MIN_PCT )); th
     # Réarmer : sans ça, `strikes` continuait de grimper et le script répondait
     # « dump déjà pris » sans plus rien vérifier — 40 min d'aveuglement le 14/08
     # à 04h12. Le cooldown évite de re-dumper chaque minute entre-temps.
-    printf '%s %s %s 0\n' "$pid" "$frame" "$stamp" > "$STATE_FILE"
+    write_state "$pid" "$frame" "$stamp" 0
     write_cooldown
     exit 0
 fi
@@ -331,6 +387,43 @@ fi
 # l'attente avant le SIGKILL que systemd finira par envoyer. Aucune perte
 # supplémentaire : la boucle empêche déjà toute sauvegarde.
 log "stallwatch: SIGKILL immédiat (le quit ne peut pas aboutir sur un thread bloqué)."
+
+# C13 : revérifier l'invocation diagnostiquée juste avant de tuer.
+# --try (jamais bloquant) : si le monde est déjà opéré (backup, maintenance,
+# restart...), on abandonne plutôt que d'attendre ou de doubler l'opération.
+# Le verrou est conservé jusqu'à la fin (relâché par le noyau à la sortie) :
+# le `pzm server restart` enfant y participe par héritage (PZ_WORLD_LOCK_DEPTH).
+if declare -F acquire_world_lock >/dev/null 2>&1; then
+    if ! acquire_world_lock --try; then
+        log "stallwatch: verrou monde occupé — abandon du SIGKILL (une opération monde est déjà en cours)."
+        exit 0
+    fi
+fi
+read_service_identity
+if [[ -n "$DIAG_INV" && -n "$REQ_INVOCATION" ]]; then
+    if [[ "$DIAG_INV" != "$REQ_INVOCATION" ]]; then
+        log "stallwatch: invocation changée depuis le diagnostic (${DIAG_INV} -> ${REQ_INVOCATION}) : restart entre-temps — abandon du SIGKILL."
+        write_state "$pid" "$frame" "$stamp" 0
+        exit 0
+    fi
+    if [[ -n "$DIAG_MAIN" && -n "$REQ_MAINPID" && "$DIAG_MAIN" != "$REQ_MAINPID" ]]; then
+        log "stallwatch: PID principal changé depuis le diagnostic (${DIAG_MAIN} -> ${REQ_MAINPID}) — abandon du SIGKILL."
+        write_state "$pid" "$frame" "$stamp" 0
+        exit 0
+    fi
+else
+    # InvocationID indisponible d'un côté ou des deux : repli PID+ActiveEnter.
+    if [[ -z "$DIAG_MAIN" || -z "$REQ_MAINPID" || "$DIAG_MAIN" != "$REQ_MAINPID" ]]; then
+        log "stallwatch: InvocationID indisponible, PID principal changé ou illisible (diag '${DIAG_MAIN:-?}' -> live '${REQ_MAINPID:-?}') — abandon du SIGKILL."
+        write_state "$pid" "$frame" "$stamp" 0
+        exit 0
+    fi
+    if [[ -n "$DIAG_ENTER" && -n "$REQ_ACTIVE_ENTER" && "$DIAG_ENTER" != "$REQ_ACTIVE_ENTER" ]]; then
+        log "stallwatch: InvocationID indisponible, ActiveEnter changé (même PID réutilisé ?) — abandon du SIGKILL."
+        write_state "$pid" "$frame" "$stamp" 0
+        exit 0
+    fi
+fi
 systemctl --user kill --signal=SIGKILL --kill-whom=all "${PZ_SERVICE_NAME}" || true
 
 # Laisser systemd constater la mort : tant qu'il voit le service actif, pz.sh

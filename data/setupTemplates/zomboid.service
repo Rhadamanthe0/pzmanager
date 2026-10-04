@@ -8,6 +8,20 @@ Wants=zomboid_logger.service
 Type=simple
 PrivateTmp=true
 WorkingDirectory=%h/pzmanager/data/pzserver/
+# C17 (split-users) : en mode split, la JVM tourne sous un compte dédié
+# (User=__PZ_GAME_USER__, sans accès aux secrets du manager) via l'unité
+# système correspondante. Cette unité --user tourne déjà sous l'UID du manager :
+# aucune directive User= active ici (interdite dans les unités --user, elle
+# casserait le démarrage mono-user). Durcissement ci-dessous valable en mono
+# comme en split. ProtectHome=yes proscrit : il casserait le cachedir.
+# User=__PZ_GAME_USER__ (unité système split uniquement, voir ci-dessus)
+NoNewPrivileges=true
+PrivateDevices=true
+RestrictSUIDSGID=true
+ProtectSystem=strict
+# Chemins inscriptibles : install (pzserver), monde (Zomboid), logs, et le
+# tube de contrôle (dans pzserver/). Tout le reste est en lecture seule.
+ReadWritePaths=%h/pzmanager/data/pzserver %h/pzmanager/Zomboid %h/pzmanager/logs
 # Purge tout octet résiduel (ex: "quit" bufferisé d'un stop précédent) resté dans
 # le FIFO de contrôle. Sinon la socket-activation relance le service qui relit ce
 # "quit" et remeurt à f:0 en boucle (flap). Lecture non-bloquante (iflag=nonblock):

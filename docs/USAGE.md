@@ -181,6 +181,12 @@ data/scripts/admin/purgeInactivePlayers.sh --force --dry-run --days 60
 It prints, per account, whether the SteamID would be released or kept because
 another account shares it.
 
+Safety net: when the pre-start snapshot is skipped (ExecStartPre running under
+the starter's world lock), the purge copies the world DB to
+`<db>.pre-purge-<timestamp>` (verified `integrity_check=ok`) instead — and that
+filet is **kept** after a successful purge (only the 3 most recent are retained,
+older ones are pruned), so a bad purge can still be rolled back by hand.
+
 ## Administration
 
 ```bash

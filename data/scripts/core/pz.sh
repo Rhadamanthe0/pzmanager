@@ -280,6 +280,11 @@ shutdown_server() {
 }
 
 do_start() {
+    # C1 : verrou monde AVANT serverctl (ordre WORLD -> SERVERCTL, réentrant
+    # pour les enfants : maintenance/reset qui appellent `pz.sh ...` participent
+    # au lieu de se bloquer). Tenu pendant tout l'arrêt/démarrage : un wipe,
+    # restore, reset ou backup --required concurrent est exclu.
+    acquire_world_lock --required || exit 1
     acquire_serverctl_lock_or_die
     echo "Démarrage du service..."
     systemctl --user start "${PZ_SERVICE_NAME}"
@@ -290,20 +295,27 @@ do_start() {
         send_discord "$context_msg"
     fi
     echo "Terminé."
+    release_world_lock
 }
 
 do_stop() {
+    # C1 : voir do_start (ordre WORLD -> SERVERCTL).
+    acquire_world_lock --required || exit 1
     acquire_serverctl_lock_or_die
     shutdown_server "ARRÊT"
     echo "Terminé."
+    release_world_lock
 }
 
 do_restart() {
+    # C1 : voir do_start (ordre WORLD -> SERVERCTL).
+    acquire_world_lock --required || exit 1
     acquire_serverctl_lock_or_die
     shutdown_server "REDÉMARRAGE"
     echo "Démarrage du service..."
     systemctl --user start "${PZ_SERVICE_NAME}"
     echo "Terminé."
+    release_world_lock
 }
 
 do_status() {

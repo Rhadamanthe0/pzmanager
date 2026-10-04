@@ -54,7 +54,7 @@ log() { printf '%s\\n' "$*"; }
         result = self.run_watch()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(marker.exists())
-        self.assertEqual(state.read_text(), '123 42 2000 0\n')
+        self.assertEqual(state.read_text(), '123 42 2000 0 - 0 0\n')
 
     def test_untrusted_cooldown_is_not_evaluated(self):
         marker = self.root / 'executed'
@@ -68,7 +68,7 @@ log() { printf '%s\\n' "$*"; }
         state.write_text('123 42 1999 08\n')
         result = self.run_watch()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(state.read_text(), '123 42 2000 9\n')
+        self.assertEqual(state.read_text(), '123 42 2000 9 - 0 0\n')
         state.unlink()
         self.assertEqual(self.run_watch().returncode, 0)
         self.assertEqual(state.stat().st_mode & 0o777, 0o600)
@@ -79,7 +79,7 @@ log() { printf '%s\\n' "$*"; }
         state.write_text('123 0 1999 99\n')
         result = self.run_watch()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(state.read_text(), '123 0 2000 0\n')
+        self.assertEqual(state.read_text(), '123 0 2000 0 - 0 0\n')
 
     def test_unproven_readiness_refuses_shutdown(self):
         # Extract only the function into a scratch shell: no production setup.

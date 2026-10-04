@@ -130,7 +130,8 @@ pzm rcon additem "Marc Riviere" "Base.556Box" 1
 The bot:
 
 1. Runs each line **in order** (same lock as the slash commands — they never
-   interleave), continuing even if one line fails. If another pzm command is
+   interleave), stopping at the first failing line — later lines are **not
+   executed** (marked ⏭ in the recap). If another pzm command is
    already running, the batch is **queued** (FIFO) and starts when its turn
    comes — the status message shows "en file d'attente…" until then.
 2. **Deletes your source message** to keep the channel clean.
