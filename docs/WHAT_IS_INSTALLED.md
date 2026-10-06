@@ -300,6 +300,7 @@ ExecStart=/bin/sh -c "... exec .../start-server.sh -cachedir=%h/pzmanager/Zomboi
 ExecStartPost=-/bin/sh -c "%h/pzmanager/data/scripts/internal/notifyServerReady.sh &"
 ExecStop=/bin/sh -c "echo 'quit' > %h/pzmanager/data/pzserver/zomboid.control"
 KillSignal=SIGCONT
+TimeoutStartSec=900           # allows the pre-start purge safety snapshot to finish
 TimeoutStopSec=120            # a large modded B42 save can take >30s to shut down cleanly
 MemorySwapMax=0              # swap forbidden to the process (prevents micro-freezes/desync)
 
@@ -309,6 +310,7 @@ WantedBy=default.target
 
 **Features**:
 - Automatic startup at boot
+- Pre-start purge and its safety snapshot have up to 15 minutes to complete
 - Uses systemd socket for control pipe
 - Admin password passed once via `.admin_password` (read then deleted by ExecStart)
 - Discord notification at startup (via notifyServerReady.sh)
