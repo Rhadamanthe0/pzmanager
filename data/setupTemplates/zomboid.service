@@ -47,6 +47,9 @@ ExecStart=/bin/sh -c "ENV_FILE='%h/pzmanager/.env'; if [ -r \"$ENV_FILE\" ]; the
 ExecStartPost=-/bin/sh -c "%h/pzmanager/data/scripts/internal/notifyServerReady.sh &"
 ExecStop=/bin/sh -c "echo 'quit' > %h/pzmanager/data/pzserver/zomboid.control"
 KillSignal=SIGCONT
+# 06/10/2026 : le snapshot préalable à la purge a pris 180 s au démarrage.
+# Le délai systemd par défaut (90 s) interrompait cette sauvegarde avant la JVM.
+TimeoutStartSec=900
 # Sauvegarde-à-l'extinction d'un gros monde B42 moddé dépasse souvent 30s ;
 # à 120s systemd laisse le "quit" finir proprement au lieu de SIGKILL (faux "timeout")
 TimeoutStopSec=120
