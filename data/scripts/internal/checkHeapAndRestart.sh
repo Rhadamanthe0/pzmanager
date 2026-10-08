@@ -22,7 +22,13 @@ source "${SCRIPT_DIR}/../lib/common.sh"
 source_env
 
 readonly GC_LOG="${LOG_ZOMBOID_DIR}/gc.log"
-readonly COOLDOWN_MARKER="/tmp/pzmanager-heapcheck-$(id -un).trigger"
+# Marqueur de cooldown dans le répertoire privé (cf. private_state_path) : le
+# précédent marqueur partagé prévisible sous /tmp laissait un autre utilisateur
+# local le pré-créer avec un mtime futur et bloquer ainsi les restarts
+# préventifs (âge calculé négatif < cooldown).
+COOLDOWN_MARKER="$(private_state_path "heapcheck.trigger")" \
+    || die "Répertoire d'état privé indisponible (repli /tmp pré-créé par un tiers ?) : heapcheck annulé (fail-closed)."
+readonly COOLDOWN_MARKER
 readonly PCT_THRESHOLD="${HEAP_RESTART_PERCENT:-95}"
 readonly RESTART_DELAY="${HEAP_RESTART_DELAY:-5m}"
 # Ne pas re-déclencher tant que le restart précédent (préavis + arrêt + reboot
@@ -51,6 +57,12 @@ log "heapcheck: heap post-GC ${pct}% (seuil ${PCT_THRESHOLD}%)"
 (( pct >= PCT_THRESHOLD )) || exit 0
 
 # Anti-empilement : un restart vient-il d'être déclenché ?
+# Hygiène du marqueur : on ne fait confiance qu'à un fichier régulier possédé
+# par nous (un autre type/propriétaire est retiré, jamais lu). Dans le dossier
+# privé 0700 ci-dessus, un tiers ne peut de toute façon rien y déposer.
+if [[ -e "$COOLDOWN_MARKER" ]] && { [[ ! -f "$COOLDOWN_MARKER" ]] || [[ ! -O "$COOLDOWN_MARKER" ]]; }; then
+    rm -f -- "$COOLDOWN_MARKER" 2>/dev/null || true
+fi
 age="$(marker_age_seconds "$COOLDOWN_MARKER")"
 if (( age < COOLDOWN_SECONDS )); then
     log "heapcheck: restart déjà déclenché il y a ${age}s (<${COOLDOWN_SECONDS}s) — on attend."
