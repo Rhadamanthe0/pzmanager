@@ -194,6 +194,25 @@ fi
 # dans le plan/dry-run (toujours « CONSERVÉ, encore utilisé »).
 VICTIM_IDS="$(printf '%s\n' "${VICTIMS[@]}" | cut -d$'\x1f' -f1 | paste -sd,)"
 
+# Garde-fou précoce (constat Codex Security, 10/2026) : les id alimentent des
+# IN (...) SQL dès le plan (steamid_becomes_orphan) puis la transaction. Le
+# garde du plan venait trop tard pour les lignes précédentes, et un saut de
+# ligne ou un 0x1f dans un pseudo forgeait des lignes
+# (VICTIM_IDS="5,0); DELETE FROM whitelist;--"). Tout identifiant non entier,
+# toute ligne mal cadrée ou tout écart de cardinalité annule la purge AVANT
+# toute requête (fail-closed).
+sql_or_die _pz_expected "SELECT COUNT(*) FROM whitelist WHERE $WHERE"
+(( ${#VICTIMS[@]} == _pz_expected )) \
+    || die "Registre incohérent (${#VICTIMS[@]} lignes pour ${_pz_expected} victimes) : purge annulée (fail-closed)."
+for _pz_row in "${VICTIMS[@]}"; do
+    _pz_vid="${_pz_row%%$'\x1f'*}"
+    _pz_sep="${_pz_row//[^$'\x1f']/}"
+    if [[ ! "$_pz_vid" =~ ^[0-9]+$ || "${#_pz_sep}" -ne 2 ]]; then
+        die "Ligne inattendue en base (id='${_pz_vid}') : purge annulée (fail-closed)."
+    fi
+done
+unset _pz_expected _pz_row _pz_vid _pz_sep
+
 steamid_becomes_orphan() {
     local sid="$1" esc kept
     [[ -n "$sid" ]] || return 1
