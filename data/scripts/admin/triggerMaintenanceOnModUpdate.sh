@@ -251,8 +251,18 @@ main() {
     cleanup_old_logs
     check_prerequisites
 
+    # WORLD avant MAINTENANCE : un backup peut tenir le monde pendant plusieurs
+    # passages du timer. Reporter le contrôle plutôt que laisser pz.sh échouer.
+    # Le fd reste hérité par le restart/la maintenance : pas de fenêtre entre
+    # le contrôle et l'action où un autre backup pourrait prendre le monde.
+    if ! acquire_world_lock --try; then
+        log_event "World operation in progress - skipping"
+        exit 0
+    fi
+
     if ! try_acquire_maintenance_lock; then
         log_event "Maintenance in progress - skipping"
+        release_world_lock
         exit 0
     fi
 
