@@ -184,6 +184,14 @@ grep -q 'BACKUP_SKIPPED_LOCK' "$SCRIPT" \
 grep -q -- '--required' "$SCRIPT" \
     && ok "--required accepté (non-régression C1)" \
     || ko "--required absent (régression C1)"
+if grep -q 'pzmanager-backup-.*\.lock' "$SCRIPT"; then
+    ko "verrou backup /tmp prévisible encore présent"
+else
+    ok "verrou backup : plus de chemin /tmp prévisible"
+fi
+grep -q 'private_state_path "backup.lock"' "$SCRIPT" \
+    && ok "verrou backup : passe par private_state_path" \
+    || ko "verrou backup : n'utilise pas private_state_path"
 
 # --- (1) rsync 23 -> échec, rien publié ----------------------------------------
 echo "== (1) rsync 23 =="
@@ -301,7 +309,11 @@ fi
 echo "== (7) concurrence =="
 fresh_case clock
 export MOCK_RSYNC_EXIT=0
-LOCKFILE="/tmp/pzmanager-backup-$(id -un).lock"
+# Verrou tenu au même endroit que le script : répertoire privé (cf. fix
+# c8c38a9). La fonction réelle est sourcée, pas le chemin dupliqué.
+# shellcheck disable=SC1091
+source "${ROOT}/data/scripts/lib/common.sh"
+LOCKFILE="$(private_state_path "backup.lock")"
 # Holder SANS fork : le subshell est REMPLACÉ par sleep (même pid, fd hérité) —
 # le kill libère donc réellement le verrou (sinon l'enfant sleep orphelin
 # garderait le fd et le verrou jusqu'à la fin de son sleep).
