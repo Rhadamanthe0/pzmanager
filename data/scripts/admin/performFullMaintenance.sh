@@ -145,6 +145,9 @@ cd "${PZ_HOME}"
 
 readonly MAINT_LOG="${LOG_MAINTENANCE_DIR}/maintenance_$(date +'%Y-%m-%d_%Hh%Mm%S').log"
 ensure_directory "${LOG_MAINTENANCE_DIR}"
+# Journal créé d'emblée en 600 (même idiome que generate_admin_password) : un
+# `tee` appliquerait l'umask (644) alors que le log mentionne le compte Steam.
+install -m 600 /dev/null "${MAINT_LOG}"
 exec > >(tee -a "${MAINT_LOG}") 2>&1
 
 stop_server() {
@@ -213,8 +216,11 @@ update_game_server() {
     # branche par défaut ; -beta "" reste proscrit (steamcmd avalerait le token
     # suivant comme nom de branche).
     local beta_branch; beta_branch="$(steam_beta_branch)"
-    "${STEAMCMD_PATH}" +force_install_dir "${PZ_INSTALL_DIR}" +login "${STEAM_LOGIN:-anonymous}" \
-        +app_update "${STEAM_APP_ID}" -beta "${beta_branch}" validate +quit
+    # Login hors argv (/proc, ps) : via runscript 0600, jamais en argument visible.
+    steamcmd_runscript "${STEAM_LOGIN:-anonymous}" \
+        "force_install_dir \"${PZ_INSTALL_DIR}\"" \
+        "login \"${STEAM_LOGIN:-anonymous}\"" \
+        "app_update \"${STEAM_APP_ID}\" -beta \"${beta_branch}\" validate"
 
     # Le validate restaure le ProjectZomboid64.json vanilla : réappliquer le tuning
     "${SCRIPT_DIR}/../internal/configureJvm.sh"
@@ -249,17 +255,23 @@ download_workshop_mods() {
         log "Aucun WorkshopItems à pré-télécharger."
         return 0
     fi
-    log "Pré-téléchargement des mods Workshop (compte ${login})..."
-    local args=(+force_install_dir "${PZ_INSTALL_DIR}" +login "${login}")
+    log "Pré-téléchargement des mods Workshop (compte configuré)..."
+    local lines=("force_install_dir \"${PZ_INSTALL_DIR}\"" "login \"${login}\"")
     local id
     for id in $items; do
-        args+=(+workshop_download_item "${STEAM_WORKSHOP_APP_ID}" "${id}")
+        # Garde anti-injection du runscript : les IDs viennent de servertest.ini.
+        # Averti + ignoré (non bloquant, comme l'échec pré-DL ci-dessous) : un
+        # `die` annulerait toute la maintenance pour une coquille dans l'ini.
+        if [[ ! "$id" =~ ^[0-9]+$ ]]; then
+            log "WARNING: WorkshopItems invalide ignoré ('${id}') : ID numérique attendu."
+            continue
+        fi
+        lines+=("workshop_download_item \"${STEAM_WORKSHOP_APP_ID}\" \"${id}\"")
     done
-    args+=(+quit)
-    if "${STEAMCMD_PATH}" "${args[@]}"; then
+    if steamcmd_runscript "$login" "${lines[@]}"; then
         log "Pré-téléchargement des mods Workshop terminé."
     else
-        log "WARNING: pré-DL des mods Workshop en échec (non bloquant) — vérifier le login '${login}' (jeton steamcmd expiré ?)."
+        log "WARNING: pré-DL des mods Workshop en échec (non bloquant) — vérifier le compte Steam configuré (jeton steamcmd expiré ?)."
     fi
 }
 

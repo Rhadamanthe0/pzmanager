@@ -582,15 +582,19 @@ download_zomboid_server() {
     # BetaKey précédente figée dans le manifeste, ce qui avait provoqué la boucle
     # de mises à jour du 05/08/2026. performFullMaintenance.sh le documente et le
     # fait déjà ; l'installation faisait l'inverse et rejouait donc le bug sur une
-    # machine neuve. Tableau plutôt que chaîne : plus de word-splitting implicite.
+    # machine neuve. La ligne est interpolée dans le runscript (citée) plutôt
+    # qu'en tableau argv : le login n'y est jamais visible via /proc ou ps.
     local branch; branch="$(steam_beta_branch)"
-    local -a beta_args=(-beta "$branch")
     echo "  → Branche Steam: ${branch}"
 
     # STEAMCMD_PATH / STEAM_APP_ID viennent du .env comme partout ailleurs, au
     # lieu d'être écrits en dur ici seulement.
-    sudo -u "$PZ_USER" "${STEAMCMD_PATH:-/usr/games/steamcmd}" +force_install_dir "$PZ_INSTALL_DIR" \
-        +login "${STEAM_LOGIN:-anonymous}" +app_update "${STEAM_APP_ID:-380870}" "${beta_args[@]}" validate +quit
+    # Login hors argv : runscript 0600 confié à PZ_USER puis exécuté sous son
+    # identité (ce script tourne en root, steamcmd sous PZ_USER).
+    STEAMCMD_AS_USER="$PZ_USER" steamcmd_runscript "${STEAM_LOGIN:-anonymous}" \
+        "force_install_dir \"${PZ_INSTALL_DIR}\"" \
+        "login \"${STEAM_LOGIN:-anonymous}\"" \
+        "app_update \"${STEAM_APP_ID:-380870}\" -beta \"${branch}\" validate"
 }
 
 configure_zomboid_jvm() {

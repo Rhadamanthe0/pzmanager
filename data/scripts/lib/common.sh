@@ -159,6 +159,33 @@ apply_env_defaults() {
 # expression `${STEAM_BETA_BRANCH:-public}` avec le même paragraphe d'explication.
 steam_beta_branch() { echo "${STEAM_BETA_BRANCH:-public}"; }
 
+# SteamCMD sans exposer le login dans argv (lisible via /proc et ps) : le
+# `login` transite par un runscript temporaire (mktemp = 0600, nom aléatoire),
+# exécuté via `+runscript` puis effacé — l'argv ne montre que le chemin du
+# fichier, jamais le compte. Chaque argument = une ligne du script (`quit`
+# ajouté d'office). Le login est refusé s'il contient un saut de ligne ou un
+# guillemet (injection de commande du runscript) ; les chemins/IDs sont cités
+# par l'appelant. STEAMCMD_AS_USER (optionnel) : exécute sous cet utilisateur
+# (installation root via sudo) après lui avoir confié le fichier.
+# Usage: steamcmd_runscript <login> <ligne>...
+steamcmd_runscript() {
+    local login="$1"; shift
+    [[ "$login" != *$'\n'* && "$login" != *\"* ]] \
+        || die "STEAM_LOGIN invalide (saut de ligne ou guillemet) : login steamcmd refusé."
+    local script
+    script="$(mktemp "${TMPDIR:-/tmp}/pz-steamcmd-XXXXXX")" || die "Impossible de créer le runscript steamcmd."
+    printf '%s\n' "$@" 'quit' > "$script"
+    local rc=0
+    if [[ -n "${STEAMCMD_AS_USER:-}" ]]; then
+        chown -- "${STEAMCMD_AS_USER}:${STEAMCMD_AS_USER}" "$script" || { rm -f -- "$script"; die "Impossible de confier le runscript steamcmd à ${STEAMCMD_AS_USER}."; }
+        sudo -u "${STEAMCMD_AS_USER}" "${STEAMCMD_PATH}" +runscript "$script" || rc=$?
+    else
+        "${STEAMCMD_PATH}" +runscript "$script" || rc=$?
+    fi
+    rm -f -- "$script"
+    return "$rc"
+}
+
 # Arrêt avec message d'erreur
 die() {
     echo "ERREUR: $*" >&2
