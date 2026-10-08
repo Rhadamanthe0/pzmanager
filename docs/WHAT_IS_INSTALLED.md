@@ -70,7 +70,8 @@ the install on mismatch, so the binary the `zomboid.service` JVM ends up on is
 the one that was proven. Overrides in `.env`: `JAVA_VERSION` (17–25) and
 `PZ_JDK_SOURCE` (`debian`|`temurin`); the sudoers template already permits the
 three `apt-get install … openjdk-{25,21,17}-jre-headless` lines the fallback
-can pick.
+can pick. Temurin is pinned to `temurin-25-jre` only (no wildcard: a wildcard
+would allow apt option injection as root).
 
 ---
 

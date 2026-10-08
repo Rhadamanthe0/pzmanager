@@ -7,7 +7,9 @@ __PZ_USER__ ALL=(ALL) NOPASSWD: /usr/bin/apt-get upgrade -y -qq -o DPkg\:\:Lock\
 __PZ_USER__ ALL=(ALL) NOPASSWD: /usr/bin/apt-get install -y -qq -o DPkg\:\:Lock\:\:Timeout=300 openjdk-25-jre-headless
 __PZ_USER__ ALL=(ALL) NOPASSWD: /usr/bin/apt-get install -y -qq -o DPkg\:\:Lock\:\:Timeout=300 openjdk-21-jre-headless
 __PZ_USER__ ALL=(ALL) NOPASSWD: /usr/bin/apt-get install -y -qq -o DPkg\:\:Lock\:\:Timeout=300 openjdk-17-jre-headless
-__PZ_USER__ ALL=(ALL) NOPASSWD: /usr/bin/apt-get install -y -qq -o DPkg\:\:Lock\:\:Timeout=300 temurin-*-jre
+# Temurin épinglé à la 25 : un joker autoriserait l'injection d'options apt en
+# root (constat Codex Security, 10/2026).
+__PZ_USER__ ALL=(ALL) NOPASSWD: /usr/bin/apt-get install -y -qq -o DPkg\:\:Lock\:\:Timeout=300 temurin-25-jre
 __PZ_USER__ ALL=(ALL) NOPASSWD: /usr/bin/apt-get autoremove -y -qq -o DPkg\:\:Lock\:\:Timeout=300
 __PZ_USER__ ALL=(ALL) NOPASSWD: /usr/bin/apt-get autoclean -qq -o DPkg\:\:Lock\:\:Timeout=300
 
