@@ -27,6 +27,11 @@ ReadWritePaths=%h/pzmanager/data/pzserver %h/pzmanager/Zomboid %h/pzmanager/logs
 # "quit" et remeurt à f:0 en boucle (flap). Lecture non-bloquante (iflag=nonblock):
 # vide instantanément si des octets traînent, retourne aussitôt si le FIFO est vide.
 ExecStartPre=/bin/sh -c "dd if=%h/pzmanager/data/pzserver/zomboid.control iflag=nonblock of=/dev/null 2>/dev/null; exit 0"
+# Admission verrouillée : Open=false est LA barrière B42 (cf. allowedsteamid).
+# BLOQUANT (sans "-") : un serveur qui ne peut pas être fermé ne démarre pas.
+# Couvre tous les démarrages (boot, pzm, socket-activation) ; la whitelist et
+# les comptes ne sont jamais touchés (constat Codex Security, 10/2026).
+ExecStartPre=%h/pzmanager/data/scripts/internal/enforceClosedServer.sh
 # Purge des accès inactifs juste AVANT le lancement de la JVM. C'est le seul
 # instant où le monde est garanti fermé quel que soit le chemin de démarrage
 # (boot après maintenance, pzm server start/restart, socket-activation) : la
