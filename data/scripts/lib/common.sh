@@ -491,6 +491,35 @@ wait_for_server_ready() {
     return 1
 }
 
+# --- Répertoire privé pour marqueurs/verrous (anti-/tmp prévisible) ---------------
+# Même motif que world_lock_path (lib/world_lock.sh) pour le verrou monde : le
+# marqueur de cooldown heapcheck et les verrous /tmp prévisibles laissaient un
+# autre utilisateur local bloquer les restarts (fichier futur) ou les opérations
+# serveur/backup (flock adverse, pré-création hostile). Ce helper donne le même
+# abri à tous : ${XDG_RUNTIME_DIR}/pzmanager/ (géré par pam_systemd, un par
+# utilisateur, insensible à PrivateTmp), avec repli /tmp/pzmanager-<user>/ 0700.
+# Fail-closed : un dossier de repli pré-créé par un tiers (non possédé) fait
+# échouer l'appel (retour 1) au lieu d'y écrire.
+# Usage: private_state_path <nom-fichier>  -> imprime le chemin (crée le dossier 0700)
+private_state_path() {
+    local name="${1:-}" user runtime dir
+    # Nom simple uniquement : pas de chemin (échappée du dossier privé impossible).
+    [[ -n "$name" && "$name" != *"/"* ]] || return 1
+    user="$(id -un 2>/dev/null || echo unknown)"
+    runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u 2>/dev/null || echo 0)}"
+    if [[ -n "$runtime" && -d "$runtime" ]]; then
+        dir="${runtime}/pzmanager"
+    else
+        # Repli : pas de runtime (service sans session user...). Partagé, donc
+        # la possession exclusive est vérifiée ci-dessous avant tout usage.
+        dir="/tmp/pzmanager-${user}"
+    fi
+    mkdir -p "$dir" 2>/dev/null || return 1
+    chmod 0700 "$dir" 2>/dev/null || true
+    [[ -d "$dir" && ! -L "$dir" && -O "$dir" ]] || return 1
+    printf '%s\n' "${dir}/${name}"
+}
+
 # --- Verrous d'exclusion mutuelle ---------------------------------------------
 # Tous les verrous du produit passent par flock. Deux propriétés en découlent, et
 # c'est tout ce qu'il faut savoir : le verrou est pris atomiquement (pas de fenêtre
