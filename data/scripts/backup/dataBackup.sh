@@ -63,7 +63,12 @@ fi
 # tient déjà le verrou, on skippe proprement ce run (exit 0) au lieu de paralléliser
 # deux rsync/rm sur le même arbre. Le verrou est tenu jusqu'à la fin du script ;
 # libéré automatiquement par le noyau si le process est tué (timeout systemd inclus).
-readonly BACKUP_LOCK_FILE="/tmp/pzmanager-backup-$(id -un).lock"
+# Chemin en répertoire privé (constat Codex Security, 10/2026 : le /tmp prévisible
+# laissait un tiers local supprimer les backups par flock adverse ou pré-création
+# hostile). Même motif que le marqueur heapcheck.
+BACKUP_LOCK_FILE="$(private_state_path "backup.lock")" \
+    || die "BACKUP_REQUIRED_LOCKED répertoire d'état privé indisponible — snapshot annulé (fail-closed)."
+readonly BACKUP_LOCK_FILE
 BACKUP_LOCK_FD=""
 if ! try_lock "${BACKUP_LOCK_FILE}" BACKUP_LOCK_FD; then
     # C1 : message structuré (un exit 0 muet se lisait comme un succès).
