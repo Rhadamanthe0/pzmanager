@@ -52,8 +52,29 @@ if [[ "$REQUIRED" == "1" ]]; then
         exit 1
     fi
 elif ! acquire_world_lock --try; then
-    echo "BACKUP_SKIPPED_LOCK $(world_lock_path) — run ignoré (opération monde en cours)."
-    exit 0
+    # Le modcheck tient le verrou monde pendant ses sondes (constat Codex
+    # Security, 10/2026 : collision possible avec le backup horaire, qui
+    # skippait sans réessai). Directive du propriétaire (10/2026) : réessayer
+    # ~60 fois à 10 s d'intervalle avant de sauter le run. En --required,
+    # échec immédiat inchangé (ExecStartPre : pas d'attente au démarrage).
+    # PZ_WORLD_LOCK_RETRIES / PZ_WORLD_LOCK_RETRY_DELAY : coutures de test.
+    echo "BACKUP_WAITING_LOCK $(world_lock_path) — opération monde en cours, attente avant skip."
+    _pz_lock_tries=0
+    _pz_lock_max="${PZ_WORLD_LOCK_RETRIES:-60}"
+    _pz_lock_wait="${PZ_WORLD_LOCK_RETRY_DELAY:-10}"
+    [[ "$_pz_lock_max" =~ ^[0-9]+$ ]] || _pz_lock_max=60
+    [[ "$_pz_lock_wait" =~ ^[0-9]+$ ]] || _pz_lock_wait=10
+    while (( _pz_lock_tries < _pz_lock_max )) && ! acquire_world_lock --try; do
+        sleep "$_pz_lock_wait"
+        _pz_lock_tries=$(( _pz_lock_tries + 1 ))
+    done
+    unset _pz_lock_tries _pz_lock_max _pz_lock_wait
+    if acquire_world_lock --try; then
+        echo "BACKUP_WAITING_LOCK OK — verrou monde acquis après attente."
+    else
+        echo "BACKUP_SKIPPED_LOCK $(world_lock_path) — run ignoré (opération monde en cours)."
+        exit 0
+    fi
 fi
 
 # Verrou d'instance unique. Un run peut durer longtemps (le prune GFS d'un gros

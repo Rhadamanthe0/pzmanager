@@ -17,6 +17,9 @@
 #       --required -> 1 + BACKUP_REQUIRED_LOCKED, aucun final.
 #   (8) SIGTERM pendant rsync -> pas de final, pas de .tmp.
 #   (9) répertoire réel nommé latest -> refuse sans rm -rf (sentinelle intacte).
+#   (10) verrou monde occupé -> retry ~PZ_WORLD_LOCK_RETRIES x
+#       PZ_WORLD_LOCK_RETRY_DELAY puis succès sans skip ; essais épuisés ->
+#       exit 0 + BACKUP_SKIPPED_LOCK, rien publié.
 #   Partout : aucun final incomplet (final absent ou contenant Saves/db/Server),
 #   aucun .tmp résiduel.
 #
@@ -386,6 +389,47 @@ if [[ -d "${BKP}/latest" && ! -L "${BKP}/latest" && -f "${BKP}/latest/sentinel.t
 else
     ko "latest réel : répertoire altéré ou supprimé"
 fi
+
+# --- (10) attente verrou monde (retry, cf. fix a49ebd2) ----------------------------------
+echo "== (10) attente verrou monde =="
+fresh_case cwait
+export MOCK_RSYNC_EXIT=0 PZ_WORLD_LOCK_RETRIES=30 PZ_WORLD_LOCK_RETRY_DELAY=1
+# shellcheck disable=SC1091
+source "${ROOT}/data/scripts/lib/world_lock.sh"
+WL="$(world_lock_path)"
+mkdir -p "$(dirname "$WL")"
+( exec {WHFD}>"$WL" && flock -n "$WHFD" && exec sleep 4 ) &
+HOLDER_PID=$!
+sleep 1
+if run_backup; then rc=0; else rc=$?; fi
+kill "$HOLDER_PID" 2>/dev/null || true
+wait "$HOLDER_PID" 2>/dev/null || true
+HOLDER_PID=""
+out="$(cat "${SANDBOX}/out.log")"
+if (( rc == 0 )) && grep -q 'BACKUP_WAITING_LOCK OK' <<<"$out" && ! grep -q 'BACKUP_SKIPPED_LOCK' <<<"$out"; then
+    ok "attente monde : backup passe après libération (pas de skip)"
+else
+    ko "attente monde : rc=$rc (attendu 0 sans skip)"; show_out
+fi
+(( $(final_count "$BKP") == 1 )) && ok "attente monde : un final publié" || { ko "attente monde : final=$(final_count "$BKP") (attendu 1)"; show_out; }
+# Essais épuisés -> skip propre (exit 0 + BACKUP_SKIPPED_LOCK).
+fresh_case cwaitko
+export MOCK_RSYNC_EXIT=0 PZ_WORLD_LOCK_RETRIES=2 PZ_WORLD_LOCK_RETRY_DELAY=1
+( exec {WHFD}>"$WL" && flock -n "$WHFD" && exec sleep 15 ) &
+HOLDER_PID=$!
+sleep 1
+if run_backup; then rc=0; else rc=$?; fi
+kill "$HOLDER_PID" 2>/dev/null || true
+wait "$HOLDER_PID" 2>/dev/null || true
+HOLDER_PID=""
+out="$(cat "${SANDBOX}/out.log")"
+if (( rc == 0 )) && grep -q 'BACKUP_SKIPPED_LOCK' <<<"$out"; then
+    ok "attente épuisée : 0 + BACKUP_SKIPPED_LOCK"
+else
+    ko "attente épuisée : rc=$rc (attendu 0 + skip)"; show_out
+fi
+(( $(final_count "$BKP") == 0 )) && ok "attente épuisée : rien publié" || ko "attente épuisée : final publié à tort"
+unset PZ_WORLD_LOCK_RETRIES PZ_WORLD_LOCK_RETRY_DELAY
 
 # --- Bilan -------------------------------------------------------------------------
 echo ""
