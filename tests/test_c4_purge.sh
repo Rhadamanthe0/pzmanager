@@ -32,6 +32,8 @@
 #   (10) hors couverture (verrou tenu, unité inactive) -> die franc, rien
 #       supprimé, aucun filet local ; (10b) erreur snapshot réelle (exit 1)
 #       sous couverture -> die aussi (filet réservé au BACKUP_SKIPPED_LOCK).
+#   (11) pseudo hostile (pipe + saut de ligne avec tentative d'injection SQL)
+#       -> die fail-closed AVANT toute requête, base inchangée.
 #
 # Preuves réelles : vrai script purgeInactivePlayers.sh, vraies bases SQLite
 # (fichiers), vrai flock via lib C1, vraies transactions. Seules parties
@@ -509,6 +511,26 @@ else
         fi
     fi
 fi
+
+# --- (11) pseudo hostile : pipe + saut de ligne avec injection -------------------
+# Constat Codex Security (10/2026) : un saut de ligne dans un pseudo forgeait des
+# lignes (VICTIM_IDS="5,0); DELETE FROM whitelist;--"), exécutées dès le plan.
+# Le garde précoce (id entiers + lignes bien cadrées + cardinalité) annule la
+# purge AVANT toute requête : base inchangée, snapshot même pas tenté.
+echo "== (11) pseudo hostile =="
+fresh_case hostile
+mk_fixture
+sqlite3 "$DB" "INSERT INTO whitelist(id,username,steamid,lastConnection) VALUES (7,'MabEira | Hannibal','sid-hostile','$OLD');"
+sqlite3 "$DB" "INSERT INTO allowedsteamid(steamid) VALUES ('sid-hostile');"
+sqlite3 "$DB" "INSERT INTO whitelist(id,username,steamid,lastConnection) VALUES (8,'evil' || char(10) || '0); DELETE FROM whitelist;--','sid-evil','$OLD');"
+sqlite3 "$DB" "INSERT INTO allowedsteamid(steamid) VALUES ('sid-evil');"
+before="$(db_state)"
+if run_purge; then rc=0; else rc=$?; fi
+(( rc != 0 )) && ok "pseudo hostile : die fail-closed (exit $rc)" || { ko "pseudo hostile : exit 0 à tort"; show_out; }
+[[ "$(db_state)" == "$before" ]] && ok "pseudo hostile : base inchangée" || { ko "pseudo hostile : base MODIFIÉE"; show_out; }
+grep -q 'fail-closed' "${SANDBOX}/out.log" \
+    && ok "pseudo hostile : refus journalisé" \
+    || { ko "pseudo hostile : refus non journalisé"; show_out; }
 
 # --- Bilan -------------------------------------------------------------------------
 echo ""
