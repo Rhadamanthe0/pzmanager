@@ -573,8 +573,52 @@ MAINTENANCE_LOCK_FD=""
 # directes dans les bases du monde. Une commande qui exige un serveur arrêté le
 # conserve de sa vérification jusqu'à sa dernière écriture : `pzm server start`
 # ne peut donc pas s'intercaler entre les deux.
-readonly SERVERCTL_LOCK_FILE="/tmp/pzmanager-serverctl-$(id -un).lock"
+SERVERCTL_LOCK_FILE=""
 SERVERCTL_LOCK_FD=""
+
+# Le chemin partagé prévisible permettait à un autre utilisateur de tenir
+# un flock adverse. Résoudre seulement à l'acquisition : common.sh sert aussi
+# aux lecteurs et à l'ExecStartPre confiné, qui n'ont pas besoin de ce verrou.
+serverctl_lock_path() {
+    local runtime dir parent owner mode lock_file
+    runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    [[ "$runtime" == /* ]] || return 1
+    if [[ -e "$runtime" || -L "$runtime" ]]; then
+        [[ -d "$runtime" && ! -L "$runtime" && -O "$runtime" ]] || return 1
+        dir="${runtime}/pzmanager"
+    else
+        dir="/tmp/pzmanager-$(id -un)"
+    fi
+    # Un répertoire privé sous un parent remplaçable ne protège pas son inode.
+    # Le parent sticky possédé par root (/tmp) préserve ses enfants possédés.
+    parent="$(dirname "$dir")"
+    while :; do
+        [[ -d "$parent" && ! -L "$parent" ]] || return 1
+        owner="$(stat -c %u "$parent")" || return 1
+        mode="$(stat -c %a "$parent")" || return 1
+        [[ "$owner" == 0 || -O "$parent" ]] || return 1
+        if (( (8#$mode & 0022) != 0 )); then
+            [[ "$owner" == 0 && -k "$parent" ]] || return 1
+        fi
+        [[ "$parent" == / ]] && break
+        parent="$(dirname "$parent")"
+    done
+    if [[ -e "$dir" || -L "$dir" ]]; then
+        [[ -d "$dir" && ! -L "$dir" && -O "$dir" ]] || return 1
+    else
+        (umask 077; mkdir -m 0700 -- "$dir") || return 1
+    fi
+    # Même sélection que private_state_path, mais résolue une seule fois :
+    # l'apparition du runtime ne doit pas déplacer le verrou après validation.
+    chmod 0700 -- "$dir" || return 1
+    [[ "$(stat -c %a "$dir")" == 700 ]] || return 1
+    lock_file="${dir}/serverctl.lock"
+    if [[ -e "$lock_file" || -L "$lock_file" ]]; then
+        [[ -f "$lock_file" && ! -L "$lock_file" && -O "$lock_file" ]] || return 1
+        [[ "$(stat -c %h "$lock_file")" == 1 ]] || return 1
+    fi
+    printf '%s\n' "$lock_file"
+}
 
 # Prend un verrou flock NON BLOQUANT sur $1 et publie le fd dans la variable
 # nommée $2. Retour 0 si acquis, 1 si déjà tenu par quelqu'un d'autre.
@@ -594,6 +638,8 @@ try_lock() {
 acquire_serverctl_lock_or_die() {
     local message="${1:-}"
     [[ -n "$message" ]] || message="Une opération serveur ou une écriture dans le monde est déjà en cours. Attends qu'elle se termine."
+    SERVERCTL_LOCK_FILE="$(serverctl_lock_path)" \
+        || die "Répertoire ou fichier du verrou serverctl non sûr : opération refusée."
     try_lock "$SERVERCTL_LOCK_FILE" SERVERCTL_LOCK_FD || die "$message"
 }
 
