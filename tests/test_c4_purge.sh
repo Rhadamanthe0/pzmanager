@@ -21,7 +21,7 @@
 #   (6) liste vide -> exit 0, snapshot non appelé, base inchangée.
 #   (7) SIGTERM avant écriture (sleep injecté PZ_PURGE_TEST_SLEEP) -> exit != 0,
 #       rien supprimé, pas de .sql résiduel, verrou libéré (relance OK).
-#   (8) témoin ancien code (HEAD, copie isolée) sur le cas (4) -> succès partiel
+#   (8) témoin ancien code (avant #141, copie isolée) sur le cas (4) -> succès partiel
 #       (prouve que le test (4) détecte le défaut corrigé, pas un vacuité).
 #   (9) couverture démarreur (C1xC2xC4) : verrou tenu par un processus distinct
 #       + unité activating (systemctl mocké) + dataBackup --snapshot-only sans
@@ -392,7 +392,8 @@ export PATH="${BIN}:$PATH"
 hold_world_lock() {
     WORLD_LOCKF="${XDG_RUNTIME_DIR}/pzmanager/world.lock"
     mkdir -p "$(dirname "$WORLD_LOCKF")"
-    flock "$WORLD_LOCKF" sleep 60 &
+    # Sans processus intermédiaire : tuer le détenteur ferme réellement le FD.
+    flock --no-fork "$WORLD_LOCKF" sleep 60 &
     WORLD_HOLDER_PID=$!
     for _i in $(seq 1 50); do
         if flock -n "$WORLD_LOCKF" true 2>/dev/null; then sleep 0.1; else break; fi
@@ -477,13 +478,14 @@ fi
 export PATH="$PATH_SAVED"
 unset MOCK_ACTIVE_STATE
 
-# --- (8) témoin ancien code (copie isolée HEAD) ---------------------------------------------
+# --- (8) témoin ancien code (copie isolée avant #141) ---------------------------
 # Miroite data/scripts/{admin,lib,backup} : PZ_MANAGER_ROOT est dérivé à 3
 # niveaux au-dessus de lib/common.sh — toute autre profondeur casse source_env.
 echo "== (8) témoin ancien code =="
 mkdir -p "${SANDBOX}/oldtree/data/scripts/admin"
-if ! git -C "$ROOT" show "HEAD:data/scripts/admin/purgeInactivePlayers.sh" > "${SANDBOX}/oldtree/data/scripts/admin/purge-old.sh" 2>/dev/null; then
-    echo "[SKIP-local] HEAD inaccessible pour le témoin" >&2
+OLD_REV=4bf0853d1fabac475302ef634fc1fba1d9c8b886
+if ! git -C "$ROOT" show "${OLD_REV}:data/scripts/admin/purgeInactivePlayers.sh" > "${SANDBOX}/oldtree/data/scripts/admin/purge-old.sh" 2>/dev/null; then
+    echo "[SKIP-local] révision avant #141 inaccessible pour le témoin" >&2
 else
     ln -sfn "${ROOT}/data/scripts/lib" "${SANDBOX}/oldtree/data/scripts/lib"
     ln -sfn "${ROOT}/data/scripts/backup" "${SANDBOX}/oldtree/data/scripts/backup"
@@ -518,6 +520,9 @@ fi
 # Le garde précoce (id entiers + lignes bien cadrées + cardinalité) annule la
 # purge AVANT toute requête : base inchangée, snapshot même pas tenté.
 echo "== (11) pseudo hostile =="
+# Le témoin précédent a restauré PATH : ce scénario doit retrouver son faux
+# systemctl, sinon une panne du bus utilisateur masque le refus de l'entrée.
+export PATH="$BIN:$PATH_SAVED" MOCK_ACTIVE_STATE=inactive
 fresh_case hostile
 mk_fixture
 sqlite3 "$DB" "INSERT INTO whitelist(id,username,steamid,lastConnection) VALUES (7,'MabEira | Hannibal','sid-hostile','$OLD');"
@@ -528,9 +533,11 @@ before="$(db_state)"
 if run_purge; then rc=0; else rc=$?; fi
 (( rc != 0 )) && ok "pseudo hostile : die fail-closed (exit $rc)" || { ko "pseudo hostile : exit 0 à tort"; show_out; }
 [[ "$(db_state)" == "$before" ]] && ok "pseudo hostile : base inchangée" || { ko "pseudo hostile : base MODIFIÉE"; show_out; }
-grep -q 'fail-closed' "${SANDBOX}/out.log" \
+grep -q 'Registre incohérent .*fail-closed' "${SANDBOX}/out.log" \
     && ok "pseudo hostile : refus journalisé" \
     || { ko "pseudo hostile : refus non journalisé"; show_out; }
+[[ ! -s "$MOCK_CALLS_LOG" ]] && ok "pseudo hostile : snapshot non tenté" \
+    || { ko "pseudo hostile : snapshot tenté avant le refus"; show_out; }
 
 # --- Bilan -------------------------------------------------------------------------
 echo ""
