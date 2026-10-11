@@ -13,9 +13,40 @@ has repeatedly been mistaken for a pzmanager bug.
 ## Contents
 
 - [Memory budget](#memory-budget)
+- [Backup CPU isolation](#backup-cpu-isolation)
 - [Hard freezes and the watchdog](#hard-freezes-and-the-watchdog)
 - [Networking](#networking)
 - [Wake-on-LAN](#wake-on-lan)
+
+## Backup CPU isolation
+
+This Ryzen 7 8745HS has 8 physical cores and 16 logical CPUs. `lscpu -e`
+and `cpu*/topology/thread_siblings_list` identify CPUs **7 and 15** as the
+two SMT threads of physical core 7. Both are reserved for the hourly backup;
+the game is restricted to **0–6 and 8–14**, the other seven physical cores.
+Reserving only CPU 7 would still let the game compete with the backup on CPU 15.
+
+These are **machine-specific**, persistent user-unit overrides, applied with:
+
+```bash
+systemctl --user set-property zomboid.service 'AllowedCPUs=0-6 8-14'
+systemctl --user set-property pz-backup.service 'AllowedCPUs=7 15'
+```
+
+systemd stores them under `~/.config/systemd/user.control/<unit>.d/` and
+enables the delegated cpuset controller. The kernel applies the masks to
+**all existing and future threads** in each service, without restarting PZ.
+Check `EffectiveCPUs` while the services are running, the cgroups'
+`cpuset.cpus.effective`, and `/proc/<game-pid>/task/*/status` rather than
+assuming a successful `set-property` proves effective isolation.
+
+The backup's aggregate CPU budget is specified in
+[WHAT_IS_INSTALLED](WHAT_IS_INSTALLED.md#pz-backuptimer---hourly-backup).
+The CPU masks do not isolate the shared NVMe, memory bandwidth, or unrelated
+host workloads. Direct manual `pzm backup create` calls run in the caller's
+cgroup; this isolation covers `pz-backup.service` and its hourly timer.
+Do not copy these CPU numbers to another machine without checking its topology.
+To remove the separation, set each unit's `AllowedCPUs` to an empty value.
 
 ## Memory budget
 
