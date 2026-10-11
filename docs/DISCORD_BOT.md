@@ -221,8 +221,16 @@ Each embed carries:
 - **🧠 Heap Java** — used MB / `Xmx` and % (from `gc.log`), the **live-set floor**
   (last major-GC %, the number that drives the auto-restart) vs
   `HEAP_RESTART_PERCENT`. This is the Java-heap-OOM story.
-- **💾 Process (JVM)** — resident `RSS`, the **native/off-heap** part (`RSS − heap`,
-  ~5 GB on B42 modded), peak RSS, and process swap (should stay 0).
+- **🧠 RAM de PZ** — accounted cgroup memory (`MemoryCurrent`) / the effective
+  systemd hard limit, with its usage bar and accounted peak (`MemoryPeak`).
+  Resident process memory and peak JVM RSS are separate, followed by heap
+  usage / its own JVM ceiling. RSS divided by the cgroup limit would omit
+  other charges and is not used as the budget percentage.
+  The **18 GiB** preventive restart threshold remains active without a permanent
+  label in the embed. It excludes bulk file and kernel caches; `MemoryMax=20G`
+  enforces the cgroup total after attempting cache reclaim. If systemd
+  accounting is unavailable, the bot shows process RSS without claiming that a
+  hard limit is enforced. Process swap should stay 0.
 - **🖥️ System RAM** — used %, **available** GB (the real margin before the OS
   OOM-killer), cache, shmem, system swap.
 - **🌡️ Temperatures** — CPU (`k10temp`), NVMe, GPU, RAM DIMM (the mini-PC

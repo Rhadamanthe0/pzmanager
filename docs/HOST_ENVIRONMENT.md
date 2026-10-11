@@ -71,27 +71,33 @@ instead.
 
 - **RAM**: 32 GB (`MemTotal` 32130864 kB ≈ **30.6 GiB usable**), upgraded
   2026-08-19 from 15 GiB.
-- **`PZ_XMX_GB=20`** — above half, on purpose.
+- **Target profile: `PZ_XMX_GB=16`, `MemoryMax=20G`.** The 4 GiB difference
+  covers all service charges outside the heap, including native memory, code,
+  stacks, descendants, cache and kernel accounting. The preventive monitor
+  requests a restart at 18 GiB resident process memory; it cannot guarantee a
+  clean save during a rapid increase.
+- The historical override **20** from 2026-08-19 is incompatible with the
+  20 GiB whole-service cap. It must be explicitly migrated while stopped,
+  rather than silently clamped or applied to the live JVM. See the
+  [migration plan](ADVANCED.md#existing-installation-migration-to-the-20-gib-budget).
 
-Resident budget at that setting:
-
-| Component | Size |
+| Target component | Budget |
 |---|---|
-| Java heap (shmem-backed, pre-touched by `AlwaysPreTouch`) | 20 GiB |
-| PZ native / anon | ~1.3 GiB |
-| Everything else on the box | ~5.7 GiB |
-| **Total** | **~27 GiB of 30.6 → ~3.6 GiB slack** |
+| Java heap maximum | 16 GiB |
+| All other charges in the PZ cgroup | 4 GiB headroom |
+| Entire PZ service hard cap | 20 GiB |
+| Physical RAM remaining for the host and other services | about 10.6 GiB |
 
-That is 2.7× the slack the old 8g-on-15 GiB configuration had.
-
-> **The operating rule: watch the slack, not the half-RAM ratio.** If an abrupt
-> SIGKILL, a kernel OOM or an unexplained shutdown ever appears, **lower
-> `PZ_XMX_GB` until slack is back above ~3 GiB.**
+These are limits and planning margins, not observed resident use. The outside
+heap headroom is not a separate enforced sub-limit. Lowering Xmx can increase
+GC work and require earlier restarts; it does not fix serialization of a large
+or problematic book.
 
 Two things that are *not* levers here:
 
-- `HEAP_RESTART_PERCENT` (90 vs 95) changes only the **Java-heap** OOM trigger. It
-  has no effect on OS-OOM-kill exposure.
+- `HEAP_RESTART_PERCENT` (90 vs 95) changes only the **Java-heap** OOM trigger.
+  The separate 18 GiB total service trigger and 20 GiB cgroup cap protect the
+  service budget; they do not guarantee protection from host-wide OOM pressure.
 - A bigger heap lengthens the `HeapDumpOnOutOfMemoryError` pause — the dump is
   roughly `-Xmx` GB written to disk.
 

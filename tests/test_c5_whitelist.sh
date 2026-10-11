@@ -29,7 +29,8 @@ set -euo pipefail
 
 ROOT="${PZ_TEST_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 SCRIPT="${ROOT}/data/scripts/admin/manageWhitelist.sh"
-SANDBOX="${ROOT}/tests/.tmp-c5-$$"
+SANDBOX="$(mktemp -d "${ROOT}/tests/.tmp-c5-XXXXXX")"
+SANDBOX_INODE="$(stat -c %d:%i "$SANDBOX")"
 BIN="${SANDBOX}/bin"
 
 PASS=0
@@ -49,7 +50,12 @@ cleanup() {
             rm -f "$REPO_ENV"
         fi
     fi
-    rm -rf "$SANDBOX"
+    if [[ -d "$SANDBOX" && ! -L "$SANDBOX" && -O "$SANDBOX" \
+        && "$(stat -c %d:%i "$SANDBOX")" == "$SANDBOX_INODE" ]]; then
+        rm -rf -- "$SANDBOX"
+    else
+        echo "[FAIL] identité de la fixture C5 modifiée : nettoyage refusé." >&2
+    fi
 }
 trap cleanup EXIT
 
@@ -68,7 +74,6 @@ if [[ ! -f "$SCRIPT" ]]; then
 fi
 
 # --- Isolation ---------------------------------------------------------------
-rm -rf "$SANDBOX"
 mkdir -p "${SANDBOX}/rt" "${SANDBOX}/tmp" "$BIN"
 # Comme pam_systemd : le runtime simulé doit appartenir au compte et être privé.
 chmod 0700 "${SANDBOX}/rt"

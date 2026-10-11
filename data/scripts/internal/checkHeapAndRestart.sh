@@ -1,6 +1,10 @@
 #!/bin/bash
-# Moniteur mémoire adaptatif : déclenche un redémarrage anticipé quand le heap
-# Java atteint HEAP_RESTART_PERCENT % du -Xmx. Remplace le redémarrage périodique
+# Moniteur mémoire adaptatif : restart à PZ_RAM_RESTART_GB (18 Gio par défaut)
+# de RAM résidente des processus du service (heap + natif + descendants), OU
+# à HEAP_RESTART_PERCENT % du -Xmx après GC majeur. Le cache de fichiers et le
+# slab récupérables ne déclenchent pas un restart. MemoryMax=20G reste un plafond
+# cgroup de secours, où Linux peut récupérer ces caches avant l'OOM-kill.
+# Remplace le redémarrage périodique
 # fixe (11h/17h/23h) : on redémarre quand c'est NÉCESSAIRE, pas à heure fixe.
 #
 # Pourquoi : le heap se remplit de cellules de map VIVANTES (IsoGridSquare/chunks)
@@ -12,8 +16,8 @@
 # gc.log. C'est le vrai indicateur d'OOM imminent : si même après un GC complet
 # on reste ≥ seuil, plus rien n'est récupérable sans redémarrer.
 #
-# Lancé par pz-heapcheck.timer (~toutes les 3 min). Sans effet si le serveur est
-# arrêté, si gc.log est absent, ou si un restart a déjà été déclenché récemment.
+# Lancé par pz-heapcheck.timer (~toutes les 30 s). La RAM reste surveillée même
+# sans gc.log. Sans effet si arrêté ou si un restart a déjà été déclenché.
 
 set -euo pipefail
 
@@ -30,7 +34,12 @@ COOLDOWN_MARKER="$(private_state_path "heapcheck.trigger")" \
     || die "Répertoire d'état privé indisponible (repli /tmp pré-créé par un tiers ?) : heapcheck annulé (fail-closed)."
 readonly COOLDOWN_MARKER
 readonly PCT_THRESHOLD="${HEAP_RESTART_PERCENT:-95}"
+readonly RAM_THRESHOLD_GB="${PZ_RAM_RESTART_GB:-18}"
 readonly RESTART_DELAY="${HEAP_RESTART_DELAY:-5m}"
+[[ "$RAM_THRESHOLD_GB" =~ ^([1-9]|1[0-9])$ ]] \
+    || die "PZ_RAM_RESTART_GB doit être un entier entre 1 et 19 (plafond strict : 20 Gio)."
+[[ "$PCT_THRESHOLD" =~ ^([1-9]|[1-9][0-9]|100)$ ]] \
+    || die "HEAP_RESTART_PERCENT doit être un entier entre 1 et 100."
 # Ne pas re-déclencher tant que le restart précédent (préavis + arrêt + reboot
 # éventuel) n'est pas passé et que le heap n'est pas retombé.
 readonly COOLDOWN_SECONDS=1800
@@ -38,8 +47,21 @@ readonly COOLDOWN_SECONDS=1800
 # Serveur arrêté -> rien à surveiller.
 server_is_active || exit 0
 
-# Pas encore de gc.log (aucun GC émis) -> rien à faire.
-[[ -f "$GC_LOG" ]] || exit 0
+# Un service peut dépasser le budget total avec un heap encore peu rempli.
+# Restreindre la lecture /proc aux processus du cgroup serveur et ses enfants.
+# Ne jamais interpréter une erreur du bus comme une mesure valide.
+reason=""
+control_group="$(systemctl --user show "${PZ_SERVICE_NAME}" -p ControlGroup --value 2>/dev/null || true)"
+memory_bytes="$(python3 "${SCRIPT_DIR}/../lib/service_memory.py" "$control_group" 2>/dev/null || true)"
+if [[ "$memory_bytes" =~ ^[0-9]{1,18}$ ]]; then
+    log "heapcheck: RAM service ${memory_bytes} octets (seuil ${RAM_THRESHOLD_GB} Gio)"
+    if (( 10#$memory_bytes >= RAM_THRESHOLD_GB * 1024 * 1024 * 1024 )); then
+        memory_gb="$(awk -v bytes="$memory_bytes" 'BEGIN {printf "%.1f", bytes / 1073741824}')"
+        reason="RAM totale du service à ${memory_gb} Go (seuil ${RAM_THRESHOLD_GB} Go, plafond strict 20 Go)"
+    fi
+else
+    log "heapcheck: RAM service indisponible — surveillance heap conservée."
+fi
 
 # Dernière synthèse de GC MAJEUR :
 #   "... Major Collection (Timer) AAAAM(BB%)->CCCCM(DD%) X,Ys"
@@ -48,13 +70,19 @@ server_is_active || exit 0
 # "Major Collection" encore) -> grep sort en code 1, et sous set -e + pipefail
 # l'assignation ferait planter le script (service "failed" -> alerte Discord)
 # AVANT d'atteindre le garde-fou ci-dessous. On avale l'échec pour le gérer ici.
-last_line="$(grep -aE 'Major Collection .*->[0-9]+M\([0-9]+%\)' "$GC_LOG" 2>/dev/null | tail -1 || true)"
-[[ -n "$last_line" ]] || exit 0
-pct="$(sed -E 's/.*->[0-9]+M\(([0-9]+)%\).*/\1/' <<< "$last_line")"
-[[ "$pct" =~ ^[0-9]+$ ]] || exit 0
-
-log "heapcheck: heap post-GC ${pct}% (seuil ${PCT_THRESHOLD}%)"
-(( pct >= PCT_THRESHOLD )) || exit 0
+if [[ -f "$GC_LOG" ]]; then
+    last_line="$(grep -aE 'Major Collection .*->[0-9]+M\([0-9]+%\)' "$GC_LOG" 2>/dev/null | tail -1 || true)"
+    if [[ -n "$last_line" ]]; then
+        pct="$(sed -E 's/.*->[0-9]+M\(([0-9]+)%\).*/\1/' <<< "$last_line")"
+        if [[ "$pct" =~ ^[0-9]{1,3}$ ]]; then
+            log "heapcheck: heap post-GC ${pct}% (seuil ${PCT_THRESHOLD}%)"
+            if [[ -z "$reason" ]] && (( 10#$pct >= PCT_THRESHOLD )); then
+                reason="Heap Java post-GC à ${pct}% du max (seuil ${PCT_THRESHOLD}%)"
+            fi
+        fi
+    fi
+fi
+[[ -n "$reason" ]] || exit 0
 
 # Anti-empilement : un restart vient-il d'être déclenché ?
 # Hygiène du marqueur : on ne fait confiance qu'à un fichier régulier possédé
@@ -70,8 +98,17 @@ if (( age < COOLDOWN_SECONDS )); then
 fi
 : > "$COOLDOWN_MARKER"
 
-log "heapcheck: seuil atteint (${pct}%) -> redémarrage préventif dans ${RESTART_DELAY}."
+log "heapcheck: ${reason} -> redémarrage préventif dans ${RESTART_DELAY}."
 # Foreground obligatoire (un restart avec délai lancé en arrière-plan est un no-op).
 # La commande bloque le temps du préavis : pz-heapcheck.service a un TimeoutStartSec large.
-exec "${PZ_MANAGER_DIR}/pzm" server restart "$RESTART_DELAY" --automatic \
-    --reason "Mémoire serveur à ${pct}% du max — redémarrage préventif (évite le crash mémoire)"
+if "${PZ_MANAGER_DIR}/pzm" server restart "$RESTART_DELAY" --automatic \
+    --reason "${reason} — redémarrage préventif"; then
+    exit 0
+else
+    rc=$?
+    # Un verrou occupé ou un restart en échec doit être retenté au prochain tick,
+    # pas bloquer la surveillance pendant 30 min jusqu'au plafond brutal.
+    rm -f -- "$COOLDOWN_MARKER"
+    log "heapcheck: redémarrage en échec (exit=${rc}) — nouvelle tentative au prochain contrôle."
+    exit "$rc"
+fi

@@ -14,26 +14,23 @@ source_env
 json_file="${PZ_INSTALL_DIR}/ProjectZomboid64.json"
 [[ -f "$json_file" ]] || exit 0
 
-# Heap Java : PAS de -Xms (retiré) — avec AlwaysPreTouch il était trompeur (le
-# vrai poste résident est le Xmx pré-touché, pas Xms) et le give-back ZGC ne se
-# déclenche jamais sur ce workload (le heap ne fait que croître de cellules
-# vivantes). Sans -Xms, l'init part du défaut ergonomique et croît à la demande.
-# Xmx = moitié de la RAM physique par défaut (garde-fou laissant la place au natif
-# PZ + l'OS), override via .env (PZ_XMX_GB, en Go).
-# On ne pose AUCUN plafond cgroup (MemoryMax/MemoryHigh) : il throttle/OOM
-# PZ dès qu'il est atteint. Voir aussi data/setupTemplates/zomboid.service.
-# ATTENTION PZ_XMX_GB: dépasser la moitié de la RAM est RISQUÉ — avec AlwaysPreTouch
-# tout le Xmx est résident dès le boot ; Xmx + ~5 Go de natif PZ peut dépasser la
-# RAM totale → OOM-killer OS (SIGKILL brutal). Ne relever qu'en connaissance de cause.
+# Heap Java : pas de -Xms ; l'initialisation utilise le défaut ergonomique.
+# Les pages ZGC engagées restent comptées en shmem, même si le heap utilisé
+# après GC est plus petit. RSS - heap utilisé ne mesure pas le natif.
+# Défaut : moitié de la RAM arrondie au Gio supérieur, plafonnée à 16 Gio.
+# MemoryMax=20G couvre le cgroup entier : les 4 Gio restants comprennent natif,
+# code, stacks, descendants, cache et comptabilité noyau. Cette marge n'est pas
+# une garantie contre une allocation hors heap anormale. Override 2..16 seulement.
+# Valider AVANT de sauvegarder/modifier le JSON : une ancienne valeur 20 doit
+# être migrée explicitement dans .env, jamais réduite silencieusement.
 mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
-default_xmx_gb=$(( mem_kb / 1024 / 1024 / 2 ))
-xmx_gb="${PZ_XMX_GB:-$default_xmx_gb}"
-(( xmx_gb < 2 )) && xmx_gb=2  # plancher de sécurité
+xmx_gb="$(python3 "${SCRIPT_DIR}/../lib/jvm_memory_budget.py" choose-heap \
+    --override "${PZ_XMX_GB:-}" --memory-kib "$mem_kb")"
 
 if [[ -n "${PZ_XMX_GB:-}" ]]; then
-    echo "Optimisation JVM (Xmx ${xmx_gb}g = override PZ_XMX_GB ; moitié RAM = ${default_xmx_gb}g ; pas de Xms)..."
+    echo "Optimisation JVM (Xmx ${xmx_gb}g = override PZ_XMX_GB ; budget total 20 Gio ; pas de Xms)..."
 else
-    echo "Optimisation JVM (Xmx ${xmx_gb}g = moitié RAM ; pas de Xms)..."
+    echo "Optimisation JVM (Xmx ${xmx_gb}g = défaut plafonné à 16 Gio ; budget total 20 Gio ; pas de Xms)..."
 fi
 
 # Exporteur de métriques réseau interne de PZ (voir plus bas). Vide => désactivé.
@@ -54,7 +51,7 @@ with open(f) as fp:
 # Repartir des args sans aucun réglage mémoire/GC/réseau/diag qu'on (re)pose nous-mêmes.
 # '-Xms' reste dans la liste retirée -> on NE le repose PAS (défaut JVM = init à la demande).
 drop = ('znetlog', '-Xms', '-Xmx', 'UseZGC', 'AlwaysPreTouch',
-        'ZCollectionInterval', 'MaxRAMPercentage', 'preferIPv4Stack',
+        'ZCollectionInterval', 'MaxRAMPercentage', 'MaxHeapSize', 'MaxRAM=', 'preferIPv4Stack',
         'UseStringDeduplication', 'UseCompactObjectHeaders',
         'HeapDumpOnOutOfMemoryError', 'HeapDumpPath', 'Xlog:gc',
         'prometheusEnabled', 'prometheusPort', 'OmitStackTraceInFastThrow',
@@ -70,8 +67,8 @@ args.append(f'-Xmx{xmx_gb}g')
 # vivant) tournait en quasi-continu -> CPU de fond + chauffe. À 60s, les collectes
 # young restent fréquentes/bon marché (pilotées par l'allocation) et les majeures
 # deviennent rares. Le moniteur heap (pz-heapcheck, ~3 min) lit la dernière ligne
-# "Major Collection" de gc.log : une majeure/min suffit largement (le heap met
-# ~15 h à se remplir). Remonter si gc.log devient trop clairsemé.
+# "Major Collection" de gc.log : une majeure/min donne un échantillon récent,
+# mais une poussée d'allocation peut saturer la mémoire avant le préavis.
 args.append('-XX:+UseZGC')
 args.append('-XX:+AlwaysPreTouch')
 args.append('-XX:ZCollectionInterval=60')

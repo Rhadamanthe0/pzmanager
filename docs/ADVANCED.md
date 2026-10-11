@@ -11,13 +11,12 @@ re-applied after every SteamCMD update** — the nightly maintenance runs
 of `ProjectZomboid64.json` is overwritten the next night. There is no
 `pzm config ram` command. What it sets:
 
-- **No `-Xms`.** It was removed: with `AlwaysPreTouch` the real resident cost is
-  the pre-touched `-Xmx`, not `-Xms`, and ZGC give-back never fires on this
-  ever-growing workload. The heap now starts at the ergonomic default and grows
-  on demand.
-- `-Xmx` = **`PZ_XMX_GB` GB if set in `.env`, else half of physical RAM** (e.g.
-  7g on a 14 GiB machine). This is a real guardrail: it triggers a clean Java
-  `OutOfMemoryError` before the heap can crowd out PZ's native memory + the OS.
+- **No `-Xms`.** The heap starts at the ergonomic default and grows on demand.
+  Committed ZGC pages are backed by resident shmem; unused committed heap
+  still counts toward the cgroup budget.
+- `-Xmx` = **`PZ_XMX_GB` GiB (2..16) if set in `.env`, else rounded-up half of
+  physical RAM capped at 16 GiB** (16 on MINIPC). The remaining 4 GiB of the
+  20 GiB service budget cover all charges outside the heap.
 - `-XX:+UseZGC` (generational by default on JDK 25) `-XX:+AlwaysPreTouch`
   `-XX:ZCollectionInterval=60` — GC tuning. `ZCollectionInterval` forces a
   *major* (young+old) collection at that interval; 60s keeps the cheap young
@@ -33,27 +32,35 @@ of `ProjectZomboid64.json` is overwritten the next night. There is no
 - `-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=<logs/zomboid>` plus a
   rotating `-Xlog:gc*` to `logs/zomboid/gc.log` — diagnostics.
 
-**No cgroup memory cap.** `MemoryMax`/`MemoryHigh` are deliberately *not* set:
-on a modest machine they sit at the level of physical RAM, and the kernel
-throttles/OOM-kills PZ the instant it touches the cap (this caused server
-crashes). Instead, `data/setupTemplates/zomboid.service` sets
-`MemorySwapMax=0` — swap is **forbidden** to the process, because swapping game
-pages causes micro-freezes and worsens network desync. The `-Xmx` cap leaves
-the headroom to stay resident.
+**Total service budget: 18 / 20 GiB.** The monitor requests a clean restart at
+`PZ_RAM_RESTART_GB=18`; `zomboid.service` enforces `MemoryMax=20G` with
+`OOMPolicy=kill` as a last resort. If reclaim cannot contain memory below 20 GiB,
+the service is killed without a guaranteed save. Preventive monitoring sums process RSS (heap, native memory and descendants),
+excluding reclaimable file and kernel caches. The hard cap uses cgroup accounting
+including those caches; Linux can reclaim them before killing the service. `MemoryHigh` is not set;
+`MemorySwapMax=0` forbids swap to avoid game freezes. The heap is capped at **16 GiB** within this budget; **4 GiB** remain for every
+other cgroup charge (native memory, code, stacks, descendants, cache and kernel
+accounting). This is planning headroom, not a guarantee against OOM. Resident
+ZGC shmem is part of the heap and cannot be treated as reclaimable disk cache.
+A smaller heap can increase GC work and require earlier restarts; it does not
+fix pathological item serialization.
 
-**To change `Xmx`**, either set `PZ_XMX_GB` in `.env` (simplest) or edit
-`data/scripts/internal/configureJvm.sh`, then apply and restart:
+**To change `Xmx`**, set `PZ_XMX_GB` to an integer from **2 to 16** in `.env`.
+An old override of 20 is rejected explicitly, before the JSON or its backup
+is changed. The default is half of physical RAM rounded up to GiB, capped at
+16 (16 GiB on MINIPC). Apply during an agreed stop, then restart:
 
 ```bash
-nano ~/pzmanager/.env        # e.g. uncomment: export PZ_XMX_GB=8
+pzm server stop             # after an agreed warning/stop
+nano ~/pzmanager/.env        # e.g. export PZ_XMX_GB=16 on MINIPC
 ~/pzmanager/data/scripts/internal/configureJvm.sh
-pzm server restart 5m
+pzm server start
 ```
 
-> ⚠️ Keep `-Xmx` at roughly half of physical RAM. With `AlwaysPreTouch` the full
-> `Xmx` is resident from boot, and `Xmx` + ~5 GB of PZ native memory can exceed
-> total RAM, triggering a brutal Linux OOM-kill instead of a clean Java OOM. Only
-> raise `PZ_XMX_GB` above half if you know the box has the headroom.
+> Committed ZGC shmem is not reclaimable disk cache. RSS minus *used* heap
+> is not a native-memory measurement: it can include unused committed heap.
+> Keep the JSON and whole-service limit coherent; the 4 GiB planning margin
+> does not prevent OOM if other charges grow beyond it.
 
 ## GraalVM (optional JIT engine)
 
@@ -109,12 +116,14 @@ keeps them resident. There is no console command or config knob to evict cold
 chunks at runtime, so **a restart is the only way to reclaim that memory** —
 otherwise the heap OOMs after ~15 h of uptime.
 
-pzmanager handles this adaptively via `pz-heapcheck.timer` (every ~3 min): it
+pzmanager handles this adaptively via `pz-heapcheck.timer` (every ~30 s): it
 reads the post-major-GC heap occupancy from `logs/zomboid/gc.log` and,
 when it reaches `HEAP_RESTART_PERCENT` (`.env`, default **95**), triggers
 `pzm server restart` with `HEAP_RESTART_DELAY` (default `5m`) and a player
-warning. A quiet server never gets a needless restart; a fast-filling evening
-session is caught before it OOMs. The daily 04:30 maintenance restart is the
+warning. It also triggers at **18 GiB of resident process memory**, even when
+`gc.log` is absent or the heap is still low. The **20 GiB hard cap** can kill the
+service during the warning; preventive monitoring reduces that risk but cannot
+guarantee a save after a rapid increase. The daily 04:30 maintenance restart is the
 backstop if the monitor never fires.
 
 Tuning: if a crash ever happens *during* the warning countdown, lower
@@ -246,3 +255,36 @@ systemctl --user daemon-reload
 - [SERVER_CONFIG.md](SERVER_CONFIG.md) - Game configuration
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Problem solving
 - [PZ Wiki](https://pzwiki.net/wiki/Dedicated_Server) - Official docs
+
+
+### Existing installation migration to the 20 GiB budget
+
+A pull of this change does not migrate `.env`, installed units or a running
+JVM. In particular, MINIPC's historical `PZ_XMX_GB=20` must be changed explicitly.
+Do not lower the cgroup limit around an already running 20 GiB heap.
+
+1. Archive the current `.env`, JVM JSON and installed unit/drop-ins privately.
+   Preserve unrelated local changes and coordinate any concurrent writer.
+2. During an agreed game stop, change only `PZ_XMX_GB=20` to `16`, then run
+   `data/scripts/internal/configureJvm.sh` as the installation owner. This
+   updates the next launch; it does not alter the running JVM.
+3. Validate the next JSON without starting a service:
+   `python3 data/scripts/lib/jvm_memory_budget.py check data/pzserver/ProjectZomboid64.json --planned-limit 20G`.
+   This validates the planned budget, not its actual application.
+4. Install the updated `zomboid.service` and account for existing drop-ins.
+   Remove a temporary incident override such as `zz-incident-pz-memory.conf`
+   only after the next JSON is confirmed to use Xmx16. Reload the user manager
+   and read back `MemoryMax=21474836480`, swap policy and the complete drop-in
+   list. Do not run the global installer solely to update this unit.
+5. Start once. The blocking `ExecStartPre` checks the actual current cgroup and
+   JSON before purge or JVM launch. Verify GC initialization reports max heap
+   16384M, the 20 GiB service cap, fresh game progression and player connection.
+   Restore paused timers conditionally after their I/O and restart risks have
+   been checked; keep a diagnostic watchdog mode until the freeze cause is fixed.
+
+For rollback, keep the saved configuration and units. An old Xmx20 must be
+paired with an explicitly reviewed larger total budget; restoring Xmx20 under
+MemoryMax20 is not a safe rollback. Reducing the heap can increase GC work or
+bring heap OOM earlier. The 20 GiB cap remains a last resort, not a guarantee of
+a clean save during a sudden allocation spike. Existing problematic item data
+require a separate remedy.

@@ -121,7 +121,7 @@ DISCORD_WEBHOOK="https://discord.com/api/webhooks/..."
 | Task | Schedule | Description |
 |------|----------|-------------|
 | Mod & server check | Every 5 min | Auto-maintenance if mod or server updates detected |
-| Heap check | Every ~3 min | Restart when the Java heap fills up (adaptive) |
+| Memory check | Every ~30 s | Restart at 18 GiB total service RAM or when the heap fills up |
 | Backup | Hourly (:14) | Incremental hardlinks, GFS retention (24h/7d/30d) |
 | Maintenance | Daily 4:30 AM | Updates + full backup + reboot/restart |
 | Whitelist dates | Daily 00:00 | Init creation dates for purge |

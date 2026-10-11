@@ -1,5 +1,5 @@
 [Unit]
-Description=Project Zomboid - Surveillance mémoire heap (redémarrage adaptatif)
+Description=Project Zomboid - Surveillance RAM totale et heap (redémarrage adaptatif)
 
 [Service]
 Type=oneshot
