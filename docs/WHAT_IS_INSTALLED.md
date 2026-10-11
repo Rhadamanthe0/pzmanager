@@ -414,7 +414,10 @@ RestartSec=5
 **Schedule**: Every hour at :14
 
 **Function**:
-- Incremental backup with hard links (CPU-throttled 20%, single-instance `flock`)
+- Incremental backup with hard links (single-instance `flock`)
+- `pz-backup.service`: `CPUQuota=100%` caps aggregate CPU usage at one core,
+  with `Nice=19` and `CPUWeight=10` (game: 1000) to favor the game under contention.
+  This replaces the former 20% cap; the 2400s timeout and prune limit remain.
 - Retention: GFS — 24h hourly / 1-per-6h 7d / 1-per-day 30d (`BACKUP_GFS_*`)
 - Destination: `/home/pzuser/pzmanager/data/dataBackups/`
 
