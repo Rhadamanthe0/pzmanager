@@ -121,3 +121,19 @@ a genuinely long world save, correctly left non-conclusive. The remaining four
 all show `main` merely *sleeping* at `GameServer.java:959` with the process at
 0 % CPU and a header reading `clients=1` — an idle server, and exactly the false
 positive the player-count fix eliminates.
+
+## Backup script rewritten during a copy — 2026-10-11
+
+The 11:14 hourly backup failed with exit 127 after a live edit to
+`dataBackup.sh` while rsync was running. At 11:25:59 its journal reported
+`s: command not found`: Bash resumed reading the edited file at its previous
+byte offset, now in the middle of another line. No snapshot was published;
+the staging trap removed the incomplete tree and `latest` remained at 10:15.
+
+The backup body now lives in a function that Bash parses completely before
+executing it. Its call and final `exit` are also parsed as one block, preventing
+a longer replacement file from supplying unexpected commands after completion.
+The regression test pauses a mock rsync, rewrites the script in place and appends
+an invalid command, then verifies that the running copy still publishes normally.
+Pause the hourly timer during live script edits and validate a complete run
+before reporting the deployment finished.
