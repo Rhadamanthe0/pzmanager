@@ -37,6 +37,9 @@ ExecStartPre=/usr/bin/python3 %h/pzmanager/data/scripts/lib/jvm_memory_budget.py
 # Couvre tous les démarrages (boot, pzm, socket-activation) ; la whitelist et
 # les comptes ne sont jamais touchés (constat Codex Security, 10/2026).
 ExecStartPre=%h/pzmanager/data/scripts/internal/enforceClosedServer.sh
+# ProjectWriting actif : dessin libre désactivé et garde des livres réinstallé
+# après les mises à jour Steam. Le texte et les notes restent disponibles.
+ExecStartPre=%h/pzmanager/data/scripts/internal/configureWritingTextOnly.sh
 # Purge des accès inactifs juste AVANT le lancement de la JVM. C'est le seul
 # instant où le monde est garanti fermé quel que soit le chemin de démarrage
 # (boot après maintenance, pzm server start/restart, socket-activation) : la

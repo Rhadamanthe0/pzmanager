@@ -13,6 +13,9 @@ data/scripts/lib/__pycache__/
 data/dataBackups/
 data/fullBackups/
 
+# Exports des écrits des joueurs (PNG, archives et données personnelles).
+data/writingExports/
+
 # Game server installation (36M+ files, binary)
 data/pzserver/
 Zomboid/
