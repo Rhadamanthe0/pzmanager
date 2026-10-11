@@ -14,6 +14,11 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
 source_env
 
+# Bash lit les fichiers au fil de l'eau : une mise à jour pendant rsync peut
+# déplacer la suite et faire exécuter un fragment (incident du 11/10/2026).
+# Le corps de cette fonction est lu EN ENTIER avant la première copie.
+backup_main() {
+
 # --snapshot-only : crée un snapshot NORMAL (backup_<ts>, comme le backup horaire)
 # sans déclencher la sauvegarde in-game ni le prune GFS. Utilisé par les opérations
 # destructrices (purge whitelist, wipe de tuiles) pour se garder un filet de sécurité
@@ -376,3 +381,11 @@ fi
 
 total_count=$(find "${BACKUP_DIR}" -maxdepth 1 -type d -name "backup_*" | wc -l)
 echo "Backup completed. Total: $total_count snapshots."
+}
+
+# Lire aussi l'appel ET exit dans un même bloc avant de lancer le travail :
+# même si le fichier grandit, aucun octet de sa nouvelle fin n'est exécuté.
+{
+    backup_main "$@"
+    exit $?
+}

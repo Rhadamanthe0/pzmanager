@@ -47,6 +47,9 @@ HOLDER_PID=""
 
 cleanup() {
     if [[ -n "${HOLDER_PID:-}" ]]; then kill "$HOLDER_PID" 2>/dev/null || true; HOLDER_PID=""; fi
+    if [[ -f "${SANDBOX}/script-before-rewrite" ]]; then
+        cp "${SANDBOX}/script-before-rewrite" "$SCRIPT"
+    fi
     # Orphelin éventuel du test SIGTERM (sleep du mock rsync) : best-effort.
     pkill -P $$ sleep 2>/dev/null || true
     # Restaure le .env préexistant (ou retire le stub posé par le test).
@@ -99,6 +102,7 @@ else
     mkdir -p "$dest/Saves" 2>/dev/null || true
     echo dummy > "$dest/Saves/dummy.bin" 2>/dev/null || true
 fi
+[[ -z "${MOCK_RSYNC_READY:-}" ]] || touch "$MOCK_RSYNC_READY"
 if [[ -n "${MOCK_RSYNC_SLEEP:-}" ]]; then sleep "$MOCK_RSYNC_SLEEP"; fi
 exit "${MOCK_RSYNC_EXIT:-0}"
 MOCKEOF
@@ -167,6 +171,7 @@ fresh_case() {
     unset MOCK_RSYNC_EXIT MOCK_RSYNC_SLEEP MOCK_RSYNC_EMPTY MOCK_LN_FAIL MOCK_MV_FAIL
     unset MOCK_CPU_STATE MOCK_CPU_SUBSTATE MOCK_CPU_MAINPID MOCK_SCOPE_LOG MOCK_SCOPE_FAIL
     unset MOCK_CPU_PIN_FAIL
+    unset MOCK_RSYNC_READY
 }
 final_count() { find "$1" -maxdepth 1 -type d -name 'backup_*' 2>/dev/null | wc -l | tr -d ' '; }
 tmp_left() { find "$1" -maxdepth 1 -name '*.tmp*' 2>/dev/null | wc -l | tr -d ' '; }
@@ -491,6 +496,40 @@ export MOCK_CPU_PIN_FAIL=1 BACKUP_CPU_LIST=7,15
 if run_backup; then ko "affinité impossible : succès à tort"; else ok "affinité impossible : copie refusée"; fi
 (( $(final_count "$BKP") == 0 )) && ok "affinité impossible : rien publié" || ko "affinité impossible : snapshot publié"
 unset MOCK_CPU_PIN_FAIL BACKUP_CPU_LIST
+
+# Une mise à jour pendant la copie ne doit pas déplacer le programme en cours.
+# Cette suite ne tourne que dans une copie Linux jetable : restaurer le script
+# testé avant les contrôles suivants, comme .env.
+fresh_case script-rewritten
+cp "$SCRIPT" "$SANDBOX/script-before-rewrite"
+export MOCK_RSYNC_SLEEP=2 MOCK_RSYNC_READY="$SANDBOX/rsync-ready"
+bash "$SCRIPT" --snapshot-only --required >"${SANDBOX}/out.log" 2>&1 &
+REWRITE_PID=$!
+for (( tick=0; tick<200; tick++ )); do
+    [[ -f "$MOCK_RSYNC_READY" ]] && break
+    sleep 0.02
+done
+if [[ -f "$MOCK_RSYNC_READY" ]]; then
+    python3 - "$SCRIPT" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+s = p.read_text()
+s = s.replace('rsync_status=0\n', '# inserted while the backup was copying\n' * 50 + 'rsync_status=0\n', 1)
+p.write_text(s + '\ncommand_that_must_never_execute_after_the_backup\n')
+PY
+else
+    ko "mise à jour : rsync n'a pas atteint le point de synchronisation"
+fi
+rewrite_status=0
+wait "$REWRITE_PID" || rewrite_status=$?
+cp "$SANDBOX/script-before-rewrite" "$SCRIPT"
+if (( rewrite_status == 0 && $(final_count "$BKP") == 1 )); then
+    ok "mise à jour pendant rsync : ancien corps terminé et snapshot publié"
+else
+    ko "mise à jour pendant rsync : rc=$rewrite_status, snapshot incorrect"; show_out
+fi
+unset MOCK_RSYNC_SLEEP MOCK_RSYNC_READY
 
 # --- Bilan -------------------------------------------------------------------------
 echo ""
