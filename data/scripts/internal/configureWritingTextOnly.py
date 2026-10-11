@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Install the ProjectWriting text-only guard and enforce static sandbox switches."""
+"""Remove the live guard and enforce ProjectWriting's restart cleanup policy."""
 import argparse
 import os
 import re
 import stat
 import sys
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -374,7 +375,7 @@ def append_managed_guard(base, guard):
     return base + separator + BEGIN_MARKER + newline + body + newline + END_MARKER + newline
 
 
-def configure(install_dir, sandbox_file, ini_file, guard_source, mode=1):
+def configure(install_dir, sandbox_file, ini_file, guard_source=None, mode=1):
     enabled = False
     if mode == 1:
         ini, _ = read_regular(ini_file)
@@ -382,13 +383,8 @@ def configure(install_dir, sandbox_file, ini_file, guard_source, mode=1):
     root_fd, private_install_anchor = open_root(install_dir)
     guard_fd = None; sandbox_fd = None
     try:
-        # Validate all inputs and old filenames before any mutation. The guard
-        # lives after the sandbox table, outside the auto-loaded checksum tree.
-        guard = None
-        if enabled:
-            guard, _ = read_regular(guard_source)
-            guard = guard.decode("utf-8")
-            if not guard.strip(): raise ConfigurationError("Guard source is empty")
+        # Validate paths and legacy targets before mutation. Remove the old
+        # managed Lua footer; no source guard or runtime callback is loaded.
         sandbox_path = Path(os.path.abspath(sandbox_file))
         old_sandbox = new_sandbox = None
         try:
@@ -397,7 +393,7 @@ def configure(install_dir, sandbox_file, ini_file, guard_source, mode=1):
             if enabled or sandbox_path.exists() or sandbox_path.is_symlink(): raise
         if old_sandbox is not None:
             base = strip_managed_guard(old_sandbox.decode("utf-8"))
-            new_sandbox = (append_managed_guard(enforce_sandbox(base), guard) if enabled else base).encode("utf-8")
+            new_sandbox = (enforce_sandbox(base) if enabled else base).encode("utf-8")
             sandbox_fd, private_sandbox_anchor = open_root(sandbox_path.parent)
             if not trusted_owner(info.st_uid) or info.st_mode & 0o002 or (info.st_mode & 0o020 and not private_sandbox_anchor):
                 raise ConfigurationError("Sandbox file can be written by another user")
@@ -425,14 +421,32 @@ def main():
     parser.add_argument("--install-dir", required=True)
     parser.add_argument("--sandbox-file", required=True)
     parser.add_argument("--ini-file", required=True)
-    parser.add_argument("--guard-source", required=True)
+    parser.add_argument("--guard-source", help="Deprecated; no Lua guard is loaded")
+    parser.add_argument("--cleanup-world")
+    parser.add_argument("--cleanup-backups")
+    parser.add_argument("--jar")
+    parser.add_argument("--java")
+    parser.add_argument("--javac")
     parser.add_argument("--mode", type=int, choices=(0, 1), default=1)
     args = parser.parse_args()
     try:
+        if bool(args.cleanup_world) != bool(args.cleanup_backups):
+            raise ConfigurationError("Both cleanup paths are required")
+        worker_fd = None
+        if args.cleanup_world:
+            from writing_start_admission import validate_worker_admission
+            worker_fd = validate_worker_admission()
         state = configure(args.install_dir, args.sandbox_file, args.ini_file, args.guard_source, args.mode)
-        print("ProjectWriting text-only guard: " + state)
+        if state == "enabled" and args.cleanup_world:
+            command = [sys.executable, str(Path(__file__).with_name("cleanWritingDrawings.py")),
+                "--world-dir", args.cleanup_world, "--backup-dir", args.cleanup_backups]
+            for name in ("jar", "java", "javac"):
+                value = getattr(args, name)
+                if value: command.extend(["--" + name, value])
+            subprocess.run(command, check=True, pass_fds=(worker_fd,))
+        print("ProjectWriting restart cleanup policy: " + state)
         return 0
-    except (ConfigurationError, OSError, UnicodeError) as error:
+    except (ValueError, OSError, UnicodeError, subprocess.SubprocessError) as error:
         print("ProjectWriting text-only configuration refused: " + str(error), file=sys.stderr)
         return 1
 

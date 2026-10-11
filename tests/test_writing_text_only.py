@@ -35,7 +35,7 @@ class InstallerTests(unittest.TestCase):
     def test_enable_preserves_original_text_and_options(self):
         before=self.sandbox.read_text()
         self.assertEqual(self.run_install(), 'enabled')
-        self.assertFalse(self.target.exists()); self.assertIn(self.source.read_text(), self.sandbox.read_text()); self.assertIn(installer.BEGIN_MARKER, self.sandbox.read_text())
+        self.assertFalse(self.target.exists()); self.assertNotIn(installer.BEGIN_MARKER, self.sandbox.read_text())
         self.assertFalse((self.install/'media').exists())
         self.assertEqual(installer.strip_managed_guard(self.sandbox.read_text()), before.replace('Freehand = true', 'Freehand = false').replace('VanillaMap = false', 'VanillaMap = true'))
     def test_exact_mod_tokens(self):
@@ -46,6 +46,14 @@ class InstallerTests(unittest.TestCase):
                 before=self.sandbox.read_bytes()
                 self.assertEqual(self.run_install(), 'disabled')
                 self.assertFalse(self.target.exists()); self.assertEqual(self.sandbox.read_bytes(),before)
+    def test_enable_removes_previous_continuous_guard(self):
+        base=self.sandbox.read_text()
+        self.sandbox.write_text(installer.append_managed_guard(base, 'Events.OnTickEvenPaused.Add(function() end)\n'))
+        self.assertEqual(self.run_install(), 'enabled')
+        self.assertNotIn(installer.BEGIN_MARKER, self.sandbox.read_text())
+        self.assertNotIn('Events.OnTickEvenPaused', self.sandbox.read_text())
+        self.assertIn('Freehand = false', self.sandbox.read_text())
+
     def test_mode_zero_no_source_or_sandbox_needed(self):
         self.target.parent.mkdir(parents=True); self.target.parent.chmod(0o755); self.target.parent.parent.chmod(0o755); self.target.parent.parent.parent.chmod(0o755); self.target.write_text('old guard')
         self.source.unlink(); self.sandbox.unlink(); self.ini.unlink()
@@ -56,7 +64,7 @@ class InstallerTests(unittest.TestCase):
         self.target.symlink_to(outside); self.ini.write_text('Mods=SomethingElse\n')
         before=self.sandbox.read_bytes()
         self.run_install(); self.assertFalse(self.target.is_symlink()); self.assertEqual(outside.read_text(),'protected'); self.assertEqual(self.sandbox.read_bytes(),before)
-    def test_idempotent_inline_source_and_no_auto_lua(self):
+    def test_idempotent_native_options_and_no_auto_lua(self):
         self.run_install(); before=self.sandbox.read_bytes(); sbtime=self.sandbox.stat().st_mtime_ns
         self.run_install(); self.assertEqual(self.sandbox.read_bytes(),before); self.assertEqual(self.sandbox.stat().st_mtime_ns,sbtime)
         self.assertFalse((self.install/'media').exists())
@@ -67,12 +75,14 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue(all(not (self.target.parent/name).exists() for name in installer.LEGACY_GUARD_NAMES))
         enabled_base=installer.strip_managed_guard(self.sandbox.read_text())
         for name in installer.LEGACY_GUARD_NAMES: (self.target.parent/name).write_text('old guard')
+        self.sandbox.write_text(installer.append_managed_guard(enabled_base, self.source.read_text()))
         self.run_install(mode=0)
         self.assertTrue(all(not (self.target.parent/name).exists() for name in installer.LEGACY_GUARD_NAMES))
         self.assertEqual(self.sandbox.read_text(),enabled_base)
         self.assertIn('Freehand = false',enabled_base); self.assertIn('VanillaMap = true',enabled_base)
     def test_mod_absent_strips_footer_preserves_native_flags(self):
         self.run_install(); base=installer.strip_managed_guard(self.sandbox.read_text())
+        self.sandbox.write_text(installer.append_managed_guard(base, self.source.read_text()))
         self.ini.write_text('Mods=SomethingElse\n'); self.source.unlink()
         self.run_install(); self.assertEqual(self.sandbox.read_text(),base)
     def test_mod_absent_leaves_unrelated_dynamic_sandbox_untouched(self):
@@ -83,10 +93,10 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.run_install(), 'disabled')
         self.assertEqual(self.sandbox.read_text(), original)
         self.assertEqual(self.sandbox.stat().st_mtime_ns, before)
-    def test_guard_source_update_replaces_single_inline_block(self):
+    def test_guard_source_is_never_loaded(self):
         self.run_install(); self.source.write_text('-- replacement guard\nprint("replacement")\n')
         self.run_install(); result=self.sandbox.read_text()
-        self.assertEqual(result.count(installer.BEGIN_MARKER),1); self.assertNotIn('print("guard")',result); self.assertIn(self.source.read_text(),result)
+        self.assertNotIn(installer.BEGIN_MARKER,result); self.assertNotIn('print("guard")',result); self.assertNotIn(self.source.read_text(),result)
     def test_add_absent_block_preserves_comments_and_long_strings(self):
         original='-- {{{\nSandboxVars = {\n VERSION = 5,\n Label = [=[ text } -- { " ]=], -- }\n --[[ { ProjectWriting = { false } } ]]\n}\n'
         self.sandbox.write_text(original); self.run_install()
@@ -113,12 +123,15 @@ class InstallerTests(unittest.TestCase):
         values=('SandboxVars={ProjectWriting={},ProjectWriting={}}','SandboxVars={ProjectWriting={Freehand=true,Freehand=false}}','SandboxVars={ProjectWriting={Freehand=true,["Freehand"]=false}}','SandboxVars={ProjectWriting={Freehand=true,["Free\\104and"]=false}}','SandboxVars={ProjectWriting={Other=1,Other=2}}','SandboxVars={ProjectWriting={Freehand=true,[ [[\nFreehand]] ]=false}}')
         for value in values:
             with self.subTest(value=value): self.sandbox.write_text(value); self.assert_refused_unchanged()
-    def test_missing_guard_refuses_without_mutation(self):
-        self.source.unlink(); before=self.sandbox.read_bytes()
-        with self.assertRaises(installer.ConfigurationError): self.run_install()
-        self.assertEqual(self.sandbox.read_bytes(),before); self.assertFalse((self.install/'media').exists())
-    def test_source_symlink_refuses(self):
-        self.source.unlink(); self.source.symlink_to(self.ini); self.assert_refused_unchanged()
+    def test_missing_guard_is_not_needed(self):
+        self.source.unlink()
+        self.assertEqual(self.run_install(), 'enabled')
+        self.assertFalse((self.install/'media').exists())
+        self.assertNotIn(installer.BEGIN_MARKER, self.sandbox.read_text())
+    def test_deprecated_source_is_ignored(self):
+        self.source.unlink(); self.source.symlink_to(self.ini)
+        self.assertEqual(self.run_install(), 'enabled')
+        self.assertNotIn(installer.BEGIN_MARKER, self.sandbox.read_text())
     def test_sandbox_symlink_refuses(self):
         actual=self.root/'actual.lua'; self.sandbox.rename(actual); self.sandbox.symlink_to(actual)
         self.assert_refused_unchanged(); self.assertEqual(actual.read_bytes(),self.sandbox.read_bytes())
@@ -174,7 +187,7 @@ class InstallerTests(unittest.TestCase):
         with patch.object(installer, 'namespace_root_uid', return_value=65534), patch.object(installer.os, 'fstat', side_effect=mapped_fstat):
             self.assertEqual(self.run_install(), 'enabled')
             self.assertFalse(installer.trusted_owner(65533))
-        self.assertFalse(self.target.exists()); self.assertIn(self.source.read_text(), self.sandbox.read_text()); self.assertIn(installer.BEGIN_MARKER, self.sandbox.read_text())
+        self.assertFalse(self.target.exists()); self.assertNotIn(installer.BEGIN_MARKER, self.sandbox.read_text())
     def test_group_writable_path_without_private_ancestor_refuses(self):
         self.root.chmod(0o755); self.install.chmod(0o775)
         self.assert_refused_unchanged()

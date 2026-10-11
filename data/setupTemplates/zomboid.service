@@ -7,6 +7,10 @@ Wants=zomboid_logger.service
 [Service]
 Type=simple
 PrivateTmp=true
+# Shared private startup-admission directory; preserve live WORLD lock inodes.
+RuntimeDirectory=pzmanager
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
 WorkingDirectory=%h/pzmanager/data/pzserver/
 # C17 (split-users) : en mode split, la JVM tourne sous un compte dédié
 # (User=__PZ_GAME_USER__, sans accès aux secrets du manager) via l'unité
@@ -21,7 +25,7 @@ RestrictSUIDSGID=true
 ProtectSystem=strict
 # Chemins inscriptibles : install (pzserver), monde (Zomboid), logs, et le
 # tube de contrôle (dans pzserver/). Tout le reste est en lecture seule.
-ReadWritePaths=%h/pzmanager/data/pzserver %h/pzmanager/Zomboid %h/pzmanager/logs
+ReadWritePaths=%h/pzmanager/data/pzserver %h/pzmanager/Zomboid %h/pzmanager/logs %h/pzmanager/data/dataBackups %t/pzmanager
 # Purge tout octet résiduel (ex: "quit" bufferisé d'un stop précédent) resté dans
 # le FIFO de contrôle. Sinon la socket-activation relance le service qui relit ce
 # "quit" et remeurt à f:0 en boucle (flap). Lecture non-bloquante (iflag=nonblock):
@@ -37,8 +41,12 @@ ExecStartPre=/usr/bin/python3 %h/pzmanager/data/scripts/lib/jvm_memory_budget.py
 # Couvre tous les démarrages (boot, pzm, socket-activation) ; la whitelist et
 # les comptes ne sont jamais touchés (constat Codex Security, 10/2026).
 ExecStartPre=%h/pzmanager/data/scripts/internal/enforceClosedServer.sh
-# ProjectWriting actif : dessin libre désactivé et garde des livres réinstallé
-# après les mises à jour Steam. Le texte et les notes restent disponibles.
+# (Ré)applique le lien jre64 -> GraalVM si PZ_GRAALVM_HOME est défini (.env), sinon
+# garde le jre64 bundlé. SteamCMD "validate" restaure le vrai jre64 à chaque
+# maintenance : on rétablit donc le lien à chaque démarrage. "-" non bloquant.
+ExecStartPre=-%h/pzmanager/data/scripts/internal/linkJvm.sh --auto
+# ProjectWriting actif : nettoyer les dessins sauvegardés avant JVM startup.
+# Les textes et notes sont conservés ; aucune purge Lua pendant la session.
 ExecStartPre=%h/pzmanager/data/scripts/internal/configureWritingTextOnly.sh
 # Purge des accès inactifs juste AVANT le lancement de la JVM. C'est le seul
 # instant où le monde est garanti fermé quel que soit le chemin de démarrage
@@ -48,10 +56,6 @@ ExecStartPre=%h/pzmanager/data/scripts/internal/configureWritingTextOnly.sh
 # le serveur de démarrer. Pas de --force : en ExecStartPre l'unité est
 # "activating", donc le garde-fou serveur-arrêté de la purge passe de lui-même.
 ExecStartPre=-%h/pzmanager/data/scripts/admin/purgeInactivePlayers.sh
-# (Ré)applique le lien jre64 -> GraalVM si PZ_GRAALVM_HOME est défini (.env), sinon
-# garde le jre64 bundlé. SteamCMD "validate" restaure le vrai jre64 à chaque
-# maintenance : on rétablit donc le lien à chaque démarrage. "-" non bloquant.
-ExecStartPre=-%h/pzmanager/data/scripts/internal/linkJvm.sh --auto
 # -servername est passé explicitement depuis PZ_SERVER_NAME (.env) : sans lui PZ
 # retombe sur son défaut "servertest", et le nom du monde pourrait diverger des
 # chemins (db/<nom>.db, Server/<nom>.ini) que lisent les scripts. Le :- garantit
@@ -62,7 +66,9 @@ ExecStop=/bin/sh -c "echo 'quit' > %h/pzmanager/data/pzserver/zomboid.control"
 KillSignal=SIGCONT
 # 06/10/2026 : le snapshot préalable à la purge a pris 180 s au démarrage.
 # Le délai systemd par défaut (90 s) interrompait cette sauvegarde avant la JVM.
-TimeoutStartSec=900
+# Le nettoyage offline parcourt aussi les chunks des zones non chargées.
+# Laisser 20 minutes pour ce passage sur les mondes comportant beaucoup de fichiers.
+TimeoutStartSec=1200
 # Sauvegarde-à-l'extinction d'un gros monde B42 moddé dépasse souvent 30s ;
 # à 120s systemd laisse le "quit" finir proprement au lieu de SIGKILL (faux "timeout")
 TimeoutStopSec=120
