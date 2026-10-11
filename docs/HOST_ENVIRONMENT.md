@@ -31,6 +31,7 @@ These are **machine-specific**, persistent user-unit overrides, applied with:
 ```bash
 systemctl --user set-property zomboid.service 'AllowedCPUs=0-6 8-14'
 systemctl --user set-property pz-backup.service 'AllowedCPUs=7 15'
+systemctl --user set-property pz-backup.service CPUQuota=50%
 ```
 
 systemd stores them under `~/.config/systemd/user.control/<unit>.d/` and
@@ -42,6 +43,10 @@ assuming a successful `set-property` proves effective isolation.
 
 The backup's aggregate CPU budget is specified in
 [WHAT_IS_INSTALLED](WHAT_IS_INSTALLED.md#pz-backuptimer---hourly-backup).
+The first isolated run was initially allowed a full CPU; the limit was reduced
+while observing shared-disk waits and slower game-loop intervals, to temper the
+metadata burst. These observations alone do not identify which host workload
+caused the waits.
 The CPU masks do not isolate the shared NVMe, memory bandwidth, or unrelated
 host workloads. Direct manual `pzm backup create` calls run in the caller's
 cgroup; this isolation covers `pz-backup.service` and its hourly timer.
