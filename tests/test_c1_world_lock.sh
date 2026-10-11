@@ -19,10 +19,34 @@
 # PATH. Isolé : XDG_RUNTIME_DIR redirigé vers un sandbox (aucun impact sur
 # l'installation). Sans flock sur l'hôte -> SKIP propre (vérifié en WSL/Linux).
 set -euo pipefail
+# Réserver aussi le repli : les sous-shells ne doivent jamais employer le compte réel.
+TEST_FALLBACK_DIR="$(mktemp -d /tmp/pzmanager-pz-c1.XXXXXX)"
+readonly TEST_FALLBACK_DIR
+TEST_FALLBACK_INODE="$(stat -c '%d:%i' "$TEST_FALLBACK_DIR")"
+readonly TEST_FALLBACK_INODE
+WORLD_TEST_USER="${TEST_FALLBACK_DIR#/tmp/pzmanager-}"
+export WORLD_TEST_USER
+id() {
+    if [[ "$*" == "-un" ]]; then printf '%s\n' "$WORLD_TEST_USER"
+    else command id "$@"; fi
+}
+export -f id
+remove_test_fallback() {
+    if [[ -d "$TEST_FALLBACK_DIR" && ! -L "$TEST_FALLBACK_DIR" && -O "$TEST_FALLBACK_DIR" ]] \
+       && [[ "$(stat -c '%d:%i' "$TEST_FALLBACK_DIR")" == "$TEST_FALLBACK_INODE" ]]; then
+        rm -rf -- "$TEST_FALLBACK_DIR"
+    else
+        echo "[FAIL] cleanup du repli refusé : identité inattendue" >&2
+        return 1
+    fi
+}
 
 ROOT="${PZ_TEST_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 LIB_DIR="${ROOT}/data/scripts/lib"
-SANDBOX="${ROOT}/tests/.tmp-c1-$$"
+SANDBOX="$(mktemp -d "${ROOT}/tests/.tmp-c1.XXXXXX")"
+readonly SANDBOX
+SANDBOX_INODE="$(stat -c '%d:%i' "$SANDBOX")"
+readonly SANDBOX_INODE
 BIN="${SANDBOX}/bin"
 
 PASS=0
@@ -31,8 +55,21 @@ ok() { PASS=$(( PASS + 1 )); echo "[OK] $*"; }
 ko() { FAIL=$(( FAIL + 1 )); echo "[FAIL] $*" >&2; }
 
 cleanup() {
+    # Uniquement les jobs encore enregistrés comme vivants par ce shell.
+    local job
+    for job in $(jobs -pr); do
+        kill "$job" 2>/dev/null || true
+        wait "$job" 2>/dev/null || true
+    done
     release_world_lock 2>/dev/null || true
-    rm -rf "$SANDBOX"
+    remove_test_fallback
+    if [[ -d "$SANDBOX" && ! -L "$SANDBOX" && -O "$SANDBOX" ]] \
+       && [[ "$(stat -c '%d:%i' "$SANDBOX")" == "$SANDBOX_INODE" ]]; then
+        rm -rf -- "$SANDBOX"
+    else
+        echo "[FAIL] cleanup sandbox refusé : identité inattendue" >&2
+        return 1
+    fi
 }
 trap cleanup EXIT
 
@@ -51,7 +88,6 @@ source "${LIB_DIR}/server_state.sh"
 source "${LIB_DIR}/common.sh"
 
 # --- Isolation ----------------------------------------------------------------
-rm -rf "$SANDBOX"
 mkdir -p "${SANDBOX}/rt" "$BIN"
 export XDG_RUNTIME_DIR="${SANDBOX}/rt"
 # État verrou assaini pour ce shell de test (ou participation si né sous verrou).
@@ -152,7 +188,7 @@ fi
 
 # --- (2) deux wipes concurrents ----------------------------------------------------
 echo "== (2) wipes concurrents =="
-with_world_lock --required sleep 3 &
+with_world_lock --required exec sleep 3 &
 WIPE_PID=$!
 sleep 1
 if timeout 10 bash -c "source '${LIB_DIR}/world_lock.sh'; export XDG_RUNTIME_DIR='${SANDBOX}/rt'; acquire_world_lock --try"; then
@@ -169,7 +205,7 @@ fi
 
 # --- (3) restore pendant backup exclu -----------------------------------------------
 echo "== (3) restore pendant backup =="
-with_world_lock --required sleep 3 &
+with_world_lock --required exec sleep 3 &
 BACKUP_PID=$!
 sleep 1
 if timeout 10 bash -c "source '${LIB_DIR}/world_lock.sh'; export XDG_RUNTIME_DIR='${SANDBOX}/rt'; acquire_world_lock --required" 2>/dev/null; then
@@ -179,7 +215,7 @@ else
 fi
 wait "$BACKUP_PID" 2>/dev/null || true
 # Et inversement : backup --try pendant un restore.
-with_world_lock --required sleep 3 &
+with_world_lock --required exec sleep 3 &
 RESTORE_PID=$!
 sleep 1
 if timeout 10 bash -c "source '${LIB_DIR}/world_lock.sh'; export XDG_RUNTIME_DIR='${SANDBOX}/rt'; acquire_world_lock --try" 2>/dev/null; then

@@ -720,7 +720,8 @@ _CLK_TCK = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
 # Résumé d'une collecte ZGC : "NNNNM(PP%)->MMMMM(QQ%)" (majeure OU mineure).
 _GC_HEAP_RE = re.compile(r"(\d+)M\((\d+)%\)->(\d+)M\((\d+)%\)")
 _GC_MAJOR_RE = re.compile(
-    r"Major Collection \([^)]*\) \d+M\(\d+%\)->(\d+)M\((\d+)%\) ([\d.,]+)s")
+    r"GC\((\d+)\).*Major Collection \([^)]*\) \d+M\(\d+%\)->(\d+)M\((\d+)%\) ([\d.,]+)s")
+_GC_PAUSE_RE = re.compile(r"GC\((\d+)\).*?\bPause [^\r\n]*? ([\d.,]+)ms(?:\s|$)")
 
 
 def _bar(pct, width=10) -> str:
@@ -865,22 +866,27 @@ def _temps() -> dict:
 
 
 def _gc_heap():
-    """(used_mb, pct, major_pct, major_used_mb, major_pause_s) depuis gc.log.
-    used/pct = dernière collecte (fraîche) ; major_* = dernière MAJEURE (plancher
-    du live-set = indicateur d'OOM). Les % sont des % de Xmx."""
+    """(used_mb, pct, major_pct, major_used_mb, major_pause_s, major_cycle_s).
+    La durée du cycle concurrent ZGC n'est pas une pause du jeu. major_pause_s
+    est la plus longue phase Pause du dernier GC majeur, ou None si le fragment
+    lu ne contient pas ses phases. Les % sont des % de Xmx."""
     txt = _tail_text(GC_LOG_PATH)
     if not txt:
         return None
     used = pct = None
     for m in _GC_HEAP_RE.finditer(txt):
         used, pct = int(m.group(3)), int(m.group(4))     # post-flèche = état courant
-    maj_pct = maj_used = maj_pause = None
+    maj_id = maj_pct = maj_used = maj_cycle = None
     for m in _GC_MAJOR_RE.finditer(txt):
-        maj_used, maj_pct = int(m.group(1)), int(m.group(2))
-        maj_pause = float(m.group(3).replace(",", "."))
+        maj_id = m.group(1)
+        maj_used, maj_pct = int(m.group(2)), int(m.group(3))
+        maj_cycle = float(m.group(4).replace(",", "."))
+    pauses = [float(m.group(2).replace(",", ".")) / 1000
+              for m in _GC_PAUSE_RE.finditer(txt) if m.group(1) == maj_id]
+    maj_pause = max(pauses) if pauses else None
     if used is None:
         return None
-    return used, pct, maj_pct, maj_used, maj_pause
+    return used, pct, maj_pct, maj_used, maj_pause, maj_cycle
 
 
 def _recent_heapdump():
@@ -1038,7 +1044,11 @@ def _prom_snapshot():
         elif line.startswith("packet_receive_bytes_sum"):
             out["recv_b"] += _prom_val(line)
         elif line.startswith('performance{parameter="fps"}'):
-            out["fps"] = _prom_val(line)
+            # B42 : ce compteur au nom historique fps expose la période du tick
+            # en ms (PerformanceStatistic), pas sa fréquence.
+            period_ms = _prom_val(line)
+            out["fps"] = (1000.0 / period_ms
+                          if period_ms is not None and 0 < period_ms < float("inf") else None)
         elif line.startswith('network{parameter="packet-loss-last-second"}'):
             out["ploss"] = _prom_val(line)
         elif line.startswith('network{parameter="voip-sent"}'):
@@ -1280,7 +1290,7 @@ def _monitoring_embed(s: dict) -> discord.Embed:
     else:
         net_txt = ""
     fps = s.get("srv_fps")
-    fps_txt = f" · ⚙️ **{fps:.0f}** fps" if fps is not None else ""
+    fps_txt = f" · ⚙️ **{fps:.1f}** fps" if fps is not None else ""
     embed.add_field(
         name="Serveur",
         value=f"{state}{players_txt}{net_txt}{fps_txt} · uptime **{_fmt_dur(s['uptime'])}**",
@@ -1354,7 +1364,11 @@ def _monitoring_embed(s: dict) -> discord.Embed:
     # Détail de la dernière collecte majeure : uniquement en cas d'alerte
     # (info de diagnostic, inutile quand tout est vert).
     if alerts and gc and gc[2] is not None:
-        disk_line += f"\n♻️ dern. majeure {gc[2]}% en {gc[4]:.1f}s" if gc[4] else f"\n♻️ dern. majeure {gc[2]}%"
+        disk_line += f"\n♻️ dern. majeure {gc[2]}%"
+        if gc[5] is not None:
+            disk_line += f" · cycle {gc[5]:.1f}s"
+        if gc[4] is not None:
+            disk_line += f" · pause max {gc[4] * 1000:.1f}ms"
     embed.add_field(name="🗄️ Disque libre", value=disk_line, inline=True)
 
     if alerts:
@@ -1393,7 +1407,7 @@ def _csv_row(s: dict) -> list:
     mem = s.get("mem") or {}
     total_kb, avail_kb = mem.get("MemTotal") or 0, mem.get("MemAvailable")
     ram_used_pct = 100.0 * (1 - avail_kb / total_kb) if (avail_kb and total_kb) else None
-    gc = s.get("gc")                        # (used, pct, maj_pct, maj_used, pause)
+    gc = s.get("gc")                        # (used, pct, maj_pct, maj_used, pause, cycle)
     net = s.get("net") or {}
     gnet = s.get("game_net") or {}
     players, maxp = s.get("players"), s.get("max_players")
@@ -1423,7 +1437,7 @@ def _csv_row(s: dict) -> list:
         f(temps.get("cpu")), f(temps.get("nvme")), f(disk_free_pct),
         f(gnet.get("pps_sent"), 0), f(gnet.get("pps_recv"), 0),
         f(gnet.get("kbs_sent")), f(gnet.get("kbs_recv")),
-        f(s.get("srv_fps"), 0), f(s.get("packet_loss"), 3),
+        f(s.get("srv_fps"), 1), f(s.get("packet_loss"), 3),
         f(s.get("voip_sent"), 0), f(s.get("voip_recv"), 0),
         f(gnet.get("recv_pps_max_client"), 0),
         f(100.0 * gnet["recv_pps_max_client"] / maxpps)

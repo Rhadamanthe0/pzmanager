@@ -177,7 +177,10 @@ At `http://127.0.0.1:<port>/metrics` you get:
 - `packet_send_bytes` / `packet_receive_bytes` — histograms **per client and per
   packet type**; `_count` is the packet count, `_sum` the bytes. Summed and
   differentiated over time, that is exact packets/s and KB/s.
-- `performance{fps}` — the server tick (~100 when healthy; it drops under load).
+- `performance{parameter="fps"}` — despite the name, B42 reports the current
+  tick period in **milliseconds**. The bot displays `1000 / period_ms` ticks/s:
+  about 10 ticks/s for the installed server's 10 Hz cap. A raw value of 100 ms
+  is normal; larger periods indicate a slower tick, not a higher frame rate.
 - `network{packet-loss-last-second, voip-sent, voip-received, sent-packets…}`.
 - `player_x/y/lat/lon{name=…}` — **player positions**.
 

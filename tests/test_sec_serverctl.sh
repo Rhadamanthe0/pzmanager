@@ -1,20 +1,51 @@
 #!/usr/bin/env bash
 # Vrais flock et fichiers jetables : aucun appel au serveur ni aux bases joueurs.
 set -euo pipefail
+# Réserver aussi le repli : les sous-shells ne doivent jamais employer le compte réel.
+TEST_FALLBACK_DIR="$(mktemp -d /tmp/pzmanager-pz-serverctl.XXXXXX)"
+readonly TEST_FALLBACK_DIR
+TEST_FALLBACK_INODE="$(stat -c '%d:%i' "$TEST_FALLBACK_DIR")"
+readonly TEST_FALLBACK_INODE
+SERVERCTL_TEST_USER="${TEST_FALLBACK_DIR#/tmp/pzmanager-}"
+export SERVERCTL_TEST_USER
+id() {
+    if [[ "$*" == "-un" ]]; then printf '%s\n' "$SERVERCTL_TEST_USER"
+    else command id "$@"; fi
+}
+export -f id
+remove_test_fallback() {
+    if [[ -d "$TEST_FALLBACK_DIR" && ! -L "$TEST_FALLBACK_DIR" && -O "$TEST_FALLBACK_DIR" ]] \
+       && [[ "$(stat -c '%d:%i' "$TEST_FALLBACK_DIR")" == "$TEST_FALLBACK_INODE" ]]; then
+        rm -rf -- "$TEST_FALLBACK_DIR"
+    else
+        echo "[FAIL] cleanup du repli refusé : identité inattendue" >&2
+        return 1
+    fi
+}
 ROOT="${PZ_TEST_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 LIB="${ROOT}/data/scripts/lib/common.sh"
 SANDBOX="$(mktemp -d /tmp/pz-serverctl-test.XXXXXX)"
+readonly SANDBOX
+SANDBOX_INODE="$(stat -c '%d:%i' "$SANDBOX")"
+readonly SANDBOX_INODE
 HOLDER=""
 cleanup() {
     if [[ -n "$HOLDER" ]]; then kill "$HOLDER" 2>/dev/null || true; wait "$HOLDER" 2>/dev/null || true; fi
-    rm -rf -- "$SANDBOX"
+    remove_test_fallback
+    if [[ -d "$SANDBOX" && ! -L "$SANDBOX" && -O "$SANDBOX" ]] \
+       && [[ "$(stat -c '%d:%i' "$SANDBOX")" == "$SANDBOX_INODE" ]]; then
+        rm -rf -- "$SANDBOX"
+    else
+        echo "[FAIL] cleanup sandbox refusé : identité inattendue" >&2
+        return 1
+    fi
 }
 trap cleanup EXIT
 PASS=0
 check() { if "$@"; then PASS=$((PASS + 1)); else echo "[FAIL] $*" >&2; exit 1; fi; }
 run() { bash -eu -c 'source "$1"; shift; eval "$1"' bash "$LIB" "$1"; }
 export TEST_SANDBOX="$SANDBOX"
-mkdir "$SANDBOX/runtime"
+mkdir -m 0700 "$SANDBOX/runtime"
 
 # La bibliothèque doit rester utilisable même quand aucun verrou ne peut être créé.
 check run 'export XDG_RUNTIME_DIR="$TEST_SANDBOX/absent"; true'
