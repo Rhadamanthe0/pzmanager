@@ -12,7 +12,7 @@
 - **Auto-updates** - Detects mod and server updates every 5 min, triggers maintenance automatically
 - **Auto-backups** - Hourly incremental snapshots with GFS retention (hourly for 24h, then 6-hourly for 7d, then daily for 30d) + off-site ZIPs
 - **Auto-maintenance** - Daily system/server updates at 4:30 AM
-- **Adaptive memory restart** - Restarts only when the Java heap actually fills up (B42 map-cell growth), not on a blind schedule
+- **Adaptive memory restart** - Requests a restart at 18 GiB resident service RAM or near-full heap; heap capped at 16 GiB within a 20 GiB service budget
 - **Discord notifications** - Server status, mod updates, maintenance alerts, periodic health monitoring
 - **Discord command bot** - Run `pzm` from Discord (`/pzm …`)
 - **Player warnings** - In-game countdown messages before restarts

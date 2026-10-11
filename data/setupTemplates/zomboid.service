@@ -27,6 +27,11 @@ ReadWritePaths=%h/pzmanager/data/pzserver %h/pzmanager/Zomboid %h/pzmanager/logs
 # "quit" et remeurt à f:0 en boucle (flap). Lecture non-bloquante (iflag=nonblock):
 # vide instantanément si des octets traînent, retourne aussitôt si le FIFO est vide.
 ExecStartPre=/bin/sh -c "dd if=%h/pzmanager/data/pzserver/zomboid.control iflag=nonblock of=/dev/null 2>/dev/null; exit 0"
+# Lecture seule, bloquante : vérifier le JSON effectivement lancé et la limite
+# du cgroup courant AVANT purge/lancement, sans charger les secrets du manager.
+# Une installation restée à Xmx20/MemoryMax20 doit migrer son override .env puis
+# réappliquer configureJvm.sh hors service ; le démarrage ne corrige rien seul.
+ExecStartPre=/usr/bin/python3 %h/pzmanager/data/scripts/lib/jvm_memory_budget.py check %h/pzmanager/data/pzserver/ProjectZomboid64.json
 # Admission verrouillée : Open=false est LA barrière B42 (cf. allowedsteamid).
 # BLOQUANT (sans "-") : un serveur qui ne peut pas être fermé ne démarre pas.
 # Couvre tous les démarrages (boot, pzm, socket-activation) ; la whitelist et
@@ -58,10 +63,16 @@ TimeoutStartSec=900
 # Sauvegarde-à-l'extinction d'un gros monde B42 moddé dépasse souvent 30s ;
 # à 120s systemd laisse le "quit" finir proprement au lieu de SIGKILL (faux "timeout")
 TimeoutStopSec=120
-# Pas de MemoryMax (il throttle/OOM PZ au plafond). Swap interdit au process
-# (MemorySwapMax=0) : le swap-in/out des pages du jeu provoque des micro-freezes
-# et aggrave la désync réseau. Heap borné côté JVM via Xmx (moitié RAM), ce qui
-# laisse la marge nécessaire pour tenir en RAM. Voir configurationInitiale.sh.
+# Budget TOTAL du service (G = Gio) : préavis de restart à 18 Gio de RSS via heapcheck,
+# puis OOM-kill du service si la consommation ne peut être contenue à 20 Gio.
+# Heap limité à 16 Gio : marge de 4 Gio pour TOUT le reste du cgroup.
+# Le plafond inclut aussi cache et mémoire noyau du cgroup, récupérés si possible
+# avant l'OOM-kill. Ces caches ne déclenchent pas le restart préventif.
+MemoryAccounting=yes
+MemoryMax=20G
+OOMPolicy=kill
+# Pas de MemoryHigh : éviter le ralentissement du jeu avant le plafond.
+# Swap interdit : le swap-in/out provoque des micro-freezes et de la désync.
 MemorySwapMax=0
 # Priorise le jeu face aux tâches de fond (backup horaire, modcheck, maintenance) :
 # sous contention CPU, ce poids élevé (défaut=100 ; pz-backup=10) garantit que le

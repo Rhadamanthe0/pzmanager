@@ -37,10 +37,15 @@ import re
 import shlex
 import shutil
 import signal
+import subprocess
+import sys
 import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
+from service_memory import service_rss_bytes
 
 import discord
 from discord import app_commands
@@ -86,6 +91,8 @@ MONITORING_INTERVAL = max(15, int(os.environ.get("DISCORD_BOT_MONITORING_INTERVA
 LOG_ZOMBOID_DIR = os.environ.get("LOG_ZOMBOID_DIR", "").rstrip("/")
 GC_LOG_PATH = f"{LOG_ZOMBOID_DIR}/gc.log" if LOG_ZOMBOID_DIR else ""
 HEAP_RESTART_PERCENT = int(os.environ.get("HEAP_RESTART_PERCENT", "95") or "95")
+PZ_RAM_RESTART_GB = int(os.environ.get("PZ_RAM_RESTART_GB", "18") or "18")
+PZ_SERVICE_NAME = os.environ.get("PZ_SERVICE_NAME", "zomboid.service")
 # Journal CSV des métriques (« boîte noire » relisible hors Discord) : une ligne
 # par cycle de monitoring, dans logs/zomboid/ (gitignoré), purgé au-delà
 # de DISCORD_BOT_MONITORING_CSV_DAYS jours.
@@ -772,6 +779,33 @@ def _proc_status(pid) -> dict:
     return out
 
 
+def _service_memory() -> dict:
+    """RAM résidente pour le restart ; total cgroup pour le plafond MemoryMax.
+
+    Les propriétés viennent du service EN VIGUEUR, pas du template : un plafond
+    absent ou une erreur systemd ne doit jamais être affiché comme actif.
+    """
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "show", PZ_SERVICE_NAME,
+             "-p", "MemoryCurrent", "-p", "MemoryPeak", "-p", "MemoryMax", "-p", "ControlGroup"],
+            capture_output=True, text=True, timeout=2, check=True)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    names = {"MemoryCurrent": "memory_bytes", "MemoryPeak": "memory_peak_bytes",
+             "MemoryMax": "memory_limit_bytes"}
+    out = {}
+    for line in result.stdout.splitlines():
+        name, _, value = line.partition("=")
+        if name in names and value.isdigit() and 0 <= int(value) < 2**63:
+            out[names[name]] = int(value)
+        elif name == "ControlGroup":
+            rss_bytes = service_rss_bytes(value)
+            if rss_bytes is not None:
+                out["service_rss_bytes"] = rss_bytes
+    return out
+
+
 def _java_pid():
     """PID de la JVM serveur : le process 'ProjectZomboid'/'java' au plus gros RSS
     (robuste au shell parent du service)."""
@@ -1065,6 +1099,7 @@ def collect_stats(prev: dict) -> dict:
     s["mem"] = _meminfo()
     st = _proc_status(s["pid"]) if s["pid"] else {}
     s["rss_kb"], s["hwm_kb"], s["pswap_kb"] = st.get("VmRSS"), st.get("VmHWM"), st.get("VmSwap")
+    s.update(_service_memory())
     s["uptime"] = _proc_uptime_seconds(s["pid"]) if s["pid"] else None
     s["cpu_pct"] = None
     if s["pid"]:
@@ -1218,6 +1253,10 @@ def _status(s):
     if s["pid"] is None:
         alerts.append("🔴 Serveur INACTIF (aucun process JVM)")
         crit = True
+    memory_bytes = s.get("service_rss_bytes")
+    if memory_bytes is not None and memory_bytes >= PZ_RAM_RESTART_GB * 1073741824:
+        alerts.append(f"🔴 RAM totale {memory_bytes / 1073741824:.1f} Go ≥ seuil de restart ({PZ_RAM_RESTART_GB} Go)")
+        crit = True
     if live is not None and live >= HEAP_RESTART_PERCENT - 3:
         alerts.append(f"🔴 Heap live-set {live}% ≈ seuil de restart ({HEAP_RESTART_PERCENT}%)")
         crit = True
@@ -1296,24 +1335,40 @@ def _monitoring_embed(s: dict) -> discord.Embed:
         value=f"{state}{players_txt}{net_txt}{fps_txt} · uptime **{_fmt_dur(s['uptime'])}**",
         inline=False)
 
-    # Mémoire du jeu (heap) : le nerf de la guerre — c'est ce qui se remplit à
-    # mesure que la carte est explorée et déclenche le restart auto quand c'est plein.
-    # Un seul bloc mémoire : le heap (ce qui se remplit et déclenche le restart
-    # auto) ET la RAM totale du process (heap + moteur/réseau/JVM). On ne détaille
-    # pas heap vs natif : avec AlwaysPreTouch le heap réservé fausse le découpage.
+    # La RAM résidente déclenche le restart ; le budget utilise MemoryCurrent,
+    # qui inclut aussi shmem, cache, noyau et descendants. RSS/MemoryMax ne
+    # représente donc pas la consommation réelle du budget cgroup.
+    # Le heap garde son propre plafond JVM et son garde-fou après GC majeur.
     if gc:
         used_g, pct = gc[0] / 1024, gc[1]
-        heap_line = f"Jeu (heap) **{used_g:.1f} / {xmx:g} Go**  `{_bar(pct)}`  **{pct}%**"
+        heap_line = f"Jeu (heap) **{used_g:.1f} / {xmx:g} Go** · **{pct}%**"
     else:
         heap_line = "Jeu (heap) —"
-    if s["rss_kb"]:
+    memory_bytes = s.get("service_rss_bytes")
+    accounted_bytes = s.get("memory_bytes")
+    limit_bytes = s.get("memory_limit_bytes")
+    if accounted_bytes is not None and limit_bytes:
+        total_pct = round(accounted_bytes / limit_bytes * 100)
+        total_line = (f"Budget systemd **{accounted_bytes / 1073741824:.1f} / {limit_bytes / 1073741824:g} Go**"
+                      f"  `{_bar(total_pct)}`  **{total_pct}%**")
+        if s.get("memory_peak_bytes") is not None:
+            total_line += f" · pic compté **{s['memory_peak_bytes'] / 1073741824:.1f} Go**"
+    elif limit_bytes:
+        total_line = f"Budget systemd — / {limit_bytes / 1073741824:g} Go · consommation indisponible"
+    else:
+        total_line = "Budget systemd — · plafond non confirmé"
+    if memory_bytes is not None:
+        resident_line = f"RAM résidente **{memory_bytes / 1073741824:.1f} Go**"
+        if s["hwm_kb"]:
+            resident_line += f" · pic processus **{s['hwm_kb'] / 1048576:.1f} Go**"
+    elif s["rss_kb"]:
         rss_g = s["rss_kb"] / 1048576
         hwm_g = s["hwm_kb"] / 1048576 if s["hwm_kb"] else 0
-        total_line = f"Total en RAM **{rss_g:.1f} Go** · pic **{hwm_g:.1f} Go**"
+        resident_line = f"RAM processus **{rss_g:.1f} Go** · pic **{hwm_g:.1f} Go**"
     else:
-        total_line = "Total en RAM —"
+        resident_line = "RAM résidente —"
     embed.add_field(name="🧠 RAM de PZ",
-                    value=f"{heap_line}\n{total_line}", inline=False)
+                    value=f"{total_line}\n{resident_line}\n{heap_line}", inline=False)
 
     # RAM de la machine : la vraie marge anti OOM-kill OS. Le cache est
     # récupérable à tout moment, donc un % élevé n'alarme pas tant qu'il reste du libre.

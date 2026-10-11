@@ -215,8 +215,11 @@ must stay reachable on loopback only and must never be forwarded on the router.
 `data/scripts/internal/configureJvm.sh`), run the script, and restart. The script
 applies the tuning at install time and re-applies it after every SteamCMD update
 (which restores the vanilla JSON) — a manual edit of `ProjectZomboid64.json`
-would not survive the nightly maintenance. There is no `pzm config ram` command
-(and no cgroup `MemoryMax`, which used to throttle/crash the server). See
+would not survive the nightly maintenance. There is no `pzm config ram` command.
+The monitor requests a restart at 18 GiB RSS. The heap ceiling is 16 GiB
+within a 20 GiB whole-service cap, leaving 4 GiB for all other cgroup charges.
+A blocking, read-only startup check rejects a stale JSON with Xmx20 and an
+incompatible effective memory limit. See
 [ADVANCED.md](ADVANCED.md#ram--jvm-configuration).
 
 ### Server Data
@@ -317,7 +320,8 @@ WantedBy=default.target
 - Discord notification at startup (via notifyServerReady.sh)
 - Dedicated logger (zomboid_logger.service)
 - Clean shutdown via 'quit' command (up to 120s)
-- `MemorySwapMax=0`; **no** `MemoryMax`/`MemoryHigh` (a cgroup cap throttles/OOM-kills PZ)
+- `MemoryAccounting=yes`, `MemoryMax=20G`, `OOMPolicy=kill`, `MemorySwapMax=0`;
+  preventive restart at 18 GiB; no `MemoryHigh` throttling threshold
 
 **Commands**:
 ```bash
@@ -427,13 +431,15 @@ RestartSec=5
 - Retention: GFS — see [CONFIGURATION](CONFIGURATION.md#backups) for tier ages (`BACKUP_GFS_*`)
 - Destination: `/home/pzuser/pzmanager/data/dataBackups/`
 
-#### pz-heapcheck.timer - Adaptive memory restart (every ~3 min)
+#### pz-heapcheck.timer - Adaptive memory restart (every ~30 s)
 
-**Schedule**: 5 min after boot, then 3 min after each run (`OnUnitInactiveSec`, so
+**Schedule**: 30 s after activation, then 30 s after each run (`OnUnitInactiveSec`, so
 it never overlaps its own execution or a restart warning).
 
 **Function**:
 - Reads the post-major-GC heap occupancy from `logs/zomboid/gc.log`.
+- Independently reads resident process memory (sum of RSS in the service cgroup), even without a GC
+  log, and triggers the same restart at `PZ_RAM_RESTART_GB` (default 18 GiB).
 - When it reaches `HEAP_RESTART_PERCENT` (`.env`, default 95), triggers
   `pzm server restart HEAP_RESTART_DELAY` (default `5m`, with a player warning).
 - The heap fills with live map cells that nothing frees at runtime, so a restart
