@@ -208,8 +208,14 @@ def run(args):
         if not startup and not offline: raise ConfigurationError('Server is not stopped or this unit start-pre')
         held_fd = os.open(path.name, os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=directory_fd)
         info = os.fstat(held_fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
             raise ConfigurationError('Untrusted WORLD lock file')
+        # Older CLI creates this same inode as 0664 under umask 002. Tighten the
+        # already verified descriptor, never replace the path or unlock it.
+        os.fchmod(held_fd, 0o600)
+        info = os.fstat(held_fd)
+        if stat.S_IMODE(info.st_mode) != 0o600:
+            raise ConfigurationError('WORLD lock permissions could not be secured')
         try: fcntl.flock(held_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             if not startup: raise ConfigurationError('A world operation is already running')
@@ -289,4 +295,8 @@ def main():
     except (ConfigurationError, OSError, ValueError, subprocess.SubprocessError) as error:
         print('Writing restart cleanup refused: ' + str(error), file=sys.stderr); return 1
 
-if __name__ == '__main__': sys.exit(main())
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+    from shared_memory_budget import check_process
+    check_process()
+    sys.exit(main())

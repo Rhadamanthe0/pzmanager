@@ -840,9 +840,12 @@ class JavaValidator:
     """Compile auditable source and run real PZ loaders with bounded heap."""
     def __init__(self,jar,java,javac,lock_fd=None):
         if not all((jar,java,javac)):raise CleanupError("Dirty APPLY requires --jar, --java and --javac (a compatible JDK)")
-        self.jar=str(Path(jar).resolve(strict=True));self.java=str(Path(java).resolve(strict=True));self.javac=str(Path(javac).resolve(strict=True))
+        self.jar=jar;self.java=java;self.javac=javac
         self.lock_fd=lock_fd
     def __call__(self,stage,files,rows):
+        # A JRE-only bootstrap with no dirty record must not require a compiler.
+        # Resolve all tools before the first actual validation, before mutation.
+        self.jar=str(Path(self.jar).resolve(strict=True));self.java=str(Path(self.java).resolve(strict=True));self.javac=str(Path(self.javac).resolve(strict=True))
         source=Path(__file__).with_name("ValidateWritingRecords.java")
         if not source.is_file():raise CleanupError("PZ validation Java source is missing")
         with tempfile.TemporaryDirectory(prefix="pz-writing-validator-") as temp:
@@ -882,4 +885,8 @@ def main(argv=None):
     except (CleanupError,OSError,sqlite3.Error,ValueError,TypeError,KeyError,ImportError,subprocess.SubprocessError) as error:
         print("ProjectWriting offline cleanup refused: "+str(error),file=sys.stderr); return 1
 
-if __name__ == "__main__": sys.exit(main())
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+    from shared_memory_budget import check_process
+    check_process()
+    sys.exit(main())
