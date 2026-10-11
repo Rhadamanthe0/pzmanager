@@ -115,17 +115,20 @@ export BACKUP_DIR="${PZ_DATA_DIR}/dataBackups"
 export BACKUP_LATEST_LINK="${BACKUP_DIR}/latest"
 
 # Rétention GFS (grand-père/père/fils) des snapshots hardlinkés locaux
-export BACKUP_GFS_HOURLY_HOURS=24
-export BACKUP_GFS_SIXHOURLY_DAYS=7
-export BACKUP_GFS_DAILY_DAYS=30
+export BACKUP_GFS_HOURLY_HOURS=12
+export BACKUP_GFS_SIXHOURLY_DAYS=3
+export BACKUP_GFS_DAILY_DAYS=14
 export BACKUP_PRUNE_MAX_DELETE=15
 ```
 
+Tier thresholds are absolute snapshot ages: 12 hours, then another 60 hours at 6-hour granularity, then another 11 days daily (14 days total).
+
 Local hourly snapshots use **GFS retention** (`prune_gfs` in `dataBackup.sh`), not a flat N-day rotation:
 
-- **BACKUP_GFS_HOURLY_HOURS**: keep every hourly snapshot for this many hours (default 24)
-- **BACKUP_GFS_SIXHOURLY_DAYS**: then keep 1 per 6h up to this many days (default 7)
-- **BACKUP_GFS_DAILY_DAYS**: then keep 1 per day up to this many days (default 30); older is deleted
+- **BACKUP_GFS_HOURLY_HOURS**: keep every hourly snapshot for this many hours (default 12)
+- **BACKUP_GFS_SIXHOURLY_DAYS**: then keep 1 per 6h up to this many days (default 3)
+- **BACKUP_GFS_DAILY_DAYS**: then keep 1 per day up to this many days (default 14); older is deleted
+- **BACKUP_CPU_LIST**: optional CPU list used by the backup scope while the game runs (empty by default; e.g. `4,12` on this host). Ignored when the JVM is proven absent.
 - **BACKUP_PRUNE_MAX_DELETE**: max snapshots deleted per run (default 15; 0 = unlimited). Deleting a hardlinked snapshot is hundreds of thousands of `unlink()`, costly even with hardlink deduplication — bounding it per run lets a large backlog drain over several hourly runs without exceeding `TimeoutStartSec` (2400s). The run is also single-instance (`flock`), so a long prune never overlaps the next hourly trigger.
 
 `BACKUP_PRUNE_DRY_RUN=1 data/scripts/backup/dataBackup.sh` previews what would be pruned without deleting. `BACKUP_RETENTION_DAYS` no longer exists: it was read by nothing once GFS retention landed, and has been dropped from `.env.example`.
@@ -209,7 +212,7 @@ Full guide: [DISCORD_BOT.md](DISCORD_BOT.md).
 **Script**: `data/scripts/backup/dataBackup.sh`
 **Schedule**: Every hour at :14
 **Method**: Incremental with hard links (rsync, `--partial` + retry ×3; resource limits in [WHAT_IS_INSTALLED](WHAT_IS_INSTALLED.md#pz-backuptimer---hourly-backup))
-**Retention**: GFS — hourly 24h / 1-per-6h 7d / 1-per-day 30d (`BACKUP_GFS_*`)
+**Retention**: GFS — hourly 12h / 1-per-6h until age 3d / 1-per-day until age 14d (`BACKUP_GFS_*`)
 
 **Contents**:
 - `Zomboid/Saves/` - World saves
@@ -255,7 +258,7 @@ sudo ./data/scripts/install/configurationInitiale.sh restore ~/pzmanager/data/fu
 nano ~/pzmanager/.env
 
 # Modify
-export BACKUP_GFS_DAILY_DAYS=14     # shorter daily GFS tier (default 30)
+export BACKUP_GFS_DAILY_DAYS=7      # shorter daily GFS tier (default 14)
 export OFFSITE_BACKUP_COUNT=3        # fewer off-site ZIPs (default 7)
 export LOG_RETENTION_DAYS=14         # Logs 14 days
 ```

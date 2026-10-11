@@ -77,6 +77,56 @@ elif ! acquire_world_lock --try; then
     fi
 fi
 
+# Le verrou monde est acquis AVANT de choisir le budget : aucun start concurrent
+# ne peut faire passer une copie à 300% pendant que la JVM tourne. Une scope
+# hérite des FD (dont WORLD/SERVERCTL), contrairement à une nouvelle service.
+# Le parent reste dans son unité, attend l'enfant et propage les interruptions.
+if [[ "${PZ_BACKUP_CPU_SCOPED:-0}" != "1" ]]; then
+    cpu_quota=25
+    cpu_list="${BACKUP_CPU_LIST:-}"
+    state_info="$(systemctl --user show "${PZ_SERVICE_NAME}" -p ActiveState -p SubState -p MainPID 2>/dev/null)" \
+        || state_info=""
+    state_value=$(awk -F= '$1 == "ActiveState" {print $2}' <<< "$state_info")
+    sub_value=$(awk -F= '$1 == "SubState" {print $2}' <<< "$state_info")
+    main_value=$(awk -F= '$1 == "MainPID" {print $2}' <<< "$state_info")
+    # ExecStartPre ne lance la JVM qu'après le retour du snapshot préalable.
+    # Tout état ambigu / bus indisponible reste au budget conservateur de 25%.
+    if [[ "$main_value" == "0" ]] && { [[ "$state_value" == "inactive" ]] \
+        || [[ "$state_value" == "activating" && "$sub_value" == "start-pre" ]]; }; then
+        cpu_quota=300
+        cpu_list="" # Pas de confinement au cœur réservé quand la JVM est absente.
+    fi
+    cpu_scope="pz-backup-cpu-$$.scope"
+    scope_args=(--user --scope --quiet --collect --expand-environment=no
+        --unit="$cpu_scope" --property="CPUQuota=${cpu_quota}%" --property=CPUWeight=10)
+    [[ -z "$cpu_list" ]] || scope_args+=(--property="AllowedCPUs=${cpu_list}")
+    # Le timeout/stop du service horaire doit aussi arrêter sa scope enfant.
+    if [[ "$(cat /proc/self/cgroup)" == *"/pz-backup.service" ]]; then
+        scope_args+=(--property=BindsTo=pz-backup.service)
+    fi
+    echo "BACKUP_CPU_QUOTA ${cpu_quota}% (serveur ${state_value:-unknown}, scope ${cpu_scope})"
+    PZ_BACKUP_CPU_SCOPED=1 PZ_BACKUP_CPU_QUOTA="$cpu_quota" systemd-run "${scope_args[@]}" \
+        nice -n 19 bash "${SCRIPT_DIR}/dataBackup.sh" "$@" &
+    cpu_scope_pid=$!
+    stop_cpu_scope() {
+        systemctl --user stop "$cpu_scope" 2>/dev/null || true
+        kill -TERM "$cpu_scope_pid" 2>/dev/null || true
+        wait "$cpu_scope_pid" 2>/dev/null || true
+        exit 143
+    }
+    trap stop_cpu_scope INT TERM
+    scope_status=0
+    wait "$cpu_scope_pid" || scope_status=$?
+    exit "$scope_status"
+fi
+
+# cpuset peut retomber silencieusement sur les CPU du parent si tous les CPU
+# demandés sont exclus par une limite supérieure. Refuser cette fausse isolation.
+if [[ "${PZ_BACKUP_CPU_QUOTA:-25}" == "25" && -n "${BACKUP_CPU_LIST:-}" ]]; then
+    taskset --pid --cpu-list "$BACKUP_CPU_LIST" "$$" >/dev/null \
+        || die "CPU réservés au backup indisponibles (${BACKUP_CPU_LIST}) — copie refusée."
+fi
+
 # Verrou d'instance unique. Un run peut durer longtemps (le prune GFS d'un gros
 # backlog de snapshots hardlinkés se compte en dizaines de minutes/heures), donc
 # le timer horaire pourrait relancer un backup alors que le précédent tourne
@@ -264,12 +314,12 @@ mv -Tf "${LATEST_TMP}" "${BACKUP_LATEST_LINK}" || { rm -f -- "${LATEST_TMP}" 2>/
 # (= le plus récent de la fenêtre). BACKUP_PRUNE_DRY_RUN=1 => plan seul, sans rien
 # supprimer (pour inspecter la rétention sur un serveur vivant).
 prune_gfs() {
-    local hourly_h="${BACKUP_GFS_HOURLY_HOURS:-24}"
-    local sixh_d="${BACKUP_GFS_SIXHOURLY_DAYS:-7}"
-    local daily_d="${BACKUP_GFS_DAILY_DAYS:-30}"
+    local hourly_h="${BACKUP_GFS_HOURLY_HOURS:-12}"
+    local sixh_d="${BACKUP_GFS_SIXHOURLY_DAYS:-3}"
+    local daily_d="${BACKUP_GFS_DAILY_DAYS:-14}"
     local dry="${BACKUP_PRUNE_DRY_RUN:-0}"
     # Plafond de suppressions par run (0 = illimité). Supprimer un snapshot hardlinké
-    # = des centaines de milliers d'unlink() ; à CPUQuota 20% c'est lent. On borne
+    # = des centaines de milliers d'unlink() ; à CPUQuota 25% c'est lent. On borne
     # donc chaque run pour qu'il finisse dans le TimeoutStartSec de l'unité (pas de
     # kill/failed), et un gros backlog s'écoule proprement sur plusieurs runs horaires.
     local max_delete="${BACKUP_PRUNE_MAX_DELETE:-0}"

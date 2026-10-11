@@ -416,10 +416,14 @@ RestartSec=5
 
 **Function**:
 - Incremental backup with hard links (single-instance `flock`)
-- `pz-backup.service`: `CPUQuota=50%` caps aggregate CPU usage at half a core,
+- `pz-backup.service`: `CPUQuota=25%` caps its launcher; `dataBackup.sh` runs the copy and prune
+  in a transient user scope at 25% while the game runs and 300% when its JVM
+  is proven absent (inactive, or start-pre with MainPID=0),
   with `Nice=19` and `CPUWeight=10` (game: 1000) to favor the game under contention.
-  This replaces the former 20% cap; the 2400s timeout and prune limit remain.
-- Retention: GFS — 24h hourly / 1-per-6h 7d / 1-per-day 30d (`BACKUP_GFS_*`)
+  An ambiguous state retains 25%; a scope launch failure fails the backup.
+  Inherited lock FDs and the waiting parent prevent a concurrent server start;
+  cancellation stops the scope as well. The hourly timeout and prune cap remain.
+- Retention: GFS — see [CONFIGURATION](CONFIGURATION.md#backups) for tier ages (`BACKUP_GFS_*`)
 - Destination: `/home/pzuser/pzmanager/data/dataBackups/`
 
 #### pz-heapcheck.timer - Adaptive memory restart (every ~3 min)
@@ -547,7 +551,7 @@ warning countdown).
 │   │   ├── natives/
 │   │   └── jre64/                     # Embedded JRE (managed by SteamCMD)
 │   │
-│   ├── dataBackups/                  # Hourly snapshots (GFS retention: 24h/7d@6h/30d)
+│   ├── dataBackups/                  # Hourly snapshots (GFS retention: see CONFIGURATION)
 │   │   ├── backup_2026-01-12_14h14m00s/
 │   │   ├── backup_2026-01-12_15h14m00s/
 │   │   └── latest -> backup_2026-01-12_15h14m00s  (symlink)
