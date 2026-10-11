@@ -17,10 +17,10 @@ StandardOutput=journal
 StandardError=journal
 # Le parcours du monde et la création des hardlinks sont coûteux en CPU.
 # Nice=19 et CPUWeight=10 gardent le jeu prioritaire (zomboid.service = 1000).
-# CPUQuota=100% borne la sauvegarde à l'équivalent d'un cœur ; l'ancien plafond
+# CPUQuota=50% borne la sauvegarde à l'équivalent d'un demi-cœur ; l'ancien plafond
 # de 20% imposait ~15 min de copie pour ~3 min de CPU. Le NVMe en scheduler
 # "none" et le contrôleur io non délégué ne permettent pas de compter sur
 # ionice/IOWeight pour limiter les I/O : surveiller leur pression après réglage.
 Nice=19
 CPUWeight=10
-CPUQuota=100%
+CPUQuota=50%
