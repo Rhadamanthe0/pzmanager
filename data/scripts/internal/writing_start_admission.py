@@ -103,13 +103,20 @@ def startup_state(state, pid):
         and state['MainPID'] == 0 and state['ControlPID'] > 0 and ancestor(state['ControlPID'], pid)
 
 
-def validate_marker(data, lock_info, unit):
+def validate_start_identity(data, lock_info, unit):
     if data['unit'] != unit or not live(data['pid'], data['birth']):
         raise ConfigurationError('Start admission owner is no longer the prepared start')
     expected = (lock_info.st_dev, lock_info.st_ino)
     if (data['dev'], data['ino']) != expected: raise ConfigurationError('Start admission WORLD inode differs')
-    locked_fd(data['pid'], data['fd'], expected)
     if not live(data['broker'], data['broker_birth']): raise ConfigurationError('Start admission broker exited')
+
+
+def validate_marker(data, lock_info, unit):
+    # Cross-process descriptors are inspected by the broker in the CLI context.
+    # A confined start-pre may read process identity but cannot open those FDs.
+    validate_start_identity(data, lock_info, unit)
+    expected = (lock_info.st_dev, lock_info.st_ino)
+    locked_fd(data['pid'], data['fd'], expected)
     locked_fd(data['broker'], data['fd'], expected)
 
 
@@ -174,11 +181,12 @@ def broker(args):
     try:
         info = os.fstat(args.fd)
         locked_fd(os.getpid(), args.fd, (info.st_dev, info.st_ino))
-        listener.bind(str(path.parent / SOCKET)); os.chmod(path.parent / SOCKET, 0o600)
-        listener.listen(1); listener.settimeout(0.25)
         payload = {'pid': args.pid, 'birth': args.birth, 'fd': args.fd, 'dev': info.st_dev,
             'ino': info.st_ino, 'broker': os.getpid(), 'broker_birth': process_birth(os.getpid()),
             'unit': args.unit, 'token': args.token}
+        validate_marker(payload, info, args.unit)
+        listener.bind(str(path.parent / SOCKET)); os.chmod(path.parent / SOCKET, 0o600)
+        listener.listen(1); listener.settimeout(0.25)
         atomic_file(directory_fd, MARKER, json.dumps(payload).encode(), 0o600)
         while live(args.pid, args.birth):
             try: client, _ = listener.accept()
@@ -189,6 +197,7 @@ def broker(args):
                 if peer[1] != os.getuid(): continue
                 request = client.recv(64)
                 if request != args.token.encode() or not startup_state(unit_state(args.unit), peer[0]): continue
+                validate_marker(payload, info, args.unit)
                 rights = array.array('i', [args.fd])
                 client.sendmsg([b'WORLD'], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)])
                 return
@@ -219,13 +228,17 @@ def run(args):
         try: fcntl.flock(held_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             if not startup: raise ConfigurationError('A world operation is already running')
-            data = read_marker(directory_fd); validate_marker(data, info, args.unit)
+            data = read_marker(directory_fd); validate_start_identity(data, info, args.unit)
             client = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
             try:
                 socket_info = os.stat(SOCKET, dir_fd=directory_fd, follow_symlinks=False)
                 if not stat.S_ISSOCK(socket_info.st_mode) or socket_info.st_uid != os.getuid() or socket_info.st_mode & 0o077:
                     raise ConfigurationError('Untrusted start admission socket')
-                client.settimeout(5); client.connect(str(path.parent / SOCKET)); client.sendall(data['token'].encode())
+                client.settimeout(5); client.connect(str(path.parent / SOCKET))
+                peer = array.array('i'); peer.frombytes(client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+                if peer[1] != os.getuid() or peer[0] != data['broker'] or not live(peer[0], data['broker_birth']):
+                    raise ConfigurationError('Start admission socket is not the authenticated broker')
+                client.sendall(data['token'].encode())
                 message, ancillary, flags, _ = client.recvmsg(16, socket.CMSG_SPACE(array.array('i').itemsize))
                 fds = array.array('i')
                 for level, kind, value in ancillary:

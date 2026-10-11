@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import signal
 import stat
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -193,6 +194,56 @@ while not pathlib.Path(os.environ['WRITING_TEST_RELEASE']).exists(): time.sleep(
         self.assertTrue(self.busy(),'WORLD disappeared while the offline worker was still alive')
         release.touch();self.assertEqual(worker.wait(timeout=5),0)
         self.assertFalse(self.busy())
+
+    def test_user_namespace_receives_world_without_reading_parent_descriptors(self):
+        if not shutil.which('unshare'):
+            self.skipTest('unshare unavailable; real namespace gate remains required on deployment host')
+        probe=subprocess.run(['unshare','--user','--map-current-user','/bin/true'],capture_output=True,text=True)
+        if probe.returncode:self.skipTest('kernel disallows user namespaces: '+probe.stderr.strip())
+        owner,release=self.prepare_owner()
+        activated=self.root/'namespace-activate';done=self.root/'namespace-done';denied=self.root/'parent-fd-denied'
+        data=self.original_marker
+        command='import os,sys; from pathlib import Path; sys.path.insert(0,'+repr(str(HELPER.parent))+'); from writing_start_admission import validate_worker_admission; fd=validate_worker_admission(); os.fstat(fd); Path('+repr(str(done))+').touch()'
+        entry='''import os,sys
+from pathlib import Path
+try: os.stat(sys.argv[1])
+except PermissionError: Path(sys.argv[2]).touch()
+else: raise AssertionError('Fixture must reproduce denied cross-namespace parent FD')
+os.execv(sys.executable,sys.argv[3:])
+'''
+        inner=[sys.executable,'-c',entry,f'/proc/{data["pid"]}/fd/{data["fd"]}',str(denied),
+               sys.executable,str(HELPER),'run','--lock-path',str(self.lock),'--unit','probe.service',
+               '--',sys.executable,'-c',command]
+        launcher='import os,time,sys; from pathlib import Path\nwhile not Path(sys.argv[1]).exists(): time.sleep(.01)\nos.execvp("unshare",["unshare","--user","--map-current-user",*sys.argv[2:]])'
+        with open(self.root/'namespace.stderr','w') as errors:
+            worker=subprocess.Popen([sys.executable,'-c',launcher,str(activated),*inner],env=self.env,
+                                    stdout=subprocess.DEVNULL,stderr=errors)
+        self.processes.append(worker);self.set_state('activating','start-pre',0,worker.pid);activated.touch()
+        try:self.wait_file(done,worker)
+        except AssertionError as error:self.fail(str(error)+'\n'+(self.root/'namespace.stderr').read_text())
+        self.assertEqual(worker.wait(timeout=5),0,(self.root/'namespace.stderr').read_text())
+        self.assertTrue(denied.exists(),'Cross-namespace EACCES was not reproduced')
+        self.assertTrue(self.busy(),'CLI still owns the unchanged WORLD lock')
+        release.touch();self.assertEqual(owner.wait(timeout=5),0,(self.root/'owner.stderr').read_text())
+        self.assertFalse(self.busy())
+
+    def test_client_rejects_socket_whose_peer_pid_differs_from_marker(self):
+        owner,release=self.prepare_owner()
+        data=dict(self.original_marker,broker=os.getpid(),broker_birth=admission.process_birth(os.getpid()))
+        (self.private/admission.MARKER).write_text(json.dumps(data))
+        activated=self.root/'peer-activate'
+        args=[sys.executable,str(HELPER),'run','--lock-path',str(self.lock),'--unit','probe.service','--','/bin/true']
+        launcher='import os,time,sys; from pathlib import Path\nwhile not Path(sys.argv[1]).exists(): time.sleep(.01)\nos.execv(sys.executable,sys.argv[2:])'
+        worker=subprocess.Popen([sys.executable,'-c',launcher,str(activated),*args],env=self.env,
+                                stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        self.processes.append(worker);self.set_state('activating','start-pre',0,worker.pid);activated.touch()
+        _,error=worker.communicate(timeout=8)
+        self.assertNotEqual(worker.returncode,0)
+        self.assertIn('authenticated broker',error)
+        self.assertTrue(self.busy())
+        # Restore the fixture's own marker before asking its owner to clear it.
+        (self.private/admission.MARKER).write_text(json.dumps(self.original_marker))
+        release.touch();self.assertEqual(owner.wait(timeout=5),0,(self.root/'owner.stderr').read_text())
 
     def test_offline_or_boot_secures_existing_or_new_lock_under_umask002(self):
         for existing in [False,True]:
