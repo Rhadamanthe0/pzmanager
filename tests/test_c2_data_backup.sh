@@ -467,9 +467,10 @@ for policy in active inactive startup loading failed error; do
     fresh_case "cpu-$policy"
     export MOCK_SCOPE_LOG="${SANDBOX}/scope-$policy.log" BACKUP_CPU_LIST=7,15
     expected_quota=200
+    expected_pin=1
     case "$policy" in
-        inactive) export MOCK_CPU_STATE=inactive MOCK_CPU_MAINPID=0; expected_quota=300 ;;
-        startup) export MOCK_CPU_STATE=activating MOCK_CPU_SUBSTATE=start-pre MOCK_CPU_MAINPID=0; expected_quota=300 ;;
+        inactive) export MOCK_CPU_STATE=inactive MOCK_CPU_MAINPID=0 MOCK_CPU_PIN_FAIL=1; expected_pin=0 ;;
+        startup) export MOCK_CPU_STATE=activating MOCK_CPU_SUBSTATE=start-pre MOCK_CPU_MAINPID=0 MOCK_CPU_PIN_FAIL=1; expected_pin=0 ;;
         loading) export MOCK_CPU_STATE=activating MOCK_CPU_SUBSTATE=start-post MOCK_CPU_MAINPID=123 ;;
         failed) export MOCK_CPU_STATE=failed MOCK_CPU_MAINPID=0 ;;
         error) export MOCK_CPU_STATE=error ;;
@@ -479,7 +480,7 @@ for policy in active inactive startup loading failed error; do
     else
         ko "CPU $policy : quota ou snapshot incorrect"; show_out
     fi
-    if (( expected_quota == 300 )); then
+    if (( expected_pin == 0 )); then
         if grep -q 'AllowedCPUs=' "$MOCK_SCOPE_LOG"; then ko "CPU $policy : confinement live conservé"; else ok "CPU $policy : cœur réservé libéré"; fi
     else
         grep -q 'AllowedCPUs=7,15' "$MOCK_SCOPE_LOG" && ok "CPU $policy : isolation conservée" || ko "CPU $policy : isolation absente"

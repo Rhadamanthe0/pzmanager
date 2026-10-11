@@ -18,7 +18,7 @@ StandardError=journal
 # Le parcours du monde et la création des hardlinks sont coûteux en CPU.
 # Nice=19 et CPUWeight=10 gardent le jeu prioritaire (zomboid.service = 1000).
 # CPUQuota=200% borne le lanceur à deux CPU logiques. dataBackup.sh impose
-# 200% à la copie quand le jeu tourne, 300% si son absence est prouvée.
+# 200% à la copie et à la purge, quel que soit l'état du jeu.
 # L'ancien plafond
 # de 20% imposait ~15 min de copie pour ~3 min de CPU.
 # Le quota CPU et l'affinité ne bornent pas les I/O : surveiller leur pression.
