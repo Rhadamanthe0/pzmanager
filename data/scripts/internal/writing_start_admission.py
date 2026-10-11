@@ -261,7 +261,7 @@ def validate_worker_admission(unit=None):
         lock_fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
         try:
             info = os.fstat(lock_fd)
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1 or info.st_mode & 0o022:
                 raise ConfigurationError('Untrusted WORLD lock file')
             locked_fd(os.getpid(), int(raw_fd), (info.st_dev, info.st_ino))
         finally: os.close(lock_fd)

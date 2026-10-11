@@ -114,6 +114,28 @@ while [[ ! -f "$6" ]]; do sleep .02; done
         self.assertNotEqual(result.returncode,0)
         self.assertFalse(self.busy())
 
+    def test_direct_worker_rejects_hardlinked_world_with_real_locked_fd(self):
+        self.lock.touch(mode=0o600)
+        extra=self.private/'same-inode.lock';os.link(self.lock,extra)
+        done=self.root/'worker-mutated'
+        code='import sys; from pathlib import Path; sys.path.insert(0,'+repr(str(HELPER.parent))+'); from writing_start_admission import validate_worker_admission; validate_worker_admission(); Path('+repr(str(done))+').touch()'
+        with open(self.lock,'rb') as stream:
+            fcntl.flock(stream,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            identity=(os.fstat(stream.fileno()).st_dev,os.fstat(stream.fileno()).st_ino)
+            env=dict(self.env,PZ_WORLD_LOCK_FD=str(stream.fileno()),PZ_WORLD_LOCK_DEPTH='1',
+                     PZ_WORLD_LOCK_FILE=str(self.lock),PZ_SERVICE_NAME='probe.service')
+            result=subprocess.run([sys.executable,'-c',code],env=env,pass_fds=(stream.fileno(),),
+                                  capture_output=True,text=True,timeout=5)
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn('Untrusted WORLD lock file',result.stderr)
+            self.assertFalse(done.exists());self.assertTrue(self.busy())
+            self.assertEqual((self.lock.stat().st_dev,self.lock.stat().st_ino),identity)
+            extra.unlink()
+            result=subprocess.run([sys.executable,'-c',code],env=env,pass_fds=(stream.fileno(),),
+                                  capture_output=True,text=True,timeout=5)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertTrue(done.exists());self.assertTrue(self.busy())
+
     def test_bus_error_refuses_before_command(self):
         (self.bin/'systemctl').write_text('#!/bin/sh\necho "Failed to connect to bus" >&2\nexit 1\n')
         done=self.root/'forbidden'
