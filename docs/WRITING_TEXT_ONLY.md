@@ -48,6 +48,11 @@ Lorsque `pzm server start/restart` tient déjà WORLD, un broker privé transmet
 même descripteur au processus de démarrage. Le verrou reste détenu si le parent
 meurt pendant le nettoyage. Le répertoire runtime privé est conservé par systemd ;
 ni le fichier du verrou ni son répertoire ne sont supprimés au stop.
+Le broker vérifie les descripteurs du propriétaire et son propre verrou avant
+publication et transfert. Le processus confiné authentifie le socket avec les
+PID/UID du noyau, la naissance du broker et le jeton privé, puis vérifie l'inode
+et le verrou du descripteur réellement reçu. Il ne lit pas les descripteurs
+d'un processus extérieur via `/proc/PID/fd`, accès interdit dans son namespace.
 
 `PZ_WRITING_TEXT_ONLY=0` ou le retrait du mod de `Mods` désactive le nettoyage au
 prochain démarrage et retire les anciens hooks. Les options natives ne sont pas
@@ -67,5 +72,8 @@ tests/writing_text_only/run.sh --jar /chemin/copie/projectzomboid.jar \
 
 Les fixtures vérifient l'absence de hooks continus, le checksum, la conservation
 du texte, les refus sans mutation et l'héritage réel du verrou entre processus.
+Une fixture de namespace utilisateur reproduit ce refus de `/proc/PID/fd` et
+vérifie que le transfert authentifié fonctionne malgré lui ; elle est sautée
+si le noyau interdit les namespaces, et doit alors être validée sur l'hôte cible.
 Les tests du nettoyeur vérifient séparément les sauvegardes arrêtées et les copies
 de récupération.
