@@ -325,9 +325,14 @@ prune_gfs() {
     local dry="${BACKUP_PRUNE_DRY_RUN:-0}"
     # Plafond de suppressions par run (0 = illimité). Supprimer un snapshot hardlinké
     # = des centaines de milliers d'unlink() ; à CPUQuota 25% c'est lent. On borne
-    # donc chaque run pour qu'il finisse dans le TimeoutStartSec de l'unité (pas de
-    # kill/failed), et un gros backlog s'écoule proprement sur plusieurs runs horaires.
+    # donc chaque run pour réduire les timeouts, et un gros backlog s'écoule
+    # progressivement sur plusieurs runs horaires.
     local max_delete="${BACKUP_PRUNE_MAX_DELETE:-0}"
+    # Le nombre seul ne borne pas le temps : à 25%, un lot de 15 gros arbres
+    # peut dépasser le timeout horaire. Finir chaque suppression commencée,
+    # puis laisser le surplus au passage suivant (constat du 11/10/2026).
+    local max_seconds="${BACKUP_PRUNE_MAX_SECONDS:-600}"
+    local prune_started=$SECONDS
     local now; now=$(date +%s)
     local -A seen_bucket=()
     local entries=() d name ts epoch
@@ -358,6 +363,10 @@ prune_gfs() {
         fi
         if [[ "$bucket" != "expired" && -z "${seen_bucket[$bucket]:-}" ]]; then
             seen_bucket[$bucket]=1; kept=$(( kept + 1 )); continue
+        fi
+        if [[ "$dry" != "1" ]] && (( max_seconds > 0 && SECONDS - prune_started >= max_seconds )); then
+            echo "Prune borné à ${max_seconds}s — surplus laissé au passage suivant."
+            break
         fi
         dropped=$(( dropped + 1 ))
         if [[ "$dry" == "1" ]]; then

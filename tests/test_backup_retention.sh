@@ -33,3 +33,23 @@ for age in 15 80 95 337; do
     [[ ! -e "$BACKUP_DIR/$(snapshot_name "$age")" ]] || { echo "FAIL: retained age ${age}h"; exit 1; }
 done
 echo 'BACKUP RETENTION: OK (hourly, six-hourly, daily, expiry and newest-per-bucket)'
+
+# Une première suppression lente doit épuiser le budget, sans couper rm et
+# sans commencer la deuxième. Avancer l'horloge Bash évite un sleep de 10 min.
+for age in 337 338 339; do
+    mkdir -p "$BACKUP_DIR/$(snapshot_name "$age")/Saves"
+done
+BACKUP_PRUNE_MAX_SECONDS=10
+rm() {
+    command rm "$@"
+    SECONDS=$(( SECONDS + 11 ))
+}
+prune_gfs
+[[ ! -e "$BACKUP_DIR/$(snapshot_name 337)" ]]
+[[ -d "$BACKUP_DIR/$(snapshot_name 338)" && -d "$BACKUP_DIR/$(snapshot_name 339)" ]]
+unset -f rm
+BACKUP_PRUNE_DRY_RUN=1
+prune_gfs > "$CASE_DIR/dry-run.log"
+grep -q "DRY-RUN prune: $(snapshot_name 338)" "$CASE_DIR/dry-run.log"
+grep -q "DRY-RUN prune: $(snapshot_name 339)" "$CASE_DIR/dry-run.log"
+echo 'BACKUP PRUNE BUDGET: OK (complete current deletion, defer remaining, dry-run unchanged)'

@@ -119,6 +119,7 @@ export BACKUP_GFS_HOURLY_HOURS=12
 export BACKUP_GFS_SIXHOURLY_DAYS=3
 export BACKUP_GFS_DAILY_DAYS=14
 export BACKUP_PRUNE_MAX_DELETE=15
+export BACKUP_PRUNE_MAX_SECONDS=600
 ```
 
 Tier thresholds are absolute snapshot ages: 12 hours, then another 60 hours at 6-hour granularity, then another 11 days daily (14 days total).
@@ -132,6 +133,13 @@ Local hourly snapshots use **GFS retention** (`prune_gfs` in `dataBackup.sh`), n
 - **BACKUP_PRUNE_MAX_DELETE**: max snapshots deleted per run (default 15; 0 = unlimited). Deleting a hardlinked snapshot is hundreds of thousands of `unlink()`, costly even with hardlink deduplication — bounding it per run lets a large backlog drain over several hourly runs without exceeding `TimeoutStartSec` (2400s). The run is also single-instance (`flock`), so a long prune never overlaps the next hourly trigger.
 
 `BACKUP_PRUNE_DRY_RUN=1 data/scripts/backup/dataBackup.sh` previews what would be pruned without deleting. `BACKUP_RETENTION_DAYS` no longer exists: it was read by nothing once GFS retention landed, and has been dropped from `.env.example`.
+
+**BACKUP_PRUNE_MAX_SECONDS** stops starting new deletions after 600 seconds by
+default (0 disables the time limit). A deletion already started is completed; before
+starting another, the script checks elapsed time and leaves the remainder for
+the next run. This works alongside the snapshot-count cap to reduce hourly
+timeouts when metadata I/O is slow. It is not a deadline for a single deletion.
+Dry-run plans ignore time.
 
 ### External Synchronization
 
