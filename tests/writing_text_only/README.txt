@@ -1,53 +1,21 @@
-Run from a disposable Linux copy of the repository:
-  tests/writing_text_only/run.sh --jdk-bin /path/to/a/compatible/jdk/bin
+Run tests/writing_text_only/run.sh --jdk-bin /path/to/compatible/jdk/bin.
+Optional --jar, --guard and --stdlib choose alternate inputs. The runner copies
+all inputs into a fresh Linux mktemp directory, sets a temporary user.home,
+and removes the copies on success or failure. It never launches the server.
 
-Optional --jar, --guard and --stdlib choose an alternate PZ JAR, Lua policy,
-and matching stdlib.lua. The runner copies all inputs into a fresh Linux
-mktemp directory; it never starts PZ or reads .env/world saves. Copies are
-removed after both successful and failed runs. The Java fixture compiles
-and runs the Lua fixture on the real Kahlua compiler/runtime in the PZ JAR.
-No system Python dependency or Lua installation is needed.
+GuardLuaTest runs test_guard.lua on PZ's real Kahlua runtime. The legacy Lua
+entry point is intentionally inert: repeated loads register zero callbacks.
+There is no continuous drawing/symbol purge during the session.
 
-API evidence checked against the installed PZ projectzomboid.jar:
-- LuaManager$Exposer.exposeAll registers IsoGridSquare at bytecode offsets
-  3299/3302 and IsoObject at 3397/3400 via setExposed.
-- exposeAll iterates the exposed set and calls exposeLikeJavaRecursively
-  at 7008. This path is not conditioned on GameClient.client.
-- LuaJavaClassExposer.exposeLikeJava calls exposeMethods; exposeMethods
-  uses Class.getMethods(), checks public modifiers, skips HiddenFromLua
-  annotations, and exposes eligible instance methods.
-- IsoObject.getContainerCount() is public, returning int.
-- IsoGridSquare.getStaticMovingObjects() is public, returning ArrayList.
-  The no-argument overload used by the guard therefore enters Lua exposure.
-- Both methods are instance methods with no HiddenFromLua annotation
-  (checked with javap -v), so neither is excluded by that filter.
-- LuaManager.init invokes exposer.exposeAll for the server as well; the
-  GameServer startup invokes LuaManager.init before Lua scripts are loaded.
+SandboxProbe invokes actual PZ LoadDirBase/loadServerLuaFile/saveServerLuaFile:
+- Any file in media/lua/server changes the checksum, even with SandboxVars.lua
+  as a suffix (relative paths are lowercased before the case-sensitive check).
+- A server sandbox configuration does not change that checksum.
+- Even a legacy inline reference to the inert entry point registers no hooks.
+- Sandbox rewriting does not create any cleanup callbacks.
 
-Synchronization limitation:
-Ground items with InventoryItem.getContainer()==null cannot be sent via
-syncItemModData: ContainerID.set(null) creates Undefined container identity.
-The guard still removes their persisted drawing/symbol data. A nearby
-client may retain an old rendering until the item is resynchronized/reloaded.
-The guard must not resend AddItemToMap blindly (duplicate-object risk).
-
-Save ordering limitation:
-Tick hooks precede ordinary NetworkPlayerManager player autosaves, but a
-queued global save inside ServerMap.preupdate may happen before tick hooks.
-ProjectWriting.Freehand=false prevents stock clients making strokes; this
-server guard supplements native prevention and is not a packet firewall.
-
-Real loader/checksum regression fixture (SandboxProbe.java):
-The runner additionally invokes PZ LuaManager.LoadDirBase and
-SandboxOptions.loadServerLuaFile in its disposable copy. It checks:
-- A policy file in media/lua/server changes the game checksum.
-- Adding a SandboxVars.lua suffix does not prevent that change: searchFolders
-  lowercases relative paths before a case-sensitive contains check.
-- Inline policy appended after the cache/Server/probe_SandboxVars.lua table
-  registers all six callbacks while leaving the game checksum unchanged.
-- PZ saveServerLuaFile removes the appended block when regenerating the file,
-  while the registered tick callback remains identical and callable.
-- The policy still removes drawings and preserves text after that rewrite.
-The startup helper must re-inject its marked block before every server boot.
-Default guard source is data/scripts/internal/PZManagerWritingTextOnly.lua,
-kept with the manager scripts rather than runtime media autoload directories.
+Actual offline data cleanup and text preservation are covered separately by
+Python/Java fixtures in tests/test_writing_restart_cleanup.py. Startup admission
+is covered by tests/test_writing_start_admission.py with real flock/SCM_RIGHTS,
+including termination of the pzm parent while the cleanup worker holds WORLD.
+Native ProjectWriting.Freehand=false/VanillaMap=true remain configured.

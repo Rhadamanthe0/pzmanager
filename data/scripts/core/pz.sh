@@ -279,6 +279,28 @@ shutdown_server() {
     "${SCRIPT_DIR}/../backup/dataBackup.sh"
 }
 
+# systemd cannot inherit our WORLD FD. A private one-shot broker transfers the
+# same open file description to the authorized start-pre process via SCM_RIGHTS.
+PZ_WRITING_START_TOKEN=""
+PZ_WRITING_START_LOCK=""
+clear_writing_start_admission() {
+    if [[ -n "$PZ_WRITING_START_TOKEN" ]]; then
+        python3 "${SCRIPT_DIR}/../internal/writing_start_admission.py" clear \
+            --lock-path "$PZ_WRITING_START_LOCK" --token "$PZ_WRITING_START_TOKEN" || return
+        PZ_WRITING_START_TOKEN=""
+    fi
+}
+start_with_writing_admission() {
+    local start_owner_pid="$BASHPID"
+    PZ_WRITING_START_LOCK="$(world_lock_path)"
+    PZ_WRITING_START_TOKEN="$(python3 "${SCRIPT_DIR}/../internal/writing_start_admission.py" prepare \
+        --lock-path "$PZ_WRITING_START_LOCK" --pid "$start_owner_pid" --fd "$PZ_WORLD_LOCK_FD" --unit "$PZ_SERVICE_NAME")"
+    trap clear_writing_start_admission EXIT
+    systemctl --user start "${PZ_SERVICE_NAME}"
+    clear_writing_start_admission
+    trap - EXIT
+}
+
 do_start() {
     # C1 : verrou monde AVANT serverctl (ordre WORLD -> SERVERCTL, réentrant
     # pour les enfants : maintenance/reset qui appellent `pz.sh ...` participent
@@ -287,7 +309,7 @@ do_start() {
     acquire_world_lock --required || exit 1
     acquire_serverctl_lock_or_die
     echo "Démarrage du service..."
-    systemctl --user start "${PZ_SERVICE_NAME}"
+    start_with_writing_admission
     # Only send message if started with reason but NOT a maintenance
     # (maintenance already sends DÉBUT MAINTENANCE before shutdown)
     if [[ -n "$REASON" ]] && [[ "$IS_MAINTENANCE" != true ]]; then
@@ -313,7 +335,7 @@ do_restart() {
     acquire_serverctl_lock_or_die
     shutdown_server "REDÉMARRAGE"
     echo "Démarrage du service..."
-    systemctl --user start "${PZ_SERVICE_NAME}"
+    start_with_writing_admission
     echo "Terminé."
     release_world_lock
 }

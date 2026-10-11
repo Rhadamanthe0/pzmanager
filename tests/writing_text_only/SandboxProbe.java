@@ -75,25 +75,19 @@ public class SandboxProbe {
             + "\n-- PZMANAGER WRITING TEXT ONLY END\n");
         if (!SandboxOptions.instance.loadServerLuaFile("probe")) throw new AssertionError("Sandbox load failed");
         execute(thread, env, """
-            assert(PZManagerWritingTextOnly ~= nil and regCount == 6)
-            originalTick = registered.OnTickEvenPaused
-            assert(type(originalTick) == 'function')
+            assert(PZManagerWritingTextOnly == nil and regCount == 0)
+            assert(registered.OnTickEvenPaused == nil)
             """);
         if (!SandboxOptions.instance.saveServerLuaFile("probe")) throw new AssertionError("Sandbox save failed");
         if (Files.readString(config).contains("PZMANAGER WRITING TEXT ONLY BEGIN"))
             throw new AssertionError("Expected PZ to regenerate the sandbox without the manager block");
         execute(thread, env, """
-            assert(PZManagerWritingTextOnly ~= nil and regCount == 6)
-            assert(registered.OnTickEvenPaused == originalTick)
-            registered.OnTickEvenPaused()
-            assert(PZManagerWritingTextOnly.failures == 0)
-            local doc = { t = { ['20'] = 'Texte conservé' }, p = { ['1'] = { ink = {}, sym = {} } } }
-            assert(PZManagerWritingTextOnly.cleanDoc(doc))
-            assert(doc.p['1'].ink == nil and doc.p['1'].sym == nil and doc.t['20'] == 'Texte conservé')
+            assert(PZManagerWritingTextOnly == nil and regCount == 0)
+            assert(registered.OnTickEvenPaused == nil)
             """);
         String after = checksum(null, policy);
         if (!baseline.equals(after)) throw new AssertionError("Sandbox policy changed checksum");
-        System.out.println("PASS: real PZ sandbox loader; 6 callbacks survive rewrite; checksum baseline="
+        System.out.println("PASS: real PZ sandbox loader; no continuous callbacks; checksum baseline="
             + baseline + " after=" + after + " autoload=" + normal + " suffix=" + suffix);
     }
 }

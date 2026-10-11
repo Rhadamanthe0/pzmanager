@@ -8,6 +8,7 @@ logs/
 data/scripts/discord/.venv/
 data/scripts/discord/__pycache__/
 data/scripts/lib/__pycache__/
+data/scripts/internal/__pycache__/
 
 # Backup directories (very large)
 data/dataBackups/
