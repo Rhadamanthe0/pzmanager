@@ -31,6 +31,8 @@ source_env() {
     local env_file="${root}/.env"
     local env_example="${root}/data/setupTemplates/.env.example"
 
+    python3 "${PZ_MANAGER_ROOT}/data/scripts/lib/shared_memory_budget.py" identity "$env_file" || exit 1
+
     if [[ ! -f "$env_file" ]] && [[ -f "$env_example" ]]; then
         # install -m 600 et non `cp` : le .env porte le webhook Discord, le token
         # du bot et la clé privée du compte de service Google (base64). Un `cp`
@@ -178,7 +180,7 @@ steamcmd_runscript() {
     local rc=0
     if [[ -n "${STEAMCMD_AS_USER:-}" ]]; then
         chown -- "${STEAMCMD_AS_USER}:${STEAMCMD_AS_USER}" "$script" || { rm -f -- "$script"; die "Impossible de confier le runscript steamcmd à ${STEAMCMD_AS_USER}."; }
-        sudo -u "${STEAMCMD_AS_USER}" "${STEAMCMD_PATH}" +runscript "$script" || rc=$?
+        sudo -u "${STEAMCMD_AS_USER}" bash "${PZ_MANAGER_DIR:-$PZ_MANAGER_ROOT}/data/scripts/lib/run_in_pz_slice.sh" "${STEAMCMD_PATH}" +runscript "$script" || rc=$?
     else
         "${STEAMCMD_PATH}" +runscript "$script" || rc=$?
     fi
@@ -671,3 +673,22 @@ release_maintenance_lock() {
 notify() {
     "${PZ_MANAGER_ROOT}/data/scripts/internal/sendDiscord.sh" "$@" || true
 }
+
+# Les scripts opérationnels peuvent être appelés directement, pas seulement via
+# pzm. Router avant source_env et avant tout verrou. Le bootstrap root sous
+# install/ est explicitement distinct ; sourcer une bibliothèque ne lance rien.
+_pz_caller="$(readlink -f -- "${BASH_SOURCE[1]:-}" 2>/dev/null || true)"
+_pz_guard_root="$(readlink -f -- "$PZ_MANAGER_ROOT")"
+case "$_pz_caller" in
+    "${_pz_guard_root}"/data/scripts/core/*.sh|"${_pz_guard_root}"/data/scripts/admin/*.sh|"${_pz_guard_root}"/data/scripts/backup/*.sh|"${_pz_guard_root}"/data/scripts/internal/*.sh|"${_pz_guard_root}"/data/scripts/discord/*.sh)
+        if [[ "$(readlink -f -- "$0")" == "$(readlink -f -- "$_pz_caller")" ]] \
+            && ! { [[ "$_pz_caller" == */core/pz.sh && "${1:-}" == status ]] \
+                || [[ "$_pz_caller" == */internal/checkDocsDuplication.sh ]]; }; then
+            if ! python3 "${PZ_MANAGER_ROOT}/data/scripts/lib/shared_memory_budget.py" inside; then
+                exec bash "${PZ_MANAGER_ROOT}/data/scripts/lib/run_in_pz_slice.sh" /bin/bash "$0" "$@"
+            fi
+            python3 "${PZ_MANAGER_ROOT}/data/scripts/lib/shared_memory_budget.py" check || exit 1
+        fi
+        ;;
+esac
+unset _pz_caller _pz_guard_root

@@ -4,6 +4,7 @@ PartOf=zomboid.service
 Before=zomboid.service
 
 [Socket]
+Slice=pz.slice
 ListenFIFO=%h/pzmanager/data/pzserver/zomboid.control
 FileDescriptorName=control
 SocketMode=0660

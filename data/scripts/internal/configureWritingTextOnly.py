@@ -451,4 +451,7 @@ def main():
         return 1
 
 if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+    from shared_memory_budget import check_process
+    check_process()
     sys.exit(main())

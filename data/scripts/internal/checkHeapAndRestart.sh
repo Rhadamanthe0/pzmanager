@@ -1,8 +1,8 @@
 #!/bin/bash
 # Moniteur mémoire adaptatif : restart à PZ_RAM_RESTART_GB (18 Gio par défaut)
-# de RAM résidente des processus du service (heap + natif + descendants), OU
+# de RAM résidente agrégée de pz.slice (jeu + bot + backups + gestion), OU
 # à HEAP_RESTART_PERCENT % du -Xmx après GC majeur. Le cache de fichiers et le
-# slab récupérables ne déclenchent pas un restart. MemoryMax=20G reste un plafond
+# slab récupérables ne déclenchent pas un restart. pz.slice MemoryMax=20G reste un plafond
 # cgroup de secours, où Linux peut récupérer ces caches avant l'OOM-kill.
 # Remplace le redémarrage périodique
 # fixe (11h/17h/23h) : on redémarre quand c'est NÉCESSAIRE, pas à heure fixe.
@@ -51,16 +51,16 @@ server_is_active || exit 0
 # Restreindre la lecture /proc aux processus du cgroup serveur et ses enfants.
 # Ne jamais interpréter une erreur du bus comme une mesure valide.
 reason=""
-control_group="$(systemctl --user show "${PZ_SERVICE_NAME}" -p ControlGroup --value 2>/dev/null || true)"
+control_group="$(systemctl --user show pz.slice -p ControlGroup --value 2>/dev/null || true)"
 memory_bytes="$(python3 "${SCRIPT_DIR}/../lib/service_memory.py" "$control_group" 2>/dev/null || true)"
 if [[ "$memory_bytes" =~ ^[0-9]{1,18}$ ]]; then
-    log "heapcheck: RAM service ${memory_bytes} octets (seuil ${RAM_THRESHOLD_GB} Gio)"
+    log "heapcheck: RAM PZ partagée ${memory_bytes} octets (seuil ${RAM_THRESHOLD_GB} Gio)"
     if (( 10#$memory_bytes >= RAM_THRESHOLD_GB * 1024 * 1024 * 1024 )); then
         memory_gb="$(awk -v bytes="$memory_bytes" 'BEGIN {printf "%.1f", bytes / 1073741824}')"
-        reason="RAM totale du service à ${memory_gb} Go (seuil ${RAM_THRESHOLD_GB} Go, plafond strict 20 Go)"
+        reason="RAM totale PZ (jeu et gestion) à ${memory_gb} Go (seuil ${RAM_THRESHOLD_GB} Go, plafond strict 20 Go)"
     fi
 else
-    log "heapcheck: RAM service indisponible — surveillance heap conservée."
+    log "heapcheck: RAM PZ partagée indisponible — surveillance heap conservée."
 fi
 
 # Dernière synthèse de GC MAJEUR :

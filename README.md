@@ -80,3 +80,6 @@ Full index, including which document owns which topic:
 ## License
 
 CC BY-NC-SA 4.0 - Free for personal use. Commercial use requires permission.
+
+Le plafond partagé PZ (jeu et gestion), sa migration et ses limites sont décrits
+dans [ADVANCED.md](docs/ADVANCED.md#budget-memoire-partage-de-pz).

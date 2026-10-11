@@ -1,0 +1,9 @@
+[Unit]
+Description=Project Zomboid - budget partagé jeu et gestion
+
+[Slice]
+# 11/10/2026 : le bot et les scopes de backup échappaient au plafond du jeu.
+# Ce parent dédié exclut les sessions SSH et les autres applications du compte.
+MemoryAccounting=yes
+MemoryMax=20G
+MemorySwapMax=0

@@ -2,6 +2,8 @@
 Description=Project Zomboid - Détection de gel du thread principal (capture thread dump)
 
 [Service]
+Slice=pz.slice
+ExecStartPre=/usr/bin/python3 %h/pzmanager/data/scripts/lib/shared_memory_budget.py check
 Type=oneshot
 # 900s : la capture (~30 s) PUIS un redémarrage complet (SIGKILL à
 # TimeoutStopSec=120 + boot du serveur) tiennent dans ce budget.

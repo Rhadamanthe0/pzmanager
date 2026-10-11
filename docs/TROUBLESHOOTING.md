@@ -497,13 +497,13 @@ pzm server start
 There is no `-Xms` (removed); `-Xmx` defaults to rounded-up half of physical
 RAM capped at 16 GiB unless a valid `PZ_XMX_GB` (2..16) is set. Full model: [ADVANCED.md](ADVANCED.md#ram--jvm-configuration).
 
-> The service has a `MemoryMax=20G` hard cap and an Xmx ceiling of 16 GiB,
-> reserving 4 GiB for all charges outside the heap. Committed ZGC shmem is
+> The shared `pz.slice` has a `MemoryMax=20G` hard cap and an Xmx ceiling of 16 GiB,
+> leaving4 GiB common headroom (not a reservation) for native memory, bot and PZ tasks. Committed ZGC shmem is
 > heap memory, not reclaimable disk cache; RSS minus used heap is not a
 > native-memory estimate. A stale `PZ_XMX_GB=20` override must be explicitly
 > changed to 16 or lower, then applied while stopped. The startup preflight
 > refuses Xmx20/MemoryMax20. This does not repair item-serialization freezes.
-> The monitor requests a restart at 18 GiB RSS, but a rapid increase can reach
+> The monitor requests a restart at18 GiB aggregate PZ RSS, but a rapid increase can reach
 > the hard cap during the warning or save. `MemoryHigh` is not set.
 
 > **Note:** a `java.lang.OutOfMemoryError: Java heap space` after ~15 h of uptime

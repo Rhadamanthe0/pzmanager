@@ -12,8 +12,21 @@ set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Bootstrap minimal avant secrets/venv : le parent manque sur une install bot seul.
+[[ "$(id -u)" != 0 ]] || { echo 'Installer le bot avec le compte manager.' >&2; exit 1; }
+python3 "${SCRIPT_DIR}/../lib/shared_memory_budget.py" identity "${SCRIPT_DIR}/../../../.env"
+mkdir -p "${HOME}/.config/systemd/user"
+if [[ ! -e "${HOME}/.config/systemd/user/pz.slice" ]]; then
+    install -m 644 "${SCRIPT_DIR}/../../setupTemplates/pz.slice" "${HOME}/.config/systemd/user/pz.slice"
+    systemctl --user daemon-reload
+fi
+if ! python3 "${SCRIPT_DIR}/../lib/shared_memory_budget.py" inside; then
+    exec bash "${SCRIPT_DIR}/../lib/run_in_pz_slice.sh" /bin/bash "$0" "$@"
+fi
+python3 "${SCRIPT_DIR}/../lib/shared_memory_budget.py" check
 source "${SCRIPT_DIR}/../lib/common.sh"
 source_env
+[[ "${PZ_GAME_USER}" == "${PZ_MANAGER_USER}" ]] || die "Budget partagé incompatible avec split multi-UID."
 
 # Requis pour systemctl --user (ex. si lancé hors session interactive)
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"

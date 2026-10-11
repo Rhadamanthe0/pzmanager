@@ -16,7 +16,7 @@ of `ProjectZomboid64.json` is overwritten the next night. There is no
   still counts toward the cgroup budget.
 - `-Xmx` = **`PZ_XMX_GB` GiB (2..16) if set in `.env`, else rounded-up half of
   physical RAM capped at 16 GiB** (16 on MINIPC). The remaining 4 GiB of the
-  20 GiB service budget cover all charges outside the heap.
+  20 GiB shared PZ budget covers game-native memory and management tasks.
 - `-XX:+UseZGC` (generational by default on JDK 25) `-XX:+AlwaysPreTouch`
   `-XX:ZCollectionInterval=60` — GC tuning. `ZCollectionInterval` forces a
   *major* (young+old) collection at that interval; 60s keeps the cheap young
@@ -32,10 +32,10 @@ of `ProjectZomboid64.json` is overwritten the next night. There is no
 - `-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=<logs/zomboid>` plus a
   rotating `-Xlog:gc*` to `logs/zomboid/gc.log` — diagnostics.
 
-**Total service budget: 18 / 20 GiB.** The monitor requests a clean restart at
-`PZ_RAM_RESTART_GB=18`; `zomboid.service` enforces `MemoryMax=20G` with
+**Shared PZ budget: 18 / 20 GiB.** The monitor requests a clean restart at
+`PZ_RAM_RESTART_GB=18`; `pz.slice` enforces an aggregate `MemoryMax=20G` with
 `OOMPolicy=kill` as a last resort. If reclaim cannot contain memory below 20 GiB,
-the service is killed without a guaranteed save. Preventive monitoring sums process RSS (heap, native memory and descendants),
+the service is killed without a guaranteed save. Preventive monitoring sums process RSS across the PZ slice (game, bot and background tasks),
 excluding reclaimable file and kernel caches. The hard cap uses cgroup accounting
 including those caches; Linux can reclaim them before killing the service. `MemoryHigh` is not set;
 `MemorySwapMax=0` forbids swap to avoid game freezes. The heap is capped at **16 GiB** within this budget; **4 GiB** remain for every
@@ -59,7 +59,7 @@ pzm server start
 
 > Committed ZGC shmem is not reclaimable disk cache. RSS minus *used* heap
 > is not a native-memory measurement: it can include unused committed heap.
-> Keep the JSON and whole-service limit coherent; the 4 GiB planning margin
+> Keep the JSON and shared PZ limit coherent; the 4 GiB planning margin
 > does not prevent OOM if other charges grow beyond it.
 
 ## GraalVM (optional JIT engine)
@@ -120,7 +120,7 @@ pzmanager handles this adaptively via `pz-heapcheck.timer` (every ~30 s): it
 reads the post-major-GC heap occupancy from `logs/zomboid/gc.log` and,
 when it reaches `HEAP_RESTART_PERCENT` (`.env`, default **95**), triggers
 `pzm server restart` with `HEAP_RESTART_DELAY` (default `5m`) and a player
-warning. It also triggers at **18 GiB of resident process memory**, even when
+warning. It also triggers at **18 GiB of aggregate resident PZ process memory**, even when
 `gc.log` is absent or the heap is still low. The **20 GiB hard cap** can kill the
 service during the warning; preventive monitoring reduces that risk but cannot
 guarantee a save after a rapid increase. The daily 04:30 maintenance restart is the
@@ -265,22 +265,25 @@ Do not lower the cgroup limit around an already running 20 GiB heap.
 
 1. Archive the current `.env`, JVM JSON and installed unit/drop-ins privately.
    Preserve unrelated local changes and coordinate any concurrent writer.
-2. During an agreed game stop, change only `PZ_XMX_GB=20` to `16`, then run
-   `data/scripts/internal/configureJvm.sh` as the installation owner. This
-   updates the next launch; it does not alter the running JVM.
-3. Validate the next JSON without starting a service:
+2. If a legacy Xmx20 is still configured, explicitly stage a coherent
+   Xmx16 JSON while stopped (also remove conflicting Xms/heap overrides).
+   Change only the PZ_XMX_GB setting in .env. Validate the staged JSON with
    `python3 data/scripts/lib/jvm_memory_budget.py check data/pzserver/ProjectZomboid64.json --planned-limit 20G`.
-   This validates the planned budget, not its actual application.
-4. Install the updated `zomboid.service` and account for existing drop-ins.
-   Remove a temporary incident override such as `zz-incident-pz-memory.conf`
-   only after the next JSON is confirmed to use Xmx16. Reload the user manager
-   and read back `MemoryMax=21474836480`, swap policy and the complete drop-in
-   list. Do not run the global installer solely to update this unit.
-5. Start once. The blocking `ExecStartPre` checks the actual current cgroup and
-   JSON before purge or JVM launch. Verify GC initialization reports max heap
-   16384M, the 20 GiB service cap, fresh game progression and player connection.
-   Restore paused timers conditionally after their I/O and restart risks have
-   been checked; keep a diagnostic watchdog mode until the freeze cause is fixed.
+   This offline command neither writes data nor proves the live budget.
+3. Stop all PZ services, timers and the control socket after the normal game
+   shutdown and backup. `pzm install budget` archives the current units/drop-ins
+   and installs only the shared slice and placement/preflight drop-ins. It
+   reloads and checks the effective guards, without starting a game or running
+   Steam. Preserve CPU/priority customizations; remove an old override that
+   resets ExecStartPre only after archival and review of its successor.
+4. Start once. The blocking preflight requires the actual shared parent20G,
+   swap0 and a coherent16G heap. Read back pz.slice kernel limits and the
+   cgroup of game, logger and bot, not only the template. Verify GC initialization,
+   native SERVERSTARTED, console response and player progression. Restore paused
+   timers progressively after checking their I/O and restart risks.
+5. Validate the backup CPU scope and manual CLI placement. A daemon-reload does
+   not migrate already-running processes. Rollout must therefore restart each
+   existing PZ participant once, with SSH kept outside the slice.
 
 For rollback, keep the saved configuration and units. An old Xmx20 must be
 paired with an explicitly reviewed larger total budget; restoring Xmx20 under
@@ -288,3 +291,47 @@ MemoryMax20 is not a safe rollback. Reducing the heap can increase GC work or
 bring heap OOM earlier. The 20 GiB cap remains a last resort, not a guarantee of
 a clean save during a sudden allocation spike. Existing problematic item data
 require a separate remedy.
+
+<a id="budget-memoire-partage-de-pz"></a>
+
+## Budget mémoire partagé de PZ
+
+`pz.slice` borne à **20 Gio au total**, sans swap, le jeu, le bot Discord,
+le logger, les sauvegardes, la maintenance et les diagnostics. Les neuf
+services utilisateur PZ et les scopes lancées par `pzm` ou les scripts
+opérationnels directs en font partie. La session SSH, le gestionnaire
+systemd utilisateur et les autres applications du compte restent hors de
+ce parent ; aucune limite n'est appliquée à `user-<UID>.slice`.
+
+Le heap Java reste limité à 16 Gio. Les 4 Gio restants sont une marge commune,
+pas une réservation pour chaque composant. Le plafond enfant du jeu reste20 Gio
+et ne s'ajoute pas aux20 Gio du parent. Un préflight refuse le démarrage si
+le vrai cgroup n'appartient pas à `pz.slice`, si son plafond partagé diffère
+ou si le swap/contrôleur mémoire ne sont pas conformes.
+
+Le monitoring affiche `MemoryCurrent/MemoryMax` du parent, avec le cache et
+la mémoire noyau inclus. Le préavis de redémarrage reste à 18 Gio de **RSS
+agrégé des processus PZ** (hors caches récupérables), ou 95% de heap après GC
+majeur. Les deux mesures répondent à deux questions différentes. Un pic
+rapide peut atteindre le plafond avant la fin du préavis 5min ; un restart
+du jeu ne libère pas la mémoire consommée par les autres tâches.
+
+Une opération manuelle passe dans une scope avant secrets et verrous.
+`systemd-run --scope` préserve les FD hérités ; une nouvelle service aurait
+perdu les verrous du monde. Bus absent ou placement/plafond invalide : la
+commande échoue, sans repli hors budget et sans flagENV de contournement.
+Aide et bootstrap restent utilisables avant installation. Les installateurs
+root (comptes, paquets, pare-feu) sont du bootstrap hôte, hors du budget PZ ;
+les opérations courantes, y compris leurs descendants `sudo`, héritent du
+parent. Le mode split avec deux UID distincts est refusé par l'installation
+unifiée : une slice utilisateur ne peut pas agréger deux gestionnaires.
+
+Pour une installation existante, `pzm install budget` pose uniquement le parent
+et les drop-ins de placement/garde après archivage privé et arrêt de tous les
+services PZ. Il conserve les unités locales, les autres drop-ins, le monde,
+`.env`, les mods et le JSON JVM ; il ne télécharge rien et ne démarre aucun
+service. Le code fusionné doit être déployé avant cette commande. Une migration
+nécessite ensuite un seul redémarrage planifié du jeu, puis la restauration
+progressive du bot/timers. Les processus déjà actifs ne changent pas de cgroup
+sur un simple `daemon-reload` : vérifier leurs chemins après démarrage, ainsi
+que le plafond kernel et la console du jeu.

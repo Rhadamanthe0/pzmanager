@@ -1,9 +1,12 @@
-"""Contrat du budget PZ : 16 Gio de heap et 4 Gio pour le reste du cgroup."""
+"""Contrat PZ : heap16 Gio, plafond partagé20 Gio (jeu et gestion)."""
 import argparse
 import json
 import re
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from shared_memory_budget import check_process
 
 GIB = 1024 ** 3
 SERVICE_BUDGET = 20 * GIB
@@ -89,6 +92,8 @@ def main(argv=None):
         if args.command == "choose-heap":
             print(choose_heap_gib(args.override, args.memory_kib))
         else:
+            if not args.planned_limit:
+                check_process()
             limit = size_bytes(args.planned_limit) if args.planned_limit else cgroup_memory_max()
             heap = validate_config(json.loads(args.json_file.read_text()), limit)
             print(f"Budget PZ valide : heap {heap / GIB:g} Gio, MemoryMax {limit / GIB:g} Gio, marge hors heap au moins 4 Gio.")

@@ -177,7 +177,7 @@ else
     pass "simulation : owner réel=$env_owner != pzgame, modes imposés 0600/0750 (bits 'other' = 0)"
 fi
 
-# --- (e) migrate-to-split-users.sh : idempotent, deux runs OK -----------------
+# --- (e) split refusé avant mutation ; mono-user reste un no-op -----------------
 [[ -x "$MIGRATE" ]] || fail "migrate-to-split-users.sh absent ou non exécutable"
 
 # Stubs système : le test reste non-root, seule la logique réelle tourne.
@@ -237,49 +237,21 @@ mkdir -p "$MGR/pzmanager/Zomboid/db" "$MGR/pzmanager/data/pzserver"
 printf 'monde\n' > "$MGR/pzmanager/Zomboid/db/servertest.db"
 printf 'binaire\n' > "$MGR/pzmanager/data/pzserver/start-server.sh"
 
-run1_out="$(PZ_MIGRATE_ALLOW_NONROOT=1 PATH="$STUB:$PATH" bash "$MIGRATE" "$SANDBOX_ENV" 2>&1)" \
-    || fail "migrate run 1 en échec : $run1_out"
-if (( FS_LINKS )); then
-    [[ -L "$MGR/pzmanager/Zomboid" ]] || fail "run 1 : Zomboid non basculé en lien"
-    [[ -L "$MGR/pzmanager/data/pzserver" ]] || fail "run 1 : pzserver non basculé en lien"
-    [[ "$(readlink "$MGR/pzmanager/Zomboid")" == "$GAME/pzmanager/Zomboid" ]] \
-        || fail "run 1 : lien monde inattendu ($(readlink "$MGR/pzmanager/Zomboid"))"
-else
-    skip_note "ln -s non effectif sur ce FS — bascule vérifiée par message + état"
-    grep -qF "Migré vers le compte jeu : $MGR/pzmanager/Zomboid -> $GAME/pzmanager/Zomboid" <<< "$run1_out" \
-        || fail "run 1 : bascule monde non exécutée"
-    grep -qF "Migré vers le compte jeu : $MGR/pzmanager/data/pzserver -> $GAME/pzmanager/data/pzserver" <<< "$run1_out" \
-        || fail "run 1 : bascule serveur non exécutée"
-fi
-[[ -f "$GAME/pzmanager/Zomboid/db/servertest.db" ]] || fail "run 1 : monde non copié"
-[[ -f "$MGR/pzmanager/Zomboid.pre-split-bak/db/servertest.db" ]] || fail "run 1 : original non conservé"
-[[ -f "$GAME/pzmanager/data/pzserver/start-server.sh" ]] || fail "run 1 : serveur non copié"
-# Preuve des commandes exigées par le brief, lue dans le journal des appels
-# (le FS local pouvant ignorer chmod, cf. FS_MODES).
-grep -q "rsync -a .*Zomboid" "$STUB_LOG" || fail "run 1 : rsync -a du monde non émis"
-grep -q "chown -R pzgame:pzgame" "$STUB_LOG" || fail "run 1 : chown vers pzgame non émis"
-grep -qF "chmod 0600 $SANDBOX_ENV" "$STUB_LOG" || fail "run 1 : chmod 0600 du .env non émis"
-grep -qF "chmod 0700 $MGR/.ssh" "$STUB_LOG" || fail "run 1 : chmod 0700 du .ssh non émis"
-if (( FS_MODES )); then
-    [[ "$(stat -c %a "$SANDBOX_ENV")" == "600" ]] || fail "run 1 : .env non resserré"
-    [[ "$(stat -c %a "$MGR/.ssh")" == "700" ]] || fail "run 1 : .ssh non resserré"
-else
-    skip_note "modes FS non vérifiables ici (chmod inopérant) — commandes prouvées via journal"
-fi
-grep -q "Migration split-users terminée" <<< "$run1_out" || fail "run 1 : résumé absent"
-pass "migrate run 1 : monde+serveur vers pzgame, originaux conservés, résumé affiché"
-
+# Depuis le contrat20G partagé, une migration multi-UID est incompatible.
+# Prouver le refus AVANT comptes, fichiers, rsync ou permissions, deux fois.
 state_before="$(cd "$SIM" && find home -mindepth 1 | sort)"
-run2_out="$(PZ_MIGRATE_ALLOW_NONROOT=1 PATH="$STUB:$PATH" bash "$MIGRATE" "$SANDBOX_ENV" 2>&1)" \
-    || fail "migrate run 2 en échec : $run2_out"
-state_after="$(cd "$SIM" && find home -mindepth 1 | sort)"
-[[ "$state_before" == "$state_after" ]] || fail "run 2 : arborescence modifiée (non idempotent)"
-if (( FS_LINKS )); then
-    grep -q "Déjà migré" <<< "$run2_out" || fail "run 2 : no-op non signalé"
-else
-    grep -qE "Déjà migré|déjà présente" <<< "$run2_out" || fail "run 2 : no-op non signalé"
-fi
-pass "migrate run 2 : no-op idempotent (état inchangé, code 0)"
+world_before="$(sha256sum "$MGR/pzmanager/Zomboid/db/servertest.db")"
+: > "$STUB_LOG"
+for attempt in 1 2; do
+    if output="$(PZ_MIGRATE_ALLOW_NONROOT=1 PATH="$STUB:$PATH" bash "$MIGRATE" "$SANDBOX_ENV" 2>&1)"; then
+        fail "split accepté malgré plafond partagé20G"
+    fi
+    grep -q 'Migration split refusée' <<< "$output" || fail "refus non lié au contrat mémoire : $output"
+    [[ ! -s "$STUB_LOG" ]] || fail "mutation système avant refus split"
+    [[ "$state_before" == "$(cd "$SIM" && find home -mindepth 1 | sort)" ]] || fail "arborescence modifiée"
+    [[ "$world_before" == "$(sha256sum "$MGR/pzmanager/Zomboid/db/servertest.db")" ]] || fail "monde modifié"
+done
+pass "split refusé avant toute mutation, données et comptes conservés"
 
 # Compat mono-user : GAME == MANAGER -> rien à faire, code 0.
 cat > "$SIM/mono.env" <<ENVEOF

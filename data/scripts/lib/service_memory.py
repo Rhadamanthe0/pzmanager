@@ -1,4 +1,4 @@
-"""RAM résidente des processus d'un service, sans son cache disque récupérable."""
+"""RSS agrégé d'un cgroup ; le CLI mesure uniquement le parent PZ partagé."""
 from pathlib import Path
 import sys
 
@@ -26,7 +26,12 @@ def service_rss_bytes(control_group, cgroup_root="/sys/fs/cgroup", proc_root="/p
 
 
 if __name__ == "__main__":
-    value = service_rss_bytes(sys.argv[1])
+    from shared_memory_budget import validate_slice, slice_group
+    try:
+        validate_slice(sys.argv[1])
+        value = service_rss_bytes(slice_group(sys.argv[1]))
+    except (OSError, ValueError):
+        value = None
     if value is None:
         sys.exit(1)
     print(value)
