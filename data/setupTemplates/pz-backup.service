@@ -4,8 +4,8 @@ After=zomboid.service
 
 [Service]
 Type=oneshot
-# À 20% de CPU, rsync et surtout le prune (unlink de snapshots hardlinkés) sont
-# lents. Le prune est plafonné par run (BACKUP_PRUNE_MAX_DELETE) pour tenir dans ce
+# Le prune (unlink de snapshots hardlinkés) reste coûteux. Il est plafonné
+# par run (BACKUP_PRUNE_MAX_DELETE) pour tenir dans ce
 # timeout ; 2400s = marge confortable pour save+rsync+un lot de suppressions, sans
 # jamais tuer un run (ce qui le marquerait failed et laisserait un prune partiel).
 # C'est un plafond CHOISI : un Type=oneshot n'a pas de timeout par défaut. La
@@ -15,13 +15,12 @@ TimeoutStartSec=2400
 ExecStart=%h/pzmanager/data/scripts/backup/dataBackup.sh
 StandardOutput=journal
 StandardError=journal
-# Le backup horaire (rsync incrémental qui doit stat ~965k fichiers du monde) ne
-# doit jamais hoqueter le jeu. Le NVMe est en scheduler "none" et le contrôleur io
-# n'est pas délégué → ionice/IOWeight sont sans effet ici ; on bride donc le CPU,
-# ce qui étale aussi le burst d'I/O (un rsync bridé émet ses I/O plus lentement).
-# Nice=19 : priorité CPU la plus basse. CPUWeight=10 : ~1/100 de la part du jeu
-# (zomboid.service = 1000). CPUQuota=20% : plafond dur à un cinquième de cœur, le
-# burst métadonnées des hardlinks est ainsi étalé et invisible pour le tick du jeu.
+# Le parcours du monde et la création des hardlinks sont coûteux en CPU.
+# Nice=19 et CPUWeight=10 gardent le jeu prioritaire (zomboid.service = 1000).
+# CPUQuota=100% borne la sauvegarde à l'équivalent d'un cœur ; l'ancien plafond
+# de 20% imposait ~15 min de copie pour ~3 min de CPU. Le NVMe en scheduler
+# "none" et le contrôleur io non délégué ne permettent pas de compter sur
+# ionice/IOWeight pour limiter les I/O : surveiller leur pression après réglage.
 Nice=19
 CPUWeight=10
-CPUQuota=20%
+CPUQuota=100%

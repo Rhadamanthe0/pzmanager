@@ -126,7 +126,7 @@ Local hourly snapshots use **GFS retention** (`prune_gfs` in `dataBackup.sh`), n
 - **BACKUP_GFS_HOURLY_HOURS**: keep every hourly snapshot for this many hours (default 24)
 - **BACKUP_GFS_SIXHOURLY_DAYS**: then keep 1 per 6h up to this many days (default 7)
 - **BACKUP_GFS_DAILY_DAYS**: then keep 1 per day up to this many days (default 30); older is deleted
-- **BACKUP_PRUNE_MAX_DELETE**: max snapshots deleted per run (default 15; 0 = unlimited). Deleting a hardlinked snapshot is hundreds of thousands of `unlink()`, slow under the unit's 20% CPU cap — bounding it per run lets a large backlog drain over several hourly runs without exceeding `TimeoutStartSec` (2400s). The run is also single-instance (`flock`), so a long prune never overlaps the next hourly trigger.
+- **BACKUP_PRUNE_MAX_DELETE**: max snapshots deleted per run (default 15; 0 = unlimited). Deleting a hardlinked snapshot is hundreds of thousands of `unlink()`, costly even with hardlink deduplication — bounding it per run lets a large backlog drain over several hourly runs without exceeding `TimeoutStartSec` (2400s). The run is also single-instance (`flock`), so a long prune never overlaps the next hourly trigger.
 
 `BACKUP_PRUNE_DRY_RUN=1 data/scripts/backup/dataBackup.sh` previews what would be pruned without deleting. `BACKUP_RETENTION_DAYS` no longer exists: it was read by nothing once GFS retention landed, and has been dropped from `.env.example`.
 
@@ -208,7 +208,7 @@ Full guide: [DISCORD_BOT.md](DISCORD_BOT.md).
 
 **Script**: `data/scripts/backup/dataBackup.sh`
 **Schedule**: Every hour at :14
-**Method**: Incremental with hard links (rsync, CPU-throttled to 20%, `--partial` + retry ×3)
+**Method**: Incremental with hard links (rsync, `--partial` + retry ×3; resource limits in [WHAT_IS_INSTALLED](WHAT_IS_INSTALLED.md#pz-backuptimer---hourly-backup))
 **Retention**: GFS — hourly 24h / 1-per-6h 7d / 1-per-day 30d (`BACKUP_GFS_*`)
 
 **Contents**:
