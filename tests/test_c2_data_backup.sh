@@ -123,6 +123,30 @@ MOCKEOF
 chmod +x "${BIN}/mv"
 export PATH="${BIN}:$PATH"
 
+# Budgets CPU : doubles explicites, aucun accès au bus du serveur réel.
+cat > "${BIN}/systemctl" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [[ " $* " == *" show "* ]]; then
+    [[ "${MOCK_CPU_STATE:-active}" != "error" ]] || exit 1
+    printf 'ActiveState=%s\nSubState=%s\nMainPID=%s\n' \
+        "${MOCK_CPU_STATE:-active}" "${MOCK_CPU_SUBSTATE:-running}" "${MOCK_CPU_MAINPID:-123}"
+fi
+MOCKEOF
+cat > "${BIN}/systemd-run" <<'MOCKEOF'
+#!/usr/bin/env bash
+[[ -z "${MOCK_SCOPE_LOG:-}" ]] || printf '%s\n' "$*" >> "$MOCK_SCOPE_LOG"
+[[ "${MOCK_SCOPE_FAIL:-0}" == "0" ]] || exit 1
+# La scope doit conserver le FD du verrou monde, même après un fork/exec.
+test -e "/proc/self/fd/${PZ_WORLD_LOCK_FD}" || exit 91
+while [[ "${1:-}" == --* ]]; do shift; done
+exec "$@"
+MOCKEOF
+cat > "${BIN}/taskset" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit "${MOCK_CPU_PIN_FAIL:-0}"
+MOCKEOF
+chmod +x "${BIN}/systemctl" "${BIN}/systemd-run" "${BIN}/taskset"
+
 # --- Helpers -----------------------------------------------------------------
 # fresh_case <nom> : (re)crée SRC + BKP vierges, exporte l'env sandbox dans CE
 # shell (appel direct, JAMAIS en substitution $() qui perdrait les exports),
@@ -141,6 +165,8 @@ fresh_case() {
     export PZ_CONTROL_PIPE="${SANDBOX}/nopipe-${name}"
     export BACKUP_WARN_DELAY=0 RSYNC_RETRY_DELAY=0 BACKUP_PRUNE_DRY_RUN=1
     unset MOCK_RSYNC_EXIT MOCK_RSYNC_SLEEP MOCK_RSYNC_EMPTY MOCK_LN_FAIL MOCK_MV_FAIL
+    unset MOCK_CPU_STATE MOCK_CPU_SUBSTATE MOCK_CPU_MAINPID MOCK_SCOPE_LOG MOCK_SCOPE_FAIL
+    unset MOCK_CPU_PIN_FAIL
 }
 final_count() { find "$1" -maxdepth 1 -type d -name 'backup_*' 2>/dev/null | wc -l | tr -d ' '; }
 tmp_left() { find "$1" -maxdepth 1 -name '*.tmp*' 2>/dev/null | wc -l | tr -d ' '; }
@@ -430,6 +456,41 @@ else
 fi
 (( $(final_count "$BKP") == 0 )) && ok "attente épuisée : rien publié" || ko "attente épuisée : final publié à tort"
 unset PZ_WORLD_LOCK_RETRIES PZ_WORLD_LOCK_RETRY_DELAY
+
+# --- Budgets CPU et héritage des verrous ---------------------------------------
+for policy in active inactive startup loading failed error; do
+    fresh_case "cpu-$policy"
+    export MOCK_SCOPE_LOG="${SANDBOX}/scope-$policy.log" BACKUP_CPU_LIST=7,15
+    expected_quota=25
+    case "$policy" in
+        inactive) export MOCK_CPU_STATE=inactive MOCK_CPU_MAINPID=0; expected_quota=300 ;;
+        startup) export MOCK_CPU_STATE=activating MOCK_CPU_SUBSTATE=start-pre MOCK_CPU_MAINPID=0; expected_quota=300 ;;
+        loading) export MOCK_CPU_STATE=activating MOCK_CPU_SUBSTATE=start-post MOCK_CPU_MAINPID=123 ;;
+        failed) export MOCK_CPU_STATE=failed MOCK_CPU_MAINPID=0 ;;
+        error) export MOCK_CPU_STATE=error ;;
+    esac
+    if run_backup --snapshot-only --required && grep -q "CPUQuota=${expected_quota}%" "$MOCK_SCOPE_LOG"; then
+        ok "CPU $policy : ${expected_quota}% + FD monde hérité + snapshot publié"
+    else
+        ko "CPU $policy : quota ou snapshot incorrect"; show_out
+    fi
+    if (( expected_quota == 300 )); then
+        if grep -q 'AllowedCPUs=' "$MOCK_SCOPE_LOG"; then ko "CPU $policy : confinement live conservé"; else ok "CPU $policy : cœur réservé libéré"; fi
+    else
+        grep -q 'AllowedCPUs=7,15' "$MOCK_SCOPE_LOG" && ok "CPU $policy : isolation conservée" || ko "CPU $policy : isolation absente"
+    fi
+    unset BACKUP_CPU_LIST
+done
+fresh_case cpu-scope-failed
+export MOCK_SCOPE_FAIL=1
+if run_backup; then ko "scope refusée : succès non bridé à tort"; else ok "scope refusée : échec sans fallback non bridé"; fi
+(( $(final_count "$BKP") == 0 )) && ok "scope refusée : aucun snapshot publié" || ko "scope refusée : snapshot publié"
+unset MOCK_SCOPE_FAIL
+fresh_case cpu-affinity-failed
+export MOCK_CPU_PIN_FAIL=1 BACKUP_CPU_LIST=7,15
+if run_backup; then ko "affinité impossible : succès à tort"; else ok "affinité impossible : copie refusée"; fi
+(( $(final_count "$BKP") == 0 )) && ok "affinité impossible : rien publié" || ko "affinité impossible : snapshot publié"
+unset MOCK_CPU_PIN_FAIL BACKUP_CPU_LIST
 
 # --- Bilan -------------------------------------------------------------------------
 echo ""

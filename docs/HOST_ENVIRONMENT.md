@@ -21,17 +21,19 @@ has repeatedly been mistaken for a pzmanager bug.
 ## Backup CPU isolation
 
 This Ryzen 7 8745HS has 8 physical cores and 16 logical CPUs. `lscpu -e`
-and `cpu*/topology/thread_siblings_list` identify CPUs **7 and 15** as the
-two SMT threads of physical core 7. Both are reserved for the hourly backup;
-the game is restricted to **0–6 and 8–14**, the other seven physical cores.
-Reserving only CPU 7 would still let the game compete with the backup on CPU 15.
+and `cpu*/topology/thread_siblings_list` identify CPUs **4 and 12** as the
+two SMT threads of physical core 4. Both are reserved for the hourly backup;
+the game is restricted to **0–3 and 8–11**, the other four physical cores allocated to this account.
+The system-wide `user-1005.slice` now permits only 0–4 and 8–12 (five physical cores). The previous reservation 7/15 was outside that parent mask and ineffective; core 4 is reserved within the actual allocation. Reserving only CPU 4 would still let the game compete with the backup on CPU 12.
 
 These are **machine-specific**, persistent user-unit overrides, applied with:
 
 ```bash
-systemctl --user set-property zomboid.service 'AllowedCPUs=0-6 8-14'
-systemctl --user set-property pz-backup.service 'AllowedCPUs=7 15'
-systemctl --user set-property pz-backup.service CPUQuota=50%
+systemctl --user set-property zomboid.service 'AllowedCPUs=0-3 8-11'
+systemctl --user set-property pz-backup.service 'AllowedCPUs=4 12'
+systemctl --user set-property pz-backup.service CPUQuota=25%
+# In this host's .env, for live-game scopes including manual backups:
+export BACKUP_CPU_LIST="4,12"
 ```
 
 systemd stores them under `~/.config/systemd/user.control/<unit>.d/` and
@@ -48,10 +50,13 @@ while observing shared-disk waits and slower game-loop intervals, to temper the
 metadata burst. These observations alone do not identify which host workload
 caused the waits.
 The CPU masks do not isolate the shared NVMe, memory bandwidth, or unrelated
-host workloads. Direct manual `pzm backup create` calls run in the caller's
-cgroup; this isolation covers `pz-backup.service` and its hourly timer.
+host workloads. The live-game backup scope reads `BACKUP_CPU_LIST` for both
+manual and hourly runs. When the JVM is proven absent, its scope uses all
+available CPUs so the stopped-server quota can exceed one core.
 Do not copy these CPU numbers to another machine without checking its topology.
-To remove the separation, set each unit's `AllowedCPUs` to an empty value.
+To remove the separation, set each unit's `AllowedCPUs` and the host's
+`BACKUP_CPU_LIST` to empty values. If the reserved CPUs become inaccessible,
+the script refuses the live-game copy rather than silently sharing game CPUs.
 
 ## Memory budget
 
