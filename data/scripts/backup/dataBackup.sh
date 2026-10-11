@@ -82,8 +82,8 @@ elif ! acquire_world_lock --try; then
     fi
 fi
 
-# Le verrou monde est acquis AVANT de choisir le budget : aucun start concurrent
-# ne peut faire passer une copie à 300% pendant que la JVM tourne. Une scope
+# Le verrou monde est acquis AVANT de choisir l'affinité : aucun start concurrent
+# ne peut libérer les cœurs réservés pendant que la JVM tourne. Une scope
 # hérite des FD (dont WORLD/SERVERCTL), contrairement à une nouvelle service.
 # Le parent reste dans son unité, attend l'enfant et propage les interruptions.
 if [[ "${PZ_BACKUP_CPU_SCOPED:-0}" != "1" ]]; then
@@ -98,7 +98,6 @@ if [[ "${PZ_BACKUP_CPU_SCOPED:-0}" != "1" ]]; then
     # Tout état ambigu / bus indisponible reste à 200%, avec l'affinité live.
     if [[ "$main_value" == "0" ]] && { [[ "$state_value" == "inactive" ]] \
         || [[ "$state_value" == "activating" && "$sub_value" == "start-pre" ]]; }; then
-        cpu_quota=300
         cpu_list="" # Pas de confinement au cœur réservé quand la JVM est absente.
     fi
     cpu_scope="pz-backup-cpu-$$.scope"
@@ -110,7 +109,7 @@ if [[ "${PZ_BACKUP_CPU_SCOPED:-0}" != "1" ]]; then
         scope_args+=(--property=BindsTo=pz-backup.service)
     fi
     echo "BACKUP_CPU_QUOTA ${cpu_quota}% (serveur ${state_value:-unknown}, scope ${cpu_scope})"
-    PZ_BACKUP_CPU_SCOPED=1 PZ_BACKUP_CPU_QUOTA="$cpu_quota" systemd-run "${scope_args[@]}" \
+    PZ_BACKUP_CPU_SCOPED=1 PZ_BACKUP_CPU_PIN_LIST="$cpu_list" systemd-run "${scope_args[@]}" \
         nice -n 19 bash "${SCRIPT_DIR}/dataBackup.sh" "$@" &
     cpu_scope_pid=$!
     stop_cpu_scope() {
@@ -127,9 +126,9 @@ fi
 
 # cpuset peut retomber silencieusement sur les CPU du parent si tous les CPU
 # demandés sont exclus par une limite supérieure. Refuser cette fausse isolation.
-if [[ "${PZ_BACKUP_CPU_QUOTA:-200}" != "300" && -n "${BACKUP_CPU_LIST:-}" ]]; then
-    taskset --pid --cpu-list "$BACKUP_CPU_LIST" "$$" >/dev/null \
-        || die "CPU réservés au backup indisponibles (${BACKUP_CPU_LIST}) — copie refusée."
+if [[ -n "${PZ_BACKUP_CPU_PIN_LIST:-}" ]]; then
+    taskset --pid --cpu-list "$PZ_BACKUP_CPU_PIN_LIST" "$$" >/dev/null \
+        || die "CPU réservés au backup indisponibles (${PZ_BACKUP_CPU_PIN_LIST}) — copie refusée."
 fi
 
 # Verrou d'instance unique. Un run peut durer longtemps (le prune GFS d'un gros

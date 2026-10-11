@@ -50,12 +50,13 @@ while observing shared-disk waits and slower game-loop intervals, to temper the
 metadata burst. These observations alone do not identify which host workload
 caused the waits.
 On 2026-10-11 the live-game quota was raised to 200% while retaining both
-SMT threads of the separate backup core. A 300% quota applies when the JVM
-is proven absent; the CPU mask is then relaxed within the account's allocation.
+SMT threads of the separate backup core. The quota now remains at 200%
+in every state; the CPU mask is relaxed within the account's allocation
+only when the JVM is proven absent.
 The CPU masks do not isolate the shared NVMe, memory bandwidth, or unrelated
 host workloads. The live-game backup scope reads `BACKUP_CPU_LIST` for both
 manual and hourly runs. When the JVM is proven absent, its scope uses all
-available CPUs so the stopped-server quota can exceed one core.
+available CPUs while retaining the same 200% quota.
 Do not copy these CPU numbers to another machine without checking its topology.
 To remove the separation, set each unit's `AllowedCPUs` and the host's
 `BACKUP_CPU_LIST` to empty values. If the reserved CPUs become inaccessible,
