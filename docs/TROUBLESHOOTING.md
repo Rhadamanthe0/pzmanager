@@ -520,3 +520,28 @@ If the issue persists:
    - Relevant logs
    - Configuration (.env without secrets)
    - Steps to reproduce the issue
+
+### Monitoring ZGC and tick frequency
+
+B42 exports `performance{parameter="fps"}` as the current update period in
+milliseconds despite its name. The monitor converts a positive finite period
+with `1000 / period_ms`; 103 ms means about 9.7 ticks/s, while 617 ms means
+about 1.6 ticks/s. An old gauge alone cannot prove that the game still responds:
+check fresh frame progression and a console response.
+
+ZGC's `Major Collection` summary reports the duration of its concurrent cycle,
+not a stop-the-world pause. The monitor keeps that cycle duration separate and
+uses the longest `Pause` phase belonging to the same major collection for GC
+pause alerts. Missing phases mean an unknown pause, never the cycle duration.
+
+The CSV columns and order remain unchanged. New `gc_pause_s` values contain
+that measured pause in seconds (empty if unknown). Rows produced before this
+correction contained the concurrent cycle duration in this column and must not
+be interpreted as game pauses. Historical `srv_fps` values also contained raw milliseconds rather than a
+frequency; new rows contain ticks/s to one decimal place. The installed B42
+server loop caps at 10 ticks/s, and no FPS alert threshold is introduced.
+Historical rows are preserved.
+
+With `STALL_AUTO_RESTART=0`, stallwatch captures diagnostics and requests admin
+intervention; it neither announces nor triggers an automatic restart. This
+monitoring correction does not repair pathological inventory serialization.

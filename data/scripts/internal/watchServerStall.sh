@@ -360,7 +360,11 @@ log "stallwatch: gel confirmé (main runnable ${runnable_count}/${#main_lines[@]
 # --- Notifications ------------------------------------------------------------
 # Canal public (annonces joueurs) : une seule ligne, lisible, sans jargon — les
 # joueurs ont juste besoin de savoir pourquoi ça coupe et que ça repart seul.
-notify "🧊 Gel du serveur détecté — redémarrage automatique en cours."
+if [[ "${STALL_AUTO_RESTART:-1}" == "1" ]]; then
+    notify "🧊 Gel du serveur détecté — redémarrage automatique en cours."
+else
+    notify "🧊 Gel du serveur détecté — diagnostic capturé, intervention administrateur requise."
+fi
 
 # Détail technique (chemin du dump) : réservé à l'admin. Sur
 # DISCORD_ADMIN_WEBHOOK si défini dans .env, sinon journal seul — jamais sur le

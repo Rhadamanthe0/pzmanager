@@ -16,29 +16,49 @@
 set -euo pipefail
 
 ROOT="${PZ_TEST_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-SANDBOX="${ROOT}/tests/.tmp-secps-$$"
+# Tous les chemins sont créés atomiquement : aucun nom de compte réel ni
+# répertoire antérieur ne peut être repris par ce test.
+SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/pz-secps-sandbox.XXXXXX")"
+readonly SANDBOX
+SANDBOX_RUN="$(mktemp -d "${TMPDIR:-/tmp}/pz-secps-runtime.XXXXXX")"
+readonly SANDBOX_RUN
+FALLBACK_DIR="$(mktemp -d /tmp/pzmanager-pz-secps.XXXXXX)"
+readonly FALLBACK_DIR
+PRIVATE_STATE_TEST_USER="${FALLBACK_DIR#/tmp/pzmanager-}"
+readonly PRIVATE_STATE_TEST_USER
+SANDBOX_INODE="$(stat -c '%d:%i' "$SANDBOX")"
+readonly SANDBOX_INODE
+RUNTIME_INODE="$(stat -c '%d:%i' "$SANDBOX_RUN")"
+readonly RUNTIME_INODE
+FALLBACK_INODE="$(stat -c '%d:%i' "$FALLBACK_DIR")"
+readonly FALLBACK_INODE
+id() {
+    if [[ "$*" == "-un" ]]; then printf '%s\n' "$PRIVATE_STATE_TEST_USER"
+    else command id "$@"; fi
+}
 
 PASS=0
 FAIL=0
-ok() { PASS=$(( PASS + 1 )); echo "[OK] $*"; }
-ko() { FAIL=$(( FAIL + 1 )); echo "[FAIL] $*" >&2; }
+ok() { PASS=$(( PASS + 1)); echo "[OK] $*"; }
+ko() { FAIL=$(( FAIL + 1)); echo "[FAIL] $*" >&2; }
 
-FALLBACK_DIR="/tmp/pzmanager-$(id -un)"
-FALLBACK_PREEXISTED=false
-[[ -e "$FALLBACK_DIR" ]] && FALLBACK_PREEXISTED=true
-# Runtime sandbox sous /tmp (vrai FS Linux : chmod probants ; sous /mnt/c les
-# bits DrvFs ne sont pas significatifs).
-SANDBOX_RUN="/tmp/.pztest-run-$$"
-
-cleanup() {
-    rm -rf "$SANDBOX" "$SANDBOX_RUN"
-    # Ne retire le repli que si le test l'a créé.
-    if [[ "$FALLBACK_PREEXISTED" == false ]]; then
-        rm -rf "$FALLBACK_DIR"
+same_directory() {
+    [[ -d "$1" && ! -L "$1" ]] && [[ "$(stat -c '%d:%i' "$1")" == "$2" ]]
+}
+remove_owned_directory() {
+    if same_directory "$1" "$2" && [[ -O "$1" ]]; then
+        rm -rf -- "$1"
+    else
+        echo "[FAIL] cleanup refusé : inode/propriétaire inattendu ($1)" >&2
+        return 1
     fi
 }
+cleanup() {
+    remove_owned_directory "$SANDBOX" "$SANDBOX_INODE"
+    remove_owned_directory "$SANDBOX_RUN" "$RUNTIME_INODE"
+    remove_owned_directory "$FALLBACK_DIR" "$FALLBACK_INODE"
+}
 trap cleanup EXIT
-mkdir -p "$SANDBOX"
 
 # --- (1) câblage statique ------------------------------------------------------
 if grep -q 'pzmanager-heapcheck.*\.trigger' "${ROOT}/data/scripts/internal/checkHeapAndRestart.sh"; then
@@ -58,7 +78,7 @@ source "${ROOT}/data/scripts/lib/common.sh"
 
 # --- (2) runtime privé ----------------------------------------------------------
 export XDG_RUNTIME_DIR="$SANDBOX_RUN"
-mkdir -p "$XDG_RUNTIME_DIR"   # en prod, créé par pam_systemd (possédé par l'utilisateur)
+# Runtime déjà réservé par mktemp, privé comme celui de pam_systemd.
 p="$(private_state_path "heapcheck.trigger")" || { ko "runtime : private_state_path en échec"; p=""; }
 if [[ -n "${p:-}" && "$p" == "${XDG_RUNTIME_DIR}/pzmanager/heapcheck.trigger" ]]; then
     ok "runtime : chemin sous XDG_RUNTIME_DIR/pzmanager"
@@ -71,35 +91,33 @@ else
     ko "runtime : dossier absent ou non-0700"
 fi
 
-# --- (3) repli /tmp 0700 ---------------------------------------------------------
+# --- (3) repli /tmp 0700 réservé exclusivement au test ---------------------------
 unset XDG_RUNTIME_DIR
-rm -rf "$FALLBACK_DIR"
 p2="$(XDG_RUNTIME_DIR=/nonexistent-xyz private_state_path "heapcheck.trigger")" \
-    || { ko "repli : private_state_path en échec"; p2=""; }
-if [[ "${p2:-}" == "${FALLBACK_DIR}/heapcheck.trigger" ]]; then
-    ok "repli : chemin sous /tmp/pzmanager-<user>"
-else
-    ko "repli : chemin inattendu ('${p2:-<vide>}')"
-fi
-if [[ "$(stat -c %a "$FALLBACK_DIR" 2>/dev/null)" == "700" ]]; then
-    ok "repli : dossier créé en 0700"
-else
-    ko "repli : dossier absent ou non-0700"
-fi
+    || { ko "repli : private_state_path en échec"; exit 1; }
+[[ "$p2" == "$FALLBACK_DIR/heapcheck.trigger" ]] \
+    && same_directory "$FALLBACK_DIR" "$FALLBACK_INODE" && [[ -O "$FALLBACK_DIR" ]] \
+    || { ko "repli : identité inattendue"; exit 1; }
+ok "repli : chemin sous /tmp/pzmanager-<identité synthétique>"
+[[ "$(stat -c %a "$FALLBACK_DIR")" == "700" ]] \
+    && ok "repli : dossier réservé en 0700" || ko "repli : mode non privé"
 
-# --- (4) repli pré-créé par un tiers -> refus ------------------------------------
-rm -rf "$FALLBACK_DIR"
-mkdir -p "$FALLBACK_DIR"
-chown 65534:65534 "$FALLBACK_DIR"
-chmod 755 "$FALLBACK_DIR"
+# --- (4) repli possédé par un tiers -> refus ------------------------------------
+# Ne remplacer ni supprimer le répertoire : garder le même inode réservé.
+same_directory "$FALLBACK_DIR" "$FALLBACK_INODE" && [[ -O "$FALLBACK_DIR" ]] \
+    || { ko "repli : inode remplacé avant simulation"; exit 1; }
+chown --no-dereference 65534:65534 "$FALLBACK_DIR"
 if XDG_RUNTIME_DIR=/nonexistent-xyz private_state_path "heapcheck.trigger" >/dev/null 2>&1; then
     ko "repli hostile : accepté (un tiers y écrirait)"
 else
     ok "repli hostile : refusé (fail-closed)"
 fi
-# Remise en état pour le cleanup (retiré car créé par le test).
-chown root:root "$FALLBACK_DIR" 2>/dev/null || true
-rm -rf "$FALLBACK_DIR"
+# Le refus ne doit pas permettre un chown suivant un lien placé entre-temps.
+same_directory "$FALLBACK_DIR" "$FALLBACK_INODE" \
+    || { ko "repli : inode remplacé, restauration refusée"; exit 1; }
+chown --no-dereference "$(id -u):$(id -g)" "$FALLBACK_DIR"
+same_directory "$FALLBACK_DIR" "$FALLBACK_INODE" && [[ -O "$FALLBACK_DIR" ]] \
+    || { ko "repli : restauration de propriétaire non vérifiée"; exit 1; }
 
 # --- (5) nom avec '/' -> refus -----------------------------------------------------
 export XDG_RUNTIME_DIR="$SANDBOX_RUN"

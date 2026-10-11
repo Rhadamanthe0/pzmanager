@@ -77,7 +77,7 @@ setup_case() {
 source_env() { :; }
 server_is_active() { [[ ! -f "${MOCK_DIR:-/nonexistent}/kill_called" ]]; }
 log() { printf '%s\n' "$*"; }
-notify() { return 0; }
+notify() { printf '%s\n' "$*" >> "${MOCK_DIR}/notify_log"; }
 acquire_world_lock() {
     if [[ "${1:-}" == "--try" && "${WORLD_LOCK_BUSY:-0}" == "1" ]]; then return 1; fi
     return 0
@@ -165,7 +165,7 @@ run_watch() {
         PZ_MANAGER_DIR="$s/pzmroot" \
         PZ_GRAALVM_HOME="" \
         STALL_WATCH_SAMPLES="1" \
-        STALL_AUTO_RESTART="1" \
+        STALL_AUTO_RESTART="${MOCK_AUTO_RESTART:-1}" \
         STALL_BURN_MIN_PCT="60" \
         DISCORD_ADMIN_WEBHOOK="" \
         MOCK_DIR="$s/mock" \
@@ -312,6 +312,32 @@ wait "$FLIP_PID" 2>/dev/null || true
 grep -q 'abandon du SIGKILL' "$SD/stdout.log" \
     && ok "repli : abandon tracé" \
     || ko "repli : abandon absent du log -- $(tail -5 "$SD/stdout.log")"
+
+# --- (D) diagnostic seul : capture, annonce exacte, aucun kill/restart ----------
+echo "== (D) diagnostic seul =="
+SE="$(setup_case diagnostic)"
+printf '%s' "$INV_A" > "$SE/mock/mock_invocation"
+printf '123' > "$SE/mock/mock_mainpid"
+printf '1000000' > "$SE/mock/mock_enter"
+printf '' > "$SE/mock/mock_enter_ts"
+printf '123' > "$SE/mock/mock_pid"
+mkdir -p "$SE/rt/pzmanager"
+printf '123 42 1999 0 %s 123 1000000\n' "$INV_A" > "$SE/rt/pzmanager/stallwatch.state"
+export MOCK_AUTO_RESTART=0
+RC="$(run_watch "$SE" "$SE/stdout.log")"
+unset MOCK_AUTO_RESTART
+[[ "$RC" == "0" ]] && ok "diagnostic : exit 0" || ko "diagnostic : exit $RC"
+[[ ! -f "$SE/mock/kill_called" && ! -s "$SE/mock/restart_log" ]] \
+    && ok "diagnostic : aucun kill/restart" || ko "diagnostic : action serveur inattendue"
+grep -q 'diagnostic capturé, intervention administrateur requise' "$SE/mock/notify_log" \
+    && ok "diagnostic : annonce exacte" || ko "diagnostic : annonce absente"
+if grep -q 'redémarrage automatique en cours' "$SE/mock/notify_log"; then
+    ko "diagnostic : annonce de restart mensongère"
+else
+    ok "diagnostic : aucun restart annoncé"
+fi
+ls "$SE/logs"/stall_*.txt >/dev/null 2>&1 \
+    && ok "diagnostic : capture conservée" || ko "diagnostic : capture absente"
 
 # --- Bilan -------------------------------------------------------------------------
 echo ""

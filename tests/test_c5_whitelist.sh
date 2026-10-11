@@ -70,6 +70,8 @@ fi
 # --- Isolation ---------------------------------------------------------------
 rm -rf "$SANDBOX"
 mkdir -p "${SANDBOX}/rt" "${SANDBOX}/tmp" "$BIN"
+# Comme pam_systemd : le runtime simulé doit appartenir au compte et être privé.
+chmod 0700 "${SANDBOX}/rt"
 export XDG_RUNTIME_DIR="${SANDBOX}/rt"
 export TMPDIR="${SANDBOX}/tmp"
 if ! [[ "${PZ_WORLD_LOCK_DEPTH:-0}" =~ ^[1-9][0-9]*$ ]] || [[ -z "${PZ_WORLD_LOCK_FD:-}" ]] \
