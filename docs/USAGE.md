@@ -244,8 +244,9 @@ REDÉMARRAGE
 RAM is set automatically (`-Xmx` = `PZ_XMX_GB` GB if set in `.env`, else half of
 physical RAM rounded up to GiB and capped at 16 GiB; no `-Xms`) at install time and re-applied after every server
 update; it is not tunable via a command. The server also restarts itself when the
-heap fills up or total service memory reaches 18 GiB. A separate systemd
-`MemoryMax=20G` hard cap can kill the service without saving. See
+heap fills up or aggregate resident PZ process memory reaches18 GiB. The shared systemd `pz.slice`
+`MemoryMax=20G` hard cap covers game, bot, backups and management tasks; an
+OOM can kill a PZ process without saving. See
 [ADVANCED.md](ADVANCED.md#ram--jvm-configuration).
 
 ## RCON
@@ -292,7 +293,7 @@ systemctl --user list-timers
 |-------|----------|----------|
 | pz-backup | Hourly :14 | Incremental backup |
 | pz-modcheck | Every 5 min | Check mod & server updates |
-| pz-heapcheck | Every ~30 s | Restart at 18 GiB total service RAM or heap ≥ `HEAP_RESTART_PERCENT` |
+| pz-heapcheck | Every ~30 s | Restart at 18 GiB aggregate PZ RSS or heap ≥ `HEAP_RESTART_PERCENT` |
 | pz-maintenance | Daily 4:30 | Full maintenance (reboot or restart selon .env) |
 | pz-creation-date-init | Daily 00:00 | Init whitelist creation dates |
 

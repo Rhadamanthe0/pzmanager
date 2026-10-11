@@ -70,6 +70,8 @@ ensure_user() {
     echo "[INFO] Utilisateur $name créé"
 }
 
+die "Migration split refusée : le plafond PZ partagé exige un UID unique ; données et comptes conservés."
+
 ensure_user "$PZ_MANAGER_USER"
 ensure_user "$PZ_GAME_USER"
 if ! getent group pzgame >/dev/null 2>&1; then

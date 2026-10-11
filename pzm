@@ -55,6 +55,7 @@ Commandes disponibles:
       --reason TEXT       Raison de la maintenance (ex: "Augmentation RAM")
 
   install <action>
+    budget             Installer le plafond PZ partagé (services arrêtés)
     system             Configuration système initiale
     zomboid            Installer serveur Project Zomboid
     discord            Installer/activer le bot Discord (slash /pzm)
@@ -183,6 +184,9 @@ cmd_install() {
     shift || true
 
     case "$action" in
+        budget)
+            exec "${SCRIPT_DIR}/data/scripts/install/setupSharedBudget.sh"
+            ;;
         system)
             exec sudo "${SCRIPT_DIR}/data/scripts/install/setupSystem.sh"
             ;;
@@ -193,7 +197,7 @@ cmd_install() {
             exec "${SCRIPT_DIR}/data/scripts/install/setupDiscordBot.sh"
             ;;
         *)
-            invalid_action "install" "$action" "system, zomboid, discord"
+            invalid_action "install" "$action" "system, zomboid, discord, budget"
             ;;
     esac
 }
@@ -252,4 +256,32 @@ main() {
     esac
 }
 
+# Aide/status et installation de ressources sont des entrées de contrôle.
+# Bootstrap serveur sans unité existante : l'installateur prépare la slice
+# avant ses helpers utilisateur. Une réinstallation courante reste confinée.
+if [[ "${1:-}" == server && "${2:-}" == status ]]; then
+    main "$@"
+    exit
+fi
+case "${1:-help}:${2:-}" in
+    help:*|--help:*|-h:*|install:system|install:budget) ;;
+    install:zomboid)
+        if [[ -e "${HOME}/.config/systemd/user/zomboid.service" ]]; then
+            if ! python3 "${SCRIPT_DIR}/data/scripts/lib/shared_memory_budget.py" inside; then
+                exec bash "${SCRIPT_DIR}/data/scripts/lib/run_in_pz_slice.sh" /bin/bash "$0" "$@"
+            fi
+            python3 "${SCRIPT_DIR}/data/scripts/lib/shared_memory_budget.py" check
+        fi
+        ;;
+    install:discord)
+        # Son bootstrap prépare seulement pz.slice puis se réexécute dedans
+        # avant le venv/pip. Pas d'exemption des opérations du bot.
+        ;;
+    *)
+        if ! python3 "${SCRIPT_DIR}/data/scripts/lib/shared_memory_budget.py" inside; then
+            exec bash "${SCRIPT_DIR}/data/scripts/lib/run_in_pz_slice.sh" /bin/bash "$0" "$@"
+        fi
+        python3 "${SCRIPT_DIR}/data/scripts/lib/shared_memory_budget.py" check
+        ;;
+esac
 main "$@"

@@ -217,9 +217,9 @@ applies the tuning at install time and re-applies it after every SteamCMD update
 (which restores the vanilla JSON) — a manual edit of `ProjectZomboid64.json`
 would not survive the nightly maintenance. There is no `pzm config ram` command.
 The monitor requests a restart at 18 GiB RSS. The heap ceiling is 16 GiB
-within a 20 GiB whole-service cap, leaving 4 GiB for all other cgroup charges.
+within the shared pz.slice20 GiB cap, leaving common headroom for native memory, bot and background PZ tasks.
 A blocking, read-only startup check rejects a stale JSON with Xmx20 and an
-incompatible effective memory limit. See
+incompatible effective parent memory limit. See
 [ADVANCED.md](ADVANCED.md#ram--jvm-configuration).
 
 ### Server Data
@@ -438,7 +438,7 @@ it never overlaps its own execution or a restart warning).
 
 **Function**:
 - Reads the post-major-GC heap occupancy from `logs/zomboid/gc.log`.
-- Independently reads resident process memory (sum of RSS in the service cgroup), even without a GC
+- Independently reads resident process memory (sum of RSS across the PZ slice), even without a GC
   log, and triggers the same restart at `PZ_RAM_RESTART_GB` (default 18 GiB).
 - When it reaches `HEAP_RESTART_PERCENT` (`.env`, default 95), triggers
   `pzm server restart HEAP_RESTART_DELAY` (default `5m`, with a player warning).

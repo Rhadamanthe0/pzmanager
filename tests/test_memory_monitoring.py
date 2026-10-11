@@ -9,9 +9,19 @@ from test_sec_markdown import bot, _serveur
 
 
 class MemoryMonitoring(unittest.TestCase):
+    def setUp(self):
+        self.fixture = tempfile.TemporaryDirectory(prefix="pz-monitor-shared-")
+        self.addCleanup(self.fixture.cleanup)
+        self.group = Path(self.fixture.name)
+        (self.group / "memory.current").write_text(str(18 * 2**30))
+        (self.group / "memory.peak").write_text("20000000000")
+        mock = patch.object(bot, "validate_slice", return_value=self.group)
+        mock.start()
+        self.addCleanup(mock.stop)
+
     def test_service_accounting_and_actual_limit(self):
         result = subprocess.CompletedProcess([], 0, stdout=(
-            "MemoryCurrent=19327352832\nMemoryPeak=20000000000\nMemoryMax=21474836480\nControlGroup=/server\n"))
+            "MemoryCurrent=19327352832\nMemoryPeak=20000000000\nMemoryMax=21474836480\nControlGroup=/user.slice/user-1005.slice/user@1005.service/pz.slice\n"))
         with patch.object(bot.subprocess, "run", return_value=result) as run, \
                 patch.object(bot, "service_rss_bytes", return_value=8 * 2**30):
             metrics = bot._service_memory()
@@ -23,11 +33,22 @@ class MemoryMonitoring(unittest.TestCase):
         field = next(f for f in bot._monitoring_embed(s).fields if f["name"] == "🧠 RAM de PZ")
         self.assertIn("18.0 / 20 Go", field["value"])
         self.assertIn("90%", field["value"])
-        self.assertIn("RAM résidente **8.0 Go**", field["value"])
+        self.assertIn("RAM résidente PZ **8.0 Go**", field["value"])
         self.assertIn("11.0 Go", field["value"])
         self.assertNotIn("Service avec caches", field["value"])
         self.assertNotIn("Restart préventif", field["value"])
         self.assertFalse(any("RAM totale" in a for a in bot._status(s)[1]))
+
+    def test_native_shared_cap_wins_over_stale_bus_and_accepts_transient_overage(self):
+        (self.group / "memory.current").write_text(str(21 * 2**30))
+        result = subprocess.CompletedProcess([], 0, stdout=(
+            "ControlGroup=/user.slice/user-1005.slice/user@1005.service/pz.slice\n"
+            "MemoryMax=25769803776\nMemoryCurrent=1\n"))
+        with patch.object(bot.subprocess, "run", return_value=result), \
+                patch.object(bot, "service_rss_bytes", return_value=7 * 2**30):
+            metrics = bot._service_memory()
+        self.assertEqual(metrics["memory_limit_bytes"], 20 * 2**30)
+        self.assertEqual(metrics["memory_bytes"], 21 * 2**30)
 
     def test_invalid_metrics_and_infinite_cap(self):
         result = subprocess.CompletedProcess([], 0, stdout=(
@@ -57,7 +78,7 @@ class MemoryMonitoring(unittest.TestCase):
             field = next(f for f in bot._monitoring_embed(s).fields if f["name"] == "🧠 RAM de PZ")
         self.assertIn("17.2 / 20 Go", field["value"])
         self.assertIn("86%", field["value"])
-        self.assertIn("RAM résidente **6.0 Go**", field["value"])
+        self.assertIn("RAM résidente PZ **6.0 Go**", field["value"])
         self.assertIn("11.1 Go", field["value"])
         self.assertIn("3.7 / 20 Go", field["value"])
         self.assertIn("19%", field["value"])
@@ -75,9 +96,9 @@ class MemoryMonitoring(unittest.TestCase):
         s = _serveur("player")
         s.update(service_rss_bytes=8 * 2**30, memory_limit_bytes=20 * 2**30)
         field = next(f for f in bot._monitoring_embed(s).fields if f["name"] == "🧠 RAM de PZ")
-        self.assertIn("Budget systemd — / 20 Go", field["value"])
+        self.assertIn("Budget PZ partagé — / 20 Go", field["value"])
         self.assertIn("consommation indisponible", field["value"])
-        self.assertIn("RAM résidente **8.0 Go**", field["value"])
+        self.assertIn("RAM résidente PZ **8.0 Go**", field["value"])
         self.assertNotIn("40%", field["value"])
 
     def test_resident_reader_scoped_to_service_and_descendants(self):

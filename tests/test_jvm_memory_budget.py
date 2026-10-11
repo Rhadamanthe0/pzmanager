@@ -73,7 +73,8 @@ class StartupBudget(unittest.TestCase):
             path = Path(tmp) / "ProjectZomboid64.json"
             original = json.dumps({"vmArgs": ["-Xmx20g"]})
             path.write_text(original)
-            with patch.object(budget, "cgroup_memory_max", return_value=20 * budget.GIB) as current, \
+            with patch.object(budget, "check_process"), \
+                    patch.object(budget, "cgroup_memory_max", return_value=20 * budget.GIB) as current, \
                     contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(budget.main(["check", str(path)]), 1)
                 current.assert_called_once_with()
@@ -96,6 +97,7 @@ class StartupBudget(unittest.TestCase):
             logs.mkdir()
             shutil.copyfile(ROOT / "data/scripts/internal/configureJvm.sh", internal / "configureJvm.sh")
             shutil.copyfile(MODULE, lib / "jvm_memory_budget.py")
+            shutil.copyfile(ROOT / "data/scripts/lib/shared_memory_budget.py", lib / "shared_memory_budget.py")
             (lib / "common.sh").write_text("source_env() { :; }\n")
             config = install / "ProjectZomboid64.json"
             config.write_text(json.dumps({"vmArgs": ["-Xmx20g", "-Xms20g", "-XX:MaxHeapSize=20g"]}))

@@ -101,7 +101,7 @@ if [[ "${PZ_BACKUP_CPU_SCOPED:-0}" != "1" ]]; then
         cpu_list="" # Pas de confinement au cœur réservé quand la JVM est absente.
     fi
     cpu_scope="pz-backup-cpu-$$.scope"
-    scope_args=(--user --scope --quiet --collect --expand-environment=no
+    scope_args=(--user --scope --slice=pz.slice --quiet --collect --expand-environment=no
         --unit="$cpu_scope" --property="CPUQuota=${cpu_quota}%" --property=CPUWeight=10)
     [[ -z "$cpu_list" ]] || scope_args+=(--property="AllowedCPUs=${cpu_list}")
     # Le timeout/stop du service horaire doit aussi arrêter sa scope enfant.

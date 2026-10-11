@@ -46,6 +46,10 @@ from typing import Literal, Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 from service_memory import service_rss_bytes
+from shared_memory_budget import validate_slice, slice_group, check_process, BUDGET
+
+if __name__ == "__main__":
+    check_process()
 
 import discord
 from discord import app_commands
@@ -782,28 +786,39 @@ def _proc_status(pid) -> dict:
 def _service_memory() -> dict:
     """RAM résidente pour le restart ; total cgroup pour le plafond MemoryMax.
 
-    Les propriétés viennent du service EN VIGUEUR, pas du template : un plafond
+    Les propriétés viennent de pz.slice EN VIGUEUR, pas du template : un plafond
     absent ou une erreur systemd ne doit jamais être affiché comme actif.
     """
     try:
         result = subprocess.run(
-            ["systemctl", "--user", "show", PZ_SERVICE_NAME,
+            ["systemctl", "--user", "show", "pz.slice",
              "-p", "MemoryCurrent", "-p", "MemoryPeak", "-p", "MemoryMax", "-p", "ControlGroup"],
             capture_output=True, text=True, timeout=2, check=True)
     except (OSError, subprocess.SubprocessError):
         return {}
-    names = {"MemoryCurrent": "memory_bytes", "MemoryPeak": "memory_peak_bytes",
-             "MemoryMax": "memory_limit_bytes"}
     out = {}
+    verified = False
     for line in result.stdout.splitlines():
         name, _, value = line.partition("=")
-        if name in names and value.isdigit() and 0 <= int(value) < 2**63:
-            out[names[name]] = int(value)
-        elif name == "ControlGroup":
+        if name == "ControlGroup":
+            try:
+                group = validate_slice(value)
+                if slice_group(value) != value:
+                    return {}
+            except (OSError, ValueError):
+                return {}
+            verified = True
+            try:
+                out["memory_bytes"] = int((group / "memory.current").read_text().strip())
+                if (group / "memory.peak").exists():
+                    out["memory_peak_bytes"] = int((group / "memory.peak").read_text().strip())
+                out["memory_limit_bytes"] = BUDGET
+            except (OSError, ValueError):
+                return {}
             rss_bytes = service_rss_bytes(value)
             if rss_bytes is not None:
                 out["service_rss_bytes"] = rss_bytes
-    return out
+    return out if verified else {}
 
 
 def _java_pid():
@@ -1349,16 +1364,16 @@ def _monitoring_embed(s: dict) -> discord.Embed:
     limit_bytes = s.get("memory_limit_bytes")
     if accounted_bytes is not None and limit_bytes:
         total_pct = round(accounted_bytes / limit_bytes * 100)
-        total_line = (f"Budget systemd **{accounted_bytes / 1073741824:.1f} / {limit_bytes / 1073741824:g} Go**"
+        total_line = (f"Budget PZ partagé **{accounted_bytes / 1073741824:.1f} / {limit_bytes / 1073741824:g} Go**"
                       f"  `{_bar(total_pct)}`  **{total_pct}%**")
         if s.get("memory_peak_bytes") is not None:
             total_line += f" · pic compté **{s['memory_peak_bytes'] / 1073741824:.1f} Go**"
     elif limit_bytes:
-        total_line = f"Budget systemd — / {limit_bytes / 1073741824:g} Go · consommation indisponible"
+        total_line = f"Budget PZ partagé — / {limit_bytes / 1073741824:g} Go · consommation indisponible"
     else:
-        total_line = "Budget systemd — · plafond non confirmé"
+        total_line = "Budget PZ partagé — · plafond non confirmé"
     if memory_bytes is not None:
-        resident_line = f"RAM résidente **{memory_bytes / 1073741824:.1f} Go**"
+        resident_line = f"RAM résidente PZ **{memory_bytes / 1073741824:.1f} Go**"
         if s["hwm_kb"]:
             resident_line += f" · pic processus **{s['hwm_kb'] / 1048576:.1f} Go**"
     elif s["rss_kb"]:

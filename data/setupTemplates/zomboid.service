@@ -5,6 +5,7 @@ Requires=zomboid.socket
 Wants=zomboid_logger.service
 
 [Service]
+Slice=pz.slice
 Type=simple
 PrivateTmp=true
 # Shared private startup-admission directory; preserve live WORLD lock inodes.
@@ -72,11 +73,9 @@ TimeoutStartSec=1200
 # Sauvegarde-à-l'extinction d'un gros monde B42 moddé dépasse souvent 30s ;
 # à 120s systemd laisse le "quit" finir proprement au lieu de SIGKILL (faux "timeout")
 TimeoutStopSec=120
-# Budget TOTAL du service (G = Gio) : préavis de restart à 18 Gio de RSS via heapcheck,
-# puis OOM-kill du service si la consommation ne peut être contenue à 20 Gio.
-# Heap limité à 16 Gio : marge de 4 Gio pour TOUT le reste du cgroup.
-# Le plafond inclut aussi cache et mémoire noyau du cgroup, récupérés si possible
-# avant l'OOM-kill. Ces caches ne déclenchent pas le restart préventif.
+# Plafond enfant de secours ; pz.slice impose 20 Gio partagés au jeu,
+# bot, backups et tâches PZ. Les 4 Gio hors heap sont une marge commune,
+# pas une réservation : les autres processus consomment aussi ce budget.
 MemoryAccounting=yes
 MemoryMax=20G
 OOMPolicy=kill

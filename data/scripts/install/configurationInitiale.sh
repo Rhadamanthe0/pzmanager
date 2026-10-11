@@ -425,6 +425,8 @@ restore_zomboid_data() {
 }
 
 restore_backup() {
+    [[ "${PZ_GAME_USER:-$PZ_USER}" == "${PZ_MANAGER_USER:-$PZ_USER}" ]] \
+        || die "Budget PZ partagé : split multi-UID non pris en charge, aucun fichier modifié."
     # Flags dans tout ordre : restore PATH [--force] [--restore-ssh].
     local backup_path="" arg
     for arg in "$@"; do
@@ -620,6 +622,12 @@ install_systemd_services() {
     mkdir -p "$systemd_dir"
     chown -R "$PZ_USER:$PZ_USER" "$PZ_HOME/.config"
 
+    # Un plafond --user ne peut pas agréger deux UID distincts.
+    [[ "${PZ_GAME_USER:-$PZ_USER}" == "${PZ_MANAGER_USER:-$PZ_USER}" ]] \
+        || die "Budget PZ partagé : mode split multi-UID non pris en charge."
+    cp "$templates_dir/pz.slice" "$systemd_dir/pz.slice"
+    chown "$PZ_USER:$PZ_USER" "$systemd_dir/pz.slice"
+
     # Server services
     for service_file in zomboid.service zomboid.socket zomboid_logger.service; do
         if [[ -f "$templates_dir/$service_file" ]]; then
@@ -701,6 +709,8 @@ generate_admin_password() {
 }
 
 install_zomboid() {
+    [[ "${PZ_GAME_USER:-$PZ_USER}" == "${PZ_MANAGER_USER:-$PZ_USER}" ]] \
+        || die "Budget PZ partagé : split multi-UID non pris en charge, aucun fichier modifié."
     echo "=== Installation serveur Project Zomboid (utilisateur: $PZ_USER) ==="
 
     local do_server_install=true
@@ -729,6 +739,13 @@ install_zomboid() {
 
     # Execute steps based on user choices
     loginctl enable-linger "$PZ_USER"
+
+    # Installer le parent avant les helpers utilisateur (configureJvm).
+    install_systemd_services
+    local runtime_dir
+    runtime_dir="$(ensure_runtime_dir)"
+    user_systemctl_strict "$runtime_dir" daemon-reload \
+        || fail_on_error $? "installation du budget partagé PZ"
 
     if [[ "$do_server_install" == true ]]; then
         migrate_single_to_split

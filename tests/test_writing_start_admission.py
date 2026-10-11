@@ -5,11 +5,14 @@ import json
 import os
 from pathlib import Path
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / 'data/scripts/internal/writing_start_admission.py'
@@ -111,6 +114,28 @@ while [[ ! -f "$6" ]]; do sleep .02; done
         self.assertNotEqual(result.returncode,0)
         self.assertFalse(self.busy())
 
+    def test_direct_worker_rejects_hardlinked_world_with_real_locked_fd(self):
+        self.lock.touch(mode=0o600)
+        extra=self.private/'same-inode.lock';os.link(self.lock,extra)
+        done=self.root/'worker-mutated'
+        code='import sys; from pathlib import Path; sys.path.insert(0,'+repr(str(HELPER.parent))+'); from writing_start_admission import validate_worker_admission; validate_worker_admission(); Path('+repr(str(done))+').touch()'
+        with open(self.lock,'rb') as stream:
+            fcntl.flock(stream,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            identity=(os.fstat(stream.fileno()).st_dev,os.fstat(stream.fileno()).st_ino)
+            env=dict(self.env,PZ_WORLD_LOCK_FD=str(stream.fileno()),PZ_WORLD_LOCK_DEPTH='1',
+                     PZ_WORLD_LOCK_FILE=str(self.lock),PZ_SERVICE_NAME='probe.service')
+            result=subprocess.run([sys.executable,'-c',code],env=env,pass_fds=(stream.fileno(),),
+                                  capture_output=True,text=True,timeout=5)
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn('Untrusted WORLD lock file',result.stderr)
+            self.assertFalse(done.exists());self.assertTrue(self.busy())
+            self.assertEqual((self.lock.stat().st_dev,self.lock.stat().st_ino),identity)
+            extra.unlink()
+            result=subprocess.run([sys.executable,'-c',code],env=env,pass_fds=(stream.fileno(),),
+                                  capture_output=True,text=True,timeout=5)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertTrue(done.exists());self.assertTrue(self.busy())
+
     def test_bus_error_refuses_before_command(self):
         (self.bin/'systemctl').write_text('#!/bin/sh\necho "Failed to connect to bus" >&2\nexit 1\n')
         done=self.root/'forbidden'
@@ -142,6 +167,9 @@ while [[ ! -f "$6" ]]; do sleep .02; done
 
     def test_scm_rights_handoff_survives_owner_sigkill_until_worker_exit(self):
         owner,_=self.prepare_owner()
+        # Existing CLI uses the same live inode, historically 0664 under umask002.
+        self.lock.chmod(0o664)
+        lock_identity=(self.lock.stat().st_dev,self.lock.stat().st_ino)
         activated=self.root/'activate';started=self.root/'worker-started';release=self.root/'worker-release'
         self.env.update(WRITING_TEST_STARTED=str(started),WRITING_TEST_RELEASE=str(release),
                         WRITING_TEST_ACTIVATE=str(activated))
@@ -158,11 +186,60 @@ while not pathlib.Path(os.environ['WRITING_TEST_RELEASE']).exists(): time.sleep(
         self.processes.append(worker)
         self.set_state('activating','start-pre',0,worker.pid);activated.touch()
         self.wait_file(started,worker)
+        self.assertEqual(stat.S_IMODE(self.lock.stat().st_mode),0o600)
+        self.assertEqual((self.lock.stat().st_dev,self.lock.stat().st_ino),lock_identity)
         self.assertTrue(self.busy())
         owner.kill();owner.wait(timeout=3)
         self.assertTrue(self.busy(),'WORLD disappeared while the offline worker was still alive')
         release.touch();self.assertEqual(worker.wait(timeout=5),0)
         self.assertFalse(self.busy())
+
+    def test_offline_or_boot_secures_existing_or_new_lock_under_umask002(self):
+        for existing in [False,True]:
+            for startup in [False,True]:
+                with self.subTest(existing=existing,startup=startup):
+                    self.lock.unlink(missing_ok=True)
+                    if existing:
+                        self.lock.touch();self.lock.chmod(0o664)
+                        identity=(self.lock.stat().st_dev,self.lock.stat().st_ino)
+                    else:identity=None
+                    if startup:
+                        (self.bin/'systemctl').write_text('#!'+sys.executable+'\nimport os\n'
+                            'print("ActiveState=activating\\nSubState=start-pre\\nMainPID=0\\nControlPID="+str(os.getppid()))\n')
+                    else:
+                        (self.bin/'systemctl').write_text('#!'+sys.executable+'\n'
+                            'print("ActiveState=inactive\\nSubState=dead\\nMainPID=0\\nControlPID=0")\n')
+                    code='import os,sys,stat; sys.path.insert(0,'+repr(str(HELPER.parent))+'); from writing_start_admission import validate_worker_admission; fd=validate_worker_admission(); assert stat.S_IMODE(os.fstat(fd).st_mode)==0o600'
+                    result=subprocess.run([sys.executable,str(HELPER),'run','--lock-path',str(self.lock),
+                        '--unit','probe.service','--',sys.executable,'-c',code],env=self.env,
+                        capture_output=True,text=True,timeout=8,preexec_fn=lambda:os.umask(0o002))
+                    self.assertEqual(result.returncode,0,result.stderr)
+                    self.assertEqual(stat.S_IMODE(self.lock.stat().st_mode),0o600)
+                    if identity:self.assertEqual((self.lock.stat().st_dev,self.lock.stat().st_ino),identity)
+                    self.assertFalse(self.busy())
+
+    def test_untrusted_world_file_or_parent_is_rejected_before_chmod(self):
+        self.lock.touch(mode=0o664);self.lock.chmod(0o664)
+        original_stat=os.fstat;identity=self.lock.stat().st_ino
+        def foreign_file(fd):
+            info=original_stat(fd)
+            if info.st_ino==identity:
+                return SimpleNamespace(st_uid=os.getuid()+1,st_mode=info.st_mode,st_nlink=info.st_nlink)
+            return info
+        args=SimpleNamespace(lock_path=str(self.lock),unit='probe.service',command=['/bin/true'])
+        with patch.object(admission,'unit_state',return_value=dict(ActiveState='inactive',SubState='dead',MainPID=0,ControlPID=0)),\
+             patch.object(admission.os,'fstat',side_effect=foreign_file),patch.object(admission.os,'fchmod') as chmod:
+            with self.assertRaises(admission.ConfigurationError):admission.run(args)
+            chmod.assert_not_called()
+        outside=self.root/'outside-lock';outside.write_text('preserved');outside.chmod(0o664)
+        self.lock.unlink();self.lock.symlink_to(outside)
+        result=self.invoke('run','--lock-path',self.lock,'--unit','probe.service','--','/bin/true')
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual(outside.read_text(),'preserved');self.assertEqual(stat.S_IMODE(outside.stat().st_mode),0o664)
+        self.lock.unlink();self.private.rmdir();self.private.symlink_to(self.root)
+        result=self.invoke('run','--lock-path',self.lock,'--unit','probe.service','--','/bin/true')
+        self.assertNotEqual(result.returncode,0)
+        self.assertFalse((self.root/'world.lock').exists())
 
     def test_forged_owner_birth_fd_inode_broker_and_unit_are_refused(self):
         owner,release=self.prepare_owner();info=self.lock.stat();data=self.original_marker

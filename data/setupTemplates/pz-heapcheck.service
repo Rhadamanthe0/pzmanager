@@ -2,6 +2,8 @@
 Description=Project Zomboid - Surveillance RAM totale et heap (redémarrage adaptatif)
 
 [Service]
+Slice=pz.slice
+ExecStartPre=/usr/bin/python3 %h/pzmanager/data/scripts/lib/shared_memory_budget.py check
 Type=oneshot
 # checkHeapAndRestart.sh bloque le temps du préavis quand il déclenche un
 # `restart <délai>` (jusqu'à 15m + arrêt). Ce timeout est un PLAFOND de sécurité,

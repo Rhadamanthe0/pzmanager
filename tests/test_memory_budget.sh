@@ -62,7 +62,7 @@ check test ! -e "$MOCK_CASE/restart"
 setup_case equality_without_gc
 export MOCK_MEMORY=$((18 * 1073741824))
 check run
-check grep -q 'RAM totale du service à 18.0 Go' "$MOCK_CASE/restart"
+check grep -q 'RAM totale PZ (jeu et gestion) à 18.0 Go' "$MOCK_CASE/restart"
 check grep -qx 5m "$MOCK_CASE/restart"
 check test "$(stat -c %a "$XDG_RUNTIME_DIR/pzmanager")" = 700
 # Même état : un seul préavis, même si le timer est lancé une seconde fois.
@@ -72,7 +72,7 @@ setup_case high_ram_low_heap
 gc 17
 export MOCK_MEMORY=$((19 * 1073741824))
 check run
-check grep -q 'RAM totale du service' "$MOCK_CASE/restart"
+check grep -q 'RAM totale PZ (jeu et gestion)' "$MOCK_CASE/restart"
 setup_case heap_guard
 gc 95
 check run

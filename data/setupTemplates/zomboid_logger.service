@@ -4,6 +4,8 @@ PartOf=zomboid.service
 After=zomboid.service
 
 [Service]
+Slice=pz.slice
+ExecStartPre=/usr/bin/python3 %h/pzmanager/data/scripts/lib/shared_memory_budget.py check
 Type=simple
 ExecStart=%h/pzmanager/data/scripts/internal/captureLogs.sh
 Restart=always

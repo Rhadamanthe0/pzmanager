@@ -369,6 +369,9 @@ main() {
     : "${PZ_GAME_HOME:=/home/${PZ_GAME_USER}}"
     : "${PZ_MANAGER_HOME:=/home/${PZ_MANAGER_USER}}"
 
+    [[ "$PZ_GAME_USER" == "$PZ_MANAGER_USER" ]] \
+        || { echo "[FATAL] Budget PZ partagé incompatible avec split multi-UID ; aucun compte modifié." >&2; exit 1; }
+
     create_user
     ensure_split_users
     harden_manager_secrets
