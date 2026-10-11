@@ -31,7 +31,7 @@ These are **machine-specific**, persistent user-unit overrides, applied with:
 ```bash
 systemctl --user set-property zomboid.service 'AllowedCPUs=0-3 8-11'
 systemctl --user set-property pz-backup.service 'AllowedCPUs=4 12'
-systemctl --user set-property pz-backup.service CPUQuota=25%
+systemctl --user set-property pz-backup.service CPUQuota=200%
 # In this host's .env, for live-game scopes including manual backups:
 export BACKUP_CPU_LIST="4,12"
 ```
@@ -49,6 +49,9 @@ The first isolated run was initially allowed a full CPU; the limit was reduced
 while observing shared-disk waits and slower game-loop intervals, to temper the
 metadata burst. These observations alone do not identify which host workload
 caused the waits.
+On 2026-10-11 the live-game quota was raised to 200% while retaining both
+SMT threads of the separate backup core. A 300% quota applies when the JVM
+is proven absent; the CPU mask is then relaxed within the account's allocation.
 The CPU masks do not isolate the shared NVMe, memory bandwidth, or unrelated
 host workloads. The live-game backup scope reads `BACKUP_CPU_LIST` for both
 manual and hourly runs. When the JVM is proven absent, its scope uses all

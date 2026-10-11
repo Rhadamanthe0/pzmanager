@@ -17,12 +17,11 @@ StandardOutput=journal
 StandardError=journal
 # Le parcours du monde et la création des hardlinks sont coûteux en CPU.
 # Nice=19 et CPUWeight=10 gardent le jeu prioritaire (zomboid.service = 1000).
-# CPUQuota=25% borne le lanceur à un quart de cœur. dataBackup.sh impose
-# 25% à la copie quand le jeu tourne, 300% si son absence est prouvée.
+# CPUQuota=200% borne le lanceur à deux CPU logiques. dataBackup.sh impose
+# 200% à la copie quand le jeu tourne, 300% si son absence est prouvée.
 # L'ancien plafond
-# de 20% imposait ~15 min de copie pour ~3 min de CPU. Le NVMe en scheduler
-# "none" et le contrôleur io non délégué ne permettent pas de compter sur
-# ionice/IOWeight pour limiter les I/O : surveiller leur pression après réglage.
+# de 20% imposait ~15 min de copie pour ~3 min de CPU.
+# Le quota CPU et l'affinité ne bornent pas les I/O : surveiller leur pression.
 Nice=19
 CPUWeight=10
-CPUQuota=25%
+CPUQuota=200%

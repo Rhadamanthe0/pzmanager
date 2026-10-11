@@ -466,7 +466,7 @@ unset PZ_WORLD_LOCK_RETRIES PZ_WORLD_LOCK_RETRY_DELAY
 for policy in active inactive startup loading failed error; do
     fresh_case "cpu-$policy"
     export MOCK_SCOPE_LOG="${SANDBOX}/scope-$policy.log" BACKUP_CPU_LIST=7,15
-    expected_quota=25
+    expected_quota=200
     case "$policy" in
         inactive) export MOCK_CPU_STATE=inactive MOCK_CPU_MAINPID=0; expected_quota=300 ;;
         startup) export MOCK_CPU_STATE=activating MOCK_CPU_SUBSTATE=start-pre MOCK_CPU_MAINPID=0; expected_quota=300 ;;

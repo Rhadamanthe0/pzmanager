@@ -87,7 +87,7 @@ fi
 # hérite des FD (dont WORLD/SERVERCTL), contrairement à une nouvelle service.
 # Le parent reste dans son unité, attend l'enfant et propage les interruptions.
 if [[ "${PZ_BACKUP_CPU_SCOPED:-0}" != "1" ]]; then
-    cpu_quota=25
+    cpu_quota=200
     cpu_list="${BACKUP_CPU_LIST:-}"
     state_info="$(systemctl --user show "${PZ_SERVICE_NAME}" -p ActiveState -p SubState -p MainPID 2>/dev/null)" \
         || state_info=""
@@ -95,7 +95,7 @@ if [[ "${PZ_BACKUP_CPU_SCOPED:-0}" != "1" ]]; then
     sub_value=$(awk -F= '$1 == "SubState" {print $2}' <<< "$state_info")
     main_value=$(awk -F= '$1 == "MainPID" {print $2}' <<< "$state_info")
     # ExecStartPre ne lance la JVM qu'après le retour du snapshot préalable.
-    # Tout état ambigu / bus indisponible reste au budget conservateur de 25%.
+    # Tout état ambigu / bus indisponible reste à 200%, avec l'affinité live.
     if [[ "$main_value" == "0" ]] && { [[ "$state_value" == "inactive" ]] \
         || [[ "$state_value" == "activating" && "$sub_value" == "start-pre" ]]; }; then
         cpu_quota=300
@@ -127,7 +127,7 @@ fi
 
 # cpuset peut retomber silencieusement sur les CPU du parent si tous les CPU
 # demandés sont exclus par une limite supérieure. Refuser cette fausse isolation.
-if [[ "${PZ_BACKUP_CPU_QUOTA:-25}" == "25" && -n "${BACKUP_CPU_LIST:-}" ]]; then
+if [[ "${PZ_BACKUP_CPU_QUOTA:-200}" != "300" && -n "${BACKUP_CPU_LIST:-}" ]]; then
     taskset --pid --cpu-list "$BACKUP_CPU_LIST" "$$" >/dev/null \
         || die "CPU réservés au backup indisponibles (${BACKUP_CPU_LIST}) — copie refusée."
 fi
@@ -324,11 +324,11 @@ prune_gfs() {
     local daily_d="${BACKUP_GFS_DAILY_DAYS:-14}"
     local dry="${BACKUP_PRUNE_DRY_RUN:-0}"
     # Plafond de suppressions par run (0 = illimité). Supprimer un snapshot hardlinké
-    # = des centaines de milliers d'unlink() ; à CPUQuota 25% c'est lent. On borne
+    # = des centaines de milliers d'unlink() ; cela reste coûteux en métadonnées. On borne
     # donc chaque run pour réduire les timeouts, et un gros backlog s'écoule
     # progressivement sur plusieurs runs horaires.
     local max_delete="${BACKUP_PRUNE_MAX_DELETE:-0}"
-    # Le nombre seul ne borne pas le temps : à 25%, un lot de 15 gros arbres
+    # Le nombre seul ne borne pas le temps : un lot de 15 gros arbres
     # peut dépasser le timeout horaire. Finir chaque suppression commencée,
     # puis laisser le surplus au passage suivant (constat du 11/10/2026).
     local max_seconds="${BACKUP_PRUNE_MAX_SECONDS:-600}"

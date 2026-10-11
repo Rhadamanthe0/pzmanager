@@ -416,11 +416,11 @@ RestartSec=5
 
 **Function**:
 - Incremental backup with hard links (single-instance `flock`)
-- `pz-backup.service`: `CPUQuota=25%` caps its launcher; `dataBackup.sh` runs the copy and prune
-  in a transient user scope at 25% while the game runs and 300% when its JVM
+- `pz-backup.service`: `CPUQuota=200%` caps its launcher; `dataBackup.sh` runs the copy and prune
+  in a transient user scope at 200% while the game runs and 300% when its JVM
   is proven absent (inactive, or start-pre with MainPID=0),
   with `Nice=19` and `CPUWeight=10` (game: 1000) to favor the game under contention.
-  An ambiguous state retains 25%; a scope launch failure fails the backup.
+  An ambiguous state retains 200% and the live-game CPU mask; a scope launch failure fails the backup.
   Inherited lock FDs and the waiting parent prevent a concurrent server start;
   cancellation stops the scope as well. The hourly timeout and prune cap remain.
 - Retention: GFS — see [CONFIGURATION](CONFIGURATION.md#backups) for tier ages (`BACKUP_GFS_*`)
