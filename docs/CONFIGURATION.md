@@ -141,6 +141,21 @@ the next run. This works alongside the snapshot-count cap to reduce hourly
 timeouts when metadata I/O is slow. It is not a deadline for a single deletion.
 Dry-run plans ignore time.
 
+### Exact tile restoration
+
+`pzm backup restore-zone` uses a native terrain reader for partially selected
+chunks. It defaults to the game's `jre64/bin/java` and its sibling `javac`, then
+`javac` on PATH. A compatible JDK is required to apply a partial chunk.
+
+```bash
+# Optional overrides; an explicit compiler never silently falls back.
+#export PZ_RESTORE_JAVA="/path/to/runtime/bin/java"
+#export PZ_RESTORE_JAVAC="/path/to/compatible-jdk/bin/javac"
+```
+
+See [restoring exact tile columns](USAGE.md#restore-a-map-zone-build-42) for the
+preview, all-floor selection and compatibility checks.
+
 ### External Synchronization
 
 ```bash

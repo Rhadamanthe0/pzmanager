@@ -34,15 +34,16 @@ Commandes disponibles:
     restore <chemin>   Restaurer données Zomboid
     restore-character <pseudo> <backup>   Restaurer le perso d'un joueur (serveur arrêté ; écrase l'existant)
     restore-zone <backup> <x1> <y1> <x2> <y2> [options]
-                       Restaurer les chunks de carte Build 42 depuis un snapshot
-                       Coordonnées en TUILES, coins inclusifs ; chunks entiers 8x8
-                       Minimum : 1 chunk (64 tuiles), pas de restauration par tuile
-                       Un seul chunk : répéter les coordonnées d'une même tuile
+                       Restaurer exactement les tuiles de carte depuis un snapshot
+                       Coordonnées en TUILES, coins inclusifs ; toutes les hauteurs
+                       Minimum : 1 tuile, sous-sols et étages compris
+                       Une seule tuile : répéter ses coordonnées X Y X Y
       --dry-run           Aperçu sans modification (comportement par défaut)
       --apply             Appliquer la restauration (serveur arrêté requis)
       --save <monde>       Choisir le monde multijoueur
-                       Écrase terrain, constructions et conteneurs de tous les
-                       étages sélectionnés ; copie de récupération dans OLD.
+                       Écrase terrain, constructions et conteneurs sur toute
+                       la hauteur des tuiles ; copie de récupération dans OLD.
+                       Tuiles voisines conservées ; JDK requis si chunk partiel
                        Backup : nom de snapshot ou chemin de dossier (pas de ZIP)
                        Procédure et limites : docs/USAGE.md#restore-a-map-zone-build-42
     list               Lister backups disponibles
@@ -90,7 +91,7 @@ Exemples:
   pzm server restart 5m --reason "Ajout de mods"
   pzm backup restore data/dataBackups/backup_2026-01-11_14h30m00s
   pzm backup restore-zone backup_2026-10-12_10h00m00s 10500 9500 10500 9500
-    (aperçu du chunk contenant la tuile 10500,9500 ; --apply pour restaurer)
+    (aperçu de la seule tuile 10500,9500 sur toute sa hauteur ; --apply pour restaurer)
   pzm whitelist add "76561198012345678" "PlayerName"
   pzm admin reset --keep-config --keep-whitelist
   pzm rcon save
