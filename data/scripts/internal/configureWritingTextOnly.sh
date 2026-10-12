@@ -9,7 +9,13 @@ mode="${PZ_WRITING_TEXT_ONLY:-1}"
 world_lock="$(world_lock_path)"
 # Use the JVM actually launched by PZ; JAVA_PATH may refer to an older JDK.
 cleanup_java="${PZ_WRITING_CLEANUP_JAVA:-$(realpath -m "${PZ_INSTALL_DIR}/jre64/bin/java")}"
-cleanup_javac="${PZ_WRITING_CLEANUP_JAVAC:-$(dirname "$cleanup_java")/javac}"
+# The bundled runtime may be a JRE. Do not invent a missing sibling javac.
+compiler_args=()
+if [[ -n "${PZ_WRITING_CLEANUP_JAVAC:-}" ]]; then
+    compiler_args=(--javac "$PZ_WRITING_CLEANUP_JAVAC")
+elif [[ -x "${JAVA_PATH}/bin/javac" ]]; then
+    compiler_args=(--javac "${JAVA_PATH}/bin/javac")
+fi
 python3 "${SCRIPT_DIR}/writing_start_admission.py" run \
     --unit "$PZ_SERVICE_NAME" --lock-path "$world_lock" -- \
     python3 "${SCRIPT_DIR}/configureWritingTextOnly.py" \
@@ -18,4 +24,4 @@ python3 "${SCRIPT_DIR}/writing_start_admission.py" run \
     --cleanup-world "${PZ_SOURCE_DIR}/Saves/Multiplayer/${PZ_SERVER_NAME}" \
     --cleanup-backups "${BACKUP_DIR}/projectwriting-cleanups" \
     --jar "${PZ_INSTALL_DIR}/java/projectzomboid.jar" \
-    --java "$cleanup_java" --javac "$cleanup_javac" --mode "$mode"
+    --java "$cleanup_java" "${compiler_args[@]}" --mode "$mode"

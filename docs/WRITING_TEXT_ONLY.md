@@ -22,9 +22,22 @@ arrêtés du monde, avec copies de récupération et validation des formats.
 Les objets modifiés sont également chargés et relus par le véritable JAR du jeu
 avant toute mutation. Un JDK compatible avec la JVM du serveur est nécessaire
 lorsqu'un objet doit être nettoyé. Le helper choisit la JVM réellement lancée sous
-`jre64/bin/java` et son `javac` voisin ; `JAVA_PATH` peut viser un autre JDK.
+`jre64/bin/java`. Le compilateur est choisi séparément : override explicite,
+`JAVA_PATH/bin/javac`, voisin de la JVM, puis `javac` du PATH du service.
 `PZ_WRITING_CLEANUP_JAVA` et `PZ_WRITING_CLEANUP_JAVAC` permettent de fournir
 explicitement ces deux exécutables, sans installation automatique de paquet.
+La JRE Steam et `openjdk-*-jre-headless` **ne fournissent pas** ce compilateur.
+Avant le nettoyage d'un monde avec dessins, installer un JDK adapté à la majeure
+annoncée par `jre64/bin/java -version` (par exemple `openjdk-25-jdk-headless`
+lorsque la JVM est 25 et ce paquet est disponible), ou fournir un JDK compatible
+déjà installé. Renseigner son chemin absolu dans `PZ_WRITING_CLEANUP_JAVAC`
+du `.env`, sans remplacer le runtime Steam. La compilation utilise `--release`
+avec la majeure de la JVM sélectionnée ; un compilateur trop ancien ou incapable
+de lire le JAR du jeu est refusé. Un override invalide n'est jamais remplacé.
+Un monde absent, vide ou sans dessins ne demande aucun JDK. Avec dessins, une
+dépendance absente produit un diagnostic explicite et bloque le démarrage avant
+toute mutation du monde ; l'échec du nettoyage n'est jamais ignoré. La politique
+native peut déjà avoir été appliquée aux fichiers de configuration.
 Un format ambigu, une sauvegarde incohérente ou une erreur bloque le démarrage.
 Le format pris en charge est celui des sauvegardes 249 de PZ 42.21. Les objets
 éditables ProjectWriting connus sont pris en charge ; les types ou enveloppes

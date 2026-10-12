@@ -838,21 +838,43 @@ def validation_manifest(stage,files,rows,fixtures):
 
 class JavaValidator:
     """Compile auditable source and run real PZ loaders with bounded heap."""
-    def __init__(self,jar,java,javac,lock_fd=None):
-        if not all((jar,java,javac)):raise CleanupError("Dirty APPLY requires --jar, --java and --javac (a compatible JDK)")
+    def __init__(self,jar,java,javac=None,lock_fd=None):
+        if not all((jar,java)):raise CleanupError("Dirty APPLY requires --jar and --java")
         self.jar=jar;self.java=java;self.javac=javac
         self.lock_fd=lock_fd
+    def tools(self):
+        self.jar=str(Path(self.jar).resolve(strict=True))
+        self.java=str(Path(self.java).resolve(strict=True))
+        # An explicit compiler is authoritative: never silently replace a bad
+        # operator override. A bundled JRE otherwise uses the installed JDK.
+        compiler=self.javac
+        if compiler is None:
+            sibling=Path(self.java).with_name("javac")
+            compiler=str(sibling) if os.access(sibling,os.X_OK) else shutil.which("javac")
+        if not compiler or not os.path.isfile(compiler) or not os.access(compiler,os.X_OK):
+            raise CleanupError("Dirty ProjectWriting cleanup requires a JDK compiler; "
+                               "install a compatible JDK and set PZ_WRITING_CLEANUP_JAVAC "
+                               "to its executable javac (missing: "+str(compiler)+")")
+        self.javac=str(Path(compiler).resolve(strict=True))
+        result=subprocess.run([self.java,"-version"],stdin=subprocess.DEVNULL,
+                              capture_output=True,timeout=20)
+        match=re.search(rb'version\s+"([0-9]+)',result.stdout+result.stderr)
+        if result.returncode or not match or int(match[1])<17:
+            raise CleanupError("Cannot determine a supported cleanup JVM version (17 or newer required)")
+        return str(int(match[1]))
     def __call__(self,stage,files,rows):
         # A JRE-only bootstrap with no dirty record must not require a compiler.
         # Resolve all tools before the first actual validation, before mutation.
-        self.jar=str(Path(self.jar).resolve(strict=True));self.java=str(Path(self.java).resolve(strict=True));self.javac=str(Path(self.javac).resolve(strict=True))
+        release=self.tools()
         source=Path(__file__).with_name("ValidateWritingRecords.java")
         if not source.is_file():raise CleanupError("PZ validation Java source is missing")
         with tempfile.TemporaryDirectory(prefix="pz-writing-validator-") as temp:
             root=Path(temp);manifest,count=validation_manifest(stage,files,rows,root/"records")
             if not count:raise CleanupError("No real item records selected for a dirty cleanup")
             classes=root/"classes";classes.mkdir()
-            self.run([self.javac,"-cp",self.jar,"-d",str(classes),str(source)],root)
+            # Keep bytecode compatible with the selected runtime. An older
+            # compiler fails before any mutation rather than skipping validation.
+            self.run([self.javac,"--release",release,"-cp",self.jar,"-d",str(classes),str(source)],root)
             self.run([self.java,"-Xmx512m","-cp",self.jar+os.pathsep+str(classes),"ValidateWritingRecords",str(manifest)],root)
     def run(self,command,cwd):
         result=subprocess.run(command,cwd=cwd,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
@@ -878,7 +900,7 @@ def main(argv=None):
         if not args.dry_run:
             from writing_start_admission import validate_worker_admission
             lock_fd=validate_worker_admission(args.unit)
-            if all((args.jar,args.java,args.javac)):validator=JavaValidator(args.jar,args.java,args.javac,lock_fd)
+            if all((args.jar,args.java)):validator=JavaValidator(args.jar,args.java,args.javac,lock_fd)
         scripts=args.scripts_dir
         if scripts is None and args.jar:scripts=Path(args.jar).resolve().parent.parent/"media/scripts"
         print(json.dumps(cleanup(args.world_dir,args.backup_dir,args.dry_run,validator,scripts),sort_keys=True)); return 0
