@@ -100,6 +100,8 @@ autre type produit un refus (code 2), jamais une confirmation de compatibilité.
 Les nouveaux champs statiques sont tolérés, mais un futur changement de ces
 champs obligatoires exige une adaptation vérifiée du contrôle. Le parseur
 n'exécute aucun Lua et refuse les clés dupliquées et expressions dynamiques.
+Un script chargé sans origine identifiable dans les items/entities produit
+également le code 2 : un registre partiel ne prouve pas la compatibilité.
 
 `historical_missing` also lists item/entity references to absent mods. Those alone
 do not prove a client loading failure and are advisory. Passing the check does

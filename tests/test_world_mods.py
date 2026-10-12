@@ -95,6 +95,22 @@ class ModRemoval(unittest.TestCase):
         self.dictionary.write_text(DICTIONARY.replace('isLoaded=true', 'isLoaded=false, futureField={"extra"}'))
         self.assertIn('Izbushka', checker.require_compatible(self.dictionary, self.ini)['historical_missing'])
 
+    def test_loaded_script_without_assessable_owner_is_unknown_not_compatible(self):
+        self.ini.write_text('Mods=\\Other\n')
+        orphan = 'items={} entities={} scripts={SpriteConfigs={{name="Base.Orphan",isLoaded=true}}}'
+        self.dictionary.write_text(orphan)
+        with self.assertRaisesRegex(ValueError, 'no assessable dictionary owner'):
+            checker.require_compatible(self.dictionary, self.ini)
+        self.assertEqual(self.dictionary.read_text(), orphan)
+        self.dictionary.write_text(orphan.replace('isLoaded=true', 'isLoaded=false'))
+        self.assertEqual(checker.require_compatible(self.dictionary, self.ini)['required_missing'], {})
+
+    def test_loaded_script_with_unavailable_nonmodded_origin_is_not_treated_as_compatible(self):
+        self.ini.write_text('Mods=\\Other\n')
+        self.dictionary.write_text(DICTIONARY.replace('isModded=true', 'isModded=false'))
+        with self.assertRaisesRegex(ValueError, 'no assessable dictionary owner'):
+            checker.require_compatible(self.dictionary, self.ini)
+
     def test_new_world_and_malformed_existing_dictionary(self):
         self.ini.write_text('Mods=\\Other\n')
         self.dictionary.unlink()
@@ -130,7 +146,8 @@ class ModRemoval(unittest.TestCase):
                 '--sandbox-file', str(self.root/'sandbox.lua'), '--ini-file', str(self.ini),
                 '--cleanup-world', str(self.root), '--cleanup-backups', str(self.root/'backups'), '--mode', '0']
         for broken in (DICTIONARY.replace('name="Base.LogCabinWall",', ''),
-                       DICTIONARY.replace('isLoaded=true', 'isLoaded="unknown"')):
+                       DICTIONARY.replace('isLoaded=true', 'isLoaded="unknown"'),
+                       'items={} entities={} scripts={SpriteConfigs={{name="Base.Orphan",isLoaded=true}}}'):
             self.dictionary.write_text(broken)
             with patch.object(sys, 'argv', argv), patch.object(admission, 'validate_worker_admission', return_value=0), \
                     patch.object(config, 'configure') as mutate:

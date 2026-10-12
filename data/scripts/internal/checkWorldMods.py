@@ -101,7 +101,9 @@ def check(dictionary, ini):
                 continue
             if name in available:
                 continue
-            for mod in owners.get(name, ()):
+            if name not in owners:
+                raise ValueError('Loaded client script has no assessable dictionary owner: ' + name)
+            for mod in owners[name]:
                 required.setdefault(mod, set()).add(name)
     return {key: {mod: sorted(names) for mod, names in sorted(values.items())}
             for key, values in [('required_missing', required), ('historical_missing', historical)]}
