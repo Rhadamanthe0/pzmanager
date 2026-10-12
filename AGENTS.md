@@ -1,5 +1,11 @@
 # Consignes — pzmanager
 
+ProjectWriting : un monde propre ne requiert pas de compilateur. Un monde avec
+dessins exige un JDK compatible, distinct de la JRE Steam ; voir
+`docs/WRITING_TEXT_ONLY.md`. Préserver `--release` pour la JVM choisie, les
+refus avant mutation du monde et les copies de récupération. Ne pas installer
+de paquet ni désactiver le nettoyage pour faire passer une validation.
+
 Exécuter les tests dans une copie Linux jetable : ils peuvent modifier
 `/tmp` et `.env`, et ne doivent pas tourner sur une installation active.
 Chaque scénario doit rétablir ses doubles de commande et son état simulé ;
