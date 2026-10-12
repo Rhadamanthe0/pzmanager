@@ -92,6 +92,15 @@ dictionary format is refused. A new world without a readable dictionary has no
 saved registry to assess. The same check runs under the WORLD lock during startup
 preparation, before changing Writing settings or cleaning data.
 
+Le format lisible Build 42 vérifié exige des chaînes non vides `fulltype` et
+`modID`, et un booléen `isModded` pour chaque item/entity. Chaque entrée de
+registre de scripts doit posséder un `name` non vide et un booléen `isLoaded`,
+y compris pour les entrées non chargées. Une valeur absente, inconnue ou d'un
+autre type produit un refus (code 2), jamais une confirmation de compatibilité.
+Les nouveaux champs statiques sont tolérés, mais un futur changement de ces
+champs obligatoires exige une adaptation vérifiée du contrôle. Le parseur
+n'exécute aucun Lua et refuse les clés dupliquées et expressions dynamiques.
+
 `historical_missing` also lists item/entity references to absent mods. Those alone
 do not prove a client loading failure and are advisory. Passing the check does
 not prove removal is harmless: dependencies, map tiles, inventories and Lua data

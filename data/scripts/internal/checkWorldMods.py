@@ -37,14 +37,26 @@ def tables(text):
     return result
 
 
-def scalar(text, record, key, default=None):
+def field(record, key, kinds):
     if record.kind != 'table':
         raise ValueError('Unsupported dictionary record')
     value = record.entries.get(key)
-    if value is None:
-        return default
-    raw = text[value.start:value.end]
-    return string_key(raw) if value.kind == 'string' else raw
+    if value is None or value.kind not in kinds:
+        raise ValueError('World dictionary field ' + key + ' is missing or has an unsupported type')
+    return value
+
+
+def identity(text, record, key):
+    value = field(record, key, ('string',))
+    result = string_key(text[value.start:value.end])
+    if not result.strip():
+        raise ValueError('World dictionary field ' + key + ' must be a nonempty string')
+    return result
+
+
+def flag(record, key):
+    # Un état inconnu n'est pas un état « non chargé » : refuser avant mutation.
+    return field(record, key, ('true', 'false')).kind == 'true'
 
 
 def check(dictionary, ini):
@@ -69,14 +81,13 @@ def check(dictionary, ini):
     available = set()
     for section in ('items', 'entities'):
         for record in sections[section].entries.values():
-            name = scalar(text, record, 'fulltype')
-            mod = scalar(text, record, 'modID')
-            if not name or not mod:
-                raise ValueError('World dictionary record lacks fulltype/modID')
+            name = identity(text, record, 'fulltype')
+            mod = identity(text, record, 'modID')
+            modded = flag(record, 'isModded')
             if mod == 'pz-vanilla' or mod in enabled:
                 available.add(name)
                 continue
-            if scalar(text, record, 'isModded') != 'true':
+            if not modded:
                 continue
             historical.setdefault(mod, set()).add(name)
             owners.setdefault(name, set()).add(mod)
@@ -85,9 +96,9 @@ def check(dictionary, ini):
         if register.kind != 'table':
             raise ValueError('Unsupported client script register')
         for record in register.entries.values():
-            if scalar(text, record, 'isLoaded') != 'true':
+            name = identity(text, record, 'name')
+            if not flag(record, 'isLoaded'):
                 continue
-            name = scalar(text, record, 'name')
             if name in available:
                 continue
             for mod in owners.get(name, ()):
