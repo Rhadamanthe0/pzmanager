@@ -84,6 +84,8 @@ class Console(unittest.TestCase):
             echo + 'CheckModsNeedUpdate: Checking...\n',
             echo + 'CheckModsNeedUpdate: Mods updated maybe\n',
             echo + 'CheckModsNeedUpdate: Unknown error\n',
+            echo + 'Lua unrelated error: CheckModsNeedUpdate: Mods updated\n',
+            echo + 'NotCheckModsNeedUpdate: Mods need update\n',
             echo + ECHO + 'CheckModsNeedUpdate: Mods updated\n',
             ECHO + 'CheckModsNeedUpdate: Mods updated\n',
             echo + 'CheckModsNeedUpdate: Mods updated\nCheckModsNeedUpdate: Mods need update\n',

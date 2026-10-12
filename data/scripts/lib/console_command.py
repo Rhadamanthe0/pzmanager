@@ -46,7 +46,7 @@ def response(text, command):
     if command == "checkModsNeedUpdate":
         # « Checking... » accuse réception ; seul le statut final est un résultat.
         final = [line for line in lines if re.search(
-            r"CheckModsNeedUpdate:\s*(?:Mods need update|Mods updated)\s*$", line,
+            r"^CheckModsNeedUpdate:\s*(?:Mods need update|Mods updated)\s*$", line,
             re.IGNORECASE)]
         if not final or len({line.lower() for line in final}) != 1:
             return ""
