@@ -3,6 +3,11 @@ import json
 import os
 from pathlib import Path
 import sys
+import pwd
+import shutil
+import subprocess
+import tempfile
+import shlex
 import unittest
 from unittest.mock import patch
 
@@ -101,6 +106,99 @@ class CompilerDependency(unittest.TestCase):
             "if sys.argv[1:]==['-version']:\n print('openjdk version \"25.0.1\"',file=sys.stderr)\n raise SystemExit(0)\n"
             'raise SystemExit(3)\n')
         self.assert_refused(self.validator(self.compiler), 'validation failed')
+
+
+
+class JreOnlyStartup(unittest.TestCase):
+    """Exercise the shipped shell/admission/configuration/cleanup chain offline."""
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='pz-jre-startup-')
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.repo = self.root / 'repository'
+        scripts = self.repo / 'data/scripts'
+        shutil.copytree(Path(__file__).resolve().parents[1] / 'data/scripts', scripts)
+        (self.repo / 'data/dataBackups').mkdir(mode=0o700)
+        self.world = self.repo / 'Zomboid/Saves/Multiplayer/servertest'
+        self.world.mkdir(parents=True)
+        server = self.repo / 'Zomboid/Server'; server.mkdir()
+        (server / 'servertest.ini').write_text('Mods=ProjectWriting\n')
+        (server / 'servertest_SandboxVars.lua').write_text('SandboxVars = { VERSION = 5 }\n')
+        self.install = self.repo / 'data/pzserver'
+        (self.install / 'java').mkdir(parents=True)
+        (self.install / 'media/scripts').mkdir(parents=True)
+        (self.install / 'media/scripts/items.txt').write_text(
+            'module Base { item Diary2 { ItemType = base:Literature, } }')
+        (self.install / 'java/projectzomboid.jar').write_bytes(b'fixture; not loaded')
+        runtime = self.install / 'jre64/bin'; runtime.mkdir(parents=True)
+        self.java_log = self.root / 'java-invoked'
+        java = runtime / 'java'
+        java.write_text('#!' + sys.executable + '\nfrom pathlib import Path\nPath('
+                        + repr(str(self.java_log)) + ').touch()\nraise SystemExit(99)\n')
+        java.chmod(0o700)
+        self.bin = self.root / 'bin'; self.bin.mkdir()
+        # Restricted PATH models an actual JRE-only installation, even on JDK CI hosts.
+        for name in ['bash', 'python3', 'id', 'dirname', 'realpath', 'stat', 'mkdir',
+                     'chmod', 'getent', 'flock', 'cat', 'date', 'readlink']:
+            target = shutil.which(name)
+            if target: (self.bin / name).symlink_to(target)
+        systemctl = self.bin / 'systemctl'
+        systemctl.write_text('#!/bin/bash\nprintf "ActiveState=inactive\\nSubState=dead\\nMainPID=0\\nControlPID=0\\n"\n')
+        systemctl.chmod(0o700)
+        self.runtime = self.root / 'runtime'; self.runtime.mkdir(mode=0o700)
+        values = dict(PZ_USER=pwd.getpwuid(os.getuid()).pw_name, JAVA_PATH=str(runtime.parent),
+                      PZ_WRITING_TEXT_ONLY='1', PZ_SERVICE_NAME='fixture.service')
+        env_file = self.repo / '.env'
+        env_file.write_text(''.join(k + '=' + shlex.quote(v) + '\n' for k, v in values.items()))
+        env_file.chmod(0o600)
+        # Real budget reader, private cgroup evidence; no production guard is disabled.
+        proc = self.root / 'proc-cgroup'; cg = self.root / 'cgroups'
+        group = '/user.slice/user-1005.slice/user@1005.service/pz.slice'
+        proc.write_text('0::' + group + '/fixture.scope\n')
+        parent = cg / group.lstrip('/'); parent.mkdir(parents=True)
+        for name, value in {'memory.max': str(20 * 2**30), 'memory.swap.max': '0', 'memory.current': '0'}.items():
+            (parent / name).write_text(value)
+        helper = scripts / 'lib/shared_memory_budget.py'
+        helper.write_text(helper.read_text().replace('Path("/proc/self/cgroup")', 'Path(' + repr(str(proc)) + ')')
+                          .replace('Path("/sys/fs/cgroup")', 'Path(' + repr(str(cg)) + ')'))
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith(('PZ_', 'BACKUP_', 'JAVA_', 'STEAM_', 'LOG_'))
+                    and k not in {'BASH_ENV', 'ENV', 'XDG_RUNTIME_DIR'}}
+        self.env.update(PATH=str(self.bin), XDG_RUNTIME_DIR=str(self.runtime))
+
+    def start(self):
+        return subprocess.run(['/bin/bash', str(self.repo / 'data/scripts/internal/configureWritingTextOnly.sh')],
+                              env=self.env, cwd=self.repo, capture_output=True, text=True, timeout=15)
+
+    def add_chunk(self, dirty):
+        path = self.world / 'map/1/2.bin'; path.parent.mkdir(parents=True)
+        path.write_bytes(fixture.chunk(fixture.nested(dirty)))
+        (self.world / 'WorldDictionaryReadable.lua').write_text('items = {\n' + ',\n'.join(
+            f'{{ registryID = {i}, fulltype = "{name}", modID = "pz-vanilla", isModded = false }}'
+            for i, name in fixture.REGISTRY.items()) + '\n}\nentities = {}\nscripts = {}\n')
+
+    def world_bytes(self):
+        return {str(p.relative_to(self.world)): p.read_bytes() for p in self.world.rglob('*') if p.is_file()}
+
+    def test_empty_and_clean_world_start_without_javac(self):
+        for populated in (False, True):
+            with self.subTest(populated=populated):
+                if populated: self.add_chunk(False)
+                before = self.world_bytes()
+                result = self.start()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(self.world_bytes(), before)
+                self.assertFalse(self.java_log.exists())
+                self.assertEqual(list((self.repo / 'data/dataBackups').rglob('manifest.json')), [])
+
+    def test_dirty_world_requires_compiler_before_mutation(self):
+        self.add_chunk(True)
+        before = self.world_bytes()
+        result = self.start()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('PZ_WRITING_CLEANUP_JAVAC', result.stdout + result.stderr)
+        self.assertEqual(self.world_bytes(), before)
+        self.assertFalse(self.java_log.exists())
+        self.assertEqual(list((self.repo / 'data/dataBackups').rglob('manifest.json')), [])
 
 
 if __name__ == '__main__':
