@@ -83,13 +83,17 @@ backup_current_zomboid() {
     fi
 
     # C7 : ce mv n'est appelé qu'APRÈS staging validé (voir main) — on ne
-    # déplace jamais le live sans copie prête à basculer. Horodatage à la
-    # seconde. OLD est conservé jusqu'à la validation finale (jamais supprimé).
-    RESTORE_OLD_BACKUP="${PZ_HOME}/OLD/ZomboidBROKEN_$(date +"%Y-%m-%d_%Hh%Mm%Ss")"
+    # déplace jamais le live sans copie prête à basculer. Réserver une
+    # destination unique : deux opérations dans la même seconde ne doivent
+    # jamais imbriquer le second monde dans le premier OLD.
+    mkdir -p "${PZ_HOME}/OLD"
+    RESTORE_OLD_BACKUP="$(mktemp -d "${PZ_HOME}/OLD/ZomboidBROKEN_$(date +"%Y-%m-%d_%Hh%Mm%Ss")_XXXXXX")" \
+        || die "Impossible de réserver le backup de sécurité — live intact."
 
     echo "Création backup de sécurité..."
-    mkdir -p "${PZ_HOME}/OLD"
-    mv "${PZ_SOURCE_DIR}" "$RESTORE_OLD_BACKUP"
+    # -T interdit la sémantique « déplacer dans » ; le répertoire réservé
+    # est vide et peut être remplacé, sans effacer un autre monde.
+    mv -T -- "${PZ_SOURCE_DIR}" "$RESTORE_OLD_BACKUP"
     echo "✓ Backup sécurité: $RESTORE_OLD_BACKUP"
 }
 
@@ -143,7 +147,9 @@ rollback_live() {
         || die "Échec du swap et aucun OLD à restaurer — live incomplet dans ${PZ_SOURCE_DIR}."
     echo "Échec du swap — rollback depuis $old_backup ..."
     mkdir -p "${PZ_SOURCE_DIR}"
-    rsync -a "${old_backup}/" "${PZ_SOURCE_DIR}/" \
+    # Le live peut contenir des fichiers du swap échoué. Un miroir exact
+    # les retire ; OLD reste intact même si la copie de rollback échoue.
+    rsync -a --delete "${old_backup}/" "${PZ_SOURCE_DIR}/" \
         || die "Échec du swap ET du rollback — restaure manuellement : $old_backup → ${PZ_SOURCE_DIR}."
     echo "✓ Rollback terminé: $old_backup → ${PZ_SOURCE_DIR}"
     die "Restauration interrompue (swap incomplet) — live restauré depuis $old_backup, OLD conservé."

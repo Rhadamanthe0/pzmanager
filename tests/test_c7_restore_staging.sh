@@ -122,6 +122,9 @@ countfile="${MOCK_RSYNC_COUNT:-/tmp/pzm-c7-rsync-count}"
 n=0
 [[ -f "$countfile" ]] && n=$(cat "$countfile" 2>/dev/null || echo 0)
 n=$(( n + 1 )); echo "$n" > "$countfile"
+if [[ "$n" -eq 3 && -n "${MOCK_RSYNC_FAIL_ROLLBACK:-}" ]]; then
+    exit "$MOCK_RSYNC_FAIL_ROLLBACK"
+fi
 if [[ -n "${MOCK_RSYNC_EMPTY:-}" ]]; then
     mkdir -p "$dest"
     exit 0
@@ -136,6 +139,17 @@ if [[ "$n" -eq 2 && -n "${MOCK_RSYNC_FAIL_SECOND:-}" ]]; then exit "${MOCK_RSYNC
 exit "$rc"
 MOCKEOF
 chmod +x "${BIN}/rsync"
+REAL_DATE="$(command -v date)"
+export REAL_DATE
+cat > "${BIN}/date" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [[ -n "${MOCK_FIXED_DATE:-}" ]]; then
+    printf '%s\n' '2026-10-12_12h00m00s'
+else
+    exec "$REAL_DATE" "$@"
+fi
+MOCKEOF
+chmod +x "${BIN}/date"
 export PATH="${BIN}:$PATH"
 
 # --- Helpers -----------------------------------------------------------------
@@ -167,7 +181,7 @@ fresh_case() {
     export MOCK_SYSTEMCTL_MODE=inactive
     export MOCK_RSYNC_COUNT="${SANDBOX}/rsync-count-${name}"
     rm -f "$MOCK_RSYNC_COUNT"
-    unset MOCK_RSYNC_FAIL_FIRST MOCK_RSYNC_FAIL_SECOND MOCK_RSYNC_SLEEP_SECOND MOCK_RSYNC_EMPTY
+    unset MOCK_RSYNC_FAIL_FIRST MOCK_RSYNC_FAIL_SECOND MOCK_RSYNC_SLEEP_SECOND MOCK_RSYNC_EMPTY MOCK_RSYNC_FAIL_ROLLBACK MOCK_FIXED_DATE
 }
 live_marker() { cat "$LIVE/Saves/Multiplayer/world1/players.db" 2>/dev/null || echo "(absent)"; }
 old_count() { find "${HOME_DIR}/OLD" -maxdepth 1 -mindepth 1 -name 'ZomboidBROKEN_*' 2>/dev/null | wc -l | tr -d ' '; }
@@ -278,6 +292,11 @@ fi
 # --- (3) manque d'espace (exit 11 sur swap) -> rollback ---------------------------------
 echo "== (3) disque plein =="
 fresh_case full
+# The failed swap writes entries absent from the original world, including
+# a directory and a symlink. Comparing entire trees catches mixed worlds.
+mkdir -p "$BKP/Saves/Multiplayer/new-world"
+printf 'new only\n' > "$BKP/Saves/Multiplayer/new-world/partial.bin"
+ln -s new-world/partial.bin "$BKP/Saves/Multiplayer/new-link"
 export MOCK_RSYNC_FAIL_SECOND=11
 if run_restore "$BKP"; then
     ko "exit 11 : succès à tort"; show_out
@@ -293,6 +312,47 @@ grep -q "Rollback" "${SANDBOX}/out.log" \
 (( $(old_count) == 1 )) && ok "exit 11 : OLD conservé" \
     || ko "exit 11 : OLD manquant (count=$(old_count))"
 (( $(staging_left) == 0 )) && ok "exit 11 : staging nettoyé" || ko "exit 11 : staging résiduel"
+old_full="$(find "$HOME_DIR/OLD" -mindepth 1 -maxdepth 1 -type d -name 'ZomboidBROKEN_*' -print -quit)"
+if diff -r -- "$old_full" "$LIVE"; then
+    ok "rollback : arbre exact, aucun fichier/dossier/lien du swap échoué"
+else
+    ko "rollback : monde mélangé après échec"
+fi
+
+fresh_case rollbackerr
+export MOCK_RSYNC_FAIL_SECOND=11 MOCK_RSYNC_FAIL_ROLLBACK=23
+if run_restore "$BKP"; then
+    ko "échec rollback : succès à tort"
+else
+    ok "échec rollback : erreur explicite"
+fi
+old_failed="$(find "$HOME_DIR/OLD" -mindepth 1 -maxdepth 1 -type d -name 'ZomboidBROKEN_*' -print -quit)"
+make_world "$SANDBOX/expected-old" "LIVE"
+if diff -r -- "$SANDBOX/expected-old" "$old_failed"; then
+    ok "échec rollback : copie OLD complète récupérable"
+else
+    ko "échec rollback : copie OLD altérée"
+fi
+
+fresh_case collision
+export MOCK_FIXED_DATE=1
+if run_restore "$BKP" && run_restore "$BKP"; then
+    ok "deux restaurations à horodatage identique réussissent"
+else
+    ko "deux restaurations : erreur"; show_out
+fi
+if (( $(old_count) == 2 )); then
+    ok "deux restaurations : deux destinations OLD distinctes"
+else
+    ko "deux restaurations : OLD imbriqués ou absents"
+fi
+if [[ "$(find "$HOME_DIR/OLD" -type f -name players.db | wc -l)" -eq 2 ]] \
+    && [[ "$(find "$HOME_DIR/OLD" -mindepth 2 -maxdepth 2 -type d -name 'live-*' | wc -l)" -eq 0 ]] \
+    && grep -rq 'LIVE-players' "$HOME_DIR/OLD" && grep -rq 'BKP-players' "$HOME_DIR/OLD"; then
+    ok "deux restaurations : chaque OLD contient son propre monde"
+else
+    ko "deux restaurations : contenu OLD incorrect ou imbriqué"
+fi
 
 # --- (4) erreur extraction/copie (exit 23 sur copie staging) --------------------------------
 echo "== (4) copie staging =="
