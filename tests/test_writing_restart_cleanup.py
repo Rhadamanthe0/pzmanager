@@ -171,8 +171,72 @@ class OfflineCleanup(unittest.TestCase):
         cleaner.cleanup(self.world,self.backups,validator=self.validator,scripts_dir=scripts)
         self.assertEqual(self.path.read_bytes(),chunk(prefix+nested(False)))
 
+    def test_scan_cache_skips_unchanged_but_rereads_changed_and_replaced_files(self):
+        path = self.world/'plain.bin';path.write_bytes(b'no writing')
+        cached = {};first = dict(cleaner.drawing_files(self.world, {}, cached))
+        self.assertIsNone(first[Path('plain.bin')]);self.assertIn('plain.bin', cached)
+        original = cleaner.read_file
+        reads = []
+        def tracked(file):
+            reads.append(file);return original(file)
+        with patch.object(cleaner, 'read_file', side_effect=tracked):
+            retained = {};dict(cleaner.drawing_files(self.world, cached, retained))
+        self.assertNotIn(path, reads);self.assertIn('plain.bin', retained)
+        path.write_bytes(cleaner.MARKER)
+        with patch.object(cleaner, 'read_file', side_effect=tracked):
+            self.assertEqual(dict(cleaner.drawing_files(self.world, cached, {}))[Path('plain.bin')], cleaner.MARKER)
+        self.assertIn(path, reads)
+        path.unlink();path.write_bytes(b'new file')
+        reads.clear()
+        with patch.object(cleaner, 'read_file', side_effect=tracked):
+            dict(cleaner.drawing_files(self.world, cached, {}))
+        self.assertIn(path, reads)
+
+    def test_successful_clean_scan_persists_cache_and_next_scan_skips_plain_file(self):
+        self.path.write_bytes(b'no writing')
+        db=sqlite3.connect(self.world/'players.db');db.execute("UPDATE networkPlayers SET data=?",(b'no writing',));db.commit();db.close()
+        cache=self.root/'cache.json'
+        self.assertEqual(cleaner.cleanup(self.world,self.backups,scan_cache=cache)['files'],0)
+        self.assertEqual(cache.stat().st_mode & 0o777,0o600)
+        data=json.loads(cache.read_text());self.assertIn(str(self.path.relative_to(self.world)),data['files'])
+        actual=cleaner.read_file;reads=[]
+        def tracked(path):reads.append(path);return actual(path)
+        with patch.object(cleaner,'read_file',side_effect=tracked):
+            cleaner.cleanup(self.world,self.backups,scan_cache=cache)
+        self.assertNotIn(self.path,reads)
+        cache.write_text('[]')
+        self.assertEqual(cleaner.load_scan_cache(cache,self.world),{})
+
+    def test_invalid_cache_falls_back_and_symlink_is_never_trusted(self):
+        cache = self.root/'cache.json';cache.write_text('invalid')
+        self.assertEqual(cleaner.load_scan_cache(cache, self.world), {})
+        cache.unlink();cache.symlink_to(self.path)
+        self.assertEqual(cleaner.load_scan_cache(cache, self.world), {})
+        with self.assertRaises(cleaner.CleanupError):
+            cleaner.cleanup(self.world,self.backups,scan_cache=self.world/'cache.json')
+
+    def test_clean_world_does_not_require_compiler_but_dirty_apply_does(self):
+        validator = cleaner.JavaValidator(str(self.root/'missing.jar'),str(self.root/'java'),str(self.root/'javac'))
+        empty = self.root/'empty';empty.mkdir(mode=0o700)
+        self.assertEqual(cleaner.cleanup(empty,self.backups,validator=validator)['files'],0)
+        before = self.sources()
+        with self.assertRaises((FileNotFoundError,cleaner.CleanupError)):
+            cleaner.cleanup(self.world,self.backups,validator=validator)
+        self.assertEqual(self.sources(),before)
+
+    def test_clean_saved_notes_do_not_require_compiler(self):
+        validator = cleaner.JavaValidator(str(self.root/'missing.jar'),str(self.root/'java'),str(self.root/'javac'))
+        self.path.write_bytes(chunk(nested(False)))
+        db=sqlite3.connect(self.world/'players.db')
+        db.execute('UPDATE networkPlayers SET data=?',(nested(False),));db.commit();db.close()
+        before=self.sources()
+        self.assertEqual(cleaner.cleanup(self.world,self.backups,validator=validator)['files'],0)
+        self.assertEqual(self.sources(),before)
+
     def test_parallel_read_ahead_is_bounded_ordered_and_errors_leave_world_unchanged(self):
         paths=[Path(str(i)+'.bin') for i in range(64)]
+        for rel in paths:
+            (self.world/rel).write_bytes(b'fixture')
         release=threading.Event();queued=threading.Event();mutex=threading.Lock()
         submitted=0;running=0;peak=0;results=[];errors=[]
         class Pool(RealThreadPoolExecutor):

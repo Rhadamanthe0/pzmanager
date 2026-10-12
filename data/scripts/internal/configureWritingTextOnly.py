@@ -56,7 +56,7 @@ def lex(text):
         comment = text.startswith("--", pos)
         if comment:
             pos += 2
-        long = re.match(r"\[(=*)\[", text[pos:])
+        long = re.compile(r"\[(=*)\[").match(text, pos)
         if long:
             ending = "]" + long[1] + "]"
             finish = text.find(ending, pos + len(long[0]))
@@ -89,10 +89,10 @@ def lex(text):
                 raise ConfigurationError("Truncated Lua escape")
             tokens.append(Token("string", text[start:pos], start, pos))
             continue
-        ident = re.match(r"[A-Za-z_][A-Za-z_0-9]*", text[pos:])
+        ident = re.compile(r"[A-Za-z_][A-Za-z_0-9]*").match(text, pos)
         if ident:
             pos += len(ident[0]); tokens.append(Token("identifier", ident[0], start, pos)); continue
-        number = re.match(r"(?:0[xX][0-9a-fA-F]+|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)", text[pos:])
+        number = re.compile(r"(?:0[xX][0-9a-fA-F]+|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)").match(text, pos)
         if number:
             pos += len(number[0]); tokens.append(Token("number", number[0], start, pos)); continue
         if text[pos] in "{}[]=,;+-":
@@ -439,10 +439,13 @@ def main():
         if args.cleanup_world:
             from writing_start_admission import validate_worker_admission
             worker_fd = validate_worker_admission()
+            from checkWorldMods import require_compatible
+            require_compatible(Path(args.cleanup_world) / "WorldDictionaryReadable.lua", args.ini_file)
         state = configure(args.install_dir, args.sandbox_file, args.ini_file, args.guard_source, args.mode)
         if state == "enabled" and args.cleanup_world:
             command = [sys.executable, str(Path(__file__).with_name("cleanWritingDrawings.py")),
-                "--world-dir", args.cleanup_world, "--backup-dir", args.cleanup_backups]
+                "--world-dir", args.cleanup_world, "--backup-dir", args.cleanup_backups,
+                "--scan-cache", str(Path(args.cleanup_backups) / "scan-cache.json")]
             for name in ("jar", "java", "javac"):
                 value = getattr(args, name)
                 if value: command.extend(["--" + name, value])

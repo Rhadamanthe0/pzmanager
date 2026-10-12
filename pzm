@@ -68,6 +68,8 @@ Commandes disponibles:
 
   rcon <cmd> [args]    Envoyer commande RCON au serveur
 
+  mods check [fichier] Vérifier les mods requis par le monde (INI ou V[N].txt)
+
   discord <message>    Envoyer message sur Discord (webhook)
                        Bot de commandes /pzm : voir 'pzm install discord'
 
@@ -230,6 +232,12 @@ cmd_discord() {
 }
 
 # Point d'entrée principal
+cmd_mods() {
+    [[ "${1:-}" == check ]] || usage_error "Action mods invalide" "pzm mods check [fichier]"
+    shift
+    exec "${SCRIPT_DIR}/data/scripts/internal/checkWorldMods.sh" "$@"
+}
+
 main() {
     if [[ $# -eq 0 ]]; then
         show_help
@@ -240,7 +248,7 @@ main() {
     shift
 
     case "$command" in
-        server|backup|whitelist|admin|install|map|rcon|discord)
+        server|backup|whitelist|admin|install|map|rcon|discord|mods)
             "cmd_${command}" "$@"
             ;;
         help|--help|-h)

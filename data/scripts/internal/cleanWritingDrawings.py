@@ -624,14 +624,53 @@ def world_files(world):
             if name.endswith(".bin") and name != "WorldDictionary.bin": yield rel
 
 
-def drawing_files(world):
+def file_identity(info):
+    return [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
+
+
+def load_scan_cache(path, world):
+    """A cache is only a hint; unavailable or malformed hints trigger full reads."""
+    if path is None:
+        return {}
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            return {}
+        data = json.loads(read_file(path))
+        if not isinstance(data, dict) or data.get('schema') != 1 or data.get('world') != str(world) or data.get('version') != VERSION:
+            return {}
+        files = data['files']
+        if not isinstance(files, dict) or any(not isinstance(v, list) or len(v) != 5
+                or any(type(n) is not int for n in v) for v in files.values()):
+            return {}
+        return files
+    except (OSError, ValueError, TypeError, KeyError):
+        return {}
+
+
+def drawing_files(world, cached=None, scanned=None):
     """Read ahead at most 16 files, with eight readers and ordered results.
 
     Workers only read and find the marker. Lua parsing, staging and mutation
     remain in the calling thread, after the same complete validation plan.
     """
     def read(rel):
-        blob=read_file(world/rel)
+        path = world/rel
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode):
+            raise CleanupError('World file must be regular')
+        identity = file_identity(before)
+        if cached is not None and cached.get(str(rel)) == identity:
+            if scanned is not None:
+                scanned[str(rel)] = identity
+            return rel, None
+        blob=read_file(path)
+        if identity != file_identity(path.lstat()):
+            raise CleanupError('World file changed during scan')
+        # Cache only absence of Writing data. Files containing Writing are
+        # always parsed, including clean notes and previously cleaned drawings.
+        if MARKER not in blob and scanned is not None:
+            scanned[str(rel)] = identity
         return rel,blob if MARKER in blob else None
     paths=iter(world_files(world));waiting=deque()
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -667,7 +706,7 @@ def stage_change(stage,world,rel,original,new,items=None):
         target=stage/folder/rel;target.parent.mkdir(parents=True,exist_ok=True,mode=0o700);atomic_file(target,data)
     return {"path":str(rel),"original_sha256":digest(original),"new_sha256":digest(new),"mode":stat.S_IMODE((world/rel).stat().st_mode),"items":items or []}
 
-def prepare(world,stage,scripts_dir=None):
+def prepare(world,stage,scripts_dir=None,cached=None,scanned=None):
     registry=dictionary(world/"WorldDictionaryReadable.lua",scripts_dir);files=[];rows=[]
     db=world/"players.db";check_database_files(world)
     if db.exists():
@@ -693,7 +732,7 @@ def prepare(world,stage,scripts_dir=None):
         if rows:
             if file_digest(db)!=original_hash or file_digest(stage/"original/players.db")!=original_hash:raise CleanupError("Player database changed during planning")
             files.append({"path":"players.db","original_sha256":original_hash,"new_sha256":file_digest(stage/"new/players.db"),"mode":stat.S_IMODE(db.stat().st_mode),"items":[]})
-    for rel,original in drawing_files(world):
+    for rel,original in drawing_files(world,cached,scanned):
         if original is None:continue
         known=rel.parts[0]=="map" or rel==Path("reanimated.bin")
         new,detail=clean_blob(original,registry,VERSION,chunk=rel.parts[0]=="map")
@@ -747,7 +786,7 @@ def recover(world, stage, validator=None):
     return len(entries)
 
 
-def cleanup(world_dir, backup_dir, dry_run=False, validator=None, scripts_dir=None):
+def cleanup(world_dir, backup_dir, dry_run=False, validator=None, scripts_dir=None, scan_cache=None):
     world_path=Path(os.path.abspath(world_dir))
     if world_path.is_symlink():raise CleanupError("World symlink refused")
     if not world_path.exists():
@@ -771,6 +810,26 @@ def cleanup(world_dir, backup_dir, dry_run=False, validator=None, scripts_dir=No
         if saved:raise CleanupError("Saved world data exists without its readable item dictionary")
         return {"files":0,"players":0,"version":VERSION,"dry_run":dry_run}
     if backups == world or world in backups.parents: raise CleanupError("Backup directory must be outside the world")
+    cache_path = None
+    if scan_cache is not None and not dry_run:
+        cache_path = Path(os.path.abspath(scan_cache))
+        if cache_path == world or world in cache_path.parents:
+            raise CleanupError('Scan cache must be outside the world')
+        # Apply is admitted under WORLD; the cache never replaces player DB
+        # checks, pending transaction recovery or real record validation.
+        safe_root(cache_path.parent, create=not dry_run)
+    cached = load_scan_cache(cache_path, world)
+    scanned = {}
+
+    def save_cache():
+        if cache_path is None or dry_run:
+            return
+        try:
+            atomic_file(cache_path, json.dumps({'schema': 1, 'world': str(world),
+                'version': VERSION, 'files': scanned}, separators=(',', ':')).encode())
+        except OSError:
+            # An optimization cannot prevent an otherwise successful startup.
+            print('ProjectWriting scan cache unavailable; next scan will reread files', file=sys.stderr)
     if backups.exists():
         backups = safe_root(backups)
         for pending in sorted(backups.glob("cleanup-*")):
@@ -783,9 +842,11 @@ def cleanup(world_dir, backup_dir, dry_run=False, validator=None, scripts_dir=No
     # Planning lives in a disposable private directory. No source changes occur
     # until all formats, SQLite data and chunk checksums have been validated.
     with tempfile.TemporaryDirectory(prefix="pz-writing-plan-") as temporary:
-        files, rows = prepare(world, Path(temporary),scripts_dir)
+        files, rows = prepare(world, Path(temporary),scripts_dir,cached,scanned)
         summary = {"files":len(files),"players":len(rows),"version":VERSION,"dry_run":dry_run}
-        if dry_run or not files: return summary
+        if dry_run or not files:
+            save_cache()
+            return summary
         if validator is None: raise CleanupError("A genuine PZ record validator is required before applying cleanup")
         validator(Path(temporary),files,rows)
         backups = safe_root(backups,create=True)
@@ -799,6 +860,7 @@ def cleanup(world_dir, backup_dir, dry_run=False, validator=None, scripts_dir=No
         write_manifest(stage,manifest)
         recover(world,stage,validator)
         summary["backup"] = str(stage)
+        save_cache()
         return summary
 
 
@@ -894,6 +956,7 @@ def main(argv=None):
     parser.add_argument("--javac")
     parser.add_argument("--unit")
     parser.add_argument("--scripts-dir")
+    parser.add_argument("--scan-cache", help="Private cache of unchanged files without Writing data")
     args=parser.parse_args(argv)
     try:
         validator=None
@@ -903,7 +966,7 @@ def main(argv=None):
             if all((args.jar,args.java)):validator=JavaValidator(args.jar,args.java,args.javac,lock_fd)
         scripts=args.scripts_dir
         if scripts is None and args.jar:scripts=Path(args.jar).resolve().parent.parent/"media/scripts"
-        print(json.dumps(cleanup(args.world_dir,args.backup_dir,args.dry_run,validator,scripts),sort_keys=True)); return 0
+        print(json.dumps(cleanup(args.world_dir,args.backup_dir,args.dry_run,validator,scripts,args.scan_cache),sort_keys=True)); return 0
     except (CleanupError,OSError,sqlite3.Error,ValueError,TypeError,KeyError,ImportError,subprocess.SubprocessError) as error:
         print("ProjectWriting offline cleanup refused: "+str(error),file=sys.stderr); return 1
 
