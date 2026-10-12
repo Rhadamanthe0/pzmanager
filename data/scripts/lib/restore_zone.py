@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import struct
+import zlib
 import tempfile
 
 
@@ -23,6 +25,18 @@ def plain(path, root, directory=False):
             break
     if path.exists() and not (path.is_dir() if directory else path.is_file()):
         raise ValueError(f"Type de fichier incompatible : {path}")
+
+
+def terrain_version(path, validate=True):
+    data = path.read_bytes()
+    if len(data) < 17 or data[0] != 0:
+        raise ValueError(f'En-tête de chunk Build 42 invalide : {path}')
+    version, length, checksum = struct.unpack_from('>iiq', data, 1)
+    if version != 249:
+        raise ValueError(f'Version de chunk non supportée ({version}) : {path}')
+    if validate and (length != len(data) or checksum != zlib.crc32(data[17:])):
+        raise ValueError(f'Longueur ou checksum de chunk invalide : {path}')
+    return version
 
 
 def replace_file(source, destination):
@@ -66,6 +80,9 @@ def restore(args):
     for name in ('map_ver.bin', 'WorldDictionary.bin'):
         a, b = live / name, source / name
         plain(a, live); plain(b, source)
+        # Current B42 saves store version in each terrain header, not map_ver.
+        if name == 'map_ver.bin' and not a.exists() and not b.exists():
+            continue
         if not a.is_file() or not b.is_file() or a.read_bytes() != b.read_bytes():
             raise ValueError(f'{name} absent ou différent : compatibilité non prouvée.')
     x1, x2 = sorted((args.x1, args.x2))
@@ -86,6 +103,11 @@ def restore(args):
                 paths.append(rel)
             if not (source / terrain).is_file() or (source / terrain).stat().st_size == 0:
                 raise ValueError(f'Chunk absent ou vide dans le backup : {terrain}. Rien modifié.')
+            source_version = terrain_version(source / terrain)
+            # A damaged live checksum is recoverable; its version must still
+            # match. A missing chunk is explicitly allowed in the destination.
+            if (live / terrain).is_file() and terrain_version(live / terrain, validate=False) != source_version:
+                raise ValueError(f'Versions de chunks incompatibles : {terrain}')
     print(f'Monde : {save}\nBackup : {backup}\nZone effective inclusive : '
           f'({cx1*8},{cy1*8}) → ({cx2*8+7},{cy2*8+7}), {count} chunks de 8×8.')
     print('Tous les étages et objets/conteneurs de ces chunks reviennent au backup.\n'

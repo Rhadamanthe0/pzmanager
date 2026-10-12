@@ -8,6 +8,8 @@ import subprocess
 import tempfile
 import time
 import signal
+import struct
+import zlib
 import unittest
 from unittest.mock import patch
 from argparse import Namespace
@@ -16,6 +18,10 @@ ROOT = Path(os.environ.get('PZ_TEST_ROOT', Path(__file__).resolve().parents[1]))
 spec = importlib.util.spec_from_file_location('zone', ROOT / 'data/scripts/lib/restore_zone.py')
 zone = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(zone)
+
+
+def chunk(payload):
+    return b'\0' + struct.pack('>iiq', 249, len(payload) + 17, zlib.crc32(payload)) + payload
 
 
 class ZoneTests(unittest.TestCase):
@@ -31,8 +37,8 @@ class ZoneTests(unittest.TestCase):
                               'players.db': b'player', 'vehicles.db': b'vehicle',
                               'metagrid/metacell_0_0.bin': b'cell'}.items():
                 (root / rel).parent.mkdir(parents=True, exist_ok=True)
-                (root / rel).write_bytes(data)
-        (self.live / 'map/1/1.bin').write_bytes(b'broken')
+                (root / rel).write_bytes(chunk(data) if rel.startswith('map/') else data)
+        (self.live / 'map/1/1.bin').write_bytes(chunk(b'broken'))
         (self.live / 'isoregiondata').mkdir()
         (self.live / 'isoregiondata/datachunk_1_1.bin').write_bytes(b'stale')
         self.args = Namespace(live_root=str(self.root / 'live'), backup_root=str(self.root),
@@ -51,13 +57,35 @@ class ZoneTests(unittest.TestCase):
         before = self.state()
         zone.restore(self.args)
         after = self.state()
-        self.assertEqual(after.pop('map/1/1.bin'), b'old')
+        self.assertEqual(after.pop('map/1/1.bin'), chunk(b'old'))
         before.pop('map/1/1.bin'); before.pop('isoregiondata/datachunk_1_1.bin')
         self.assertEqual(after, before)
-        self.assertEqual(linked.read_bytes(), b'broken')
+        self.assertEqual(linked.read_bytes(), chunk(b'broken'))
         recovery = next((self.root / 'OLD').glob('zone-*'))
-        self.assertEqual((recovery / 'before/Saves/Multiplayer/world/map/1/1.bin').read_bytes(), b'broken')
-        self.assertEqual((self.source / 'map/1/1.bin').read_bytes(), b'old')
+        self.assertEqual((recovery / 'before/Saves/Multiplayer/world/map/1/1.bin').read_bytes(), chunk(b'broken'))
+        self.assertEqual((self.source / 'map/1/1.bin').read_bytes(), chunk(b'old'))
+
+    def test_current_b42_without_map_ver_and_missing_live_terrain(self):
+        (self.live / 'map_ver.bin').unlink()
+        (self.source / 'map_ver.bin').unlink()
+        (self.live / 'map/1/1.bin').unlink()
+        zone.restore(self.args)
+        self.assertEqual((self.live / 'map/1/1.bin').read_bytes(), chunk(b'old'))
+
+    def test_corrupt_live_checksum_can_be_recovered(self):
+        data = (self.live / 'map/1/1.bin').read_bytes()
+        (self.live / 'map/1/1.bin').write_bytes(data[:-1] + b'!')
+        zone.restore(self.args)
+        self.assertEqual((self.live / 'map/1/1.bin').read_bytes(), chunk(b'old'))
+
+    def test_source_chunk_integrity_is_required(self):
+        for data in (b'bad', chunk(b'old')[:-1], chunk(b'old')[:-1] + b'!',
+                     b'\0' + struct.pack('>i', 250) + chunk(b'old')[5:]):
+            (self.source / 'map/1/1.bin').write_bytes(data)
+            before = self.state()
+            with self.assertRaises(ValueError): zone.restore(self.args)
+            self.assertEqual(self.state(), before)
+            self.assertFalse((self.root / 'OLD').exists())
 
     def test_preview_does_not_write(self):
         self.args.apply = False
@@ -105,14 +133,14 @@ class ZoneTests(unittest.TestCase):
     def test_chunk_boundary_includes_both_edges(self):
         for root in (self.live, self.source):
             (root / 'map/0').mkdir()
-            (root / 'map/0/1.bin').write_bytes(b'edge')
+            (root / 'map/0/1.bin').write_bytes(chunk(b'edge'))
         self.args.x1 = 7; self.args.x2 = 8
         self.args.y1 = self.args.y2 = 8
-        (self.live / 'map/0/1.bin').write_bytes(b'broken edge')
+        (self.live / 'map/0/1.bin').write_bytes(chunk(b'broken edge'))
         zone.restore(self.args)
-        self.assertEqual((self.live / 'map/0/1.bin').read_bytes(), b'edge')
-        self.assertEqual((self.live / 'map/1/1.bin').read_bytes(), b'old')
-        self.assertEqual((self.live / 'map/1/2.bin').read_bytes(), b'outside')
+        self.assertEqual((self.live / 'map/0/1.bin').read_bytes(), chunk(b'edge'))
+        self.assertEqual((self.live / 'map/1/1.bin').read_bytes(), chunk(b'old'))
+        self.assertEqual((self.live / 'map/1/2.bin').read_bytes(), chunk(b'outside'))
 
     def test_staging_failure_keeps_world_intact(self):
         before = self.state()

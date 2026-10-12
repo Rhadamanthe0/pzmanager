@@ -384,9 +384,11 @@ This targets construction loss; it is not a complete rewind of all activity in
 the rectangle, nor a fix for a mod or save bug that continues to remove buildings.
 
 Every selected terrain chunk must exist and be nonempty in the source. Missing
-chunks cause refusal before any write. `map_ver.bin` and `WorldDictionary.bin`
-must be present and byte-identical in both worlds: different versions or object
-ID dictionaries cannot be safely mixed. This conservative check may reject older
+chunks cause refusal before any write. `WorldDictionary.bin`
+must be present and byte-identical in both worlds. If `map_ver.bin` exists, it
+must match too; current Build 42 saves can omit it. Every source terrain chunk
+must have a valid world-version-249 header, length and CRC32 checksum. Different
+versions or object ID dictionaries cannot be safely mixed. This conservative check may reject older
 snapshots after a dictionary update. Do not overwrite the live global dictionary
 to bypass the refusal. Keep the same mods; binary map contents are copied, not
 validated by loading the game. Verify the recovered construction in game.
@@ -407,3 +409,15 @@ backups are never modified by the restore.
 
 Discord exposes the same operation as `/pzm backup restore-zone`, with `backup`,
 `x1`, `y1`, `x2`, `y2`, optional `monde`, and `appliquer` (false by default).
+
+Offline validation of real snapshots can use `tests/ValidateRestoredTerrain.java`
+with the installed game JAR and a compatible JDK (`javac --release` matching the
+chosen JVM). Run it from a private directory containing read-only access to the
+matching `media/` and `stdlib.lua`, with `CHUNK_PATH CHUNK_X CHUNK_Y` as arguments.
+It reads the copied world's dictionary and calls the genuine terrain record
+loader, then reports object, thumpable, floor and door counts. It never starts a
+server, regenerates terrain or saves a world. Compare baseline/restored counts
+and exact chunk bytes, and verify that changes outside the rectangle are absent.
+This minimal probe does not initialize Workshop scripts or render tiles; some
+chunks need a fully initialized game environment. A successful probe validates
+only its selected records, not every possible mod or world combination.
