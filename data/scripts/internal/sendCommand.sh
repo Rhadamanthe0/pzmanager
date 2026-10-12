@@ -52,8 +52,11 @@ fi
 
 # La collecte est bornée et liée à l'invocation ; une connexion intercalée ne
 # coupe plus la réponse. --no-output garde une écriture seule, sans attente.
+output_timeout=8
+# Le contrôle Workshop est asynchrone ; attendre son statut final au plus 30 s.
+[[ "$CMD" != "checkModsNeedUpdate" ]] || output_timeout=30
 args=(--unit "$PZ_SERVICE_NAME" --pipe "$PZ_CONTROL_PIPE"
       --write-timeout "${PZ_PIPE_WRITE_TIMEOUT:-10}"
-      --output-timeout "${PZ_CONSOLE_OUTPUT_TIMEOUT:-8}")
+      --output-timeout "${PZ_CONSOLE_OUTPUT_TIMEOUT:-$output_timeout}")
 [[ "$NO_OUTPUT" == false ]] || args+=(--no-output)
 exec python3 "${SCRIPT_DIR}/../lib/console_command.py" "${args[@]}" -- "$CMD"

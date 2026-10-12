@@ -559,6 +559,13 @@ connexion intercalés ne coupent plus la collecte. `PZ_CONSOLE_OUTPUT_TIMEOUT`
 peut régler l'attente entre 0 et 30 secondes ; une réponse absente reste
 indéterminée et ne prouve pas à elle seule un gel.
 
+Exception : `checkModsNeedUpdate` attend par défaut au plus 30 secondes, car
+le contrôle Workshop termine de manière asynchrone. Un réglage explicite de
+`PZ_CONSOLE_OUTPUT_TIMEOUT` reste prioritaire. `Checking...` accuse réception
+mais seul `Mods updated` ou `Mods need update` confirme le résultat. Un accusé
+réception sans statut final reste indéterminé et ne compte pas comme une console
+muette ; une absence d'accusé réception conserve la surveillance habituelle.
+
 Lors d'une fermeture qui dépasse 60 secondes, le moniteur capture deux
 `Thread.print` bornés à 8 secondes dans `logs/zomboid/stop-stall-*.txt` (0600).
 Il sort si l'invocation termine ou change, sans tuer la JVM du jeu ni redémarrer
