@@ -69,7 +69,12 @@ check_mods() {
         return 1
     fi
 
-    log_event "OK - no updates (response: ${output:0:100})"
+    # Le statut peut tarder après un accusé réception : la console a bien lu
+    # le FIFO. Ne pas transformer ce cas indéterminé en « console muette ».
+    if [[ "$output" == "Commande reçue: checkModsNeedUpdate "* ]]; then
+        note_console_silence 0
+    fi
+    log_event "ERROR: Mod check returned no final status (response: ${output:0:100})"
     return 1
 }
 

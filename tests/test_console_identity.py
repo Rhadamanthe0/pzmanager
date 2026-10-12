@@ -41,6 +41,84 @@ class Console(unittest.TestCase):
         self.assertEqual(journal.call_count, 2)
         self.assertIn('_SYSTEMD_INVOCATION_ID=' + ID[0], journal.call_args.args[0])
 
+    def test_mod_check_waits_for_final_status(self):
+        echo = ECHO.replace('"players"', '"checkModsNeedUpdate"')
+        pending = echo + 'CheckModsNeedUpdate: Checking...\nChecking started.\n'
+        self.assertEqual(console.response(pending, 'checkModsNeedUpdate'), '')
+        for status in ['Mods need update', 'Mods updated']:
+            with self.subTest(status=status):
+                complete = pending + 'CheckModsNeedUpdate: ' + status + '\n'
+                polls = [subprocess.CompletedProcess([], 0, stdout=pending),
+                         subprocess.CompletedProcess([], 0, stdout=complete)]
+                with patch.object(console, 'identity', return_value=ID), \
+                     patch.object(console, 'write_fifo') as write, \
+                     patch.object(console.subprocess, 'run', side_effect=polls), \
+                     patch.object(console.time, 'sleep'):
+                    self.assertEqual(console.execute('zomboid.service', Path('/unused'),
+                                                    'checkModsNeedUpdate'),
+                                     'CheckModsNeedUpdate: ' + status)
+                write.assert_called_once()
+
+    def test_mod_check_without_final_status_times_out(self):
+        pending = ECHO.replace('"players"', '"checkModsNeedUpdate"') + 'CheckModsNeedUpdate: Checking...\n'
+        with patch.object(console, 'identity', return_value=ID), \
+             patch.object(console, 'write_fifo'), \
+             patch.object(console.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, stdout=pending)):
+            self.assertIn('délai borné', console.execute('zomboid.service', Path('/unused'),
+                                                      'checkModsNeedUpdate', output_timeout=.03))
+
+    def test_mod_check_receipt_without_result_is_not_console_silence(self):
+        pending = ECHO.replace('"players"', '"checkModsNeedUpdate"') + 'CheckModsNeedUpdate: Checking...\n'
+        with patch.object(console, 'identity', return_value=ID), \
+             patch.object(console, 'write_fifo'), \
+             patch.object(console.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, stdout=pending)):
+            result = console.execute('zomboid.service', Path('/unused'),
+                                     'checkModsNeedUpdate', output_timeout=.03)
+        self.assertIn('Commande reçue: checkModsNeedUpdate', result)
+        self.assertIn('aucun statut final', result)
+        self.assertNotIn('aucune sortie capturée', result)
+
+    def test_mod_check_unknown_or_foreign_result_is_not_success(self):
+        echo = ECHO.replace('"players"', '"checkModsNeedUpdate"')
+        for text in [
+            echo + 'CheckModsNeedUpdate: Checking...\n',
+            echo + 'CheckModsNeedUpdate: Mods updated maybe\n',
+            echo + 'CheckModsNeedUpdate: Unknown error\n',
+            echo + 'Lua unrelated error: CheckModsNeedUpdate: Mods updated\n',
+            echo + 'NotCheckModsNeedUpdate: Mods need update\n',
+            echo + ECHO + 'CheckModsNeedUpdate: Mods updated\n',
+            ECHO + 'CheckModsNeedUpdate: Mods updated\n',
+            echo + 'CheckModsNeedUpdate: Mods updated\nCheckModsNeedUpdate: Mods need update\n',
+        ]:
+            with self.subTest(text=text):
+                self.assertEqual(console.response(text, 'checkModsNeedUpdate'), '')
+        self.assertFalse(console.command_received(ECHO, 'checkModsNeedUpdate'))
+        self.assertTrue(console.command_received(echo, 'checkModsNeedUpdate'))
+        interleaved = (echo + 'unrelated game tick\nConnectionManager: connect\n'
+                       + 'LOG : Mod f:1 st:1\u202f238> CheckModsNeedUpdate: Mods need update\n')
+        self.assertEqual(console.response(interleaved, 'checkModsNeedUpdate'),
+                         'CheckModsNeedUpdate: Mods need update')
+
+    def test_prefixed_foreign_echo_cannot_confirm_mod_update_or_receipt(self):
+        command = 'checkModsNeedUpdate'
+        bare = 'command entered via server console (System.in): "' + command + '"'
+        final = 'CheckModsNeedUpdate: Mods need update\n'
+        for echo in ['Lua unrelated error: ' + bare,
+                     'LOG : Lua f:1 st:123> ' + bare,
+                     'WARN : General f:1 st:123> ' + bare,
+                     bare + ' unrelated suffix']:
+            with self.subTest(echo=echo):
+                text = echo + '\n' + final
+                self.assertFalse(console.command_received(text, command))
+                self.assertEqual(console.response(text, command), '')
+        echo = ECHO.replace('"players"', '"checkModsNeedUpdate"')
+        for false_final in ['LOG : Lua f:1 st:123> ' + final,
+                            'WARN : Mod f:1 st:123> ' + final]:
+            self.assertEqual(console.response(echo + false_final, command), '')
+        self.assertEqual(console.response('LOG : General , 123> ' + bare + '\n'
+                                         + 'LOG : Mod , 124> ' + final, command),
+                         final.strip())
+
     def test_restart_or_bus_failure_refuses_response(self):
         for fresh in [('b' * 32, *ID[1:]), ValueError('bus')]:
             with self.subTest(fresh=fresh), patch.object(console, 'identity', side_effect=[ID, fresh]), \
