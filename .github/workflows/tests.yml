@@ -40,6 +40,9 @@ jobs:
         env:
           RESULTS: ${{ runner.temp }}/pz-test-results
         run: |
+          if sudo test -d "$RESULTS"; then
+            sudo chown -R "$(id -u):$(id -g)" "$RESULTS"
+          fi
           python3 - <<'PY'
           import json, os
           from pathlib import Path
