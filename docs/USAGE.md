@@ -77,6 +77,29 @@ refused. A healthy empty server and a stuck boot cannot be distinguished by
 Inspect the journal before deciding whether a direct systemd stop is appropriate
 (it may end in SIGKILL without a final save).
 
+## Map coordinates (Build 42)
+
+Use the X/Y position displayed in game with `pzm map coords X Y` (or
+`/pzm map coords` on Discord). This read-only command works while the server is
+running and reports inclusive minimum/maximum **tile coordinates**:
+
+```text
+pzm map coords 4112 6344
+Tuile (4112, 6344): minimum (4112, 6344), maximum (4112, 6344)
+Chunk (514, 793), 8×8 tiles: minimum (4112, 6344), maximum (4119, 6351)
+Cellule (16, 24), 256×256 tiles: minimum (4096, 6144), maximum (4351, 6399)
+```
+
+Each result includes the `x1 y1 x2 y2` arguments for `backup restore-zone`.
+Choose the **tile** row to restore only that position on every floor; choosing
+the chunk or cell bounds restores that entire rectangle on every floor.
+Coordinates must be nonnegative integers. In game, enable the server option
+`ShowCoordinates` through Admin → See Server Options → Save → Apply Changes.
+
+If you already have chunk or cell indices instead of a position in game, use
+`pzm map coords 514 793 --unit chunk` or `pzm map coords 16 24 --unit cell`.
+On Discord, the corresponding optional dropdown is `unite` (default `tile`).
+
 ## Backups
 
 ```bash

@@ -74,6 +74,10 @@ Commandes disponibles:
     discord            Installer/activer le bot Discord (slash /pzm)
 
   map <action> [arguments]
+    coords <x> <y> [--unit tile|chunk|cell]
+                               Afficher les bornes inclusives en tuiles (Build 42)
+                               Par défaut : position en jeu → tuile, chunk, cellule
+                               Lecture seule ; serveur démarré ou arrêté
     wipe <x> <y>                Regenerer le chunk d'une tuile
     wipe <x1> <y1> <x2> <y2>    Regenerer un rectangle de tuiles
       (serveur arrete ; suppression immediate + snapshot auto ;
@@ -228,11 +232,14 @@ cmd_map() {
     shift || true
 
     case "$action" in
+        coords)
+            exec python3 "${SCRIPT_DIR}/data/scripts/lib/map_coords.py" "$@"
+            ;;
         wipe)
             exec "${SCRIPT_DIR}/data/scripts/admin/wipeMapTile.sh" "$@"
             ;;
         *)
-            invalid_action "map" "$action" "wipe"
+            invalid_action "map" "$action" "coords, wipe"
             ;;
     esac
 }

@@ -451,6 +451,15 @@ backup_group = app_commands.Group(name="backup", description="Sauvegardes", pare
 whitelist_group = app_commands.Group(name="whitelist", description="Liste blanche / accès", parent=pzm_group)
 admin_group = app_commands.Group(name="admin", description="Maintenance / reset", parent=pzm_group)
 install_group = app_commands.Group(name="install", description="Installation (setup)", parent=pzm_group)
+map_group = app_commands.Group(name="map", description="Coordonnées de la carte", parent=pzm_group)
+
+
+@map_group.command(name="coords", description="Afficher les bornes en tuiles d’une position, d’un chunk ou d’une cellule")
+@app_commands.describe(x="Coordonnée X", y="Coordonnée Y",
+                       unite="Unité saisie : tile = position en jeu, chunk = 8×8, cell = 256×256")
+async def map_coords(interaction: discord.Interaction, x: int, y: int,
+                     unite: Literal["tile", "chunk", "cell"] = "tile"):
+    await execute(interaction, ["map", "coords", str(x), str(y), "--unit", unite])
 
 
 # --- server ---
