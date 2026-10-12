@@ -561,7 +561,8 @@ indéterminée et ne prouve pas à elle seule un gel.
 
 Lors d'une fermeture qui dépasse 60 secondes, le moniteur capture deux
 `Thread.print` bornés à 8 secondes dans `logs/zomboid/stop-stall-*.txt` (0600).
-Il sort si l'invocation termine ou change, sans tuer de processus ni redémarrer.
+Il sort si l'invocation termine ou change, sans tuer la JVM du jeu ni redémarrer
+le serveur ; seul l'outil de diagnostic est interrompu si nécessaire.
 Le délai systemd reste de 120 secondes. Sans `jcmd`, le relevé conserve l'état
 `/proc` disponible et indique explicitement l'absence du dump. La cause de
 l'arrêt V78 du 11 octobre 2026 reste inconnue faute de capture prise alors.
