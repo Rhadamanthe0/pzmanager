@@ -113,7 +113,12 @@ Restore one map chunk or a rectangle of chunks to recover disappeared constructi
 `pzm backup list`. Coordinates are world **tiles**, not cells or chunks; give the
 X/Y of each of two opposite corners, in either order. Bounds are inclusive.
 
-To find a location, open the [Project Zomboid map](https://pzmap.org/), select
+To read coordinates **in game**, an administrator can open **Admin → See Server
+Options**, filter for `ShowCoordinates`, set it to `true`, save and apply changes.
+Stand at the location and read X/Y in the lower-right corner; Z is not an argument
+because restoration includes every floor. This setting shows coordinates to players.
+
+Alternatively, open the [Project Zomboid map](https://pzmap.org/), select
 Build 42 and set **Coordinate Display → Tile**. Read X/Y at each corner of
 the area. Use tile coordinates rather than the Cell or Chunk display values;
 check the effective bounds printed by the preview before applying.
@@ -135,6 +140,8 @@ pzm backup restore-zone backup_2026-10-12_10h00m00s 10500 9500 10500 9500
 
 This selects the whole chunk (tiles `10496..10503`, `9496..9503`), on every floor.
 Supply tile coordinates, even for a single chunk; do not pass chunk indices.
+**The minimum restore size is one 8×8 chunk (64 tiles), on every floor.**
+A single tile or object cannot be restored independently with this command.
 
 The first command previews without modifying the map, even while the server runs.
 `--dry-run` also explicitly selects preview. `--apply` requires a proven stopped

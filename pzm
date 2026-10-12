@@ -36,6 +36,7 @@ Commandes disponibles:
     restore-zone <backup> <x1> <y1> <x2> <y2> [options]
                        Restaurer les chunks de carte Build 42 depuis un snapshot
                        Coordonnées en TUILES, coins inclusifs ; chunks entiers 8x8
+                       Minimum : 1 chunk (64 tuiles), pas de restauration par tuile
                        Un seul chunk : répéter les coordonnées d'une même tuile
       --dry-run           Aperçu sans modification (comportement par défaut)
       --apply             Appliquer la restauration (serveur arrêté requis)
