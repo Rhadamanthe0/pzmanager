@@ -48,7 +48,9 @@ def scalar(text, record, key, default=None):
 
 
 def check(dictionary, ini):
-    lines = read_file(Path(ini)).decode('utf-8').splitlines()
+    # ConfigFile.read du jeu retire les espaces en début/fin de ligne
+    # avant d'interpréter la clé : ne pas ignorer une seconde ligne indentée.
+    lines = [line.strip() for line in read_file(Path(ini)).decode('utf-8').splitlines()]
     lists = [line.split('=', 1)[1] for line in lines if line.startswith('Mods=')]
     if len(lists) != 1:
         raise ValueError('Expected exactly one Mods= line')

@@ -817,7 +817,13 @@ def cleanup(world_dir, backup_dir, dry_run=False, validator=None, scripts_dir=No
             raise CleanupError('Scan cache must be outside the world')
         # Apply is admitted under WORLD; the cache never replaces player DB
         # checks, pending transaction recovery or real record validation.
-        safe_root(cache_path.parent, create=not dry_run)
+        try:
+            safe_root(cache_path.parent, create=True)
+        except (CleanupError, OSError):
+            # Le cache est facultatif : un chemin indisponible ou non sûr
+            # impose un parcours complet, sans affaiblir les contrôles du monde.
+            print('ProjectWriting scan cache unavailable; next scan will reread files', file=sys.stderr)
+            cache_path = None
     cached = load_scan_cache(cache_path, world)
     scanned = {}
 

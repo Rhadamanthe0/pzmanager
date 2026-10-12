@@ -38,6 +38,13 @@ class ModRemoval(unittest.TestCase):
         self.ini.write_text('Mods=\\Other;\\Izbushka\n')
         self.assertEqual(checker.require_compatible(self.dictionary, self.ini)['required_missing'], {})
 
+    def test_game_supported_line_whitespace_and_duplicate_detection(self):
+        self.ini.write_text('  Mods=\\Izbushka  \n')
+        self.assertEqual(checker.require_compatible(self.dictionary,self.ini)['required_missing'],{})
+        self.ini.write_text('Mods=\\Izbushka\n\tMods=\\Other\n')
+        with self.assertRaisesRegex(ValueError,'exactly one Mods='):
+            checker.check(self.dictionary,self.ini)
+
     def test_removed_flag_does_not_hide_loaded_script(self):
         self.dictionary.write_text(DICTIONARY.replace('removed=false', 'removed=true'))
         self.ini.write_text('Mods=\\Other\n')

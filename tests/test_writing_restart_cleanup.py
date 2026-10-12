@@ -215,6 +215,28 @@ class OfflineCleanup(unittest.TestCase):
         with self.assertRaises(cleaner.CleanupError):
             cleaner.cleanup(self.world,self.backups,scan_cache=self.world/'cache.json')
 
+    def test_unavailable_optional_cache_parent_falls_back_to_full_scan(self):
+        self.path.write_bytes(chunk(nested(False)))
+        with sqlite3.connect(self.world/'players.db') as db:
+            db.execute('UPDATE networkPlayers SET data=?',(nested(False),))
+        before = self.sources()
+        parent = self.root/'unavailable-cache-parent'
+        parent.write_text('A stale file blocks the optional directory')
+        self.assertEqual(cleaner.cleanup(self.world,self.backups,
+            scan_cache=parent/'cache.json')['files'],0)
+        self.assertEqual(self.sources(),before)
+        self.assertFalse(self.backups.exists())
+        self.assertEqual(parent.read_text(),'A stale file blocks the optional directory')
+        cache = self.root/'optional-cache/cache.json'
+        actual = cleaner.safe_root
+        def denied(path,create=False):
+            if Path(path) == cache.parent: raise PermissionError('Private cache fixture')
+            return actual(path,create)
+        with patch.object(cleaner,'safe_root',side_effect=denied):
+            self.assertEqual(cleaner.cleanup(self.world,self.backups,scan_cache=cache)['files'],0)
+        self.assertEqual(self.sources(),before)
+        self.assertFalse(self.backups.exists())
+
     def test_clean_world_does_not_require_compiler_but_dirty_apply_does(self):
         validator = cleaner.JavaValidator(str(self.root/'missing.jar'),str(self.root/'java'),str(self.root/'javac'))
         empty = self.root/'empty';empty.mkdir(mode=0o700)
