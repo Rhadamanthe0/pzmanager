@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the public coordinate command, including grid edges and invalid input."""
+"""Exercise coordinate conversion, including grid edges and invalid input."""
 from pathlib import Path
 import subprocess
 import unittest
@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class MapCoordinates(unittest.TestCase):
     def command(self, *args):
-        return subprocess.run(["bash", str(ROOT / "pzm"), "map", "coords", *map(str, args)],
+        return subprocess.run(["python3", str(ROOT / "data/scripts/lib/map_coords.py"), *map(str, args)],
                               capture_output=True, text=True)
 
     def test_game_position(self):
