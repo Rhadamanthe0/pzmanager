@@ -548,3 +548,26 @@ Historical rows are preserved.
 With `STALL_AUTO_RESTART=0`, stallwatch captures diagnostics and requests admin
 intervention; it neither announces nor triggers an automatic restart. This
 monitoring correction does not repair pathological inventory serialization.
+
+
+## Réponse console et fermeture lente
+
+`pzm rcon` attend une réponse de la même invocation du jeu pendant au plus
+8 secondes après l'écriture FIFO (écriture bornée à 10 secondes). Un écho de
+`servermsg players` ne vaut pas une réponse à `players`. Les évènements de
+connexion intercalés ne coupent plus la collecte. `PZ_CONSOLE_OUTPUT_TIMEOUT`
+peut régler l'attente entre 0 et 30 secondes ; une réponse absente reste
+indéterminée et ne prouve pas à elle seule un gel.
+
+Lors d'une fermeture qui dépasse 60 secondes, le moniteur capture deux
+`Thread.print` bornés à 8 secondes dans `logs/zomboid/stop-stall-*.txt` (0600).
+Il sort si l'invocation termine ou change, sans tuer de processus ni redémarrer.
+Le délai systemd reste de 120 secondes. Sans `jcmd`, le relevé conserve l'état
+`/proc` disponible et indique explicitement l'absence du dump. La cause de
+l'arrêt V78 du 11 octobre 2026 reste inconnue faute de capture prise alors.
+
+Pour les contrôles de développement, lancer depuis une copie Linux jetable :
+`python3 tests/run-isolated.py --results /var/tmp/pz-test-results`. Le runner
+crée une seconde copie privée pour les fixtures métier ; les gardes mémoire et
+routage sont testés séparément sur le code original. Aucun test ne doit être
+lancé dans l'installation active.

@@ -229,22 +229,21 @@ shutdown_server() {
     if server_is_active; then
         players="$(count_connected_players)"
         if [[ -z "$players" ]]; then
-            # Même pronostic dans les deux cas (le quit ne sera pas exécuté), mais
-            # pas le même diagnostic : le dire exactement évite de chercher au
-            # mauvais endroit ensuite.
+            # Un comptage absent ne prouve ni une console morte ni un gel.
+            # Rapporter seulement l'observation et garder un préavis prudent.
             local frame; frame="$(last_game_frame)"
             if console_echoed_recently 60; then
-                log "AVERTISSEMENT : la console répond, mais la BOUCLE DE JEU est gelée."
-                log "  La commande a bien été accusée réception ; c'est son exécution"
-                log "  qui n'arrive jamais${frame:+ (compteur de frames figé à f:${frame})}."
-                send_discord "⚠️ Boucle de jeu gelée avant l'arrêt${frame:+ (frame figée à f:${frame})} — la console répond mais n'exécute plus rien ; le redémarrage risque de se terminer par un arrêt brutal (sans sauvegarde finale)."
+                log "AVERTISSEMENT : un écho console récent existe, mais le comptage players reste indéterminé."
+                log "  Une réponse lente, intercalée ou bloquée reste possible ; l'écho seul"
+                log "  ne prouve pas un gel${frame:+ (dernière frame observée : f:${frame})}."
+                send_discord "⚠️ Réponse players indéterminée avant l'arrêt${frame:+ (dernière frame f:${frame})} — écho console récent, sans preuve de gel ; vérifier les diagnostics si la fermeture tarde."
             else
-                log "AVERTISSEMENT : la console du serveur ne répond pas (aucun accusé de réception)."
-                send_discord "⚠️ Console du serveur muette avant l'arrêt — le redémarrage risque de se terminer par un arrêt brutal (sans sauvegarde finale)."
+                log "AVERTISSEMENT : aucun écho console récent ni comptage players exploitable."
+                send_discord "⚠️ Console indéterminée avant l'arrêt — aucune réponse exploitable ; le redémarrage pourrait se terminer par un arrêt brutal."
             fi
-            log "  Le 'quit' d'arrêt passe par ce même canal : il a de fortes chances"
-            log "  de ne pas être traité, auquel cas systemd tuera le serveur au bout"
-            log "  de 120 s (arrêt brutal, sans sauvegarde finale)."
+            log "  Le 'quit' passe par le même canal ; s'il n'aboutit pas, systemd"
+            log "  conserve le délai de 120 s, puis un arrêt forcé reste possible."
+            log "  Le diagnostic de fermeture lente capture avant cette échéance."
             log "  Le dernier backup horaire reste le point de restauration."
         fi
     fi
@@ -255,7 +254,7 @@ shutdown_server() {
             # Comptage impossible : on ne sait pas si la salle est vide ou pleine,
             # donc on préavise comme s'il y avait du monde.
             DELAY="2m"
-            echo "Délai auto : nombre de joueurs indéterminé (console muette) → $DELAY par sécurité"
+            echo "Délai auto : nombre de joueurs indéterminé → $DELAY par sécurité"
         else
             DELAY="$(delay_for_player_count "$players")"
             echo "Délai auto (${players} joueur(s) connecté(s)) → $DELAY"

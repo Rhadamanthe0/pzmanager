@@ -31,7 +31,7 @@ log() { printf '%s\\n' "$*"; }
         commands = self.root / 'bin'
         commands.mkdir()
         for name, body in {
-            'pgrep': 'echo 123',
+            'python3': 'case "${1:-}" in */service_process.py) echo 123 ;; *) exec /usr/bin/python3 "$@" ;; esac',
             'journalctl': 'echo "2000.000 f:${TEST_FRAME:-42} st:ready"' ,
             'curl': "echo 'game{parameter=\"players\"} 1'",
         }.items():

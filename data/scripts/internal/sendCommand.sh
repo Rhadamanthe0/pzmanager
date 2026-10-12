@@ -50,62 +50,10 @@ if [[ ! -p "${PZ_CONTROL_PIPE}" ]]; then
     exit 1
 fi
 
-# Capture timestamp BEFORE sending command
-TIMESTAMP_BEFORE=$(date +%s.%N)
-
-# Send command
-# timeout : écrire dans une FIFO dont plus personne ne lit BLOQUE indéfiniment
-# (serveur figé ou tué entre le test -p ci-dessus et ici). Sans borne, un préavis
-# joueur en plein compte à rebours pouvait rester coincé là pour toujours.
-# C'est aussi ce qui avait poussé dataBackup.sh à réécrire sa propre écriture FIFO
-# sous `timeout 10` au lieu d'appeler ce script.
-if ! timeout "${PZ_PIPE_WRITE_TIMEOUT:-10}" bash -c 'printf "%s\n" "$1" > "$2"' _ "$CMD" "${PZ_CONTROL_PIPE}"; then
-    echo "Erreur: écriture dans ${PZ_CONTROL_PIPE} impossible (serveur figé ?)" >&2
-    exit 1
-fi
-
-if [[ "$NO_OUTPUT" == true ]]; then
-    echo "Commande envoyée: $CMD"
-    exit 0
-fi
-
-# Wait for command to be processed
-sleep 3
-
-# Capture output from journald logs (only after our timestamp)
-OUTPUT=$(journalctl --user -u "${PZ_SERVICE_NAME}" \
-    --since "@${TIMESTAMP_BEFORE}" --no-pager 2>/dev/null | \
-    awk -v cmd="$CMD" '
-        BEGIN { capture=0 }
-
-        # Start capturing when we find our command.
-        # index() plutot que $0 ~ cmd : cmd vient de la ligne de commande (pzm
-        # rcon, champ libre du bot) et etait donc interprete comme EXPRESSION
-        # REGULIERE. Un servermsg contenant une parenthese ouvrante tuait awk
-        # (regex non terminee), le pipeline echouait sous pipefail et aucune
-        # sortie n etait affichee.
-        # NB : pas d apostrophe dans ce bloc, il est lui-meme entre quotes simples.
-        /command entered via server console/ && index($0, cmd) > 0 {
-            capture=1
-            next
-        }
-
-        # Stop on new command or unrelated events
-        capture && /command entered via server console/ { exit }
-        capture && /ConnectionManager:/ { exit }
-        capture && /ChatMessage\{/ { exit }
-        capture && /User:.*is trying to connect/ { exit }
-
-        # Capture response lines
-        capture {
-            sub(/^.*> [0-9,]+> /, "")
-            sub(/^.*sh\[[0-9]+\]: /, "")
-            if ($0 !~ /^[[:space:]]*$/) print
-        }
-    ')
-
-if [[ -n "$OUTPUT" ]]; then
-    echo "$OUTPUT"
-else
-    echo "Commande envoyée: $CMD (aucune sortie capturée)"
-fi
+# La collecte est bornée et liée à l'invocation ; une connexion intercalée ne
+# coupe plus la réponse. --no-output garde une écriture seule, sans attente.
+args=(--unit "$PZ_SERVICE_NAME" --pipe "$PZ_CONTROL_PIPE"
+      --write-timeout "${PZ_PIPE_WRITE_TIMEOUT:-10}"
+      --output-timeout "${PZ_CONSOLE_OUTPUT_TIMEOUT:-8}")
+[[ "$NO_OUTPUT" == false ]] || args+=(--no-output)
+exec python3 "${SCRIPT_DIR}/../lib/console_command.py" "${args[@]}" -- "$CMD"

@@ -63,7 +63,7 @@ ExecStartPre=-%h/pzmanager/data/scripts/admin/purgeInactivePlayers.sh
 # un nom non vide même si .env est absent ou la variable non définie.
 ExecStart=/bin/sh -c "ENV_FILE='%h/pzmanager/.env'; if [ -r \"$ENV_FILE\" ]; then . \"$ENV_FILE\"; fi; ADMIN_ARGS=''; PW_FILE='%h/pzmanager/.admin_password'; if [ -f \"$PW_FILE\" ]; then ADMIN_ARGS=\"-adminpassword $(cat $PW_FILE)\"; rm -f \"$PW_FILE\"; fi; exec %h/pzmanager/data/pzserver/start-server.sh -cachedir=%h/pzmanager/Zomboid -servername \"${PZ_SERVER_NAME:-servertest}\" $ADMIN_ARGS <> %h/pzmanager/data/pzserver/zomboid.control"
 ExecStartPost=-/bin/sh -c "%h/pzmanager/data/scripts/internal/notifyServerReady.sh &"
-ExecStop=/bin/sh -c "echo 'quit' > %h/pzmanager/data/pzserver/zomboid.control"
+ExecStop=%h/pzmanager/data/scripts/internal/stopServer.sh
 KillSignal=SIGCONT
 # 06/10/2026 : le snapshot préalable à la purge a pris 180 s au démarrage.
 # Le délai systemd par défaut (90 s) interrompait cette sauvegarde avant la JVM.
