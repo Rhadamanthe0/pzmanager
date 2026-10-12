@@ -163,12 +163,13 @@ pzm rcon "help"                          # All commands
 
 Full list: [PZ Wiki - Server Commands](https://pzwiki.net/wiki/Server_commands)
 
-## Restoring a Map Chunk from a Backup
+## Restoring Map Tiles from a Backup
 
 To recover constructions from an older snapshot, use
 `pzm backup restore-zone <backup> <x1> <y1> <x2> <y2>`. It previews by default;
-`--apply` restores whole Build 42 8×8 chunks while the server is stopped.
-For one chunk, repeat the coordinates of a tile inside it as both corners.
+`--apply` restores the exact inclusive tile rectangle, on every floor, while the
+server is stopped. For one tile, repeat its X/Y as both corners. Other tiles in
+the same chunk are preserved; partial chunks require a compatible JDK.
 Follow [the restore procedure](USAGE.md#restore-a-map-zone-build-42) for the
 options, affected data and recovery copies.
 

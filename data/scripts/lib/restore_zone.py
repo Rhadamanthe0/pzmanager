@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Restore B42 8x8 terrain chunks. Called under the shell world lock.
+"""Restore exact B42 tile columns on every floor. Called under the shell world lock.
 
 Cell metadata/populations and global player/vehicle databases stay current.
 A complete source chunk is required for every intersecting chunk; absence is
@@ -14,6 +14,10 @@ import signal
 import struct
 import zlib
 import tempfile
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from terrain_tiles import prepare_partial
 
 
 def plain(path, root, directory=False):
@@ -94,6 +98,8 @@ def restore(args):
     if count > 65536:
         raise ValueError('Zone trop grande (maximum 65536 chunks).')
     paths = []
+    partial = {}
+    invalidate = set()
     for x in range(cx1, cx2 + 1):
         for y in range(cy1, cy2 + 1):
             terrain = Path(f'map/{x}/{y}.bin')
@@ -103,14 +109,23 @@ def restore(args):
                 paths.append(rel)
             if not (source / terrain).is_file() or (source / terrain).stat().st_size == 0:
                 raise ValueError(f'Chunk absent ou vide dans le backup : {terrain}. Rien modifié.')
+            selected = [lx * 8 + ly for lx in range(8) for ly in range(8)
+                        if x1 <= x * 8 + lx <= x2 and y1 <= y * 8 + ly <= y2]
+            if len(selected) < 64:
+                if not (live / terrain).is_file():
+                    raise ValueError(f'Chunk courant absent : {terrain}. Impossible de préserver les tuiles voisines.')
+                terrain_version(live / terrain)  # Partial restoration needs an intact neighbour record.
+                partial[terrain] = {'x': x, 'y': y, 'selected': selected}
+                invalidate.add(iso)  # Rebuild regions from the merged map, never from the old whole chunk.
             source_version = terrain_version(source / terrain)
             # A damaged live checksum is recoverable; its version must still
             # match. A missing chunk is explicitly allowed in the destination.
             if (live / terrain).is_file() and terrain_version(live / terrain, validate=False) != source_version:
                 raise ValueError(f'Versions de chunks incompatibles : {terrain}')
     print(f'Monde : {save}\nBackup : {backup}\nZone effective inclusive : '
-          f'({cx1*8},{cy1*8}) → ({cx2*8+7},{cy2*8+7}), {count} chunks de 8×8.')
-    print('Tous les étages et objets/conteneurs de ces chunks reviennent au backup.\n'
+          f'({x1},{y1}) → ({x2},{y2}). Tuiles : {(x2-x1+1)*(y2-y1+1)} ; chunks : {count}.')
+    print('Toutes les hauteurs de ces tuiles, sous-sols compris, reviennent au backup.\n'
+          'Les tuiles voisines sont conservées.\n'
           'Métadonnées de cellule, populations, personnages et véhicules restent courants.')
     if not args.apply:
         print('Aperçu : rien modifié. Serveur arrêté + --apply pour appliquer.')
@@ -123,7 +138,9 @@ def restore(args):
     new = recovery / 'staged'
     old.mkdir(parents=True); new.mkdir()
     manifest = {'world': save, 'source': str(backup), 'bounds': [x1, y1, x2, y2],
-                'paths': [str(p) for p in paths], 'absent_before': [], 'status': 'preparing'}
+                'paths': [str(p) for p in paths], 'absent_before': [], 'status': 'preparing',
+                'selection': 'exact-tile-columns-all-floors',
+                'partial_chunks': [str(p) for p in partial]}
     manifest_path = recovery / 'manifest.json'
     def record(status):
         manifest['status'] = status
@@ -133,7 +150,7 @@ def restore(args):
     record('preparing')
     # Finish staging AND recovery before the first mutation.
     for rel in paths:
-        if (source / rel).is_file():
+        if rel not in invalidate and (source / rel).is_file():
             (new / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source / rel, new / rel)
         if (live / rel).is_file():
@@ -141,6 +158,18 @@ def restore(args):
             shutil.copy2(live / rel, old / rel)
         else:
             manifest['absent_before'].append(str(rel))
+    if partial:
+        # Native readers see private copies only. No live map is passed to Java.
+        inputs = recovery / 'source'; inputs.mkdir()
+        dictionary = inputs / 'WorldDictionary.bin'
+        shutil.copy2(source / 'WorldDictionary.bin', dictionary)
+        entries = []
+        for rel, selection in partial.items():
+            original = inputs / rel
+            original.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(new / rel, original)
+            entries.append(dict(selection, source=original, current=old / rel, output=new / rel))
+        prepare_partial(recovery, dictionary, entries)
     record('ready')
     print(f'Copie de récupération : {recovery}', flush=True)
     changed = []

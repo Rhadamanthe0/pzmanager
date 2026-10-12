@@ -130,17 +130,64 @@ class ZoneTests(unittest.TestCase):
             with self.assertRaises(OSError): zone.restore(self.args)
         self.assertEqual(self.state(), before)
 
-    def test_chunk_boundary_includes_both_edges(self):
-        for root in (self.live, self.source):
-            (root / 'map/0').mkdir()
-            (root / 'map/0/1.bin').write_bytes(chunk(b'edge'))
+    def test_exact_tiles_across_chunk_boundary(self):
+        from test_terrain_tiles import fixture, fixture_index, FixtureIndexer, tiles
+        for root, label in ((self.live, 'live'), (self.source, 'backup')):
+            for x in (0, 1):
+                path = root / f'map/{x}/1.bin'
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(fixture(label))
         self.args.x1 = 7; self.args.x2 = 8
         self.args.y1 = self.args.y2 = 8
-        (self.live / 'map/0/1.bin').write_bytes(chunk(b'broken edge'))
-        zone.restore(self.args)
-        self.assertEqual((self.live / 'map/0/1.bin').read_bytes(), chunk(b'edge'))
-        self.assertEqual((self.live / 'map/1/1.bin').read_bytes(), chunk(b'old'))
+        (self.source / 'isoregiondata').mkdir()
+        (self.source / 'isoregiondata/datachunk_1_1.bin').write_bytes(b'old whole chunk cache')
+        with patch.object(tiles, 'NativeIndexer', FixtureIndexer):
+            zone.restore(self.args)
+        for x, selected in ((0, 56), (1, 0)):
+            data = (self.live / f'map/{x}/1.bin').read_bytes()
+            columns = tiles.checked_columns(data, fixture_index(data))
+            for i, column in enumerate(columns):
+                self.assertIn((b'backup' if i == selected else b'live') + b':tile=', column)
+        self.assertFalse((self.live / 'isoregiondata/datachunk_1_1.bin').exists())
         self.assertEqual((self.live / 'map/1/2.bin').read_bytes(), chunk(b'outside'))
+
+    def test_partial_chunk_missing_or_corrupt_live_is_refused(self):
+        self.args.x1 = self.args.x2 = self.args.y1 = self.args.y2 = 8
+        path = self.live / 'map/1/1.bin'
+        for value in (None, b'broken', chunk(b'broken')[:-1]+b'!'):
+            if value is None: path.unlink(missing_ok=True)
+            else: path.write_bytes(value)
+            before = self.state()
+            with self.assertRaises(ValueError): zone.restore(self.args)
+            self.assertEqual(self.state(), before)
+            self.assertFalse((self.root / 'OLD').exists())
+
+    def test_partial_native_refusal_before_any_world_write(self):
+        self.args.x1 = self.args.x2 = self.args.y1 = self.args.y2 = 8
+        before = self.state()
+        with patch.object(zone, 'prepare_partial', side_effect=ValueError('unsupported native record')):
+            with self.assertRaises(ValueError): zone.restore(self.args)
+        self.assertEqual(self.state(), before)
+
+    def test_partial_restore_write_failure_recovers_both_chunks(self):
+        from test_terrain_tiles import fixture, FixtureIndexer, tiles
+        for root, label in ((self.live, 'live'), (self.source, 'backup')):
+            for x in (0, 1):
+                path = root / f'map/{x}/1.bin'
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(fixture(label))
+        self.args.x1 = 7; self.args.x2 = 8; self.args.y1 = self.args.y2 = 8
+        before = self.state()
+        real = zone.replace_file
+        calls = 0
+        def fail(source, dest):
+            nonlocal calls
+            calls += 1
+            real(source, dest)
+            if calls == 2: raise OSError('failure after second chunk replacement')
+        with patch.object(tiles, 'NativeIndexer', FixtureIndexer), patch.object(zone, 'replace_file', side_effect=fail):
+            with self.assertRaises(OSError): zone.restore(self.args)
+        self.assertEqual(self.state(), before)
 
     def test_staging_failure_keeps_world_intact(self):
         before = self.state()

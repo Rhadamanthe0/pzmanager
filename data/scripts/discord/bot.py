@@ -519,9 +519,10 @@ async def backup_restore_character(interaction: discord.Interaction, pseudo: str
     await execute(interaction, ["backup", "restore-character", pseudo, backup])
 
 
-@backup_group.command(name="restore-zone", description="Restaurer une zone de carte (aperçu par défaut)")
-@app_commands.describe(backup="Backup (nom ou chemin)", x1="X du premier coin", y1="Y du premier coin",
-                       x2="X du second coin", y2="Y du second coin", appliquer="Appliquer serveur arrêté",
+@backup_group.command(name="restore-zone", description="Restaurer les tuiles sélectionnées, toutes hauteurs (aperçu par défaut)")
+@app_commands.describe(backup="Backup (nom ou chemin)", x1="X de la première tuile", y1="Y de la première tuile",
+                       x2="X de la dernière tuile (identique à x1 pour une tuile)",
+                       y2="Y de la dernière tuile (identique à y1 pour une tuile)", appliquer="Appliquer serveur arrêté",
                        monde="Nom du monde si plusieurs sauvegardes")
 async def backup_restore_zone(interaction: discord.Interaction, backup: str,
                               x1: int, y1: int, x2: int, y2: int,

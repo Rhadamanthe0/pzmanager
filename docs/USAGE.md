@@ -86,7 +86,7 @@ pzm backup list               # List backups
 pzm backup restore <path>     # Restore ALL data from a backup
 pzm backup restore-character <name> <backup>   # Restore ONE player's character (overwrites existing)
 pzm backup restore-zone <backup> <x1> <y1> <x2> <y2> [--apply] [--save <world>]
-                              # Preview/restore whole 8x8 map chunks (tile coordinates)
+                              # Preview/restore exact tiles, every floor (inclusive tile coordinates)
 ```
 
 Example:
@@ -109,7 +109,7 @@ pzm server start
 
 ### Restore a map zone (Build 42)
 
-Restore one map chunk or a rectangle of chunks to recover disappeared constructions from an older **directory snapshot** listed by
+Restore one tile column or an exact rectangle of tiles to recover disappeared constructions from an older **directory snapshot** listed by
 `pzm backup list`. Coordinates are world **tiles**, not cells or chunks; give the
 X/Y of each of two opposite corners, in either order. Bounds are inclusive.
 
@@ -130,18 +130,18 @@ pzm backup restore-zone backup_2026-10-12_10h00m00s 10500 9500 10540 9540 --appl
 pzm server start now --reason "Restauration de constructions terminée"
 ```
 
-For **one chunk**, repeat the coordinates of any tile inside it. For example,
-this previews the chunk containing tile `10500,9500`; add `--apply` after stopping
+For **one tile**, repeat its X/Y coordinates as both corners. For example,
+this previews only tile `10500,9500`, on every floor; add `--apply` after stopping
 the server to restore it:
 
 ```bash
 pzm backup restore-zone backup_2026-10-12_10h00m00s 10500 9500 10500 9500
 ```
 
-This selects the whole chunk (tiles `10496..10503`, `9496..9503`), on every floor.
-Supply tile coordinates, even for a single chunk; do not pass chunk indices.
-**The minimum restore size is one 8×8 chunk (64 tiles), on every floor.**
-A single tile or object cannot be restored independently with this command.
+**The minimum restore size is one tile column**, including all basement and upper
+levels. The example leaves the other 63 tiles of its 8×8 chunk untouched.
+The command also removes a current floor when that floor is absent for this tile
+in the snapshot. Selecting only one floor or one object is not supported.
 
 The first command previews without modifying the map, even while the server runs.
 `--dry-run` also explicitly selects preview. `--apply` requires a proven stopped
@@ -151,14 +151,17 @@ contain `Saves/Multiplayer/<world>/map/`; ZIP archives and Build 41 are unsuppor
 A snapshot name under `BACKUP_DIR`, its `latest` alias, or a full directory path
 is accepted. Prefer a dated snapshot from before the disappearance.
 
-The preview prints the **actual rectangle expanded to 8×8 chunk boundaries**.
-All floors, terrain, constructions and container contents in those chunks return
-to the snapshot, including changes made since that snapshot. Terrain outside
-these chunks is untouched. Stale isoregion caches in the selected chunks are
-replaced or removed if absent from the source. Cell-wide chunkdata, metagrid,
-zombie/animal populations, global files, characters and vehicles are not restored.
-This targets construction loss; it is not a complete rewind of all activity in
-the rectangle, nor a fix for a mod or save bug that continues to remove buildings.
+The preview prints the **exact inclusive tile rectangle**, with no expansion to
+chunk boundaries. All floors, terrain, constructions and container contents on
+those tiles return to the snapshot. Other tile-column records in the same chunk
+are preserved byte for byte. For a partially selected chunk, its current
+chunk-wide metadata (including blood splats) is kept, and the isoregion cache is
+invalidated so it can be rebuilt from the merged terrain. Fully selected chunks
+are copied from the snapshot with their isoregion cache when available.
+Cell-wide chunkdata, metagrid, zombie/animal populations, global files, player
+characters and vehicles are not restored. This targets construction loss; it is
+not a complete rewind of all activity in the rectangle, nor a fix for a mod or
+save bug that continues to remove buildings.
 
 Every selected terrain chunk must exist and be nonempty in the source. Missing
 chunks cause refusal before any write. `WorldDictionary.bin`
@@ -167,8 +170,26 @@ must match too; current Build 42 saves can omit it. Every source terrain chunk
 must have a valid world-version-249 header, length and CRC32 checksum. Different
 versions or object ID dictionaries cannot be safely mixed. This conservative check may reject older
 snapshots after a dictionary update. Do not overwrite the live global dictionary
-to bypass the refusal. Keep the same mods; binary map contents are copied, not
-validated by loading the game. Verify the recovered construction in game.
+to bypass the refusal. Keep the same mods. A partial chunk also requires a present,
+valid current chunk, because its unselected tiles must be preserved. Missing or
+corrupt current terrain can only be replaced when the entire chunk is selected.
+Verify the recovered construction in game.
+
+Partial-chunk application uses the installed game's native record readers on
+private copies to find tile boundaries, then splices the original serialized
+columns. It never reserializes neighbouring objects. The result is loaded again
+and all 64 columns are compared with the intended source/current bytes before
+any world write. A record that cannot be read causes refusal; there is no fallback
+to restoring a larger area. The offline reader does not initialize a complete
+Workshop script environment, so some modded records may be refused.
+
+This requires a compatible **JDK** for partial chunks (including one-tile restores).
+The default JVM is `PZ_INSTALL_DIR/jre64/bin/java`; its sibling `javac` is used
+when available, otherwise `javac` on PATH. Set `PZ_RESTORE_JAVA` and/or
+`PZ_RESTORE_JAVAC` in `.env` to override these tools. An explicitly configured
+compiler is authoritative; incompatible or missing tools stop before changing
+the world. Compilation uses `--release` for the selected JVM. Preview and whole
+chunk copies do not need a JDK. Diagnostics remain in the private recovery folder.
 
 Before writing, the command stages the selected source files and copies the
 current selected files into a private, unique `${PZ_HOME}/OLD/zone-rollback-*`
@@ -187,7 +208,15 @@ backups are never modified by the restore.
 Discord exposes the same operation as `/pzm backup restore-zone`, with `backup`,
 `x1`, `y1`, `x2`, `y2`, optional `monde`, and `appliquer` (false by default).
 
-Offline validation of real snapshots can use `tests/ValidateRestoredTerrain.java`
+To reproduce the native one-tile preservation test, run
+`tests/verify_tile_restore_native.py --help` from a disposable checkout. Supply
+two snapshot world directories, chunk coordinates and a private results directory,
+with `PZ_INSTALL_DIR` set to the installed game. It copies only the required files,
+simulates a lost column in its private copy when necessary, restores all its
+floors and proves that the other 63 column records are byte-identical. It never
+writes to either input snapshot or the production world.
+
+Offline validation of real snapshots can also use `tests/ValidateRestoredTerrain.java`
 with the installed game JAR and a compatible JDK (`javac --release` matching the
 chosen JVM). Run it from a private directory containing read-only access to the
 matching `media/` and `stdlib.lua`, with `CHUNK_PATH CHUNK_X CHUNK_Y` as arguments.
@@ -430,8 +459,8 @@ systemctl --user list-timers
 | Check status | `pzm server status` |
 | Add player | `pzm whitelist add "SteamID64" "Name"` |
 | Manual backup | `pzm backup create` |
-| Preview one map chunk | `pzm backup restore-zone <backup> <x> <y> <x> <y>` |
-| Restore that chunk (server stopped) | `pzm backup restore-zone <backup> <x> <y> <x> <y> --apply` |
+| Preview one tile, all floors | `pzm backup restore-zone <backup> <x> <y> <x> <y>` |
+| Restore that tile (server stopped) | `pzm backup restore-zone <backup> <x> <y> <x> <y> --apply` |
 | Send message | `pzm rcon servermsg "Text"` |
 
 ## Help
