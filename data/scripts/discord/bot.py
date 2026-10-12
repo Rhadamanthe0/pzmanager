@@ -508,7 +508,7 @@ async def backup_list(interaction: discord.Interaction):
 
 
 @backup_group.command(name="restore", description="Restaurer les données Zomboid depuis un backup")
-@app_commands.describe(chemin="Dossier de backup (nom sous data/dataBackups/ ou chemin complet)")
+@app_commands.describe(chemin="Chemin du dossier de backup (ex: data/dataBackups/backup_... ; serveur arrêté)")
 async def backup_restore(interaction: discord.Interaction, chemin: str):
     await execute(interaction, ["backup", "restore", chemin])
 
@@ -581,7 +581,7 @@ async def whitelist_rename_account(interaction: discord.Interaction, ancien: str
     await execute(interaction, args)
 
 
-@whitelist_group.command(name="resetpassword", description="Reset du mot de passe d'un compte")
+@whitelist_group.command(name="resetpassword", description="Reset du mot de passe d’un compte (serveur arrêté)")
 @app_commands.describe(nom="Nom du compte")
 async def whitelist_resetpassword(interaction: discord.Interaction, nom: str):
     await execute(interaction, ["whitelist", "resetpassword", nom])
@@ -589,7 +589,7 @@ async def whitelist_resetpassword(interaction: discord.Interaction, nom: str):
 
 @whitelist_group.command(name="purge", description="Lister/supprimer les accès inactifs")
 @app_commands.describe(duree="Seuil d'inactivité (ex: 3m, 60d ; défaut .env)",
-                       delete="Supprimer (sinon liste seulement)")
+                       delete="Suppression à confirmer en terminal ; laisser false depuis Discord")
 async def whitelist_purge(interaction: discord.Interaction, duree: Optional[str] = None,
                           delete: bool = False):
     args = ["whitelist", "purge"]

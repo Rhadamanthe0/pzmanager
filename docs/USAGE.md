@@ -9,7 +9,7 @@ su - pzuser
 ## Server
 
 ```bash
-pzm server start              # Start
+pzm server start              # Start immediately (no countdown)
 pzm server stop [delay]       # Stop (default: auto)
 pzm server restart [delay]    # Restart (default: auto)
 pzm server status             # Status + logs
@@ -19,11 +19,14 @@ pzm server status             # Status + logs
 
 `auto` is the default and picks the delay from the number of connected players:
 **5m** if 2 or more, **2m** if 1, **now** if none — so an empty server restarts
-without a pointless countdown.
+without a countdown. If the player count is unavailable, the fallback is **2m**.
+This delay applies to shutdown; `start` starts immediately.
 
 **Always pass `--reason`** on `start`/`stop`/`restart`: the text is shown to
 players in the in-game warning and on Discord. Without it the message only says
-whether the action was manual or automatic. A delay token must come *before* it:
+whether the shutdown was manual or automatic; a start without a reason has no
+start notification. The delay is optional. If supplied, put it immediately after
+`stop` or `restart`, before the named options:
 
 ```bash
 pzm server restart 5m --reason "Adding mods"
@@ -84,13 +87,17 @@ pzm backup create             # Incremental backup
 pzm backup full               # Complete backup
 pzm backup list               # List backups
 pzm backup restore <path>     # Restore ALL data from a backup
-pzm backup restore-character <name> <backup>   # Restore ONE player's character (overwrites existing)
+pzm backup restore-character <name> <backup> [--dry-run]   # Preview/restore ONE character
 pzm backup restore-zone <backup> <x1> <y1> <x2> <y2> [--apply] [--save <world>]
                               # Preview/restore exact tiles, every floor (inclusive tile coordinates)
 ```
 
+Full restore takes an existing directory path, not a bare snapshot name or ZIP.
+Stop the server first; the command does not stop it for you.
+
 Example:
 ```bash
+pzm server stop 2m --reason "Restauration du monde"
 pzm backup restore data/dataBackups/backup_2026-01-12_14h14m00s
 ```
 
@@ -104,6 +111,8 @@ pzm server start
 - `<name>`: the player's username (case-sensitive).
 - `<backup>`: **required** — the backup folder name (resolved under `data/dataBackups/`)
   or a full path. Use a specific backup from **before** the incident.
+- `--dry-run` previews without modifying the character and works while the server
+  runs. Without it, an active server produces a preview followed by a refusal.
 - The player's current character is **overwritten** by the one from the backup. No extra
   snapshot is taken — `pzm server stop` already backs up before stopping.
 
@@ -239,9 +248,9 @@ pzm whitelist list                                  # Allowed SteamIDs + account
 pzm whitelist add "76561198012345678" "Name"        # Authorize a SteamID (name optional)
 pzm whitelist remove "76561198012345678"            # Remove a SteamID's access (SteamID64 only)
 pzm whitelist remove "76561198012345678" --ban      # Remove + permanent ban
-pzm whitelist remove-account "Name" [--dry-run]     # Delete ONE account, keep the SteamID
+pzm whitelist remove-account "Name" [--dry-run]     # Delete one account; remove its SteamID only if orphaned
 pzm whitelist rename-account "Old" "New" [--dry-run]  # Rename an account, keep its character
-pzm whitelist resetpassword "Name"                  # Reset a player's password
+pzm whitelist resetpassword "Name"                  # Reset password, server stopped
 pzm whitelist purge                                 # List inactive (default: WHITELIST_PURGE_DAYS)
 pzm whitelist purge 3m                              # List inactive 3+ months
 pzm whitelist purge 3m --delete                     # Delete inactive after confirmation
@@ -269,10 +278,12 @@ account sharing it too. To act on one account of a shared SteamID (say
 only touched by `rename-account` (re-attach) and `backup restore-character`. A
 player whose access is removed and later re-authorized gets their character back.
 
-`remove-account`, `rename-account` and `purge --delete` write straight to the
-world database, which the server holds open while running: they refuse to run
-unless it is stopped, and snapshot the databases first. Use `--dry-run` to see
-the plan without stopping anything.
+`remove-account`, `rename-account`, `resetpassword` and `purge --delete` require
+a stopped server for database writes. They do **not** create a dedicated snapshot;
+choose an existing backup or create one before the operation. `remove-account`
+and `rename-account` accept `--dry-run` for a preview; `purge` without `--delete`
+only lists candidates. The deletion asks for `oui` in an interactive terminal.
+`resetpassword` has no preview option.
 
 **Player onboarding**: see [PROCEDURE_JOUEURS](PROCEDURE_JOUEURS.md) (French) — the
 player sends their SteamID64, you authorize it, they connect and set their own password.
@@ -322,8 +333,11 @@ pzm admin maintenance 2m --reason "RAM upgrade"    # Maintenance with reason
 ```
 
 **Maintenance options**:
-- `[delay]`: `30m`, `15m`, `5m`, `2m`, `30s`, `now` (default: 30m)
+- `[delay]`: `30m`, `15m`, `5m`, `2m`, `30s`, `now`, `auto` (default: 30m)
 - `--reason TEXT`: Add reason to messages (optional)
+- `--no-reboot`: Restart the service instead of rebooting the machine, regardless of `REBOOT_ON_MAINTENANCE`.
+- `--silent`: Suppress normal Discord announcements (error alerts may still be sent).
+- `--automatic`: Mark the maintenance as automatic.
 
 **Message formats by action type**:
 
@@ -405,7 +419,7 @@ JDK for the real PZ validator, selected with `PZ_WRITING_CLEANUP_JAVA` and
 console commands retain their configured output timeout.
 
 ```bash
-pzm rcon "command"            # Send RCON command
+pzm rcon <command> [args] [--no-output]   # Send via the server console FIFO
 ```
 
 Common commands:

@@ -155,7 +155,7 @@ Installing GraalVM (see above) is the easier route: it *does* ship `jcmd`, and
 
 ```bash
 pzm rcon "save"                          # Force save
-pzm rcon "servermsg 'Message'"           # Broadcast
+pzm rcon servermsg "Message"           # Broadcast
 pzm rcon "players"                       # List players
 pzm rcon "quit"                          # Stop server
 pzm rcon "help"                          # All commands
@@ -204,7 +204,7 @@ whenever a mod changes buildings or rooms — which is the normal case.
 > ⚠️ **Deletion is immediate — there is no dry-run.** The server must be stopped
 > (the command refuses to run otherwise). A **normal snapshot** of the world
 > (`backup_<ts>`, via `dataBackup.sh --snapshot-only`) is taken first — it shows up
-> in `pzm backup list`, so your way back is `pzm backup restore <backup>`.
+> in `pzm backup list`, so your way back is `pzm backup restore data/dataBackups/<backup>`.
 
 Anything built by players in the wiped area is lost — it is part of the save
 data being regenerated.

@@ -122,7 +122,7 @@ DISCORD_WEBHOOK="https://discord.com/api/webhooks/..."
 |------|----------|-------------|
 | Mod & server check | Every 5 min | Auto-maintenance if mod or server updates detected |
 | Memory check | Every ~30 s | Restart at 18 GiB total service RAM or when the heap fills up |
-| Backup | Hourly (:14) | Incremental hardlinks, GFS retention (24h/7d/30d) |
+| Backup | Hourly (:14) | Hardlinked snapshots; [retention settings](CONFIGURATION.md#backups) |
 | Maintenance | Daily 4:30 AM | Updates + full backup + reboot/restart |
 | Whitelist dates | Daily 00:00 | Init creation dates for purge |
 
@@ -131,7 +131,8 @@ View timers: `systemctl --user list-timers`
 ## Restore from Backup
 
 ```bash
-# Data only (world, saves)
+# Data only (world, saves), using an existing snapshot directory
+pzm server stop 2m --reason "Restauration du monde"
 pzm backup restore data/dataBackups/backup_YYYY-MM-DD_HHhMMmSSs
 
 # Complete system restore

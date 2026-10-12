@@ -272,7 +272,7 @@ Procedure and options: [ADVANCED.md — Complete Server Reset](ADVANCED.md#compl
 Symptom: a player connects and is told *"the server cannot load player data"* / asked
 to **recreate** a character. This is usually a **load** failure (the character is still
 in `players.db`), most often after a mod that adds character data was removed — see the
-mod gotcha in [CLAUDE.md](../CLAUDE.md). First, restore the missing mod and restart.
+[mod compatibility procedure](MOD_UPDATES.md). First, restore the missing mod and restart.
 
 If the character row was actually lost/overwritten, restore just that one character
 from a backup (no full-world rollback):

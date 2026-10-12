@@ -15,24 +15,28 @@ Usage: pzm <commande> <sous-commande> [arguments]
 Commandes disponibles:
 
   server <action> [délai] [options]
-    start [délai]      Démarrer le serveur
+    start              Démarrer le serveur (sans compte à rebours)
     stop [délai]       Arrêter (30m|15m|5m|2m|30s|now|auto, défaut: auto)
     restart [délai]    Redémarrer
     status             Statut + logs récents
                        délai auto = 5m si >=2 joueurs, 2m si 1, now si 0
+                       Comptage indisponible : 2m
     Options communes à start/stop/restart :
       --reason TEXT       Motif affiché AUX JOUEURS (en jeu) et sur Discord.
-                          À renseigner systématiquement : sans lui, le message
-                          n'indique que l'origine (manuelle/automatique).
+                          Sans motif : arrêt/restart indique seulement l'origine ;
+                          start n'envoie pas d'annonce de démarrage.
       --silent            Aucune annonce Discord (redémarrage de debug)
       --automatic         Marque l'action comme déclenchée automatiquement
-    Un délai doit précéder --reason : `server start now --reason "..."`.
+    Délai facultatif pour stop/restart ; si précisé, avant les options.
+    Exemple sans délai : `server restart --reason "Ajout de mods"`.
 
   backup <action> [arguments]
     create             Backup incrémental horaire
     full               Backup complet avec sync
-    restore <chemin>   Restaurer données Zomboid
-    restore-character <pseudo> <backup>   Restaurer le perso d'un joueur (serveur arrêté ; écrase l'existant)
+    restore <chemin>   Restaurer données Zomboid (dossier ; serveur arrêté)
+    restore-character <pseudo> <backup> [--dry-run]
+                       Restaurer un personnage (application : serveur arrêté)
+                       --dry-run : aperçu ; sans option, écrase l’existant
     restore-zone <backup> <x1> <y1> <x2> <y2> [options]
                        Restaurer exactement les tuiles de carte depuis un snapshot
                        Coordonnées en TUILES, coins inclusifs ; toutes les hauteurs
@@ -51,21 +55,28 @@ Commandes disponibles:
   whitelist <action> [arguments]
     list               Liste blanche SteamID + comptes + bannis
     add <id64> [nom]   Autoriser un SteamID (Open=false ; serveur démarré requis)
-    remove <id64|nom> [--ban]  Retirer un SteamID (--ban = bannir définitivement)
+    remove <id64> [--ban]  Retirer un SteamID (17 chiffres ; serveur démarré)
+                       --ban = bannir définitivement ; pseudo refusé
     remove-account <nom|id64> [...] [--dry-run]  Supprimer des comptes (garde les
                        personnages ; retire les SteamID devenus orphelins ; serveur arrêté)
-    rename-account <ancien> <nouveau> [--dry-run]  Renommer un compte (garde perso et mdp)
-    resetpassword <nom>  Reset mot de passe (nouveau mdp à la prochaine co)
+    rename-account <ancien> <nouveau> [--dry-run]
+                       Renommer un compte (garde perso et mdp ; serveur arrêté)
+                       --dry-run : aperçu possible serveur démarré pour ces deux actions
+    resetpassword <nom>  Reset mot de passe (serveur arrêté requis)
     purge [durée]      Lister inactifs (3m, 60d... défaut: .env)
-    purge <durée> --delete  Supprimer inactifs après confirmation
+    purge [durée] --delete  Supprimer après confirmation en terminal (serveur arrêté)
+    help               Aide détaillée de la liste blanche
 
   admin <action> [arguments]
     reset [options]    Wipe complet (backup → suppression → nouveau monde)
       --keep-config       Restaurer configs (<monde>.ini, SandboxVars, spawns)
       --keep-whitelist    Restaurer whitelist
-    maintenance [délai] [--reason TEXT]   Maintenance complète
+    maintenance [délai] [options]   Maintenance complète
                        (30m|15m|5m|2m|30s|now|auto, défaut: 30m)
       --reason TEXT       Raison de la maintenance (ex: "Augmentation RAM")
+      --no-reboot         Redémarrer le service, jamais la machine
+      --silent            Masquer les annonces normales Discord
+      --automatic         Marquer la maintenance comme automatique
 
   install <action>
     budget             Installer le plafond PZ partagé (services arrêtés)
@@ -75,11 +86,13 @@ Commandes disponibles:
 
   map <action> [arguments]
     wipe <x> <y>                Regenerer le chunk d'une tuile
-    wipe <x1> <y1> <x2> <y2>    Regenerer un rectangle de tuiles
+    wipe <x1> <y1> <x2> <y2>    Regenerer les chunks couvrant un rectangle
+      --save <monde>       Choisir le monde multijoueur
       (serveur arrete ; suppression immediate + snapshot auto ;
        efface aussi le niveau cellule 256x256 -- toujours, sans option)
 
-  rcon <cmd> [args]    Envoyer commande RCON au serveur
+  rcon <cmd> [args] [--no-output]  Envoyer une commande console au serveur
+                       --no-output : ne pas attendre la réponse
 
   mods check [fichier] Vérifier les mods requis par le monde (INI ou V[N].txt)
 

@@ -724,7 +724,7 @@ Commandes agissant sur un COMPTE (le pseudo de connexion) :
                                     Supprimer des comptes (serveur arrêté requis)
   rename-account <ancien> <nouveau> [--dry-run]
                                     Renommer un compte (serveur arrêté requis)
-  resetpassword <username>          Reset le mot de passe d'un joueur
+  resetpassword <username>          Reset le mot de passe (serveur arrêté)
   purge [delay] [--delete]          Lister/supprimer les comptes inactifs
 
 Exemples:
@@ -747,7 +747,7 @@ Notes:
   - Steam ID 64 (17 chiffres, ex: 76561198012345678) via https://steamid.xyz/
   - --ban ajoute un bannissement définitif (banid) : retour impossible même renommé.
   - Délai purge: Xm (mois) ou Xj (jours) ; purge exclut toujours 'admin'.
-  - remove-account/rename-account/purge --delete écrivent en base -> serveur arrêté.
+  - remove-account/rename-account/resetpassword/purge --delete : serveur arrêté.
     Les personnages sont conservés ; remove-account retire les SteamID devenus
     orphelins. Le compte 'admin' est protégé.
 HELPEOF

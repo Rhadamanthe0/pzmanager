@@ -18,7 +18,7 @@ notifications: a small Python bot (discord.py) connects to Discord's Gateway
 
 ## How it works
 
-- The bot exposes a `/pzm` slash-command **group** that mirrors the `pzm`
+- The bot exposes a `/pzm` slash-command **group** covering part of the `pzm`
   dispatcher (`server`, `backup`, `whitelist`, `admin`, `install` subgroups,
   plus `rcon`, `discord`, `help`).
 - Each subcommand builds a **fixed argument list** and runs `pzm` via
@@ -69,7 +69,7 @@ Enable **Developer Mode** (Discord *Settings → Advanced*), then right-click to
 |----------|-------|
 | `DISCORD_BOT_GUILD_ID` | Right-click the server icon → *Copy Server ID* |
 | `DISCORD_BOT_CHANNEL_ID` | Right-click the dedicated channel → *Copy Channel ID* (comma-separated for several) |
-| `DISCORD_BOT_ADMIN_ROLE_ID` | Server Settings → Roles → right-click the role → *Copy Role ID* |
+| `DISCORD_BOT_ADMIN_ROLE_ID` | Server Settings → Roles → *Copy Role ID* (comma-separated for several allowed roles) |
 
 ### 3. Configure `.env`
 
@@ -104,7 +104,9 @@ Guild-scoped, so they appear almost instantly:
 /pzm server start | status | stop [delai] [reason] | restart [delai] [reason]
 /pzm backup create | full | list | restore <chemin> | restore-character <pseudo> <backup>
 /pzm backup restore-zone <backup> <x1> <y1> <x2> <y2> [appliquer] [monde]
-/pzm whitelist list | add <id64> [nom] | remove <cible> [ban] | resetpassword <nom> | purge [duree] [delete]
+/pzm whitelist list | add <id64> [nom] | remove <steamid64> [ban] | resetpassword <nom> | purge [duree] [delete]
+/pzm whitelist remove-account <nom> [dry_run]
+/pzm whitelist rename-account <ancien> <nouveau> [dry_run]
 /pzm admin maintenance [delai] [reason] | reset [keep_config] [keep_whitelist]
 /pzm install system | zomboid | discord
 /pzm rcon <commande>
@@ -114,8 +116,18 @@ Guild-scoped, so they appear almost instantly:
 
 - `delai` is a dropdown: `30m` / `15m` / `5m` / `2m` / `30s` / `now` / `auto`
   (`auto` = the default for stop/restart: 5m if 2+ players, 2m if 1, now if 0).
-- Flags (`ban`, `delete`, `keep_config`, `keep_whitelist`) are `True`/`False`
+- Flags (`ban`, `delete`, `dry_run`, `appliquer`, `keep_config`, `keep_whitelist`) are `True`/`False`
   options.
+
+The slash commands expose only the options listed above. For other CLI options
+(such as `backup restore-character --dry-run`, `map wipe --save`,
+`mods check`, or `admin maintenance --no-reboot`), paste a `pzm …` line.
+`backup restore` requires a directory path, unlike `restore-character` and
+`restore-zone`, which also resolve snapshot names under the backup directory.
+
+`whitelist purge` can list candidates from Discord, but `delete=True` cannot
+confirm the interactive `oui` prompt: the bot has no interactive input. Perform
+that deletion in a terminal with the server stopped.
 
 ### Restore map tiles
 
@@ -282,8 +294,9 @@ Notes:
   The only protection is the channel + role gate — **keep that role tight**.
 - No shell is ever spawned; arguments are passed as an argv list, so text like
   `; rm -rf ~` is handed to `pzm` as literal arguments and rejected.
-- `pzm install …` cannot actually run from the bot (it needs interactive
-  `sudo`, which is blocked); it returns an error rather than hanging.
+- `pzm install system` and `pzm install zomboid` need `sudo` and fail under the
+  bot service restrictions. `install discord` runs as the manager without sudo;
+  installation and service changes are best performed from a terminal.
 - Every invocation is logged (who / which channel / which command / exit code)
   in the journal.
 
