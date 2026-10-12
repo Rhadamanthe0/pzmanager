@@ -8,6 +8,7 @@ import struct
 import sys
 import tempfile
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor as RealThreadPoolExecutor
 import unittest
 from unittest.mock import patch
@@ -173,6 +174,7 @@ class OfflineCleanup(unittest.TestCase):
 
     def test_scan_cache_skips_unchanged_but_rereads_changed_and_replaced_files(self):
         path = self.world/'plain.bin';path.write_bytes(b'no writing')
+        time.sleep(cleaner.CACHE_QUIET_NS / 1e9 + .02)
         cached = {};first = dict(cleaner.drawing_files(self.world, {}, cached))
         self.assertIsNone(first[Path('plain.bin')]);self.assertIn('plain.bin', cached)
         original = cleaner.read_file
@@ -182,6 +184,12 @@ class OfflineCleanup(unittest.TestCase):
         with patch.object(cleaner, 'read_file', side_effect=tracked):
             retained = {};dict(cleaner.drawing_files(self.world, cached, retained))
         self.assertNotIn(path, reads);self.assertIn('plain.bin', retained)
+        # Une horloge reculée derrière les dates du fichier impose une relecture.
+        reads.clear();retained={}
+        with patch.object(cleaner.time,'time_ns',return_value=time.time_ns()-5_000_000_000), \
+                patch.object(cleaner,'read_file',side_effect=tracked):
+            dict(cleaner.drawing_files(self.world,cached,retained))
+        self.assertIn(path,reads);self.assertNotIn('plain.bin',retained)
         path.write_bytes(cleaner.MARKER)
         with patch.object(cleaner, 'read_file', side_effect=tracked):
             self.assertEqual(dict(cleaner.drawing_files(self.world, cached, {}))[Path('plain.bin')], cleaner.MARKER)
@@ -196,6 +204,7 @@ class OfflineCleanup(unittest.TestCase):
         self.path.write_bytes(b'no writing')
         db=sqlite3.connect(self.world/'players.db');db.execute("UPDATE networkPlayers SET data=?",(b'no writing',));db.commit();db.close()
         cache=self.root/'cache.json'
+        time.sleep(cleaner.CACHE_QUIET_NS / 1e9 + .02)
         self.assertEqual(cleaner.cleanup(self.world,self.backups,scan_cache=cache)['files'],0)
         self.assertEqual(cache.stat().st_mode & 0o777,0o600)
         data=json.loads(cache.read_text());self.assertIn(str(self.path.relative_to(self.world)),data['files'])
@@ -214,6 +223,52 @@ class OfflineCleanup(unittest.TestCase):
         self.assertEqual(cleaner.load_scan_cache(cache, self.world), {})
         with self.assertRaises(cleaner.CleanupError):
             cleaner.cleanup(self.world,self.backups,scan_cache=self.world/'cache.json')
+
+    def test_recent_negative_is_not_cached_even_when_read_is_slow(self):
+        path = self.world/'fresh.bin';path.write_bytes(b'no writing')
+        actual = cleaner.read_file
+        def slow(file):
+            if file == path: time.sleep(cleaner.CACHE_QUIET_NS / 1e9 + .02)
+            return actual(file)
+        scanned = {}
+        with patch.object(cleaner,'read_file',side_effect=slow):
+            dict(cleaner.drawing_files(self.world,{},scanned))
+        self.assertNotIn('fresh.bin',scanned)
+
+    def test_legacy_cache_cannot_reuse_unproven_absence(self):
+        path=self.world/'plain.bin';path.write_bytes(b'no writing')
+        cache=self.root/'legacy-cache.json'
+        cache.write_text(json.dumps({'schema':1,'world':str(self.world),'version':249,
+            'files':{'plain.bin':cleaner.file_identity(path.stat())}}));cache.chmod(0o600)
+        self.assertEqual(cleaner.load_scan_cache(cache,self.world),{})
+
+    def test_persisted_cache_same_tick_rewrite_is_detected_after_delay(self):
+        # Vrai tmpfs : aucun utime, faux stat, cache forgé ni écriture concurrente.
+        # Deux nettoyages séquentiels séparés par une édition offline du monde.
+        with tempfile.TemporaryDirectory(prefix='pz-cache-tick-',dir='/dev/shm') as tmp:
+            root=Path(tmp);world=root/'world';world.mkdir(mode=0o700)
+            (world/'WorldDictionaryReadable.lua').write_text('\n'.join(
+                f'{{ registryID = {i}, fulltype = "{name}" }}' for i,name in REGISTRY.items()))
+            path=world/'map/1/2.bin';path.parent.mkdir(parents=True)
+            dirty=chunk(nested());plain=chunk(bytes(len(dirty)-17));cache=root/'cache.json'
+            equal=False
+            for _ in range(128):
+                path.write_bytes(plain)
+                first=cleaner.cleanup(world,root/'backups',scan_cache=cache)
+                self.assertEqual(first['files'],0)
+                self.assertNotIn('map/1/2.bin',json.loads(cache.read_text())['files'])
+                before=cleaner.file_identity(path.stat())
+                path.write_bytes(dirty)
+                equal=before==cleaner.file_identity(path.stat())
+                if equal:break
+            self.assertTrue(equal,'La fixture doit reproduire la même tick, sans faux stat')
+            time.sleep(cleaner.CACHE_QUIET_NS / 1e9 + .02)
+            # Après ce délai, un simple refus des hits récents serait insuffisant.
+            # Les dessins doivent être détectés et exiger la validation réelle.
+            with self.assertRaisesRegex(cleaner.CleanupError,'genuine PZ record validator'):
+                cleaner.cleanup(world,root/'backups',scan_cache=cache)
+            self.assertEqual(path.read_bytes(),dirty)
+            self.assertFalse((root/'backups').exists())
 
     def test_unavailable_optional_cache_parent_falls_back_to_full_scan(self):
         self.path.write_bytes(chunk(nested(False)))

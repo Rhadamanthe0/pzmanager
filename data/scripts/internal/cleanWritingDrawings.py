@@ -26,6 +26,11 @@ import zlib
 from dataclasses import dataclass
 
 VERSION = 249
+CACHE_SCHEMA = 2
+# Sur ext4/tmpfs, deux écritures dans la même tick du noyau peuvent garder
+# mtime/ctime identiques. Attendre 2 s avant toute preuve d'absence mise en cache
+# (500 ticks sur l'hôte à 4 ms), et invalider les anciennes preuves schema=1.
+CACHE_QUIET_NS = 2_000_000_000
 MARKER = b"\x00\x00\x0bNeatWriting\x02"
 LITERATURE_TYPES = frozenset("Base." + name for name in (
     "Notepad", "Notebook", "Journal", "Diary1", "Diary2", "SheetPaper2",
@@ -628,6 +633,10 @@ def file_identity(info):
     return [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
 
 
+def cache_identity_is_quiet(identity, observed_ns):
+    return observed_ns - max(identity[3], identity[4]) > CACHE_QUIET_NS
+
+
 def load_scan_cache(path, world):
     """A cache is only a hint; unavailable or malformed hints trigger full reads."""
     if path is None:
@@ -637,7 +646,7 @@ def load_scan_cache(path, world):
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             return {}
         data = json.loads(read_file(path))
-        if not isinstance(data, dict) or data.get('schema') != 1 or data.get('world') != str(world) or data.get('version') != VERSION:
+        if not isinstance(data, dict) or data.get('schema') != CACHE_SCHEMA or data.get('world') != str(world) or data.get('version') != VERSION:
             return {}
         files = data['files']
         if not isinstance(files, dict) or any(not isinstance(v, list) or len(v) != 5
@@ -656,11 +665,15 @@ def drawing_files(world, cached=None, scanned=None):
     """
     def read(rel):
         path = world/rel
+        # Figer l'instant AVANT le stat/la lecture : une lecture lente ne doit
+        # pas transformer une identité initialement récente en preuve réutilisable.
+        observed_ns = time.time_ns()
         before = path.lstat()
         if not stat.S_ISREG(before.st_mode):
             raise CleanupError('World file must be regular')
         identity = file_identity(before)
-        if cached is not None and cached.get(str(rel)) == identity:
+        quiet = cache_identity_is_quiet(identity, observed_ns)
+        if cached is not None and cached.get(str(rel)) == identity and quiet:
             if scanned is not None:
                 scanned[str(rel)] = identity
             return rel, None
@@ -669,7 +682,7 @@ def drawing_files(world, cached=None, scanned=None):
             raise CleanupError('World file changed during scan')
         # Cache only absence of Writing data. Files containing Writing are
         # always parsed, including clean notes and previously cleaned drawings.
-        if MARKER not in blob and scanned is not None:
+        if MARKER not in blob and scanned is not None and quiet:
             scanned[str(rel)] = identity
         return rel,blob if MARKER in blob else None
     paths=iter(world_files(world));waiting=deque()
@@ -831,7 +844,7 @@ def cleanup(world_dir, backup_dir, dry_run=False, validator=None, scripts_dir=No
         if cache_path is None or dry_run:
             return
         try:
-            atomic_file(cache_path, json.dumps({'schema': 1, 'world': str(world),
+            atomic_file(cache_path, json.dumps({'schema': CACHE_SCHEMA, 'world': str(world),
                 'version': VERSION, 'files': scanned}, separators=(',', ':')).encode())
         except OSError:
             # An optimization cannot prevent an otherwise successful startup.
