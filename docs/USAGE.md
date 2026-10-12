@@ -113,6 +113,11 @@ Restore one map chunk or a rectangle of chunks to recover disappeared constructi
 `pzm backup list`. Coordinates are world **tiles**, not cells or chunks; give the
 X/Y of each of two opposite corners, in either order. Bounds are inclusive.
 
+To find a location, open the [Project Zomboid map](https://pzmap.org/), select
+Build 42 and set **Coordinate Display → Tile**. Read X/Y at each corner of
+the area. Use tile coordinates rather than the Cell or Chunk display values;
+check the effective bounds printed by the preview before applying.
+
 ```bash
 pzm backup restore-zone backup_2026-10-12_10h00m00s 10500 9500 10540 9540
 pzm server stop 2m --reason "Restauration de constructions"
