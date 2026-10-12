@@ -259,6 +259,16 @@ ProjectWriting startup cleanup caches only unchanged files containing no Writing
 data, in `data/dataBackups/projectwriting-cleanups/scan-cache.json`. The first
 successful scan populates the cache. Later scans compare file device, inode,
 size, modification time and change time; changed/replaced files are read again.
+Files modified less than two seconds before the initial observation are neither
+skipped nor added to the cache: ext4/tmpfs writes within one kernel tick can keep
+the same timestamps. This age is fixed before stat/read, so a slow read cannot
+turn a fresh absence into a cache entry. Old schema-1 caches are discarded and
+rebuilt by a full scan; a delayed lookup cannot reuse their unproven absences.
+This metadata optimization assumes ordinary local ext4/tmpfs timestamps and
+clock progression under the offline WORLD contract. Future-dated metadata,
+including a wall clock moved behind the file dates, forces a reread. It does
+not establish content identity on every filesystem or against a writer that
+does not respect WORLD; delete the optional cache to require full reads.
 Files containing Writing and player databases are always inspected. A missing or
 invalid cache causes full reads. Dry-run ignores the cache and never updates it.
 Deleting the cache merely makes the next startup perform a full scan. Pending
