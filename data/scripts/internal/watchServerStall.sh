@@ -58,7 +58,11 @@ readonly STALL_SAMPLES="${STALL_WATCH_SAMPLES:-1}"   # relevés identiques avant
 # faux positif : le détecteur se taisait définitivement sans le dire.
 resolve_jcmd() {
     local c
-    for c in "${PZ_GRAALVM_HOME:-}/bin/jcmd" "$(command -v jcmd 2>/dev/null || true)" \
+    if [[ -n "${PZ_GRAALVM_HOME:-}" && -x "${PZ_GRAALVM_HOME}/bin/jcmd" ]]; then
+        printf '%s\n' "${PZ_GRAALVM_HOME}/bin/jcmd"
+        return 0
+    fi
+    for c in "$(command -v jcmd 2>/dev/null || true)" \
              /usr/lib/jvm/*/bin/jcmd; do
         [[ -n "$c" && -x "$c" ]] && { echo "$c"; return 0; }
     done

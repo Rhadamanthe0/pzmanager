@@ -103,6 +103,7 @@ Guild-scoped, so they appear almost instantly:
 ```
 /pzm server start | status | stop [delai] [reason] | restart [delai] [reason]
 /pzm backup create | full | list | restore <chemin> | restore-character <pseudo> <backup>
+/pzm backup restore-zone <backup> <x1> <y1> <x2> <y2> [appliquer] [monde]
 /pzm whitelist list | add <id64> [nom] | remove <cible> [ban] | resetpassword <nom> | purge [duree] [delete]
 /pzm admin maintenance [delai] [reason] | reset [keep_config] [keep_whitelist]
 /pzm install system | zomboid | discord

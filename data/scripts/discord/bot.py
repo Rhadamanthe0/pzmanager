@@ -519,6 +519,21 @@ async def backup_restore_character(interaction: discord.Interaction, pseudo: str
     await execute(interaction, ["backup", "restore-character", pseudo, backup])
 
 
+@backup_group.command(name="restore-zone", description="Restaurer une zone de carte (aperçu par défaut)")
+@app_commands.describe(backup="Backup (nom ou chemin)", x1="X du premier coin", y1="Y du premier coin",
+                       x2="X du second coin", y2="Y du second coin", appliquer="Appliquer serveur arrêté",
+                       monde="Nom du monde si plusieurs sauvegardes")
+async def backup_restore_zone(interaction: discord.Interaction, backup: str,
+                              x1: int, y1: int, x2: int, y2: int,
+                              appliquer: bool = False, monde: Optional[str] = None):
+    args = ["backup", "restore-zone", backup, str(x1), str(y1), str(x2), str(y2)]
+    if monde is not None:
+        args.extend(["--save", monde])
+    if appliquer:
+        args.append("--apply")
+    await execute(interaction, args)
+
+
 # --- whitelist ---
 @whitelist_group.command(name="list", description="Liste blanche SteamID + comptes + bannis")
 async def whitelist_list(interaction: discord.Interaction):

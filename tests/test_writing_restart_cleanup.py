@@ -243,30 +243,36 @@ class OfflineCleanup(unittest.TestCase):
         self.assertEqual(cleaner.load_scan_cache(cache,self.world),{})
 
     def test_persisted_cache_same_tick_rewrite_is_detected_after_delay(self):
-        # Vrai tmpfs : aucun utime, faux stat, cache forgé ni écriture concurrente.
-        # Deux nettoyages séquentiels séparés par une édition offline du monde.
+        # Real files and cache, with only the timestamp identity boundary modeled.
+        # New kernels can expose finer timestamps after stat, so a real tmpfs
+        # collision is not reproducible everywhere. Keep inode, device and size
+        # real; freeze only the two observable timestamps to model older kernels.
+        # Permissions, reads, cache persistence and both cleanups remain real.
         with tempfile.TemporaryDirectory(prefix='pz-cache-tick-',dir='/dev/shm') as tmp:
             root=Path(tmp);world=root/'world';world.mkdir(mode=0o700)
             (world/'WorldDictionaryReadable.lua').write_text('\n'.join(
                 f'{{ registryID = {i}, fulltype = "{name}" }}' for i,name in REGISTRY.items()))
             path=world/'map/1/2.bin';path.parent.mkdir(parents=True)
             dirty=chunk(nested());plain=chunk(bytes(len(dirty)-17));cache=root/'cache.json'
-            equal=False
-            for _ in range(128):
-                path.write_bytes(plain)
+            path.write_bytes(plain)
+            before=cleaner.file_identity(path.stat())
+            original_identity=cleaner.file_identity
+            def coarse_identity(info):
+                identity=original_identity(info)
+                if identity[:3]==before[:3]:
+                    identity[3:]=before[3:]
+                return identity
+            with patch.object(cleaner,'file_identity',side_effect=coarse_identity):
                 first=cleaner.cleanup(world,root/'backups',scan_cache=cache)
                 self.assertEqual(first['files'],0)
                 self.assertNotIn('map/1/2.bin',json.loads(cache.read_text())['files'])
-                before=cleaner.file_identity(path.stat())
                 path.write_bytes(dirty)
-                equal=before==cleaner.file_identity(path.stat())
-                if equal:break
-            self.assertTrue(equal,'La fixture doit reproduire la même tick, sans faux stat')
-            time.sleep(cleaner.CACHE_QUIET_NS / 1e9 + .02)
-            # Après ce délai, un simple refus des hits récents serait insuffisant.
-            # Les dessins doivent être détectés et exiger la validation réelle.
-            with self.assertRaisesRegex(cleaner.CleanupError,'genuine PZ record validator'):
-                cleaner.cleanup(world,root/'backups',scan_cache=cache)
+                self.assertEqual(before,cleaner.file_identity(path.stat()))
+                time.sleep(cleaner.CACHE_QUIET_NS / 1e9 + .02)
+                # A recent negative must never have entered the persisted cache,
+                # even when the same identity becomes old enough to reuse later.
+                with self.assertRaisesRegex(cleaner.CleanupError,'genuine PZ record validator'):
+                    cleaner.cleanup(world,root/'backups',scan_cache=cache)
             self.assertEqual(path.read_bytes(),dirty)
             self.assertFalse((root/'backups').exists())
 
