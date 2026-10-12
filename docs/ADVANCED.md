@@ -163,6 +163,15 @@ pzm rcon "help"                          # All commands
 
 Full list: [PZ Wiki - Server Commands](https://pzwiki.net/wiki/Server_commands)
 
+## Restoring a Map Chunk from a Backup
+
+To recover constructions from an older snapshot, use
+`pzm backup restore-zone <backup> <x1> <y1> <x2> <y2>`. It previews by default;
+`--apply` restores whole Build 42 8×8 chunks while the server is stopped.
+For one chunk, repeat the coordinates of a tile inside it as both corners.
+Follow [the restore procedure](USAGE.md#restore-a-map-zone-build-42) for the
+options, affected data and recovery copies.
+
 ## Regenerating a Map Area
 
 When a map mod is updated but players have already explored the area, PZ keeps

@@ -117,6 +117,22 @@ Guild-scoped, so they appear almost instantly:
 - Flags (`ban`, `delete`, `keep_config`, `keep_whitelist`) are `True`/`False`
   options.
 
+### Restore a map chunk
+
+Use `/pzm backup list` to choose a directory snapshot from before the incident,
+then `/pzm backup restore-zone` with `backup` and the two opposite corners in
+**tile coordinates**. For one chunk containing tile `10500,9500`, set
+`x1=10500`, `y1=9500`, `x2=10500`, `y2=9500`.
+
+Leave `appliquer` false to preview. Stop the server with `/pzm server stop`
+and wait until it is stopped, then repeat with `appliquer` true. Use `monde`
+when several multiplayer worlds exist. Restart with `/pzm server start` after
+success. Every selected 8×8 chunk, including all floors, constructions and
+container contents, returns to the snapshot.
+
+See [the full restore procedure and limits](USAGE.md#restore-a-map-zone-build-42),
+including the recovery copy and compatibility checks.
+
 ## Batch: run several commands at once
 
 Slash commands are one-at-a-time. To run **many** commands, just **paste a plain
