@@ -251,6 +251,26 @@ OOM can kill a PZ process without saving. See
 
 ## RCON
 
+`pzm mods check [candidate.ini or V[N].txt]` checks whether the saved world's
+client scripts require a mod missing from the proposed list. With no argument,
+it checks the live configuration without changing it. See [Mod Updates](MOD_UPDATES.md).
+
+ProjectWriting startup cleanup caches only unchanged files containing no Writing
+data, in `data/dataBackups/projectwriting-cleanups/scan-cache.json`. The first
+successful scan populates the cache. Later scans compare file device, inode,
+size, modification time and change time; changed/replaced files are read again.
+Files containing Writing and player databases are always inspected. A missing or
+invalid cache causes full reads. Dry-run ignores the cache and never updates it.
+Deleting the cache merely makes the next startup perform a full scan. Pending
+cleanup recovery and genuine Java record validation still run before mutation.
+
+An empty/clean world does not require `javac`. Dirty records require a compatible
+JDK for the real PZ validator, selected with `PZ_WRITING_CLEANUP_JAVA` and
+`PZ_WRITING_CLEANUP_JAVAC`; missing tools stop cleanup before any world mutation.
+
+`checkModsNeedUpdate` waits up to 30 seconds for a final Workshop status; other
+console commands retain their configured output timeout.
+
 ```bash
 pzm rcon "command"            # Send RCON command
 ```

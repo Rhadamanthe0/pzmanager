@@ -78,6 +78,25 @@ Write `V[N+1].txt` with the new entries, ordered per [Load order](#load-order).
 
 ### 3. Pre-download every new item
 
+Before removing a mod, check the proposed version against the saved world's
+client script registry:
+
+```bash
+pzm mods check versionning/V[N+1].txt
+```
+
+Exit 1 means a removed mod still supplies a script required by clients; restore
+that mod or plan a world migration before deploying. Exit 2 means the check could
+not assess the dictionary/configuration. An existing world's unsupported
+dictionary format is refused. A new world without a readable dictionary has no
+saved registry to assess. The same check runs under the WORLD lock during startup
+preparation, before changing Writing settings or cleaning data.
+
+`historical_missing` also lists item/entity references to absent mods. Those alone
+do not prove a client loading failure and are advisory. Passing the check does
+not prove removal is harmless: dependencies, map tiles, inventories and Lua data
+still require review and the normal in-game verification.
+
 **Do not edit `servertest.ini` until each new Workshop ID is on disk.** A mod
 never downloaded before is the one that crash-loops the server:
 
