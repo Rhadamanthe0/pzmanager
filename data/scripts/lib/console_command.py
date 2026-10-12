@@ -12,30 +12,45 @@ import time
 from service_process import identity
 
 
+def game_line(line):
+    """Retirer seulement un préfixe connu du journal du jeu, sans texte arbitraire."""
+    prefix = re.fullmatch(
+        r"(LOG|WARN|ERROR)\s*:\s*([A-Za-z]+)\s+"
+        r"(?:f:[0-9]+\s+st:[0-9,\s]+|,\s*[0-9]+)>\s*(.*)", line)
+    return (prefix[3], prefix[1], prefix[2]) if prefix else (line, None, None)
+
+
+def console_echo(line):
+    body, level, channel = game_line(line)
+    if channel is not None and (level != 'LOG' or channel != 'General'):
+        return None
+    marker = re.fullmatch(r'command entered via server console \(System.in\): "(.*)"', body)
+    return marker[1] if marker else None
+
+
 def command_received(text, command):
     """Un écho exact prouve la lecture du FIFO, pas la fin du contrôle asynchrone."""
-    for line in text.splitlines():
-        marker = re.search(r'command entered via server console \(System.in\): "(.*)"$', line)
-        if marker and marker[1] == command:
-            return True
-    return False
+    return any(console_echo(line) == command for line in text.splitlines())
 
 
 def response(text, command):
     capture = False
     lines = []
     for line in text.splitlines():
-        marker = re.search(r'command entered via server console \(System.in\): "(.*)"$', line)
-        if marker:
+        marker = console_echo(line)
+        if marker is not None:
             if capture:
                 break
-            capture = marker[1] == command
+            capture = marker == command
             continue
         if not capture or re.search(r"ConnectionManager:|ChatMessage\{|User:.*is trying to connect", line):
             continue
-        line = re.sub(r"^.*(?:f:[0-9]+ st:[0-9,\s]+>|> [0-9,\s]+>)\s*", "", line)
-        if line.strip():
-            lines.append(line)
+        body, level, channel = game_line(line)
+        # Un message Lua ressemblant au statut Workshop n'est pas son résultat.
+        if command == "checkModsNeedUpdate" and channel is not None and (level != 'LOG' or channel != 'Mod'):
+            continue
+        if body.strip():
+            lines.append(body)
     if command == "players":
         # Une ligne de jeu intercalée ne constitue pas une réponse au comptage.
         start = next((i for i, line in enumerate(lines)
@@ -45,8 +60,8 @@ def response(text, command):
         lines = lines[start:]
     if command == "checkModsNeedUpdate":
         # « Checking... » accuse réception ; seul le statut final est un résultat.
-        final = [line for line in lines if re.search(
-            r"^CheckModsNeedUpdate:\s*(?:Mods need update|Mods updated)\s*$", line,
+        final = [line for line in lines if re.fullmatch(
+            r"CheckModsNeedUpdate:\s*(?:Mods need update|Mods updated)\s*", line,
             re.IGNORECASE)]
         if not final or len({line.lower() for line in final}) != 1:
             return ""

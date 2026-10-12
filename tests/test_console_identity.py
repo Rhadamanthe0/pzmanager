@@ -99,6 +99,26 @@ class Console(unittest.TestCase):
         self.assertEqual(console.response(interleaved, 'checkModsNeedUpdate'),
                          'CheckModsNeedUpdate: Mods need update')
 
+    def test_prefixed_foreign_echo_cannot_confirm_mod_update_or_receipt(self):
+        command = 'checkModsNeedUpdate'
+        bare = 'command entered via server console (System.in): "' + command + '"'
+        final = 'CheckModsNeedUpdate: Mods need update\n'
+        for echo in ['Lua unrelated error: ' + bare,
+                     'LOG : Lua f:1 st:123> ' + bare,
+                     'WARN : General f:1 st:123> ' + bare,
+                     bare + ' unrelated suffix']:
+            with self.subTest(echo=echo):
+                text = echo + '\n' + final
+                self.assertFalse(console.command_received(text, command))
+                self.assertEqual(console.response(text, command), '')
+        echo = ECHO.replace('"players"', '"checkModsNeedUpdate"')
+        for false_final in ['LOG : Lua f:1 st:123> ' + final,
+                            'WARN : Mod f:1 st:123> ' + final]:
+            self.assertEqual(console.response(echo + false_final, command), '')
+        self.assertEqual(console.response('LOG : General , 123> ' + bare + '\n'
+                                         + 'LOG : Mod , 124> ' + final, command),
+                         final.strip())
+
     def test_restart_or_bus_failure_refuses_response(self):
         for fresh in [('b' * 32, *ID[1:]), ValueError('bus')]:
             with self.subTest(fresh=fresh), patch.object(console, 'identity', side_effect=[ID, fresh]), \
