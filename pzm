@@ -33,6 +33,7 @@ Commandes disponibles:
     full               Backup complet avec sync
     restore <chemin>   Restaurer données Zomboid
     restore-character <pseudo> <backup>   Restaurer le perso d'un joueur (serveur arrêté ; écrase l'existant)
+    restore-zone <backup> <x1> <y1> <x2> <y2> [--apply]  Restaurer une zone (aperçu par défaut)
     list               Lister backups disponibles
 
   whitelist <action> [arguments]
@@ -134,6 +135,9 @@ cmd_backup() {
             [[ $# -gt 0 ]] || usage_error "Chemin backup requis" "pzm backup restore <chemin>"
             exec "${SCRIPT_DIR}/data/scripts/backup/restoreZomboidData.sh" "$@"
             ;;
+        restore-zone)
+            exec "${SCRIPT_DIR}/data/scripts/backup/restoreZone.sh" "$@"
+            ;;
         restore-character)
             [[ $# -ge 2 ]] || usage_error "pseudo et backup requis" "pzm backup restore-character <pseudo> <backup>"
             exec "${SCRIPT_DIR}/data/scripts/backup/restoreCharacter.sh" "$@"
@@ -142,7 +146,7 @@ cmd_backup() {
             exec "${SCRIPT_DIR}/data/scripts/backup/listBackups.sh"
             ;;
         *)
-            invalid_action "backup" "$action" "create, full, restore, restore-character, list"
+            invalid_action "backup" "$action" "create, full, restore, restore-character, restore-zone, list"
             ;;
     esac
 }
