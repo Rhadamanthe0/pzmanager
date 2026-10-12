@@ -77,7 +77,8 @@ Aux connexions suivantes, il suffira de sélectionner le serveur et de cliquer s
 ```bash
 pzm whitelist add "<SteamID64>" "<pseudo>"   # autoriser un joueur (serveur démarré)
 pzm whitelist list                            # voir SteamID autorisés / comptes / bannis
-pzm whitelist remove "<pseudo ou SteamID64>"          # retrait amiable
+pzm whitelist remove "<SteamID64>"                   # retirer tous ses accès (serveur démarré)
+pzm whitelist remove-account "<pseudo>"               # retirer ce compte (serveur arrêté)
 pzm whitelist remove "<SteamID64>" --ban              # retrait + bannissement définitif
-pzm whitelist resetpassword "<pseudo>"        # reset mot de passe d'un joueur
+pzm whitelist resetpassword "<pseudo>"        # reset mot de passe (serveur arrêté)
 ```

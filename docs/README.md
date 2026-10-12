@@ -7,12 +7,12 @@ owner below and add it there. If a second document needs the same fact, it links
 it does not restate. Two copies of one fact drift apart, and nothing then says
 which one is stale.
 
-`CLAUDE.md` at the repo root is **not** documentation: it holds agent-facing rules
-and an index into this directory. Do not move knowledge into it.
+[AGENTS.md](../AGENTS.md) holds instructions for agents. Keep operator
+documentation in this directory.
 
-Run `data/scripts/internal/checkDocsDuplication.sh` after editing docs or
-`CLAUDE.md` — it fails on literal overlap between any two files, and on a
-`CLAUDE.md` that has grown back into a second manual.
+Run `data/scripts/internal/checkDocsDuplication.sh` after editing documentation.
+It checks overlap between documents and also checks a legacy `CLAUDE.md` if one
+is present.
 
 ## Who owns what
 

@@ -28,8 +28,8 @@ The .env file is automatically created from .env.example on first run.
 export PZ_USER="pzuser"              # Default user
 export PZ_HOME="/home/${PZ_USER}"
 export PZ_MANAGER_DIR="${PZ_HOME}/pzmanager"
-export PZ_SCRIPTS_DIR="${PZ_MANAGER_DIR}/scripts"
 export PZ_DATA_DIR="${PZ_MANAGER_DIR}/data"
+export PZ_SCRIPTS_DIR="${PZ_DATA_DIR}/scripts"
 ```
 
 ### Project Zomboid Server
@@ -101,8 +101,10 @@ export JAVA_PACKAGE="openjdk-${JAVA_VERSION}-jre-headless"
 export JAVA_PATH="/usr/lib/jvm/java-${JAVA_VERSION}-openjdk-amd64"
 ```
 
-**Compatible versions**: 17, 21, 25
-**Recommended**: 25 (optimal performance)
+The current JVM configuration targets **Java 25**, including
+`-XX:+UseCompactObjectHeaders`. Java 17 and 21 are not supported by the generated
+arguments. See [JVM configuration](ADVANCED.md#ram--jvm-configuration) for the
+selected runtime and the separate JDK requirements of offline helpers.
 
 **Change version**:
 1. Modify `JAVA_VERSION` in .env
