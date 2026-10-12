@@ -58,6 +58,14 @@ class InstallerTests(unittest.TestCase):
         self.target.parent.mkdir(parents=True); self.target.parent.chmod(0o755); self.target.parent.parent.chmod(0o755); self.target.parent.parent.parent.chmod(0o755); self.target.write_text('old guard')
         self.source.unlink(); self.sandbox.unlink(); self.ini.unlink()
         self.assertEqual(self.run_install(mode=0), 'disabled'); self.assertFalse(self.target.exists())
+    def test_build42_prefixed_mod_id_enables_existing_policy(self):
+        self.ini.write_text('Mods=\\Something;\\ProjectWriting;\\Another\n')
+        self.assertEqual(self.run_install(), 'enabled')
+        self.assertIn('Freehand = false', self.sandbox.read_text())
+        self.assertFalse(self.target.exists())
+        for token in ['\\ProjectWritingAddon', 'Other\\ProjectWriting', '\\\\ProjectWriting']:
+            self.assertFalse(installer.mod_enabled('Mods=' + token + '\n'))
+
     def test_disabled_removes_only_symlink_itself(self):
         self.target.parent.mkdir(parents=True)
         outside=self.root/'outside.lua'; outside.write_text('protected')

@@ -113,9 +113,14 @@ fi
 echo "mock-systemctl: args inattendus: $*" >&2
 exit 99
 MOCKEOF
-    cat > "$s/bin/pgrep" <<'MOCKEOF'
+    # Le choix JVM est testé séparément sur /proc/cgroup privés ; ici seul le
+    # résultat de cette frontière est simulé, avec l'identité watchdog réelle.
+    cat > "$s/bin/python3" <<'MOCKEOF'
 #!/usr/bin/env bash
-cat "${MOCK_DIR}/mock_pid"
+case "${1:-}" in
+    */service_process.py) cat "${MOCK_DIR}/mock_pid" ;;
+    *) exec /usr/bin/python3 "$@" ;;
+esac
 MOCKEOF
     cat > "$s/bin/journalctl" <<'MOCKEOF'
 #!/usr/bin/env bash

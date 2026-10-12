@@ -139,7 +139,7 @@ if [[ -f "$COOLDOWN_FILE" && ! -L "$COOLDOWN_FILE" ]]; then
     rm -f "$COOLDOWN_FILE"
 fi
 
-pid="$(pgrep -f 'ProjectZomboid64' | head -1 || true)"
+pid="$(python3 "${SCRIPT_DIR}/../lib/service_process.py" "${PZ_SERVICE_NAME:-zomboid.service}" 2>/dev/null || true)"
 [[ -n "$pid" ]] || exit 0
 
 # Identité de l'invocation courante : sert à tous les write_state de ce passage

@@ -19,6 +19,15 @@ class MemoryMonitoring(unittest.TestCase):
         mock.start()
         self.addCleanup(mock.stop)
 
+    def test_unknown_service_is_not_reported_inactive(self):
+        s = _serveur('player')
+        s.update(pid=None, service_state='unknown')
+        color, alerts = bot._status(s)
+        self.assertFalse(any('INACTIF' in alert for alert in alerts))
+        self.assertTrue(any('indéterminé' in alert for alert in alerts))
+        field = next(field for field in bot._monitoring_embed(s).fields if field['name'] == 'Serveur')
+        self.assertIn('état indéterminé', field['value'])
+
     def test_service_accounting_and_actual_limit(self):
         result = subprocess.CompletedProcess([], 0, stdout=(
             "MemoryCurrent=19327352832\nMemoryPeak=20000000000\nMemoryMax=21474836480\nControlGroup=/user.slice/user-1005.slice/user@1005.service/pz.slice\n"))

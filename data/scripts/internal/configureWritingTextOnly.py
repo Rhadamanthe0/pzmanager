@@ -241,7 +241,10 @@ def mod_enabled(ini):
         key, sep, value = line.partition("=")
         if sep and key.strip() == "Mods": values.append(value.strip())
     if len(values) > 1: raise ConfigurationError("Duplicate Mods settings in server INI")
-    return bool(values) and "ProjectWriting" in {token.strip() for token in values[0].split(";")}
+    # B42 préfixe aussi les ID de mods communs par un antislash dans Mods=.
+    # Accepter uniquement ces deux ID exacts, sans activer un mod voisin/retiré.
+    return bool(values) and bool({"ProjectWriting", "\\ProjectWriting"} &
+                                 {token.strip() for token in values[0].split(";")})
 
 
 def validate_directory(fd, label, private_anchor=False):

@@ -46,6 +46,7 @@ from typing import Literal, Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 from service_memory import service_rss_bytes
+from service_process import find_jvm, jvm_status
 from shared_memory_budget import validate_slice, slice_group, check_process, BUDGET
 
 if __name__ == "__main__":
@@ -822,23 +823,8 @@ def _service_memory() -> dict:
 
 
 def _java_pid():
-    """PID de la JVM serveur : le process 'ProjectZomboid'/'java' au plus gros RSS
-    (robuste au shell parent du service)."""
-    best, best_rss = None, -1
-    for pid in os.listdir("/proc"):
-        if not pid.isdigit():
-            continue
-        try:
-            with open(f"/proc/{pid}/comm") as f:
-                comm = f.read().strip()
-        except OSError:
-            continue
-        if "ProjectZomboid" not in comm and comm != "java":
-            continue
-        rss = _proc_status(pid).get("VmRSS", 0)
-        if rss > best_rss:
-            best, best_rss = int(pid), rss
-    return best
+    """JVM de l'unité PZ identifiée, jamais la JVM d'une autre application."""
+    return find_jvm(PZ_SERVICE_NAME)
 
 
 def _proc_cpu_jiffies(pid):
@@ -1110,7 +1096,10 @@ def _prom_snapshot():
 def collect_stats(prev: dict) -> dict:
     """Un instantané complet. `prev` porte l'état inter-cycles (CPU delta)."""
     now = time.monotonic()
-    s = {"pid": _java_pid()}
+    s = jvm_status(PZ_SERVICE_NAME)
+    if prev.get("invocation") != s["invocation"]:
+        prev.pop("jif", None)
+    prev["invocation"] = s["invocation"]
     s["mem"] = _meminfo()
     st = _proc_status(s["pid"]) if s["pid"] else {}
     s["rss_kb"], s["hwm_kb"], s["pswap_kb"] = st.get("VmRSS"), st.get("VmHWM"), st.get("VmSwap")
@@ -1266,8 +1255,13 @@ def _status(s):
     live = gc[2] if gc and gc[2] is not None else None      # plancher live-set (majeure)
     crit = False
     if s["pid"] is None:
-        alerts.append("🔴 Serveur INACTIF (aucun process JVM)")
-        crit = True
+        service_state = s.get("service_state", "inactive")
+        if service_state == "inactive":
+            alerts.append("🔴 Serveur INACTIF (unité arrêtée, aucune JVM identifiée)")
+            crit = True
+        elif service_state == "unknown":
+            alerts.append("🟠 État PZ indéterminé (identité systemd ou JVM indisponible)")
+            warn = True
     memory_bytes = s.get("service_rss_bytes")
     if memory_bytes is not None and memory_bytes >= PZ_RAM_RESTART_GB * 1073741824:
         alerts.append(f"🔴 RAM totale {memory_bytes / 1073741824:.1f} Go ≥ seuil de restart ({PZ_RAM_RESTART_GB} Go)")
@@ -1319,7 +1313,10 @@ def _monitoring_embed(s: dict) -> discord.Embed:
     embed = discord.Embed(title="📊 Monitoring serveur", color=color,
                           timestamp=datetime.now(timezone.utc))
 
-    state = "🟢 actif" if s["pid"] else "🔴 inactif"
+    state = "🟢 actif" if s["pid"] else {
+        "inactive": "🔴 inactif", "activating": "🟠 démarrage", "deactivating": "🟠 arrêt",
+        "unknown": "🟠 état indéterminé",
+    }.get(s.get("service_state", "inactive"), "🟠 état indéterminé")
     players = s.get("players")
     players_txt = (f" · 👥 **{players}** joueur{'s' if players != 1 else ''}"
                    if players is not None else "")
