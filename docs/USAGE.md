@@ -85,6 +85,8 @@ pzm backup full               # Complete backup
 pzm backup list               # List backups
 pzm backup restore <path>     # Restore ALL data from a backup
 pzm backup restore-character <name> <backup>   # Restore ONE player's character (overwrites existing)
+pzm backup restore-zone <backup> <x1> <y1> <x2> <y2> [--apply] [--save <world>]
+                              # Preview/restore whole 8x8 map chunks (tile coordinates)
 ```
 
 Example:
@@ -104,6 +106,98 @@ pzm server start
   or a full path. Use a specific backup from **before** the incident.
 - The player's current character is **overwritten** by the one from the backup. No extra
   snapshot is taken — `pzm server stop` already backs up before stopping.
+
+### Restore a map zone (Build 42)
+
+Restore one map chunk or a rectangle of chunks to recover disappeared constructions from an older **directory snapshot** listed by
+`pzm backup list`. Coordinates are world **tiles**, not cells or chunks; give the
+X/Y of each of two opposite corners, in either order. Bounds are inclusive.
+
+To read coordinates **in game**, an administrator can open **Admin → See Server
+Options**, filter for `ShowCoordinates`, set it to `true`, save and apply changes.
+Stand at the location and read X/Y in the lower-right corner; Z is not an argument
+because restoration includes every floor. This setting shows coordinates to players.
+
+Alternatively, open the [Project Zomboid map](https://pzmap.org/), select
+Build 42 and set **Coordinate Display → Tile**. Read X/Y at each corner of
+the area. Use tile coordinates rather than the Cell or Chunk display values;
+check the effective bounds printed by the preview before applying.
+
+```bash
+pzm backup restore-zone backup_2026-10-12_10h00m00s 10500 9500 10540 9540
+pzm server stop 2m --reason "Restauration de constructions"
+pzm backup restore-zone backup_2026-10-12_10h00m00s 10500 9500 10540 9540 --apply
+pzm server start now --reason "Restauration de constructions terminée"
+```
+
+For **one chunk**, repeat the coordinates of any tile inside it. For example,
+this previews the chunk containing tile `10500,9500`; add `--apply` after stopping
+the server to restore it:
+
+```bash
+pzm backup restore-zone backup_2026-10-12_10h00m00s 10500 9500 10500 9500
+```
+
+This selects the whole chunk (tiles `10496..10503`, `9496..9503`), on every floor.
+Supply tile coordinates, even for a single chunk; do not pass chunk indices.
+**The minimum restore size is one 8×8 chunk (64 tiles), on every floor.**
+A single tile or object cannot be restored independently with this command.
+
+The first command previews without modifying the map, even while the server runs.
+`--dry-run` also explicitly selects preview. `--apply` requires a proven stopped
+server and takes the same world lock as start, backup, wipe and full restore.
+Use `--save <world>` if there are several multiplayer worlds. The source must
+contain `Saves/Multiplayer/<world>/map/`; ZIP archives and Build 41 are unsupported.
+A snapshot name under `BACKUP_DIR`, its `latest` alias, or a full directory path
+is accepted. Prefer a dated snapshot from before the disappearance.
+
+The preview prints the **actual rectangle expanded to 8×8 chunk boundaries**.
+All floors, terrain, constructions and container contents in those chunks return
+to the snapshot, including changes made since that snapshot. Terrain outside
+these chunks is untouched. Stale isoregion caches in the selected chunks are
+replaced or removed if absent from the source. Cell-wide chunkdata, metagrid,
+zombie/animal populations, global files, characters and vehicles are not restored.
+This targets construction loss; it is not a complete rewind of all activity in
+the rectangle, nor a fix for a mod or save bug that continues to remove buildings.
+
+Every selected terrain chunk must exist and be nonempty in the source. Missing
+chunks cause refusal before any write. `WorldDictionary.bin`
+must be present and byte-identical in both worlds. If `map_ver.bin` exists, it
+must match too; current Build 42 saves can omit it. Every source terrain chunk
+must have a valid world-version-249 header, length and CRC32 checksum. Different
+versions or object ID dictionaries cannot be safely mixed. This conservative check may reject older
+snapshots after a dictionary update. Do not overwrite the live global dictionary
+to bypass the refusal. Keep the same mods; binary map contents are copied, not
+validated by loading the game. Verify the recovered construction in game.
+
+Before writing, the command stages the selected source files and copies the
+current selected files into a private, unique `${PZ_HOME}/OLD/zone-rollback-*`
+directory. The path is printed. It is retained independently of hourly snapshot
+retention and consumes space until manually removed. `manifest.json` records the
+selected files, files absent before the operation, and completion status;
+`before/Saves/Multiplayer/<world>/` holds the recovery copies. Ordinary write
+failures and handled interruption trigger restoration of files already touched.
+A power loss or forced kill can leave a partial operation: keep the server stopped
+and use those copies and the manifest to recover (restore listed previous files,
+remove only the listed `absent_before` files). Individual replacements are atomic,
+but the whole rectangle is not one filesystem transaction. A failed recovery
+retains all copies for operator intervention. The source snapshot and hardlinked
+backups are never modified by the restore.
+
+Discord exposes the same operation as `/pzm backup restore-zone`, with `backup`,
+`x1`, `y1`, `x2`, `y2`, optional `monde`, and `appliquer` (false by default).
+
+Offline validation of real snapshots can use `tests/ValidateRestoredTerrain.java`
+with the installed game JAR and a compatible JDK (`javac --release` matching the
+chosen JVM). Run it from a private directory containing read-only access to the
+matching `media/` and `stdlib.lua`, with `CHUNK_PATH CHUNK_X CHUNK_Y` as arguments.
+It reads the copied world's dictionary and calls the genuine terrain record
+loader, then reports object, thumpable, floor and door counts. It never starts a
+server, regenerates terrain or saves a world. Compare baseline/restored counts
+and exact chunk bytes, and verify that changes outside the rectangle are absent.
+This minimal probe does not initialize Workshop scripts or render tiles; some
+chunks need a fully initialized game environment. A successful probe validates
+only its selected records, not every possible mod or world combination.
 
 ## Whitelist
 
@@ -336,6 +430,8 @@ systemctl --user list-timers
 | Check status | `pzm server status` |
 | Add player | `pzm whitelist add "SteamID64" "Name"` |
 | Manual backup | `pzm backup create` |
+| Preview one map chunk | `pzm backup restore-zone <backup> <x> <y> <x> <y>` |
+| Restore that chunk (server stopped) | `pzm backup restore-zone <backup> <x> <y> <x> <y> --apply` |
 | Send message | `pzm rcon servermsg "Text"` |
 
 ## Help
@@ -352,75 +448,6 @@ Full index and topic ownership: [README.md](README.md).
 - [ARCHITECTURE.md](ARCHITECTURE.md) - How the code is organised
 - [SERVER_CONFIG.md](SERVER_CONFIG.md) - Game configuration
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Problem solving
-
-### Restore a map zone (Build 42)
-
-Recover disappeared constructions from an older **directory snapshot** listed by
-`pzm backup list`. Coordinates are world **tiles**, not cells or chunks; give the
-X/Y of each of two opposite corners, in either order. Bounds are inclusive.
-
-```bash
-pzm backup restore-zone backup_2026-10-12_10h00m00s 10500 9500 10540 9540
-pzm server stop 2m --reason "Restauration de constructions"
-pzm backup restore-zone backup_2026-10-12_10h00m00s 10500 9500 10540 9540 --apply
-pzm server start
-```
-
-The first command previews without modifying the map, even while the server runs.
-`--dry-run` also explicitly selects preview. `--apply` requires a proven stopped
-server and takes the same world lock as start, backup, wipe and full restore.
-Use `--save <world>` if there are several multiplayer worlds. The source must
-contain `Saves/Multiplayer/<world>/map/`; ZIP archives and Build 41 are unsupported.
-A snapshot name under `BACKUP_DIR`, its `latest` alias, or a full directory path
-is accepted. Prefer a dated snapshot from before the disappearance.
-
-The preview prints the **actual rectangle expanded to 8×8 chunk boundaries**.
-All floors, terrain, constructions and container contents in those chunks return
-to the snapshot, including changes made since that snapshot. Terrain outside
-these chunks is untouched. Stale isoregion caches in the selected chunks are
-replaced or removed if absent from the source. Cell-wide chunkdata, metagrid,
-zombie/animal populations, global files, characters and vehicles are not restored.
-This targets construction loss; it is not a complete rewind of all activity in
-the rectangle, nor a fix for a mod or save bug that continues to remove buildings.
-
-Every selected terrain chunk must exist and be nonempty in the source. Missing
-chunks cause refusal before any write. `WorldDictionary.bin`
-must be present and byte-identical in both worlds. If `map_ver.bin` exists, it
-must match too; current Build 42 saves can omit it. Every source terrain chunk
-must have a valid world-version-249 header, length and CRC32 checksum. Different
-versions or object ID dictionaries cannot be safely mixed. This conservative check may reject older
-snapshots after a dictionary update. Do not overwrite the live global dictionary
-to bypass the refusal. Keep the same mods; binary map contents are copied, not
-validated by loading the game. Verify the recovered construction in game.
-
-Before writing, the command stages the selected source files and copies the
-current selected files into a private, unique `${PZ_HOME}/OLD/zone-rollback-*`
-directory. The path is printed. It is retained independently of hourly snapshot
-retention and consumes space until manually removed. `manifest.json` records the
-selected files, files absent before the operation, and completion status;
-`before/Saves/Multiplayer/<world>/` holds the recovery copies. Ordinary write
-failures and handled interruption trigger restoration of files already touched.
-A power loss or forced kill can leave a partial operation: keep the server stopped
-and use those copies and the manifest to recover (restore listed previous files,
-remove only the listed `absent_before` files). Individual replacements are atomic,
-but the whole rectangle is not one filesystem transaction. A failed recovery
-retains all copies for operator intervention. The source snapshot and hardlinked
-backups are never modified by the restore.
-
-Discord exposes the same operation as `/pzm backup restore-zone`, with `backup`,
-`x1`, `y1`, `x2`, `y2`, optional `monde`, and `appliquer` (false by default).
-
-Offline validation of real snapshots can use `tests/ValidateRestoredTerrain.java`
-with the installed game JAR and a compatible JDK (`javac --release` matching the
-chosen JVM). Run it from a private directory containing read-only access to the
-matching `media/` and `stdlib.lua`, with `CHUNK_PATH CHUNK_X CHUNK_Y` as arguments.
-It reads the copied world's dictionary and calls the genuine terrain record
-loader, then reports object, thumpable, floor and door counts. It never starts a
-server, regenerates terrain or saves a world. Compare baseline/restored counts
-and exact chunk bytes, and verify that changes outside the rectangle are absent.
-This minimal probe does not initialize Workshop scripts or render tiles; some
-chunks need a fully initialized game environment. A successful probe validates
-only its selected records, not every possible mod or world combination.
 
 The GitHub workflow **Isolated Linux tests** runs `tests/run-isolated.py` on
 a disposable hosted Ubuntu VM for pull requests and pushes to main. It verifies
