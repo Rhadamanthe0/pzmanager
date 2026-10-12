@@ -1,0 +1,60 @@
+name: Isolated Linux tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Isolated Linux tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify preinstalled test tools
+        run: |
+          for tool in bash python3 flock sqlite3 rsync tar zip unzip; do
+            command -v "$tool"
+          done
+      - name: Run suites in a disposable copy
+        # Root-only boundary scenarios run on this disposable hosted VM.
+        # No active PZ installation, secrets or production mounts are present.
+        run: |
+          sudo git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          sudo python3 tests/run-isolated.py --results "$RUNNER_TEMP/pz-test-results"
+      - name: Publish test summary
+        if: always()
+        env:
+          RESULTS: ${{ runner.temp }}/pz-test-results
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          summary = Path(os.environ['RESULTS']) / 'summary.json'
+          if summary.is_file():
+              data = json.loads(summary.read_text())
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
+                  output.write(f"Suites: {data['suites']}\n\n")
+                  output.write(f"Failures: {', '.join(data['failures']) or 'none'}\n")
+          PY
+      - name: Retain test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: isolated-test-results
+          path: ${{ runner.temp }}/pz-test-results
+          if-no-files-found: warn
+          retention-days: 14

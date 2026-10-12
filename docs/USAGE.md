@@ -421,3 +421,10 @@ and exact chunk bytes, and verify that changes outside the rectangle are absent.
 This minimal probe does not initialize Workshop scripts or render tiles; some
 chunks need a fully initialized game environment. A successful probe validates
 only its selected records, not every possible mod or world combination.
+
+The GitHub workflow **Isolated Linux tests** runs `tests/run-isolated.py` on
+a disposable hosted Ubuntu VM for pull requests and pushes to main. It verifies
+preinstalled dependencies, executes the root boundary scenarios, and retains the
+suite results as an artifact. It does not access the production server or include
+the proprietary game JAR; real-world terrain loading remains a separate offline
+validation.
