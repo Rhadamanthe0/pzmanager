@@ -132,18 +132,25 @@ def restore(args):
                 (live / rel).unlink(missing_ok=True)  # discard stale selected iso cache
         record('complete')
     except BaseException:
-        for rel in reversed(changed):
-            if (old / rel).is_file():
-                replace_file(old / rel, live / rel)
-            else:
-                (live / rel).unlink(missing_ok=True)
-        record('reverted')
+        previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+        for sig in previous:
+            signal.signal(sig, signal.SIG_IGN)
+        try:
+            for rel in reversed(changed):
+                if (old / rel).is_file():
+                    replace_file(old / rel, live / rel)
+                else:
+                    (live / rel).unlink(missing_ok=True)
+            record('reverted')
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
         raise
     print('Zone restaurée. Vous pouvez démarrer le serveur.')
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument('--live-root', required=True)
     parser.add_argument('--backup-root', required=True)
     parser.add_argument('--recovery-root', required=True)
@@ -156,8 +163,13 @@ def main():
     mode.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
     def interrupted(signum, frame):
+        # The process group and the shell may both deliver TERM. Further
+        # interruptions must not abort restoration of already changed files.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         raise KeyboardInterrupt(f"Signal {signum}")
     signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, interrupted)
     try:
         restore(args)
     except (OSError, ValueError) as error:

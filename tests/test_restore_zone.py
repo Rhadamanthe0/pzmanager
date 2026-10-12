@@ -120,6 +120,65 @@ class ZoneTests(unittest.TestCase):
             with self.assertRaises(OSError): zone.restore(self.args)
         self.assertEqual(self.state(), before)
 
+    def test_helper_rejects_abbreviated_apply(self):
+        for option in ('--app', '--appl', '--a'):
+            before = self.state()
+            result = subprocess.run(['python3', str(ROOT / 'data/scripts/lib/restore_zone.py'),
+                                     '--live-root', self.args.live_root, '--backup-root', self.args.backup_root,
+                                     '--recovery-root', self.args.recovery_root,
+                                     'backup', '8', '8', '15', '15', option], capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(self.state(), before)
+            self.assertFalse((self.root / 'OLD').exists())
+
+    def test_repeated_signals_do_not_interrupt_recovery(self):
+        before = self.state()
+        worker = self.root / 'worker.py'
+        applying = self.root / 'applying'
+        recovering = self.root / 'recovering'
+        worker.write_text(
+            'import importlib.util, sys, time\n'
+            'from pathlib import Path\n'
+            f'spec = importlib.util.spec_from_file_location("zone", {str(ROOT / "data/scripts/lib/restore_zone.py")!r})\n'
+            'zone = importlib.util.module_from_spec(spec); spec.loader.exec_module(zone)\n'
+            'original = zone.replace_file\n'
+            'calls = 0\n'
+            'def slow(source, destination):\n'
+            '    global calls\n'
+            '    calls += 1\n'
+            '    original(source, destination)\n'
+            '    if calls == 1:\n'
+            f'        Path({str(applying)!r}).touch()\n'
+            '        time.sleep(10)\n'
+            '    else:\n'
+            f'        Path({str(recovering)!r}).touch()\n'
+            '        time.sleep(0.5)\n'
+            'zone.replace_file = slow\n'
+            'zone.main()\n')
+        child = subprocess.Popen(['python3', str(worker), '--live-root', self.args.live_root,
+                                  '--backup-root', self.args.backup_root, '--recovery-root', self.args.recovery_root,
+                                  'backup', '8', '8', '15', '15', '--apply'],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        def wait_for(path):
+            deadline = time.monotonic() + 3
+            while not path.exists() and time.monotonic() < deadline: time.sleep(0.01)
+            self.assertTrue(path.exists())
+        try:
+            wait_for(applying)
+            self.assertNotEqual(self.state(), before)
+            child.send_signal(signal.SIGTERM)
+            wait_for(recovering)
+            child.send_signal(signal.SIGTERM)
+            child.send_signal(signal.SIGINT)
+            child.communicate(timeout=3)
+            self.assertNotEqual(child.returncode, 0)
+            self.assertEqual(self.state(), before)
+            import json
+            manifest = next((self.root / 'OLD').glob('zone-*/manifest.json'))
+            self.assertEqual(json.loads(manifest.read_text())['status'], 'reverted')
+        finally:
+            if child.poll() is None: child.kill(); child.communicate()
+
     def test_shell_state_guard_and_world_lock(self):
         # Copy the production shell + lock/state libs into a private harness.
         fixture = self.root / 'harness'
@@ -129,7 +188,7 @@ class ZoneTests(unittest.TestCase):
         for name in ('world_lock.sh', 'server_state.sh'):
             shutil.copy2(ROOT / 'data/scripts/lib' / name, lib)
         (lib / 'restore_zone.py').write_text('import os\nopen(os.environ["MARK"], "w").write("ran")\n')
-        (lib / 'common.sh').write_text('source "${SCRIPT_DIR}/../lib/world_lock.sh"\nsource "${SCRIPT_DIR}/../lib/server_state.sh"\nsource_env() { :; }\n')
+        (lib / 'common.sh').write_text('source "${SCRIPT_DIR}/../lib/world_lock.sh"\nsource "${SCRIPT_DIR}/../lib/server_state.sh"\nsource_env() { :; }\ndie() { echo \"$*\" >&2; exit 1; }\n')
         bin_dir = fixture / 'bin'; bin_dir.mkdir()
         systemctl = bin_dir / 'systemctl'
         systemctl.write_text('#!/bin/bash\n[[ "$STATE" != error ]] || exit 1\necho "ActiveState=$STATE"\n')
@@ -145,6 +204,12 @@ class ZoneTests(unittest.TestCase):
             self.assertEqual(result.returncode == 0, state == 'inactive', result.stderr)
             self.assertEqual(mark.exists(), state == 'inactive')
             mark.unlink(missing_ok=True)
+        # Abbreviations and overrides cannot bypass the stopped-server check.
+        for option in ('--app', '--appl', '--a', '--live-root', '--backup-root', '--recovery-root'):
+            result = subprocess.run(['bash', str(scripts / 'restoreZone.sh'), 'backup', '8', '8', '15', '15', option],
+                                    env=dict(env, STATE='active'), capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(mark.exists())
         # TERM must not unlock the world while the child is recovering.
         (lib / 'restore_zone.py').write_text(
             'import os, signal, time\n'
