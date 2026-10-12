@@ -104,7 +104,6 @@ Guild-scoped, so they appear almost instantly:
 /pzm server start | status | stop [delai] [reason] | restart [delai] [reason]
 /pzm backup create | full | list | restore <chemin> | restore-character <pseudo> <backup>
 /pzm backup restore-zone <backup> <x1> <y1> <x2> <y2> [appliquer] [monde]
-/pzm map coords <x> <y> [unite]
 /pzm whitelist list | add <id64> [nom] | remove <cible> [ban] | resetpassword <nom> | purge [duree] [delete]
 /pzm admin maintenance [delai] [reason] | reset [keep_config] [keep_whitelist]
 /pzm install system | zomboid | discord
@@ -119,13 +118,6 @@ Guild-scoped, so they appear almost instantly:
   options.
 
 ### Restore map tiles
-
-First use `/pzm map coords` with the X/Y position displayed in game. It reports
-the exact tile, the containing 8×8 chunk and the containing 256×256 cell, with
-inclusive minimum/maximum tile coordinates and `restore-zone` arguments for
-each. Use the tile row for a single position on all floors. The optional `unite`
-dropdown defaults to `tile`; select `chunk` or `cell` only when entering indices
-of those units. This lookup does not change the world and works while it runs.
 
 Use `/pzm backup list` to choose a directory snapshot from before the incident,
 then `/pzm backup restore-zone` with `backup` and the two opposite corners in
