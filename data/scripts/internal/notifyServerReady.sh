@@ -95,7 +95,7 @@ fi
 
 # Ne suivre QUE l'invocation courante, sans borne temporelle à la seconde :
 # lors d'un restart rapproché, --since pourrait inclure une frame de l'ancien boot.
-# --no-tail rejoue aussi les frames déjà émises avant le lancement du lecteur.
+# -n all rejoue aussi les frames déjà émises avant le lancement du lecteur.
 # Lecture en flux filtrée dans journald : ne pas rescanner tout le journal
 # toutes les cinq secondes (des milliers de lignes pendant le chargement).
 JOURNAL_PID=""
@@ -112,10 +112,11 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 0' TERM INT
 exec {JOURNAL_FD}< <(
-    journalctl --user \
-        "_SYSTEMD_USER_UNIT=${PZ_SERVICE_NAME}" \
-        "_SYSTEMD_INVOCATION_ID=${BOOT_ID}" \
-        --follow --no-tail --no-pager -o cat \
+    # Les journaux d'unités utilisateur peuvent avoir INVOCATION_ID mais
+    # pas _SYSTEMD_INVOCATION_ID. Reprendre le OU de captureLogs.sh.
+    # L'ID reste celui du démarrage courant, pas une fenêtre horodatée.
+    journalctl -n all --follow --no-pager -o cat \
+        "INVOCATION_ID=${BOOT_ID}" + "_SYSTEMD_INVOCATION_ID=${BOOT_ID}" \
         --grep 'f:[1-9][0-9]* st:'
 )
 JOURNAL_PID=$!
