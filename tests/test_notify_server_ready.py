@@ -108,6 +108,9 @@ class ReadyNotificationTests(unittest.TestCase):
         self.assertIn("--follow", args)
         self.assertIn("--no-tail", args)
         self.assertIn("--grep", args)
+        self.assertIn("_SYSTEMD_USER_UNIT=zomboid.service", args)
+        self.assertIn("_SYSTEMD_INVOCATION_ID=" + BOOT_A, args)
+        self.assertNotIn("--since", args)
         again = self.run_ready()
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertEqual(self.sent_count(), 1)
@@ -125,6 +128,13 @@ class ReadyNotificationTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.sent_count(), 0)
         self.assertIn("Aucune frame", result.stderr)
+
+    def test_invalid_timeout_is_rejected(self):
+        env = dict(self.env, PZ_NOTIFY_READY_TIMEOUT="999999999999999999999999")
+        result = self.run_ready(env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalide", result.stderr)
+        self.assertFalse((self.root / "journal.args").exists())
 
     def test_journald_early_exit_is_reported(self):
         env = dict(self.env, MOCK_JOURNAL_MODE="eof")
