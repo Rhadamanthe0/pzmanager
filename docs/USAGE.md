@@ -141,7 +141,7 @@ pzm backup restore-zone data/fullBackups/2026-10-11_05-04-51-1117758.zip 10500 9
 pzm server start now --reason "Restauration de constructions terminée"
 ```
 
-For a full-backup ZIP, only the necessary `zomboid/Saves/Multiplayer/<world>/` map files are staged temporarily next to the archive; `config/` and player databases are never extracted. The staging copy is removed after preview or restoration. ZIP members are validated and limited to 512 MiB per file and 8 GiB overall, with 512 MiB free-space reserve. Encrypted `.zip.age` files must first be decrypted to a ZIP; `restore-zone` does not decrypt archives.
+For a full-backup ZIP, only the necessary `zomboid/Saves/Multiplayer/<world>/` map files are staged temporarily under the manager's data directory (outside Syncthing); `config/` and player databases are never extracted. The staging copy is removed after preview or restoration. ZIP members are validated and limited to 512 MiB per file and 8 GiB overall, with 512 MiB free-space reserve. Encrypted `.zip.age` files must first be decrypted to a ZIP; `restore-zone` does not decrypt archives.
 
 For **one tile**, repeat its X/Y coordinates as both corners. For example,
 this previews only tile `10500,9500`, on every floor; add `--apply` after stopping

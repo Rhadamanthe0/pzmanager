@@ -19,7 +19,7 @@ FREE_SPACE_RESERVE = 512 * 1024 * 1024
 
 
 @contextmanager
-def zone_map_source(backup, save, x1, y1, x2, y2):
+def zone_map_source(backup, save, x1, y1, x2, y2, staging_root=None):
     """Yield the ordinary source-world directory, from a snapshot or a ZIP."""
     if backup.is_dir():
         yield backup / 'Saves/Multiplayer' / save
@@ -43,6 +43,12 @@ def zone_map_source(backup, save, x1, y1, x2, y2):
     optional.add('map_ver.bin')
     required = terrain | {'WorldDictionary.bin'}
     wanted = {prefix + rel for rel in required | optional}
+
+    # The caller chooses a nonsynchronized staging directory. Direct library
+    # callers may omit the argument and use the archive parent as a fallback.
+    staging_root = Path(staging_root) if staging_root is not None else backup.parent
+    if not staging_root.is_dir():
+        raise ValueError(f'Répertoire de staging absent : {staging_root}')
 
     try:
         with zipfile.ZipFile(backup) as archive:
@@ -70,13 +76,13 @@ def zone_map_source(backup, save, x1, y1, x2, y2):
             size = sum(info.file_size for info in members.values())
             if size > MAX_STAGING_BYTES:
                 raise ValueError('Zone ZIP trop volumineuse pour extraction temporaire (8 Gio maximum).')
-            if shutil.disk_usage(backup.parent).free - size < FREE_SPACE_RESERVE:
+            if shutil.disk_usage(staging_root).free - size < FREE_SPACE_RESERVE:
                 raise ValueError('Espace libre insuffisant pour extraire la zone ZIP '
                                  '(réserve de 512 Mio requise).')
 
-            # Same filesystem as the off-site archive; no potentially enormous
-            # temporary extraction into /tmp (often tmpfs). Never touch live here.
-            with tempfile.TemporaryDirectory(prefix='.pz-restore-zone-', dir=backup.parent) as stage:
+            # Stage outside fullBackups: that directory is synchronized by
+            # Syncthing. Avoid /tmp (often tmpfs), and never touch live here.
+            with tempfile.TemporaryDirectory(prefix='.pz-restore-zone-', dir=staging_root) as stage:
                 source = Path(stage) / 'Saves/Multiplayer' / save
                 source.mkdir(parents=True)
                 for name, info in sorted(members.items()):

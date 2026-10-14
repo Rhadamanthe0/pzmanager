@@ -32,6 +32,8 @@ class ZipZoneTests(unittest.TestCase):
         self.snap = self.root / 'snapshot/Saves/Multiplayer/world'
         self.offsite = self.root / 'fullBackups'
         self.offsite.mkdir()
+        self.staging = self.root / 'staging'
+        self.staging.mkdir()
         for root in (self.live, self.snap):
             (root / 'map/1').mkdir(parents=True)
             for rel, value in {'WorldDictionary.bin': b'dictionary',
@@ -44,7 +46,7 @@ class ZipZoneTests(unittest.TestCase):
         self.archive = self.offsite / 'backup.zip'
         self.args = Namespace(live_root=str(self.root / 'live'),
                               backup_root=str(self.root),
-                              archive_root=str(self.offsite),
+                              archive_root=str(self.offsite), staging_root=str(self.staging),
                               recovery_root=str(self.root / 'OLD'),
                               backup=str(self.archive),
                               x1=8, y1=8, x2=15, y2=15, save=None, apply=True)
@@ -77,6 +79,7 @@ class ZipZoneTests(unittest.TestCase):
 
     def assert_no_stage(self):
         self.assertEqual(list(self.offsite.glob('.pz-restore-zone-*')), [])
+        self.assertEqual(list(self.staging.glob('.pz-restore-zone-*')), [])
 
     def test_zip_applies_full_chunks_and_does_not_unpack_secrets(self):
         zone.restore(self.args)

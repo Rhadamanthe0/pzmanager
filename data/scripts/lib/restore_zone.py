@@ -75,7 +75,8 @@ def restore(args):
     if not save or '..' in save or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-' for c in save):
         raise ValueError('Nom de monde invalide.')
     live = mp / save
-    with zone_map_source(backup, save, args.x1, args.y1, args.x2, args.y2) as source:
+    with zone_map_source(backup, save, args.x1, args.y1, args.x2, args.y2,
+                         getattr(args, 'staging_root', None)) as source:
         return restore_source(args, backup, save, live, source)
 
 
@@ -213,6 +214,7 @@ def main():
     parser.add_argument('--live-root', required=True)
     parser.add_argument('--backup-root', required=True)
     parser.add_argument('--archive-root')
+    parser.add_argument('--staging-root')
     parser.add_argument('--recovery-root', required=True)
     parser.add_argument('backup')
     for name in ('x1', 'y1', 'x2', 'y2'):
