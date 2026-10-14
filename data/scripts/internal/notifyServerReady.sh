@@ -7,7 +7,12 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
 source_env
 
-readonly SILENT_FLAG="${PZ_MANAGER_DIR}/.silent_next_start"
+# ProtectSystem=strict rend la racine pzmanager non inscriptible. Le sous-dossier
+# logs est explicitement autorisé par ReadWritePaths=zomboid.service, persistant
+# pendant les reboots machine et exclu du nettoyage de captureLogs.sh.
+readonly SILENT_FLAG="${PZ_MANAGER_DIR}/logs/.silent_next_start"
+readonly LEGACY_SILENT_FLAG="${PZ_MANAGER_DIR}/.silent_next_start"
+readonly LEGACY_CONSUMED_FLAG="${PZ_MANAGER_DIR}/logs/.legacy_silent_next_start_consumed"
 # Les démarrages moddés sains peuvent durer plus de 40 minutes.
 readonly READY_TIMEOUT="${PZ_NOTIFY_READY_TIMEOUT:-3600}"
 readonly POLL_INTERVAL="${PZ_NOTIFY_READY_POLL_INTERVAL:-5}"
@@ -23,9 +28,19 @@ if [[ ! "$POLL_INTERVAL" =~ ^[1-9][0-9]*$ ]] || \
     exit 1
 fi
 
-# En maintenance, le démarrage suivant doit rester silencieux.
+# En maintenance, le démarrage suivant doit rester silencieux. L'ancien
+# marqueur à la racine (versions <= PR #183) ne peut pas être supprimé depuis
+# l'unité durcie : le consommer exactement une fois grâce au témoin dans logs.
 if [[ -f "$SILENT_FLAG" ]]; then
     rm -f -- "$SILENT_FLAG"
+    if [[ -f "$LEGACY_SILENT_FLAG" ]]; then
+        : > "$LEGACY_CONSUMED_FLAG"
+    fi
+    exit 0
+fi
+if [[ -f "$LEGACY_SILENT_FLAG" && ! -f "$LEGACY_CONSUMED_FLAG" ]]; then
+    : > "$LEGACY_CONSUMED_FLAG"
+    echo "[pz-ready] Ancien marqueur de maintenance consommé une fois (nettoyage hors sandbox requis)." >&2
     exit 0
 fi
 
