@@ -193,6 +193,11 @@ class ReadyNotificationTests(unittest.TestCase):
         self.assertFalse(flag.exists())
         self.assertEqual(self.sent_count(), 0)
         self.assertFalse((self.root / "journal.args").exists())
+        self.assertEqual(self.run_ready().returncode, 0)
+        self.assertEqual(self.sent_count(), 0)
+        (self.root / "invocation").write_text(BOOT_B)
+        self.assertEqual(self.run_ready(env=dict(self.env, INVOCATION_ID=BOOT_B)).returncode, 0)
+        self.assertEqual(self.sent_count(), 1)
 
     def test_legacy_maintenance_flag_consumed_once(self):
         flag = self.manager / ".silent_next_start"
@@ -205,6 +210,10 @@ class ReadyNotificationTests(unittest.TestCase):
         self.assertTrue((self.manager / "logs/.legacy_silent_next_start_consumed").exists())
         second = self.run_ready()
         self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(self.sent_count(), 0)
+        (self.root / "invocation").write_text(BOOT_B)
+        newer = self.run_ready(env=dict(self.env, INVOCATION_ID=BOOT_B))
+        self.assertEqual(newer.returncode, 0, newer.stderr)
         self.assertEqual(self.sent_count(), 1)
 
     def test_new_maintenance_flag_supersedes_legacy(self):
@@ -217,6 +226,10 @@ class ReadyNotificationTests(unittest.TestCase):
         self.assertFalse((self.manager / "logs/.silent_next_start").exists())
         second = self.run_ready()
         self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(self.sent_count(), 0)
+        (self.root / "invocation").write_text(BOOT_B)
+        newer = self.run_ready(env=dict(self.env, INVOCATION_ID=BOOT_B))
+        self.assertEqual(newer.returncode, 0, newer.stderr)
         self.assertEqual(self.sent_count(), 1)
 
     def test_silence_flag_path_is_writable_by_hardened_service(self):
