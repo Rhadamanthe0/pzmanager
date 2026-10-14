@@ -238,6 +238,9 @@ class ReadyNotificationTests(unittest.TestCase):
         self.assertIn("ProtectSystem=strict", template)
         self.assertIn("%h/pzmanager/logs", template)
         self.assertIn('SILENT_FLAG_FILE="${PZ_MANAGER_DIR}/logs/.silent_next_start"', maintenance)
+        start_block = maintenance.split('log "Maintenance terminée, redémarrage du service..."', 1)[1]
+        start_block = start_block.split("if validate_final_start", 1)[0]
+        self.assertIn('[[ "$SILENT_MODE" == true ]] && opts+=(--silent)', start_block)
 
     def test_discord_failure_reported_and_retry_permitted(self):
         env = dict(self.env, MOCK_NOTIFY_FAIL="1")
