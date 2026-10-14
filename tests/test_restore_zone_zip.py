@@ -138,6 +138,12 @@ class ZipZoneTests(unittest.TestCase):
         self.assert_no_stage()
         self.assertFalse((self.root / 'OLD').exists())
 
+    def test_staging_does_not_mask_downstream_errors(self):
+        with patch.object(zone, 'restore_source', side_effect=RuntimeError('downstream failure')):
+            with self.assertRaisesRegex(RuntimeError, 'downstream failure'):
+                zone.restore(self.args)
+        self.assert_no_stage()
+
     def test_archive_is_not_implicitly_applied(self):
         self.args.apply = False
         zone.restore(self.args)

@@ -50,48 +50,48 @@ def zone_map_source(backup, save, x1, y1, x2, y2, staging_root=None):
     if not staging_root.is_dir():
         raise ValueError(f'Répertoire de staging absent : {staging_root}')
 
-    try:
-        with zipfile.ZipFile(backup) as archive:
-            members = {}
-            for info in archive.infolist():
-                if info.filename not in wanted:
-                    continue
-                if info.filename in members:
-                    raise ValueError(f'Entrée dupliquée dans le ZIP : {info.filename}')
-                # UNIX symlinks, directories, devices and encrypted members
-                # must not be interpreted as regular backup data.
-                mode = info.external_attr >> 16
-                if (info.is_dir() or (info.create_system == 3 and
-                    stat.S_IFMT(mode) not in (0, stat.S_IFREG)) or
-                    info.flag_bits & 1):
-                    raise ValueError(f'Entrée ZIP non régulière ou chiffrée : {info.filename}')
-                if info.file_size > MAX_MEMBER_BYTES:
-                    raise ValueError(f'Entrée ZIP trop volumineuse : {info.filename}')
-                members[info.filename] = info
+    # Keep the staging directory alive during the whole restore, but close
+    # the ZIP and scope archive-error translation to the extraction itself.
+    with tempfile.TemporaryDirectory(prefix='.pz-restore-zone-', dir=staging_root) as stage:
+        source = Path(stage) / 'Saves/Multiplayer' / save
+        source.mkdir(parents=True)
+        try:
+            with zipfile.ZipFile(backup) as archive:
+                members = {}
+                for info in archive.infolist():
+                    if info.filename not in wanted:
+                        continue
+                    if info.filename in members:
+                        raise ValueError(f'Entrée dupliquée dans le ZIP : {info.filename}')
+                    # Reject UNIX symlinks, directories, devices and encrypted members.
+                    mode = info.external_attr >> 16
+                    if (info.is_dir() or (info.create_system == 3 and
+                        stat.S_IFMT(mode) not in (0, stat.S_IFREG)) or
+                        info.flag_bits & 1):
+                        raise ValueError(f'Entrée ZIP non régulière ou chiffrée : {info.filename}')
+                    if info.file_size > MAX_MEMBER_BYTES:
+                        raise ValueError(f'Entrée ZIP trop volumineuse : {info.filename}')
+                    members[info.filename] = info
 
-            missing = required - {name[len(prefix):] for name in members}
-            if missing:
-                raise ValueError('Carte Build 42 absente ou incomplète dans le ZIP '
-                                 f'({sorted(missing)[0]}) : {backup}')
-            size = sum(info.file_size for info in members.values())
-            if size > MAX_STAGING_BYTES:
-                raise ValueError('Zone ZIP trop volumineuse pour extraction temporaire (8 Gio maximum).')
-            if shutil.disk_usage(staging_root).free - size < FREE_SPACE_RESERVE:
-                raise ValueError('Espace libre insuffisant pour extraire la zone ZIP '
-                                 '(réserve de 512 Mio requise).')
+                missing = required - {name[len(prefix):] for name in members}
+                if missing:
+                    raise ValueError('Carte Build 42 absente ou incomplète dans le ZIP '
+                                     f'({sorted(missing)[0]}) : {backup}')
+                size = sum(info.file_size for info in members.values())
+                if size > MAX_STAGING_BYTES:
+                    raise ValueError('Zone ZIP trop volumineuse pour extraction temporaire (8 Gio maximum).')
+                if shutil.disk_usage(staging_root).free - size < FREE_SPACE_RESERVE:
+                    raise ValueError('Espace libre insuffisant pour extraire la zone ZIP '
+                                     '(réserve de 512 Mio requise).')
 
-            # Stage outside fullBackups: that directory is synchronized by
-            # Syncthing. Avoid /tmp (often tmpfs), and never touch live here.
-            with tempfile.TemporaryDirectory(prefix='.pz-restore-zone-', dir=staging_root) as stage:
-                source = Path(stage) / 'Saves/Multiplayer' / save
-                source.mkdir(parents=True)
+                # Copy only files needed for the selected map; never extract config/.
                 for name, info in sorted(members.items()):
                     relative = name[len(prefix):]
                     target = source / relative
                     target.parent.mkdir(parents=True, exist_ok=True)
                     with archive.open(info) as reader, target.open('xb') as writer:
                         shutil.copyfileobj(reader, writer, length=1024 * 1024)
-                yield source
-    except (zipfile.BadZipFile, zipfile.LargeZipFile, NotImplementedError,
-            RuntimeError, EOFError) as error:
-        raise ValueError(f'Archive ZIP illisible ou corrompue : {backup} ({error})') from error
+        except (zipfile.BadZipFile, zipfile.LargeZipFile, NotImplementedError,
+                RuntimeError, EOFError) as error:
+            raise ValueError(f'Archive ZIP illisible ou corrompue : {backup} ({error})') from error
+        yield source
