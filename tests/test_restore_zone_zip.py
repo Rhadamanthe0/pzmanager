@@ -138,6 +138,55 @@ class ZipZoneTests(unittest.TestCase):
         self.assert_no_stage()
         self.assertFalse((self.root / 'OLD').exists())
 
+    def test_crc_error_in_selected_member_does_not_modify_live(self):
+        with zipfile.ZipFile(self.archive) as archive:
+            entries = [(info.filename, archive.read(info)) for info in archive.infolist()]
+        with zipfile.ZipFile(self.archive, 'w', compression=zipfile.ZIP_STORED) as archive:
+            for name, value in entries:
+                archive.writestr(name, value)
+        raw = self.archive.read_bytes()
+        self.assertIn(b'dictionary', raw)
+        self.archive.write_bytes(raw.replace(b'dictionary', b'dIctionary', 1))
+        with self.assertRaisesRegex(ValueError, 'ZIP illisible'):
+            zone.restore(self.args)
+        self.assertEqual((self.live / 'map/1/1.bin').read_bytes(), chunk(b'current'))
+        self.assert_no_stage()
+        self.assertFalse((self.root / 'OLD').exists())
+
+    def test_dictionary_mismatch_refuses_zip_before_write(self):
+        (self.snap / 'WorldDictionary.bin').write_bytes(b'changed')
+        self.write_zip()
+        with self.assertRaisesRegex(ValueError, 'WorldDictionary.bin'):
+            zone.restore(self.args)
+        self.assertEqual((self.live / 'map/1/1.bin').read_bytes(), chunk(b'current'))
+        self.assert_no_stage()
+        self.assertFalse((self.root / 'OLD').exists())
+
+    def test_failed_zip_apply_reverts_and_cleans_staging(self):
+        before = (self.live / 'map/1/1.bin').read_bytes()
+        replace = zone.replace_file
+        calls = 0
+        def interrupted_copy(source, destination):
+            nonlocal calls
+            calls += 1
+            replace(source, destination)
+            if calls == 1:
+                raise OSError('simulated failure after write')
+        with patch.object(zone, 'replace_file', side_effect=interrupted_copy):
+            with self.assertRaisesRegex(OSError, 'simulated failure'):
+                zone.restore(self.args)
+        self.assertEqual((self.live / 'map/1/1.bin').read_bytes(), before)
+        self.assert_no_stage()
+        manifest = next((self.root / 'OLD').glob('zone-rollback-*/manifest.json'))
+        self.assertIn('"status": "reverted"', manifest.read_text())
+
+    def test_zip_must_have_a_nonsynchronized_staging_root(self):
+        self.args.staging_root = None
+        with self.assertRaisesRegex(ValueError, 'staging requis'):
+            zone.restore(self.args)
+        self.assert_no_stage()
+        self.assertFalse((self.root / 'OLD').exists())
+
     def test_staging_does_not_mask_downstream_errors(self):
         with patch.object(zone, 'restore_source', side_effect=RuntimeError('downstream failure')):
             with self.assertRaisesRegex(RuntimeError, 'downstream failure'):

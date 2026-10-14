@@ -44,9 +44,10 @@ def zone_map_source(backup, save, x1, y1, x2, y2, staging_root=None):
     required = terrain | {'WorldDictionary.bin'}
     wanted = {prefix + rel for rel in required | optional}
 
-    # The caller chooses a nonsynchronized staging directory. Direct library
-    # callers may omit the argument and use the archive parent as a fallback.
-    staging_root = Path(staging_root) if staging_root is not None else backup.parent
+    # Never default to fullBackups/: Syncthing watches that directory.
+    if staging_root is None:
+        raise ValueError('Répertoire de staging requis pour un ZIP.')
+    staging_root = Path(staging_root)
     if not staging_root.is_dir():
         raise ValueError(f'Répertoire de staging absent : {staging_root}')
 
