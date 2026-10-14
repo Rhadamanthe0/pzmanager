@@ -28,22 +28,6 @@ if [[ ! "$POLL_INTERVAL" =~ ^[1-9][0-9]*$ ]] || \
     exit 1
 fi
 
-# En maintenance, le démarrage suivant doit rester silencieux. L'ancien
-# marqueur à la racine (versions <= PR #183) ne peut pas être supprimé depuis
-# l'unité durcie : le consommer exactement une fois grâce au témoin dans logs.
-if [[ -f "$SILENT_FLAG" ]]; then
-    rm -f -- "$SILENT_FLAG"
-    if [[ -f "$LEGACY_SILENT_FLAG" ]]; then
-        : > "$LEGACY_CONSUMED_FLAG"
-    fi
-    exit 0
-fi
-if [[ -f "$LEGACY_SILENT_FLAG" && ! -f "$LEGACY_CONSUMED_FLAG" ]]; then
-    : > "$LEGACY_CONSUMED_FLAG"
-    echo "[pz-ready] Ancien marqueur de maintenance consommé une fois (nettoyage hors sandbox requis)." >&2
-    exit 0
-fi
-
 # Capturer l'invocation du démarrage courant. Sans identité vérifiable,
 # refuser d'annoncer une disponibilité potentiellement périmée.
 unit_invocation="$(systemctl --user show "${PZ_SERVICE_NAME}" -p InvocationID --value 2>/dev/null)" || {
@@ -88,6 +72,24 @@ same_running_boot() {
 
 if ! same_running_boot; then
     echo "[pz-ready] Service arrêté ou invocation remplacée avant l'attente." >&2
+    exit 0
+fi
+
+# Après authentification de l'invocation et acquisition du verrou, un
+# démarrage silencieux est marqué comme consommé. Une seconde exécution pour la
+# même invocation ne doit pas envoyer une annonce après consommation du drapeau.
+if [[ -f "$SILENT_FLAG" ]]; then
+    rm -f -- "$SILENT_FLAG"
+    if [[ -f "$LEGACY_SILENT_FLAG" ]]; then
+        : > "$LEGACY_CONSUMED_FLAG"
+    fi
+    printf '%s\n' "$BOOT_ID" > "$LOCK_FILE"
+    exit 0
+fi
+if [[ -f "$LEGACY_SILENT_FLAG" && ! -f "$LEGACY_CONSUMED_FLAG" ]]; then
+    : > "$LEGACY_CONSUMED_FLAG"
+    echo "[pz-ready] Ancien marqueur de maintenance consommé une fois (nettoyage hors sandbox requis)." >&2
+    printf '%s\n' "$BOOT_ID" > "$LOCK_FILE"
     exit 0
 fi
 
