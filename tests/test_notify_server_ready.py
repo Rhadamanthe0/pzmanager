@@ -284,6 +284,8 @@ class DiscordTransportTests(unittest.TestCase):
             '#!/usr/bin/env python3\n'
             'import os, pathlib, sys\n'
             'args = sys.argv[1:]\n'
+            'if os.environ.get("MOCK_TARGET"):\n'
+            '    pathlib.Path(os.environ["MOCK_TARGET"]).write_text(args[-1])\n'
             'path = os.environ.get("MOCK_PAYLOAD")\n'
             'if path and "-d" in args:\n'
             '    pathlib.Path(path).write_text(args[args.index("-d") + 1])\n'
@@ -297,6 +299,7 @@ class DiscordTransportTests(unittest.TestCase):
             "MOCK_DISCORD_WEBHOOK": "https://discord.invalid/SECRET",
             "MOCK_HTTP": "204",
             "MOCK_PAYLOAD": str(self.base / "payload.json"),
+            "MOCK_TARGET": str(self.base / "target.txt"),
         })
 
     def run_discord(self, *, strict=False, env=None, message="Disponibilité"):
@@ -328,6 +331,43 @@ class DiscordTransportTests(unittest.TestCase):
         best_effort = self.run_discord(env=env)
         self.assertEqual(best_effort.returncode, 0, best_effort.stderr)
         self.assertIn("HTTP=429", best_effort.stderr)
+
+    def test_explicit_webhook_options_in_both_orders(self):
+        destination = "https://discord.invalid/ADMIN"
+        message = "Private incident alert"
+        env = dict(self.env, MOCK_HTTP="429")
+        variants = (
+            [message, "--webhook", destination, "--strict"],
+            ["--webhook", destination, message, "--strict"],
+            ["--strict", "--webhook", destination, message],
+            [message, "--webhook=" + destination, "--strict"],
+        )
+        for arguments in variants:
+            with self.subTest(arguments=arguments):
+                result = subprocess.run(
+                    ["bash", str(self.script), *arguments],
+                    env=env, text=True, capture_output=True, timeout=5
+                )
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("HTTP=429", result.stderr)
+                self.assertEqual((self.base / "target.txt").read_text(), destination)
+                self.assertEqual(
+                    json.loads((self.base / "payload.json").read_text()),
+                    {"content": message},
+                )
+
+    def test_explicit_webhook_missing_argument(self):
+        for arguments in (
+            ["Incident", "--webhook"],
+            ["--webhook", "--strict", "Incident"],
+        ):
+            with self.subTest(arguments=arguments):
+                result = subprocess.run(
+                    ["bash", str(self.script), *arguments],
+                    env=self.env, text=True, capture_output=True, timeout=5
+                )
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("--webhook requiert une URL", result.stderr)
 
     def test_discord_transport_failure(self):
         env = dict(self.env, MOCK_HTTP="000", MOCK_CURL_RC="7")
