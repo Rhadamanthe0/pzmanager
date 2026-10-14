@@ -418,6 +418,7 @@ main() {
         log "Maintenance terminée, redémarrage du service..."
         local -a opts=()
         [[ "$AUTOMATIC_MODE" == true ]] && opts+=(--automatic)
+        [[ "$SILENT_MODE" == true ]] && opts+=(--silent)
         "${SCRIPT_DIR}/../core/pz.sh" start --reason "$MAINTENANCE_REASON" "${opts[@]}"
         if validate_final_start; then
             maint_set_state "DONE"
