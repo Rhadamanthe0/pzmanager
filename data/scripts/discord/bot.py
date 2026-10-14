@@ -45,7 +45,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
-from service_memory import service_rss_bytes
+from service_memory import service_rss_bytes, service_nonfile_rss_bytes
 from service_process import find_jvm, jvm_status
 from shared_memory_budget import validate_slice, slice_group, check_process, BUDGET
 
@@ -800,8 +800,30 @@ def _proc_status(pid) -> dict:
     return out
 
 
+
+def _noncache_cgroup_bytes(current_bytes: int, stat_text: str) -> int:
+    """Charge PZ hors caches récupérables, sans retirer le heap ZGC (shmem).
+
+    memory.stat.file inclut shmem : seul file - shmem est du cache file-backed.
+    slab_reclaimable est exclu ; le reste (anon, shmem, noyau non récupérable)
+    reste comptabilisé. Le plafond Linux utilise toujours memory.current brut.
+    """
+    values = {}
+    for line in stat_text.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] in ("file", "shmem", "slab_reclaimable"):
+            values[parts[0]] = int(parts[1])
+    if (len(values) != 3 or any(v < 0 for v in values.values())
+            or values["shmem"] > values["file"] or current_bytes < 0):
+        raise ValueError("Statistiques du cgroup incomplètes ou incohérentes.")
+    reclaimable = values["file"] - values["shmem"] + values["slab_reclaimable"]
+    if reclaimable > current_bytes:
+        raise ValueError("Instantanés memory.current et memory.stat incohérents.")
+    return current_bytes - reclaimable
+
+
 def _service_memory() -> dict:
-    """RAM résidente pour le restart ; total cgroup pour le plafond MemoryMax.
+    """RSS du restart inchangé ; hors cache pour l'affichage ; plafond cgroup réel.
 
     Les propriétés viennent de pz.slice EN VIGUEUR, pas du template : un plafond
     absent ou une erreur systemd ne doit jamais être affiché comme actif.
@@ -827,14 +849,24 @@ def _service_memory() -> dict:
             verified = True
             try:
                 out["memory_bytes"] = int((group / "memory.current").read_text().strip())
-                if (group / "memory.peak").exists():
-                    out["memory_peak_bytes"] = int((group / "memory.peak").read_text().strip())
                 out["memory_limit_bytes"] = BUDGET
             except (OSError, ValueError):
                 return {}
+            # Ne pas confondre memory.current (plafond brut) et RAM hors cache.
+            # Une lecture memory.stat en échec ne doit pas faire afficher le brut
+            # comme s'il excluait le cache.
+            try:
+                out["memory_noncache_bytes"] = _noncache_cgroup_bytes(
+                    out["memory_bytes"], (group / "memory.stat").read_text())
+            except (OSError, ValueError):
+                pass
+            # Le garde-fou de redémarrage préventif garde strictement son VmRSS.
             rss_bytes = service_rss_bytes(value)
             if rss_bytes is not None:
                 out["service_rss_bytes"] = rss_bytes
+            nonfile_rss = service_nonfile_rss_bytes(value)
+            if nonfile_rss is not None:
+                out["service_nonfile_rss_bytes"] = nonfile_rss
     return out if verified else {}
 
 
@@ -1363,38 +1395,30 @@ def _monitoring_embed(s: dict) -> discord.Embed:
         value=f"{state}{players_txt}{net_txt}{fps_txt} · uptime **{_fmt_dur(s['uptime'])}**",
         inline=False)
 
-    # La RAM résidente déclenche le restart ; le budget utilise MemoryCurrent,
-    # qui inclut aussi shmem, cache, noyau et descendants. RSS/MemoryMax ne
-    # représente donc pas la consommation réelle du budget cgroup.
-    # Le heap garde son propre plafond JVM et son garde-fou après GC majeur.
+    # L'affichage exclut le cache récupérable pour PZ ET pour la machine.
+    # Le cgroup conserve son vrai plafond sur memory.current brut et le
+    # redémarrage préventif conserve son propre signal RSS, inchangé.
+    # Le heap inclut des pages shmem non assimilables au cache disque.
     if gc:
         used_g, pct = gc[0] / 1024, gc[1]
         heap_line = f"Jeu (heap) **{used_g:.1f} / {xmx:g} Go** · **{pct}%**"
     else:
         heap_line = "Jeu (heap) —"
-    memory_bytes = s.get("service_rss_bytes")
-    accounted_bytes = s.get("memory_bytes")
+    noncache_bytes = s.get("memory_noncache_bytes")
     limit_bytes = s.get("memory_limit_bytes")
-    if accounted_bytes is not None and limit_bytes:
-        total_pct = round(accounted_bytes / limit_bytes * 100)
-        total_line = (f"Budget PZ partagé **{accounted_bytes / 1073741824:.1f} / {limit_bytes / 1073741824:g} Go**"
-                      f"  `{_bar(total_pct)}`  **{total_pct}%**")
-        if s.get("memory_peak_bytes") is not None:
-            total_line += f" · pic compté **{s['memory_peak_bytes'] / 1073741824:.1f} Go**"
+    if noncache_bytes is not None and limit_bytes:
+        total_pct = round(noncache_bytes / limit_bytes * 100)
+        total_line = (f"RAM PZ hors cache **{noncache_bytes / 1073741824:.1f} / {limit_bytes / 1073741824:g} Go**"
+                      f"  `{_bar(total_pct)}`  **{total_pct}%** · plafond Linux appliqué sur le brut")
     elif limit_bytes:
-        total_line = f"Budget PZ partagé — / {limit_bytes / 1073741824:g} Go · consommation indisponible"
+        total_line = f"RAM PZ hors cache — / {limit_bytes / 1073741824:g} Go · mesure indisponible"
     else:
-        total_line = "Budget PZ partagé — · plafond non confirmé"
-    if memory_bytes is not None:
-        resident_line = f"RAM résidente PZ **{memory_bytes / 1073741824:.1f} Go**"
-        if s["hwm_kb"]:
-            resident_line += f" · pic processus **{s['hwm_kb'] / 1048576:.1f} Go**"
-    elif s["rss_kb"]:
-        rss_g = s["rss_kb"] / 1048576
-        hwm_g = s["hwm_kb"] / 1048576 if s["hwm_kb"] else 0
-        resident_line = f"RAM processus **{rss_g:.1f} Go** · pic **{hwm_g:.1f} Go**"
+        total_line = "RAM PZ hors cache — · plafond non confirmé"
+    resident_bytes = s.get("service_nonfile_rss_bytes")
+    if resident_bytes is not None:
+        resident_line = f"RAM résidente PZ hors cache **{resident_bytes / 1073741824:.1f} Go**"
     else:
-        resident_line = "RAM résidente —"
+        resident_line = "RAM résidente PZ hors cache —"
     embed.add_field(name="🧠 RAM de PZ",
                     value=f"{total_line}\n{resident_line}\n{heap_line}", inline=False)
 
@@ -1405,7 +1429,7 @@ def _monitoring_embed(s: dict) -> discord.Embed:
     # PZ, qui n'est pas récupérable — l'inclure induisait en erreur.
     embed.add_field(
         name="🖥️ RAM de la machine",
-        value=f"**{used_pct:.0f}%** utilisée `{_bar(used_pct)}` · **{avail/1048576:.1f} Go** dispo / {total/1048576:.1f}",
+        value=f"**{used_pct:.0f}%** utilisée (cache récupérable exclu) `{_bar(used_pct)}` · **{avail/1048576:.1f} Go** dispo / {total/1048576:.1f}",
         inline=False)
 
     # Températures (le mobile initial : chauffe du mini-PC), sur 2 lignes :
