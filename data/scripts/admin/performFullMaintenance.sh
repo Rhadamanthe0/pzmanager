@@ -10,7 +10,10 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
 source_env
 
-readonly SILENT_FLAG_FILE="${PZ_MANAGER_DIR}/.silent_next_start"
+# Même emplacement persistant et inscriptible que notifyServerReady.sh :
+# la racine pzmanager n'est pas modifiable depuis zomboid.service durci.
+readonly SILENT_FLAG_FILE="${PZ_MANAGER_DIR}/logs/.silent_next_start"
+readonly LEGACY_SILENT_FLAG_FILE="${PZ_MANAGER_DIR}/.silent_next_start"
 
 # C9 : machine à états récupérable (minimum de changements, inline).
 # Fichier d'état : ${XDG_RUNTIME_DIR}/pzmanager/maintenance.state si le runtime
@@ -390,7 +393,16 @@ main() {
     maint_set_state "SELF"
     update_self
 
-    [[ "$SILENT_MODE" == true ]] && touch "${SILENT_FLAG_FILE}"
+    # Si l'ancien marqueur existe, le retirer ici (hors sandbox du jeu).
+    # Une installation déjà migrée n'en crée plus à cet emplacement.
+    if [[ -f "$LEGACY_SILENT_FLAG_FILE" ]]; then
+        rm -f -- "$LEGACY_SILENT_FLAG_FILE" ||
+            log "AVERTISSEMENT : ancien marqueur de maintenance non supprimé."
+    fi
+    if [[ "$SILENT_MODE" == true ]]; then
+        mkdir -p -- "${PZ_MANAGER_DIR}/logs"
+        touch "$SILENT_FLAG_FILE"
+    fi
 
     # Passé ce point, la maintenance a réussi : le filet ci-dessus n'a plus lieu
     # d'être (le reboot machine, notamment, n'est pas un échec).
