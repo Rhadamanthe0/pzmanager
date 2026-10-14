@@ -252,18 +252,24 @@ Each embed carries:
 - **🧠 Heap Java** — used MB / `Xmx` and % (from `gc.log`), the **live-set floor**
   (last major-GC %, the number that drives the auto-restart) vs
   `HEAP_RESTART_PERCENT`. This is the Java-heap-OOM story.
-- **🧠 RAM de PZ** — accounted cgroup memory (`MemoryCurrent`) / the effective
-  systemd hard limit, with its usage bar and accounted peak (`MemoryPeak`).
-  Resident process memory and peak JVM RSS are separate, followed by heap
-  usage / its own JVM ceiling. RSS divided by the cgroup limit would omit
-  other charges and is not used as the budget percentage.
-  The **18 GiB** preventive restart threshold remains active without a permanent
-  label in the embed. It excludes bulk file and kernel caches; `MemoryMax=20G`
-  enforces the cgroup total after attempting cache reclaim. If systemd
-  accounting is unavailable, the bot shows process RSS without claiming that a
-  hard limit is enforced. Process swap should stay 0.
-- **🖥️ System RAM** — used %, **available** GB (the real margin before the OS
-  OOM-killer), cache, shmem, system swap.
+- **🧠 RAM de PZ** — cache-excluded cgroup memory
+  (`memory.current - (memory.stat.file - memory.stat.shmem) -
+  memory.stat.slab_reclaimable`) / the confirmed 20 GiB hard limit, with a
+  cache-excluded usage bar. The `shmem` backing ZGC is retained **once**.
+  A second line shows cache-excluded resident process memory
+  (sum of `RssAnon + RssShmem` over the PZ slice), followed by the JVM heap.
+  Historical raw peaks (`MemoryPeak`/`VmHWM`) are omitted because they may
+  include caches. When cache-excluded metrics cannot be read, the bot shows
+  a dash rather than falling back to raw memory.
+  **Important:** `MemoryMax=20G` still applies to **raw** `memory.current`,
+  including caches. The displayed cache-excluded percentage therefore does
+  **not** represent the exact margin before cgroup memory reclaim/OOM.
+  The preventive restart threshold of **18 GiB** remains on aggregated
+  `VmRSS` (which can include file-backed process mappings); the JVM post-GC
+  threshold is unchanged. Process swap should stay 0.
+- **🖥️ System RAM** — used % and **available** GiB based on
+  `MemAvailable`, excluding its estimate of reclaimable caches;
+  no raw cache is included in the used-memory value.
 - **🌡️ Temperatures** — CPU (`k10temp`), NVMe, GPU, RAM DIMM (the mini-PC
   thermal angle).
 - **⚙️ CPU** — load over 1 min and 5 min, as a **percentage of available cores**,
