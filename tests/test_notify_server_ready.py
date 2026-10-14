@@ -359,6 +359,7 @@ class DiscordTransportTests(unittest.TestCase):
     def test_explicit_webhook_missing_argument(self):
         for arguments in (
             ["Incident", "--webhook"],
+            ["Incident", "--webhook="],
             ["--webhook", "--strict", "Incident"],
         ):
             with self.subTest(arguments=arguments):
