@@ -35,9 +35,15 @@ of `ProjectZomboid64.json` is overwritten the next night. There is no
 **Shared PZ budget: 18 / 20 GiB.** The monitor requests a clean restart at
 `PZ_RAM_RESTART_GB=18`; `pz.slice` enforces an aggregate `MemoryMax=20G` with
 `OOMPolicy=kill` as a last resort. If reclaim cannot contain memory below 20 GiB,
-the service is killed without a guaranteed save. Preventive monitoring sums process RSS across the PZ slice (game, bot and background tasks),
-excluding reclaimable file and kernel caches. The hard cap uses cgroup accounting
-including those caches; Linux can reclaim them before killing the service. `MemoryHigh` is not set;
+the service is killed without a guaranteed save. The preventive restart uses
+aggregate process `VmRSS` across the PZ slice (game, bot and background tasks).
+This excludes unmapped file and kernel caches, but still includes file-backed
+pages mapped by those processes. Discord separately shows cache-excluded cgroup
+memory (`memory.current - (memory.stat.file - memory.stat.shmem) -
+memory.stat.slab_reclaimable`) and cache-excluded process RSS
+(`RssAnon + RssShmem`), keeping ZGC shmem counted. The hard cap still uses
+`memory.current` **including** reclaimable caches; Linux can reclaim them
+before killing the service. `MemoryHigh` is not set;
 `MemorySwapMax=0` forbids swap to avoid game freezes. The heap is capped at **16 GiB** within this budget; **4 GiB** remain for every
 other cgroup charge (native memory, code, stacks, descendants, cache and kernel
 accounting). This is planning headroom, not a guarantee against OOM. Resident
@@ -319,11 +325,18 @@ et ne s'ajoute pas aux20 Gio du parent. Un préflight refuse le démarrage si
 le vrai cgroup n'appartient pas à `pz.slice`, si son plafond partagé diffère
 ou si le swap/contrôleur mémoire ne sont pas conformes.
 
-Le monitoring affiche `MemoryCurrent/MemoryMax` du parent, avec le cache et
-la mémoire noyau inclus. Le préavis de redémarrage reste à 18 Gio de **RSS
-agrégé des processus PZ** (hors caches récupérables), ou 95% de heap après GC
-majeur. Les deux mesures répondent à deux questions différentes. Un pic
-rapide peut atteindre le plafond avant la fin du préavis 5min ; un restart
+Le monitoring Discord affiche la RAM du parent **hors cache récupérable**,
+calculée comme `memory.current - (file - shmem) - slab_reclaimable` via
+`memory.stat`, ainsi que la RAM résidente **hors cache** des processus
+(`RssAnon + RssShmem`). La mémoire partagée ZGC (`shmem`) reste comptée.
+La barre compare la valeur hors cache au plafond de 20 Gio, mais ne représente
+pas la charge brute du cgroup ni la marge exacte avant `MemoryMax`.
+Le plafond système de 20 Gio reste appliqué à **`memory.current` brut**,
+avec caches. Les pics historiques bruts ne sont plus affichés.
+Le préavis de redémarrage reste à 18 Gio de **`VmRSS` agrégé**
+(incluant les pages de fichiers mappées par les processus), ou 95% de heap
+après GC majeur. Un pic rapide peut atteindre le plafond avant la fin
+du préavis 5min ; un restart
 du jeu ne libère pas la mémoire consommée par les autres tâches.
 
 Une opération manuelle passe dans une scope avant secrets et verrous.
