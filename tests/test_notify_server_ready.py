@@ -121,6 +121,12 @@ class ReadyNotificationTests(unittest.TestCase):
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertEqual(self.sent_count(), 1)
 
+    def test_stdout_frame_matched_with_invocation_id(self):
+        env = dict(self.env, MOCK_JOURNAL_MODE="invocation_only")
+        result = self.run_ready(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.sent_count(), 1)
+
     def test_long_boot_after_old_five_minute_window(self):
         env = dict(self.env, MOCK_JOURNAL_MODE="delayed")
         result = self.run_ready(env=env)
