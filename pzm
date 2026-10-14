@@ -38,7 +38,7 @@ Commandes disponibles:
                        Restaurer un personnage (application : serveur arrêté)
                        --dry-run : aperçu ; sans option, écrase l’existant
     restore-zone <backup> <x1> <y1> <x2> <y2> [options]
-                       Restaurer exactement les tuiles de carte depuis un snapshot
+                       Restaurer exactement les tuiles de carte depuis un snapshot ou ZIP
                        Coordonnées en TUILES, coins inclusifs ; toutes les hauteurs
                        Minimum : 1 tuile, sous-sols et étages compris
                        Une seule tuile : répéter ses coordonnées X Y X Y

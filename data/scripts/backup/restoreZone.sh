@@ -27,6 +27,7 @@ if [[ "$apply" == true ]]; then
 fi
 python3 "${SCRIPT_DIR}/../lib/restore_zone.py" \
     --live-root "$PZ_SOURCE_DIR" --backup-root "$BACKUP_DIR" \
+    --archive-root "$SYNC_BACKUPS_DIR" \
     --recovery-root "${PZ_HOME}/OLD" "$@" &
 restore_pid=$!
 # Keep the world lock until the child finishes recovering on interruption.

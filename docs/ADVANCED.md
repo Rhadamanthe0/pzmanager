@@ -165,7 +165,7 @@ Full list: [PZ Wiki - Server Commands](https://pzwiki.net/wiki/Server_commands)
 
 ## Restoring Map Tiles from a Backup
 
-To recover constructions from an older snapshot, use
+To recover constructions from an older directory snapshot or a full-backup ZIP, use
 `pzm backup restore-zone <backup> <x1> <y1> <x2> <y2>`. It previews by default;
 `--apply` restores the exact inclusive tile rectangle, on every floor, while the
 server is stopped. For one tile, repeat its X/Y as both corners. Other tiles in
