@@ -1,30 +1,20 @@
 #!/bin/bash
-# ------------------------------------------------------------------------------
-# sendDiscord.sh - Envoi de message à un webhook Discord
-# ------------------------------------------------------------------------------
-# Usage: ./sendDiscord.sh "message" [--webhook URL]
-#
-# Sans --webhook : DISCORD_WEBHOOK (.env), le canal PUBLIC des annonces joueurs.
-# Avec --webhook : ce webhook-là et lui seul (ex. DISCORD_ADMIN_WEBHOOK pour le
-# détail technique d'un incident, qui n'a rien à faire sur le canal public). Une
-# URL vide passée explicitement = on n'envoie rien, plutôt que de retomber sur le
-# canal public — se tromper de canal dans ce sens-là est ce qui coûte cher.
-# ------------------------------------------------------------------------------
-
+# Envoi de message à un webhook Discord (canal public par défaut).
+# --strict : retourne une erreur à l'appelant, utile pour l'annonce de disponibilité.
+# Sans --strict, reste non bloquant pour les arrêts et maintenances.
 set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-
 source "${SCRIPT_DIR}/../lib/common.sh"
 source_env
 
 message=""
 webhook=""
 webhook_set=false
+strict=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        # shift 2 échouerait (et sortirait, sous set -e) sur un « --webhook »
-        # final sans URL : on ne consomme que ce qui existe.
+        --strict)    strict=true; shift ;;
         --webhook)   webhook="${2:-}"; webhook_set=true; shift; shift 2>/dev/null || true ;;
         --webhook=*) webhook="${1#--webhook=}"; webhook_set=true; shift ;;
         *)           [[ -n "$message" ]] || message="$1"; shift ;;
@@ -32,23 +22,38 @@ while [[ $# -gt 0 ]]; do
 done
 
 $webhook_set || webhook="${DISCORD_WEBHOOK:-}"
-
-# Webhook non configuré : sortie silencieuse (Discord est optionnel).
-[[ -n "$webhook" ]] || exit 0
+if [[ -z "$webhook" ]]; then
+    if $strict; then
+        echo "[pz-discord] Webhook non configuré : envoi impossible." >&2
+        exit 1
+    fi
+    exit 0
+fi
 
 if [[ -z "$message" ]]; then
-    echo "Usage: pzm discord \"message\" [--webhook URL]" >&2
+    echo "Usage: pzm discord \"message\" [--webhook URL] [--strict]" >&2
     exit 1
 fi
 
-# Utiliser jq si disponible (plus sûr), sinon curl avec échappement JSON manuel
-if command -v jq &> /dev/null; then
-    jq -n --arg content "$message" '{content: $content}' | \
-        curl -s --connect-timeout 5 --max-time 10 -H "Content-Type: application/json" -d @- "${webhook}" > /dev/null 2>&1 || true
+# Conserver le repli sans jq pour les installations où il n'est pas présent.
+if command -v jq &>/dev/null; then
+    if ! payload="$(jq -n --arg content "$message" '{content: $content}')"; then
+        echo "[pz-discord] Impossible de générer le JSON de notification." >&2
+        if $strict; then exit 1; else exit 0; fi
+    fi
 else
-    # Échapper pour JSON: \ -> \\, " -> \", tab -> \t
-    escaped_message=$(echo "$message" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g')
-    curl -s --connect-timeout 5 --max-time 10 -H "Content-Type: application/json" \
-         -d "{\"content\": \"$escaped_message\"}" \
-         "${webhook}" > /dev/null 2>&1 || true
+    escaped_message="$(printf '%s' "$message" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g')"
+    payload="{\"content\": \"${escaped_message}\"}"
 fi
+
+# curl sans --fail peut réussir (code 0) alors que Discord répond HTTP 400/429/500.
+# Ne jamais journaliser l'URL du webhook, son token ou le corps de la réponse.
+curl_rc=0
+http_code="$(curl --silent --connect-timeout 5 --max-time 10 \
+    --output /dev/null --write-out '%{http_code}' \
+    -H "Content-Type: application/json" -d "$payload" "$webhook" 2>/dev/null)" || curl_rc=$?
+if (( curl_rc != 0 )) || [[ ! "$http_code" =~ ^2[0-9][0-9]$ ]]; then
+    echo "[pz-discord] Échec d'envoi (curl=${curl_rc}, HTTP=${http_code:-inconnu})." >&2
+    if $strict; then exit 1; else exit 0; fi
+fi
+exit 0
