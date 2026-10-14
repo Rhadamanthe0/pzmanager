@@ -35,15 +35,12 @@ if [[ -z "$message" ]]; then
     exit 1
 fi
 
-# Conserver le repli sans jq pour les installations où il n'est pas présent.
-if command -v jq &>/dev/null; then
-    if ! payload="$(jq -n --arg content "$message" '{content: $content}')"; then
-        echo "[pz-discord] Impossible de générer le JSON de notification." >&2
-        if $strict; then exit 1; else exit 0; fi
-    fi
-else
-    escaped_message="$(printf '%s' "$message" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g')"
-    payload="{\"content\": \"${escaped_message}\"}"
+# Python est déjà requis par common.sh/source_env ; son encodeur JSON gère
+# aussi les retours ligne, les tabulations, les contrôles et les caractères UTF-8.
+# L'échappement sed précédent produisait du JSON invalide pour les multilignes.
+if ! payload="$(python3 -c 'import json, sys; print(json.dumps({"content": sys.argv[1]}, ensure_ascii=False))' "$message")"; then
+    echo "[pz-discord] Impossible de générer le JSON de notification." >&2
+    if $strict; then exit 1; else exit 0; fi
 fi
 
 # curl sans --fail peut réussir (code 0) alors que Discord répond HTTP 400/429/500.

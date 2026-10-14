@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Regression tests for the Discord ready notification and webhook transport."""
+import json
 import os
 import shutil
 import subprocess
@@ -184,12 +185,62 @@ class ReadyNotificationTests(unittest.TestCase):
         self.assertEqual(self.sent_count(), 2)
 
     def test_maintenance_silences_next_start(self):
-        (self.manager / ".silent_next_start").touch()
+        flag = self.manager / "logs/.silent_next_start"
+        flag.parent.mkdir()
+        flag.touch()
         result = self.run_ready()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse((self.manager / ".silent_next_start").exists())
+        self.assertFalse(flag.exists())
         self.assertEqual(self.sent_count(), 0)
         self.assertFalse((self.root / "journal.args").exists())
+        self.assertEqual(self.run_ready().returncode, 0)
+        self.assertEqual(self.sent_count(), 0)
+        (self.root / "invocation").write_text(BOOT_B)
+        self.assertEqual(self.run_ready(env=dict(self.env, INVOCATION_ID=BOOT_B)).returncode, 0)
+        self.assertEqual(self.sent_count(), 1)
+
+    def test_legacy_maintenance_flag_consumed_once(self):
+        flag = self.manager / ".silent_next_start"
+        (self.manager / "logs").mkdir()
+        flag.touch()
+        first = self.run_ready()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertTrue(flag.exists())
+        self.assertEqual(self.sent_count(), 0)
+        self.assertTrue((self.manager / "logs/.legacy_silent_next_start_consumed").exists())
+        second = self.run_ready()
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(self.sent_count(), 0)
+        (self.root / "invocation").write_text(BOOT_B)
+        newer = self.run_ready(env=dict(self.env, INVOCATION_ID=BOOT_B))
+        self.assertEqual(newer.returncode, 0, newer.stderr)
+        self.assertEqual(self.sent_count(), 1)
+
+    def test_new_maintenance_flag_supersedes_legacy(self):
+        (self.manager / "logs").mkdir()
+        (self.manager / ".silent_next_start").touch()
+        (self.manager / "logs/.silent_next_start").touch()
+        first = self.run_ready()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(self.sent_count(), 0)
+        self.assertFalse((self.manager / "logs/.silent_next_start").exists())
+        second = self.run_ready()
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(self.sent_count(), 0)
+        (self.root / "invocation").write_text(BOOT_B)
+        newer = self.run_ready(env=dict(self.env, INVOCATION_ID=BOOT_B))
+        self.assertEqual(newer.returncode, 0, newer.stderr)
+        self.assertEqual(self.sent_count(), 1)
+
+    def test_silence_flag_path_is_writable_by_hardened_service(self):
+        template = (ROOT / "data/setupTemplates/zomboid.service").read_text()
+        maintenance = (ROOT / "data/scripts/admin/performFullMaintenance.sh").read_text()
+        self.assertIn("ProtectSystem=strict", template)
+        self.assertIn("%h/pzmanager/logs", template)
+        self.assertIn('SILENT_FLAG_FILE="${PZ_MANAGER_DIR}/logs/.silent_next_start"', maintenance)
+        start_block = maintenance.split('log "Maintenance terminée, redémarrage du service..."', 1)[1]
+        start_block = start_block.split("if validate_final_start", 1)[0]
+        self.assertIn('[[ "$SILENT_MODE" == true ]] && opts+=(--silent)', start_block)
 
     def test_discord_failure_reported_and_retry_permitted(self):
         env = dict(self.env, MOCK_NOTIFY_FAIL="1")
@@ -220,7 +271,11 @@ class DiscordTransportTests(unittest.TestCase):
         curl = binpath / "curl"
         curl.write_text(
             '#!/usr/bin/env python3\n'
-            'import os, sys\n'
+            'import os, pathlib, sys\n'
+            'args = sys.argv[1:]\n'
+            'path = os.environ.get("MOCK_PAYLOAD")\n'
+            'if path and "-d" in args:\n'
+            '    pathlib.Path(path).write_text(args[args.index("-d") + 1])\n'
             'print(os.environ.get("MOCK_HTTP", "204"), end="")\n'
             'sys.exit(int(os.environ.get("MOCK_CURL_RC", "0")))\n'
         )
@@ -230,10 +285,11 @@ class DiscordTransportTests(unittest.TestCase):
             "PATH": f'{binpath}:{os.environ.get("PATH", "")}',
             "MOCK_DISCORD_WEBHOOK": "https://discord.invalid/SECRET",
             "MOCK_HTTP": "204",
+            "MOCK_PAYLOAD": str(self.base / "payload.json"),
         })
 
-    def run_discord(self, *, strict=False, env=None):
-        args = ["bash", str(self.script), "Disponibilité"]
+    def run_discord(self, *, strict=False, env=None, message="Disponibilité"):
+        args = ["bash", str(self.script), message]
         if strict:
             args.append("--strict")
         return subprocess.run(
@@ -244,6 +300,13 @@ class DiscordTransportTests(unittest.TestCase):
     def test_discord_success(self):
         result = self.run_discord(strict=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_multiline_control_and_unicode_json(self):
+        content = 'Annonce\nLigne 2\r\t"citation" \\ barre 🧟'
+        result = self.run_discord(strict=True, message=content)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads((self.base / "payload.json").read_text())
+        self.assertEqual(payload, {"content": content})
 
     def test_discord_http_error_strict_and_best_effort(self):
         env = dict(self.env, MOCK_HTTP="429")
