@@ -520,7 +520,7 @@ async def backup_restore_character(interaction: discord.Interaction, pseudo: str
 
 
 @backup_group.command(name="restore-zone", description="Restaurer les tuiles sélectionnées, toutes hauteurs (aperçu par défaut)")
-@app_commands.describe(backup="Backup (nom ou chemin)", x1="X de la première tuile", y1="Y de la première tuile",
+@app_commands.describe(backup="Snapshot ou ZIP (nom ou chemin)", x1="X de la première tuile", y1="Y de la première tuile",
                        x2="X de la dernière tuile (identique à x1 pour une tuile)",
                        y2="Y de la dernière tuile (identique à y1 pour une tuile)", appliquer="Appliquer serveur arrêté",
                        monde="Nom du monde si plusieurs sauvegardes")

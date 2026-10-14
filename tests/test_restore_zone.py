@@ -272,6 +272,7 @@ class ZoneTests(unittest.TestCase):
         mark = fixture / 'mark'
         env = dict(os.environ, PATH=str(bin_dir) + ':' + os.environ['PATH'],
                    XDG_RUNTIME_DIR=str(runtime), PZ_SOURCE_DIR='live', BACKUP_DIR='backups',
+                   PZ_DATA_DIR=str(fixture / 'data'), SYNC_BACKUPS_DIR=str(fixture / 'data/fullBackups'),
                    PZ_HOME=str(fixture), MARK=str(mark), PZ_WORLD_LOCK_DEPTH='0', PZ_WORLD_LOCK_FD='')
         for state in ('active', 'error', 'failed', 'activating', 'unknown', 'inactive'):
             result = subprocess.run(['bash', str(scripts / 'restoreZone.sh'), 'backup', '8', '8', '15', '15', '--apply'],

@@ -18,6 +18,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from terrain_tiles import prepare_partial
+from zone_zip import zone_map_source
 
 
 def plain(path, root, directory=False):
@@ -57,8 +58,11 @@ def replace_file(source, destination):
 def restore(args):
     live_root = Path(args.live_root).absolute()
     backup = Path(args.backup)
-    if not backup.is_dir():
-        backup = Path(args.backup_root) / args.backup
+    if not backup.exists():
+        candidate = Path(args.backup_root) / args.backup
+        backup = candidate
+        if not candidate.exists() and getattr(args, 'archive_root', None):
+            backup = Path(args.archive_root) / args.backup
     backup = backup.resolve(strict=True)  # supports the regular `latest` alias
     mp = live_root / 'Saves/Multiplayer'
     plain(mp, live_root, directory=True)
@@ -71,7 +75,12 @@ def restore(args):
     if not save or '..' in save or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-' for c in save):
         raise ValueError('Nom de monde invalide.')
     live = mp / save
-    source = backup / 'Saves/Multiplayer' / save
+    with zone_map_source(backup, save, args.x1, args.y1, args.x2, args.y2,
+                         getattr(args, 'staging_root', None)) as source:
+        return restore_source(args, backup, save, live, source)
+
+
+def restore_source(args, backup, save, live, source):
     for root in (live, source):
         plain(root, Path(root.anchor), directory=True)
         plain(root / 'map', root, directory=True)
@@ -204,6 +213,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument('--live-root', required=True)
     parser.add_argument('--backup-root', required=True)
+    parser.add_argument('--archive-root')
+    parser.add_argument('--staging-root')
     parser.add_argument('--recovery-root', required=True)
     parser.add_argument('backup')
     for name in ('x1', 'y1', 'x2', 'y2'):
