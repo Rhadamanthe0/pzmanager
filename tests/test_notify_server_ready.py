@@ -26,12 +26,18 @@ class ReadyNotificationTests(unittest.TestCase):
         self.internal.mkdir(parents=True)
         self.lib.mkdir(parents=True)
         self.mockbin.mkdir()
+        self.runtime_dir = self.root / "runtime"
+        self.runtime_dir.mkdir(mode=0o700)
         self.script = self.internal / "notifyServerReady.sh"
         self.discord = self.internal / "sendDiscord.sh"
         shutil.copy2(ROOT / "data/scripts/internal/notifyServerReady.sh", self.script)
         shutil.copy2(ROOT / "data/scripts/internal/sendDiscord.sh", self.discord)
         self.script.chmod(0o755)
         self.discord.chmod(0o755)
+        common_source = (ROOT / "data/scripts/lib/common.sh").read_text()
+        helper_start = common_source.index("private_state_path() {")
+        helper_end = common_source.index("\n}\n", helper_start) + 2
+        private_state_helper = common_source[helper_start:helper_end]
         (self.lib / "common.sh").write_text(
             'source_env() {\n'
             '  PZ_MANAGER_DIR="$MOCK_MANAGER_DIR"\n'
@@ -39,6 +45,7 @@ class ReadyNotificationTests(unittest.TestCase):
             '  DISCORD_WEBHOOK="$MOCK_DISCORD_WEBHOOK"\n'
             '  export PZ_MANAGER_DIR PZ_SERVICE_NAME DISCORD_WEBHOOK\n'
             '}\n'
+            + private_state_helper + "\n"
         )
         (self.mockbin / "systemctl").write_text(
             '#!/usr/bin/env python3\n'
@@ -88,7 +95,7 @@ class ReadyNotificationTests(unittest.TestCase):
             "MOCK_MANAGER_DIR": str(self.manager),
             "MOCK_DISCORD_WEBHOOK": "https://discord.invalid/SECRET",
             "MOCK_SENT": str(self.sent),
-            "XDG_RUNTIME_DIR": str(self.root / "runtime"),
+            "XDG_RUNTIME_DIR": str(self.runtime_dir),
             "INVOCATION_ID": BOOT_A,
             "PZ_NOTIFY_READY_TIMEOUT": "5",
             "PZ_NOTIFY_READY_POLL_INTERVAL": "1",
@@ -186,6 +193,27 @@ class ReadyNotificationTests(unittest.TestCase):
             if proc.poll() is None:
                 proc.kill()
                 proc.communicate()
+
+    def test_existing_lock_symlink_is_rejected(self):
+        state_dir = self.runtime_dir / "pzmanager"
+        state_dir.mkdir(mode=0o700)
+        target = self.root / "outside.txt"
+        target.write_text("untouched")
+        (state_dir / ("notify-ready-" + BOOT_A + ".lock")).symlink_to(target)
+        result = self.run_ready()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("verrou invalide", result.stderr)
+        self.assertEqual(target.read_text(), "untouched")
+        self.assertEqual(self.sent_count(), 0)
+
+    def test_symlinked_runtime_state_directory_is_rejected(self):
+        target = self.root / "other-state"
+        target.mkdir()
+        (self.runtime_dir / "pzmanager").symlink_to(target, target_is_directory=True)
+        result = self.run_ready()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Répertoire privé", result.stderr)
+        self.assertEqual(self.sent_count(), 0)
 
     def test_new_invocation_not_blocked_by_old_cooldown(self):
         self.assertEqual(self.run_ready().returncode, 0)
