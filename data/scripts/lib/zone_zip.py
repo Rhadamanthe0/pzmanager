@@ -47,7 +47,9 @@ def zone_map_source(backup, save, x1, y1, x2, y2, staging_root=None):
     # Never default to fullBackups/: Syncthing watches that directory.
     if staging_root is None:
         raise ValueError('Répertoire de staging requis pour un ZIP.')
-    staging_root = Path(staging_root)
+    # Canonicalize possible installation symlinks before plain() validates
+    # every ancestor of the extracted source directory.
+    staging_root = Path(staging_root).resolve(strict=True)
     if not staging_root.is_dir():
         raise ValueError(f'Répertoire de staging absent : {staging_root}')
 

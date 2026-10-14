@@ -180,6 +180,14 @@ class ZipZoneTests(unittest.TestCase):
         manifest = next((self.root / 'OLD').glob('zone-rollback-*/manifest.json'))
         self.assertIn('"status": "reverted"', manifest.read_text())
 
+    def test_symlinked_staging_root_uses_canonical_directory(self):
+        alias = self.root / 'staging-alias'
+        alias.symlink_to(self.staging, target_is_directory=True)
+        self.args.staging_root = str(alias)
+        zone.restore(self.args)
+        self.assertEqual((self.live / 'map/1/1.bin').read_bytes(), chunk(b'old'))
+        self.assert_no_stage()
+
     def test_zip_must_have_a_nonsynchronized_staging_root(self):
         self.args.staging_root = None
         with self.assertRaisesRegex(ValueError, 'staging requis'):
