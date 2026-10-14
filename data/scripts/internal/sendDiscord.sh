@@ -15,7 +15,19 @@ strict=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --strict)    strict=true; shift ;;
-        --webhook)   webhook="${2:-}"; webhook_set=true; shift; shift 2>/dev/null || true ;;
+        --webhook)
+            if (( $# < 2 )) || [[ -z "$2" || "$2" == --* ]]; then
+                echo "[pz-discord] L'option --webhook requiert une URL." >&2
+                exit 2
+            fi
+            webhook="$2"
+            webhook_set=true
+            shift 2
+            ;;
+        --webhook=)
+            echo "[pz-discord] L'option --webhook requiert une URL." >&2
+            exit 2
+            ;;
         --webhook=*) webhook="${1#--webhook=}"; webhook_set=true; shift ;;
         *)           [[ -n "$message" ]] || message="$1"; shift ;;
     esac
