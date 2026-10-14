@@ -24,6 +24,10 @@ while [[ $# -gt 0 ]]; do
             webhook_set=true
             shift 2
             ;;
+        --webhook=)
+            echo "[pz-discord] L'option --webhook requiert une URL." >&2
+            exit 2
+            ;;
         --webhook=*) webhook="${1#--webhook=}"; webhook_set=true; shift ;;
         *)           [[ -n "$message" ]] || message="$1"; shift ;;
     esac
