@@ -12,11 +12,13 @@ readonly SILENT_FLAG="${PZ_MANAGER_DIR}/.silent_next_start"
 readonly READY_TIMEOUT="${PZ_NOTIFY_READY_TIMEOUT:-3600}"
 readonly POLL_INTERVAL="${PZ_NOTIFY_READY_POLL_INTERVAL:-5}"
 
-if [[ ! "$READY_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || (( READY_TIMEOUT > 86400 )); then
+if [[ ! "$READY_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || \
+   (( ${#READY_TIMEOUT} > 5 )) || (( 10#$READY_TIMEOUT > 86400 )); then
     echo "[pz-ready] PZ_NOTIFY_READY_TIMEOUT invalide (1..86400 s)." >&2
     exit 1
 fi
-if [[ ! "$POLL_INTERVAL" =~ ^[1-9][0-9]*$ ]] || (( POLL_INTERVAL > 30 )); then
+if [[ ! "$POLL_INTERVAL" =~ ^[1-9][0-9]*$ ]] || \
+   (( ${#POLL_INTERVAL} > 2 )) || (( 10#$POLL_INTERVAL > 30 )); then
     echo "[pz-ready] PZ_NOTIFY_READY_POLL_INTERVAL invalide (1..30 s)." >&2
     exit 1
 fi
@@ -74,11 +76,9 @@ if ! same_running_boot; then
     exit 0
 fi
 
-# Relire aussi les frames déjà émises avant le lancement du lecteur.
-start_timestamp="$(systemctl --user show "${PZ_SERVICE_NAME}" \
-    -p ExecMainStartTimestamp --value 2>/dev/null || true)"
-start_epoch="$(date -d "$start_timestamp" +%s 2>/dev/null || date +%s)"
-
+# Ne suivre QUE l'invocation courante, sans borne temporelle à la seconde :
+# lors d'un restart rapproché, --since pourrait inclure une frame de l'ancien boot.
+# --no-tail rejoue aussi les frames déjà émises avant le lancement du lecteur.
 # Lecture en flux filtrée dans journald : ne pas rescanner tout le journal
 # toutes les cinq secondes (des milliers de lignes pendant le chargement).
 JOURNAL_PID=""
@@ -95,7 +95,9 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 0' TERM INT
 exec {JOURNAL_FD}< <(
-    journalctl --user -u "${PZ_SERVICE_NAME}" --since "@${start_epoch}" \
+    journalctl --user \
+        "_SYSTEMD_USER_UNIT=${PZ_SERVICE_NAME}" \
+        "_SYSTEMD_INVOCATION_ID=${BOOT_ID}" \
         --follow --no-tail --no-pager -o cat \
         --grep 'f:[1-9][0-9]* st:'
 )
