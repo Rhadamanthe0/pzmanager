@@ -47,9 +47,22 @@ fi
 # Verrou par invocation, non un cooldown global de cinq minutes : deux boots
 # rapprochés ont chacun droit à leur annonce. Le fichier conserve l'envoi réussi.
 umask 077
-readonly RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}/pzmanager"
-readonly LOCK_FILE="${RUNTIME_DIR}/notify-ready-${BOOT_ID}.lock"
-mkdir -p -- "$RUNTIME_DIR"
+# Réutiliser la protection commune : répertoire privé de l'utilisateur,
+# refus des liens symboliques et des répertoires possédés par un autre UID.
+# Le chemin /tmp/pzmanager non personnalisé n'est pas sûr en mode dégradé.
+LOCK_FILE="$(private_state_path "notify-ready-${BOOT_ID}.lock")" || {
+    echo "[pz-ready] Répertoire privé de notification inaccessible." >&2
+    exit 1
+}
+readonly LOCK_FILE
+# Un fichier déjà présent ne doit pas rediriger l'ouverture du verrou.
+if [[ -e "$LOCK_FILE" || -L "$LOCK_FILE" ]]; then
+    if [[ ! -f "$LOCK_FILE" || -L "$LOCK_FILE" || ! -O "$LOCK_FILE" ]] ||
+       [[ "$(stat -c %h -- "$LOCK_FILE" 2>/dev/null)" != 1 ]]; then
+        echo "[pz-ready] Fichier de verrou invalide (lien ou propriétaire)." >&2
+        exit 1
+    fi
+fi
 exec {LOCK_FD}<>"$LOCK_FILE"
 flock -n "$LOCK_FD" || exit 0
 if grep -qxF "$BOOT_ID" "$LOCK_FILE" 2>/dev/null; then
