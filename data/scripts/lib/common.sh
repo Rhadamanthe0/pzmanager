@@ -543,9 +543,14 @@ private_state_path() {
         # la possession exclusive est vérifiée ci-dessous avant tout usage.
         dir="/tmp/pzmanager-${user}"
     fi
-    mkdir -p "$dir" 2>/dev/null || return 1
-    chmod 0700 "$dir" 2>/dev/null || true
+    # Valider l'inode avant tout chmod : chmod suit un lien symbolique et
+    # pourrait autrement modifier les permissions d'une cible sans autorisation.
+    [[ ! -L "$dir" ]] || return 1
+    mkdir -p -- "$dir" 2>/dev/null || return 1
     [[ -d "$dir" && ! -L "$dir" && -O "$dir" ]] || return 1
+    chmod 0700 -- "$dir" 2>/dev/null || return 1
+    [[ -d "$dir" && ! -L "$dir" && -O "$dir" &&
+       "$(stat -c %a -- "$dir" 2>/dev/null)" == 700 ]] || return 1
     printf '%s\n' "${dir}/${name}"
 }
 

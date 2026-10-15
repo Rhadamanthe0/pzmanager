@@ -209,11 +209,15 @@ class ReadyNotificationTests(unittest.TestCase):
     def test_symlinked_runtime_state_directory_is_rejected(self):
         target = self.root / "other-state"
         target.mkdir()
+        target.chmod(0o755)
         (self.runtime_dir / "pzmanager").symlink_to(target, target_is_directory=True)
         result = self.run_ready()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Répertoire privé", result.stderr)
         self.assertEqual(self.sent_count(), 0)
+        # Ne pas seulement refuser le lien : l'ancien code faisait chmod AVANT
+        # la vérification et modifiait la cible même sur retour en erreur.
+        self.assertEqual(target.stat().st_mode & 0o777, 0o755)
 
     def test_new_invocation_not_blocked_by_old_cooldown(self):
         self.assertEqual(self.run_ready().returncode, 0)
