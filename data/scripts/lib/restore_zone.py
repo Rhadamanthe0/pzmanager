@@ -6,18 +6,20 @@ A complete source chunk is required for every intersecting chunk; absence is
 never interpreted as permission to regenerate or erase terrain.
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
 import signal
+import stat
 import struct
 import zlib
 import tempfile
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from terrain_tiles import NativeIndexer, prepare_partial
+from terrain_tiles import NativeIndexer, checked_columns, prepare_partial
 from zone_zip import zone_map_source
 
 
@@ -44,15 +46,79 @@ def terrain_version(path, validate=True):
     return version
 
 
-def replace_file(source, destination):
+def file_sha256(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError(f'Fichier non régulier : {path}')
+        digest = hashlib.sha256()
+        for data in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(data)
+        return digest.hexdigest()
+
+
+def sync_directory(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def require_hash(path, expected):
+    # None is an absence explicitly recorded in the plan, never a missing
+    # staged file reinterpreted as an instruction to erase the live terrain.
+    if expected is None:
+        if os.path.lexists(path):
+            raise ValueError(f'Fichier apparu après préparation : {path}')
+    elif file_sha256(path) != expected:
+        raise ValueError(f'Fichier modifié après préparation : {path}')
+
+
+def replace_file(source, destination, expected_sha256=None):
+    if expected_sha256 is None:
+        expected_sha256 = file_sha256(source)
+    missing = []
+    parent = destination.parent
+    while not parent.exists():
+        missing.append(parent)
+        parent = parent.parent
     destination.parent.mkdir(parents=True, exist_ok=True)
+    # Persist new recovery-directory entries before the first live mutation.
+    for directory in reversed(missing):
+        sync_directory(directory)
+        sync_directory(directory.parent)
     fd, name = tempfile.mkstemp(prefix='.zone-', dir=destination.parent)
     os.close(fd)
     try:
         shutil.copy2(source, name)
+        require_hash(Path(name), expected_sha256)
+        with open(name, 'rb') as stream:
+            os.fsync(stream.fileno())
         os.replace(name, destination)  # Never write through a backup hardlink.
+        sync_directory(destination.parent)
     finally:
         Path(name).unlink(missing_ok=True)
+
+
+def sync_recovery_plan(recovery, old, new, paths):
+    """Persist recovery images and their directory entries before APPLY."""
+    directories = {recovery, recovery.parent, recovery.parent.parent}
+    for root in (old, new):
+        for rel in paths:
+            path = root / rel
+            if path.is_file():
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                parent = path.parent
+                while parent != recovery:
+                    directories.add(parent)
+                    parent = parent.parent
+    for directory in sorted(directories, key=lambda path: len(path.parts), reverse=True):
+        sync_directory(directory)
 
 
 def require_dictionary_compatible(source, current, staging_root):
@@ -123,6 +189,8 @@ def restore_source(args, backup, save, live, source):
             raise ValueError(f'Carte Build 42 absente : {root}')
     if live.resolve() == source.resolve():
         raise ValueError('Source et destination identiques.')
+    # Bind compatibility checks to the unchanged source/current dictionaries.
+    context_hashes = {}
     # No global dictionary rollback: prove every old ID still has its meaning.
     for name in ('map_ver.bin', 'WorldDictionary.bin'):
         a, b = live / name, source / name
@@ -132,6 +200,8 @@ def restore_source(args, backup, save, live, source):
             continue
         if not a.is_file() or not b.is_file():
             raise ValueError(f'{name} absent ou différent : compatibilité non prouvée.')
+        context_hashes[a] = file_sha256(a)
+        context_hashes[b] = file_sha256(b)
         if name == 'WorldDictionary.bin':
             require_dictionary_compatible(b, a, getattr(args, 'staging_root', None))
         elif a.read_bytes() != b.read_bytes():
@@ -194,53 +264,117 @@ def restore_source(args, backup, save, live, source):
         manifest['status'] = status
         pending = recovery / '.manifest.pending'
         pending.write_text(json.dumps(manifest, indent=2) + '\n')
+        with pending.open('rb') as stream:
+            os.fsync(stream.fileno())
         os.replace(pending, manifest_path)
+        sync_directory(recovery)
     record('preparing')
-    # Finish staging AND recovery before the first mutation.
+    # Finish staging AND recovery before the first mutation. Pin copies to
+    # their source bytes, including the explicit list of intended absences.
+    before_hashes, after_hashes = {}, {}
     for rel in paths:
+        if rel.parts[0] == 'map' and not (source / rel).is_file():
+            raise ValueError(f'Chunk source disparu pendant la préparation : {rel}')
+        after_hashes[rel] = None
         if rel not in invalidate and (source / rel).is_file():
-            (new / rel).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source / rel, new / rel)
+            after_hashes[rel] = file_sha256(source / rel)
+            replace_file(source / rel, new / rel, after_hashes[rel])
+        before_hashes[rel] = None
         if (live / rel).is_file():
-            (old / rel).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(live / rel, old / rel)
+            before_hashes[rel] = file_sha256(live / rel)
+            replace_file(live / rel, old / rel, before_hashes[rel])
         else:
             manifest['absent_before'].append(str(rel))
     if partial:
         # Native readers see private copies only. No live map is passed to Java.
         inputs = recovery / 'source'; inputs.mkdir()
         dictionary = inputs / 'WorldDictionary.bin'
-        shutil.copy2(live / 'WorldDictionary.bin', dictionary)
+        replace_file(live / 'WorldDictionary.bin', dictionary,
+                     context_hashes[live / 'WorldDictionary.bin'])
         entries = []
         for rel, selection in partial.items():
             original = inputs / rel
             original.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(new / rel, original)
+            replace_file(new / rel, original, after_hashes[rel])
             entries.append(dict(selection, source=original, current=old / rel, output=new / rel))
         prepare_partial(recovery, dictionary, entries)
+        for rel in partial:
+            after_hashes[rel] = file_sha256(new / rel)
+    # Interior/whole chunks need the same complete native validation as
+    # spliced edge chunks. A valid CRC cannot establish game readability.
+    dictionary = recovery / 'WorldDictionary.bin'
+    replace_file(live / 'WorldDictionary.bin', dictionary,
+                 context_hashes[live / 'WorldDictionary.bin'])
+    native = NativeIndexer(recovery / 'native-final', dictionary)
+    terrain = [rel for rel in paths if rel.parts[0] == 'map']
+    inputs = [{'file': str(new / rel), 'x': int(rel.parts[1]), 'y': int(rel.stem)}
+              for rel in terrain]
+    indexes = native.index(inputs)
+    if len(indexes) != len(terrain):
+        raise ValueError('Validation native du terrain incomplète.')
+    for rel, index in zip(terrain, indexes):
+        checked_columns((new / rel).read_bytes(), index)
+    manifest['files'] = [{'path': str(rel), 'before_sha256': before_hashes[rel],
+                          'after_sha256': after_hashes[rel]} for rel in paths]
     record('ready')
+    # Recheck the entire plan AFTER native readers return, BEFORE the first
+    # live mutation. Keep these hashes for the copy/rename boundary as well.
+    for path, expected in context_hashes.items():
+        require_hash(path, expected)
+    for rel in paths:
+        require_hash(old / rel, before_hashes[rel])
+        require_hash(live / rel, before_hashes[rel])
+        require_hash(new / rel, after_hashes[rel])
+    sync_recovery_plan(recovery, old, new, paths)
     print(f'Copie de récupération : {recovery}', flush=True)
     changed = []
     try:
         record('applying')
         for rel in paths:
+            require_hash(live / rel, before_hashes[rel])
             changed.append(rel)
-            if (new / rel).is_file():
-                replace_file(new / rel, live / rel)
+            if after_hashes[rel] is not None:
+                replace_file(new / rel, live / rel, after_hashes[rel])
             else:
-                (live / rel).unlink(missing_ok=True)  # discard stale selected iso cache
+                require_hash(new / rel, None)
+                (live / rel).unlink(missing_ok=True)  # discard only planned iso caches
+                if (live / rel).parent.exists():
+                    sync_directory((live / rel).parent)
+        for rel in paths:
+            require_hash(live / rel, after_hashes[rel])
         record('complete')
     except BaseException:
         previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
         for sig in previous:
             signal.signal(sig, signal.SIG_IGN)
         try:
+            rollback_errors = []
             for rel in reversed(changed):
-                if (old / rel).is_file():
-                    replace_file(old / rel, live / rel)
-                else:
-                    (live / rel).unlink(missing_ok=True)
+                try:
+                    current = file_sha256(live / rel) if os.path.lexists(live / rel) else None
+                    if current == before_hashes[rel]:
+                        continue  # An interrupted copy never replaced this file.
+                    if current != after_hashes[rel]:
+                        raise ValueError(f'Modification externe pendant la restauration : {rel}')
+                    if before_hashes[rel] is not None:
+                        require_hash(old / rel, before_hashes[rel])
+                        replace_file(old / rel, live / rel, before_hashes[rel])
+                    else:
+                        require_hash(old / rel, None)
+                        (live / rel).unlink(missing_ok=True)
+                        if (live / rel).parent.exists():
+                            sync_directory((live / rel).parent)
+                    require_hash(live / rel, before_hashes[rel])
+                except (OSError, ValueError) as error:
+                    # Preserve conflicts, but still revert other changed files.
+                    rollback_errors.append(f'{rel}: {error}')
+            if rollback_errors:
+                raise ValueError('Récupération manuelle requise ; copies conservées : '
+                                 + '; '.join(rollback_errors))
             record('reverted')
+        except BaseException:
+            record('rollback-failed')
+            raise
         finally:
             for sig, handler in previous.items():
                 signal.signal(sig, handler)

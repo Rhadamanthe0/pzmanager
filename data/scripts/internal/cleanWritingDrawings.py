@@ -510,12 +510,17 @@ def clean_blob(blob, registry, version=VERSION, chunk=False):
     records = {}
     for match in re.finditer(b"\xff", blob):
         start = match.start() - 6
-        if start < 0 or start+11 > len(blob): continue
+        if start < (17 if chunk else 0) or start+11 > len(blob): continue
         length, rid = struct.unpack_from(">ih", blob, start); end = start + 4 + length
-        if rid not in registry or length < 8 or end > len(blob): continue
+        if length < 8 or end > len(blob): continue
         if struct.unpack_from(">i", blob, start+7)[0] in (0, -1): continue
         covered = [doc for doc in documents if start+11 <= doc[0] and doc[2] <= end]
         if not covered: continue
+        # Ignoring an unknown covering envelope can shrink its nested book
+        # while leaving the enclosing size stale. Refuse instead of guessing
+        # whether this is an unknown mod item or opaque non-item binary data.
+        if rid not in registry:
+            raise CleanupError("Unknown inventory envelope registry ID: "+str(rid))
         # Keep every plausible covering envelope. Ignoring a non-container
         # could mistake an item serialized inside opaque text for a real child.
         # World floor items are direct records. Nested/compressed inventory
@@ -527,7 +532,8 @@ def clean_blob(blob, registry, version=VERSION, chunk=False):
         # by PZ before any write; a catalog match alone cannot authorize a patch.
         # Direct literature still requires an explicit NeatWriting layout:
         # script classification must not admit arbitrary magazines here.
-        if not count_valid and registry[rid] not in LITERATURE_TYPES and not is_class(registry,rid,"container"): continue
+        if not count_valid and registry[rid] not in LITERATURE_TYPES and not is_class(registry,rid,"container"):
+            raise CleanupError("Unproven direct inventory envelope type: "+registry[rid])
         records[start] = (end, rid, covered)
     for doc in documents:
         containing = sorted((start, end, rid) for start, (end, rid, docs) in records.items() if doc in docs)
@@ -597,6 +603,8 @@ def safe_root(path, create=False):
         if not current.exists():
             if not create: raise CleanupError("Storage directory missing")
             current.mkdir(mode=0o700)
+            sync_directory(current)
+            sync_directory(current.parent)
         info = current.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid not in trusted:
             raise CleanupError("Storage path is a symlink or owned by another user")
@@ -760,19 +768,44 @@ def prepare(world,stage,scripts_dir=None,cached=None,scanned=None):
     return files,rows
 
 
-def atomic_copy(path,source,mode=0o600):
+def atomic_copy(path,source,mode=0o600,expected_sha256=None):
+    if expected_sha256 is None:expected_sha256=file_digest(source)
     fd,temp=tempfile.mkstemp(prefix="."+path.name+".",dir=path.parent)
     try:
         with os.fdopen(fd,"wb") as writer:
             reader_fd=os.open(source,os.O_RDONLY|os.O_NOFOLLOW)
             with os.fdopen(reader_fd,"rb") as reader:shutil.copyfileobj(reader,writer,1024*1024)
             writer.flush();os.fchmod(writer.fileno(),mode);os.fsync(writer.fileno())
+        if file_digest(temp)!=expected_sha256:
+            raise CleanupError("Copied cleanup image differs from validated bytes")
         os.replace(temp,path)
         parent=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY)
         try:os.fsync(parent)
         finally:os.close(parent)
     finally:
         if os.path.exists(temp):os.unlink(temp)
+
+
+def sync_directory(path):
+    fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:os.fsync(fd)
+    finally:os.close(fd)
+
+
+def sync_recovery_plan(stage,entries):
+    """Persist both images and every recovery-directory link before APPLY."""
+    directories={stage,stage.parent}
+    for entry in entries:
+        for folder in ("original","new"):
+            path=stage/folder/entry["path"]
+            fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+            try:os.fsync(fd)
+            finally:os.close(fd)
+            parent=path.parent
+            while parent!=stage:
+                directories.add(parent);parent=parent.parent
+    for directory in sorted(directories,key=lambda path:len(path.parts),reverse=True):
+        sync_directory(directory)
 
 
 def manifest_path(stage): return stage/"manifest.json"
@@ -785,21 +818,34 @@ def recover(world, stage, validator=None):
     if manifest.get("schema") != 1 or manifest.get("world") != str(world) or manifest.get("version") != VERSION:
         raise CleanupError("Pending cleanup belongs to another world or format")
     entries = manifest["files"]
-    for entry in entries:
-        rel = Path(entry["path"])
-        if rel.is_absolute() or ".." in rel.parts or not rel.parts: raise CleanupError("Invalid cleanup manifest path")
-        safe_root(stage/"original"/rel.parent);safe_root(stage/"new"/rel.parent);safe_root(world/rel.parent)
-        if file_digest(stage/"original"/rel) != entry["original_sha256"] or file_digest(stage/"new"/rel) != entry["new_sha256"]:
-            raise CleanupError("Cleanup backup/staging integrity mismatch")
-        if file_digest(world/rel) not in (entry["original_sha256"],entry["new_sha256"]):
-            raise CleanupError("World changed during interrupted cleanup; manual recovery required")
-    check_database_files(world)
+    def check_plan():
+        for entry in entries:
+            rel = Path(entry["path"])
+            if rel.is_absolute() or ".." in rel.parts or not rel.parts: raise CleanupError("Invalid cleanup manifest path")
+            safe_root(stage/"original"/rel.parent);safe_root(stage/"new"/rel.parent);safe_root(world/rel.parent)
+            if file_digest(stage/"original"/rel) != entry["original_sha256"] or file_digest(stage/"new"/rel) != entry["new_sha256"]:
+                raise CleanupError("Cleanup backup/staging integrity mismatch")
+            if file_digest(world/rel) not in (entry["original_sha256"],entry["new_sha256"]):
+                raise CleanupError("World changed during interrupted cleanup; manual recovery required")
+        check_database_files(world)
+    check_plan()
     if validator is None: raise CleanupError("A genuine PZ record validator is required before applying cleanup")
     validator(stage,entries,manifest["players"])
+    # Validators may be slow. Recheck ALL images, live targets and SQLite
+    # sidecars after they return, not only before the first native read.
+    check_plan()
+    sync_recovery_plan(stage,entries)
     for entry in entries:
         rel = Path(entry["path"])
-        if file_digest(world/rel) == entry["original_sha256"]:
-            atomic_copy(world/rel, stage/"new"/rel, entry["mode"])
+        current = file_digest(world/rel)
+        if current == entry["original_sha256"]:
+            atomic_copy(world/rel, stage/"new"/rel, entry["mode"],entry["new_sha256"])
+        elif current != entry["new_sha256"]:
+            raise CleanupError("World changed during cleanup; manual recovery required")
+    for entry in entries:
+        if file_digest(world/entry["path"]) != entry["new_sha256"]:
+            raise CleanupError("Installed cleanup image differs from validated bytes")
+    check_database_files(world)
     manifest["state"] = "complete"; manifest["completed_at"] = time.time(); write_manifest(stage,manifest)
     return len(entries)
 
@@ -879,7 +925,8 @@ def cleanup(world_dir, backup_dir, dry_run=False, validator=None, scripts_dir=No
         for entry in entries:
             rel=Path(entry["path"])
             for folder in ("original","new"):
-                target=stage/folder/rel;target.parent.mkdir(parents=True,exist_ok=True,mode=0o700);atomic_copy(target,Path(temporary)/folder/rel)
+                target=stage/folder/rel;target.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+                atomic_copy(target,Path(temporary)/folder/rel,expected_sha256=entry[folder+"_sha256"])
         manifest = {"schema":1,"world":str(world),"version":VERSION,"created_at":time.time(),"state":"prepared","files":entries,"players":rows}
         write_manifest(stage,manifest)
         recover(world,stage,validator)

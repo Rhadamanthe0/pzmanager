@@ -65,8 +65,6 @@ validate_backup_path() {
 }
 
 backup_current_zomboid() {
-    [[ -d "${PZ_SOURCE_DIR}" ]] || return 0
-
     # Garde ajoutée le 2026-08-18 : ce chemin DÉPLACE le monde live (mv) puis
     # rsync par-dessus. Fait serveur allumé, la JVM continue d'écrire dans ses
     # descripteurs déjà ouverts — donc dans l'arbre RENOMMÉ — et sauvegarde son
@@ -81,6 +79,9 @@ backup_current_zomboid() {
     else
         require_server_stopped "Restauration d'une sauvegarde"
     fi
+    # L'absence du répertoire live ne prouve pas l'absence d'une JVM : après
+    # une interruption elle peut encore écrire via ses descripteurs ouverts.
+    [[ -d "${PZ_SOURCE_DIR}" ]] || return 0
 
     # C7 : ce mv n'est appelé qu'APRÈS staging validé (voir main) — on ne
     # déplace jamais le live sans copie prête à basculer. Réserver une
@@ -221,6 +222,10 @@ main() {
 
     copy_backup_to_staging
     validate_staging_dir "$STAGING_DIR"
+    # La postcondition structurelle est déjà vérifiable sur la copie : ne
+    # déplacer aucun monde live si elle impose ensuite un rollback certain.
+    validate_restored_live "$STAGING_DIR" \
+        || die "Staging sans monde restaurable — live intact, aucune bascule."
     backup_current_zomboid
     restore_zomboid_data
     show_summary

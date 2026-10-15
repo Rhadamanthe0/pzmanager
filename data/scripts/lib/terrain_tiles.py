@@ -5,11 +5,25 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import struct
 import subprocess
 import zlib
 
 MAX_TERRAIN_BYTES = 64 * 1024 * 1024
+
+
+def read_native_input(path):
+    """Bound reads and reject links/special files before a native validation."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_TERRAIN_BYTES:
+            raise ValueError('Entrée native non régulière ou trop volumineuse.')
+        data = stream.read(MAX_TERRAIN_BYTES + 1)
+    if len(data) > MAX_TERRAIN_BYTES:
+        raise ValueError('Entrée native trop volumineuse.')
+    return data
 
 
 def native_script_context(install):
@@ -163,6 +177,10 @@ class NativeIndexer:
         return result.stdout
 
     def index(self, files):
+        # A successful subprocess and the right result count do not bind the
+        # returned indexes to the exact bytes the caller is about to install.
+        before = [hashlib.sha256(read_native_input(entry['file'])).hexdigest()
+                  for entry in files]
         self.sequence += 1
         label = 'index-' + str(self.sequence)
         request = self.root / (label + '.json')
@@ -170,9 +188,17 @@ class NativeIndexer:
         request.write_text(json.dumps(dict(self.script_context, dictionary=str(self.dictionary), chunks=files)))
         self.run([str(self.java), '-Xmx512m', '-cp', self.classpath, 'IndexTerrainColumns',
                   str(request), str(response)], label)
-        indexes = json.loads(response.read_text())['chunks']
-        if len(indexes) != len(files):
-            raise ValueError('Validation native du terrain incomplète.')
+        try:
+            indexes = json.loads(response.read_text())['chunks']
+            if not isinstance(indexes, list) or len(indexes) != len(files):
+                raise ValueError('Validation native du terrain incomplète.')
+            for entry, expected, index in zip(files, before, indexes):
+                data = read_native_input(entry['file'])
+                if hashlib.sha256(data).hexdigest() != expected:
+                    raise ValueError('Terrain modifié pendant la validation native.')
+                checked_columns(data, index)
+        except (KeyError, TypeError, IndexError, OverflowError, struct.error) as error:
+            raise ValueError('Résultat natif du terrain invalide.') from error
         return indexes
 
     def dictionaries(self, paths):
