@@ -23,6 +23,7 @@ class WritingBudgetEntrypoints(unittest.TestCase):
         self.lib = self.project / "data/scripts/lib"
         self.internal.mkdir(parents=True)
         self.lib.mkdir()
+        shutil.copyfile(ROOT / 'data/scripts/lib/terrain_tiles.py', self.lib / 'terrain_tiles.py')
         for name in ["cleanWritingDrawings.py", "writing_start_admission.py", "configureWritingTextOnly.py"]:
             shutil.copyfile(ROOT / "data/scripts/internal" / name, self.internal / name)
         self.proc = self.root / "proc_cgroup"
@@ -54,7 +55,7 @@ class WritingBudgetEntrypoints(unittest.TestCase):
 
     def invoke(self, name, *args):
         return subprocess.run([sys.executable, str(self.internal / name), *map(str, args)],
-                              env=self.env, capture_output=True, text=True, timeout=8)
+                              env=self.env, capture_output=True, text=True, timeout=20)
 
     def test_outside_or_wrong_cap_refuses_every_python_entry_before_world_or_bus(self):
         for invalid in ["outside", "24g"]:

@@ -16,11 +16,72 @@ import zombie.network.GameServer;
  * Never saves a game object. Python splices the original column byte ranges.
  */
 public final class IndexTerrainColumns {
+    private static Object field(Object instance, Class<?> type, String name) throws Exception {
+        for (Class<?> parent = type; parent != null; parent = parent.getSuperclass()) {
+            try {
+                Field f = parent.getDeclaredField(name);
+                f.setAccessible(true);
+                return f.get(instance);
+            } catch (NoSuchFieldException missing) { /* anonymous register subclasses */ }
+        }
+        throw new NoSuchFieldException(type.getName() + "." + name);
+    }
+
+    /** Read the binary registries themselves; the readable Lua export can be stale. */
+    private static JSONObject dictionarySnapshot(Path path) throws Exception {
+        require(Files.size(path) <= 64L * 1024 * 1024, "Dictionary exceeds 64 MiB");
+        ByteBuffer bytes = ByteBuffer.wrap(Files.readAllBytes(path));
+        require(bytes.remaining() >= 4 && bytes.getInt(0) == 1, "Unsupported dictionary version");
+        for (Class<?> type : List.of(zombie.world.StringDictionary.class, zombie.world.ScriptsDictionary.class)) {
+            Method reset = type.getDeclaredMethod("reset");
+            reset.setAccessible(true);
+            reset.invoke(null);
+        }
+        Class<?> type = Class.forName("zombie.world.DictionaryData");
+        Constructor<?> ctor = type.getDeclaredConstructor();
+        ctor.setAccessible(true);
+        Object data = ctor.newInstance();
+        Method load = type.getDeclaredMethod("loadFromByteBuffer", ByteBuffer.class);
+        load.setAccessible(true);
+        load.invoke(data, bytes);
+        require(!bytes.hasRemaining(), "Unconsumed dictionary bytes");
+        JSONObject result = new JSONObject();
+        int removed = 0;
+        for (String name : List.of("itemIdToInfoMap", "entityIdToInfoMap", "objectIdToNameMap", "spriteIdToNameMap")) {
+            JSONObject entries = new JSONObject();
+            Map<?, ?> map = (Map<?, ?>) field(data, type, name);
+            for (var entry : map.entrySet()) {
+                Object value = entry.getValue();
+                if (value instanceof zombie.world.DictionaryInfo<?> info) {
+                    entries.put(entry.getKey().toString(), info.getFullType());
+                    if (info.isRemoved() || info.isObsolete()) removed++;
+                } else entries.put(entry.getKey().toString(), value);
+            }
+            result.put(name, entries);
+        }
+        for (Class<?> owner : List.of(zombie.world.StringDictionary.class, zombie.world.ScriptsDictionary.class)) {
+            for (Object register : (List<?>) field(null, owner, "registers")) {
+                boolean script = owner == zombie.world.ScriptsDictionary.class;
+                JSONObject entries = new JSONObject();
+                Map<?, ?> map = (Map<?, ?>) field(register, register.getClass(), script ? "idMap" : "idToStringMap");
+                for (var entry : map.entrySet()) {
+                    Object value = entry.getValue();
+                    if (script) {
+                        var info = (zombie.world.DictionaryScriptInfo<?>) value;
+                        entries.put(entry.getKey().toString(), new JSONArray().put(info.getName()).put(Long.toString(info.getVersion())));
+                    } else entries.put(entry.getKey().toString(), ((zombie.world.DictionaryStringInfo) value).getString());
+                }
+                result.put(owner.getSimpleName() + ":" + field(register, register.getClass(), "name"), entries);
+            }
+        }
+        return new JSONObject().put("registries", result).put("removed_or_obsolete", removed);
+    }
+
     private static void require(boolean ok, String reason) {
         if (!ok) throw new IllegalArgumentException(reason);
     }
 
-    private static void initialize(Path dictionary) throws Exception {
+    private static void initialize(Path dictionary, JSONObject request) throws Exception {
         zombie.core.random.RandStandard.INSTANCE.init();
         zombie.core.random.RandLua.INSTANCE.init();
         GameServer.server = true;
@@ -29,6 +90,22 @@ public final class IndexTerrainColumns {
         ZomboidFileSystem.instance.setCacheDir(Path.of("cache").toAbsolutePath().toString());
         ZomboidFileSystem.instance.init();
         LuaManager.init();
+        // Use the installed script definitions with the saved registry IDs.
+        // An unresolved world item returns early in PZ's loader and can leave
+        // its entity/fluid bytes unread, desynchronizing the remaining terrain.
+        List<String> folders = new ArrayList<>();
+        Method discover = ZomboidFileSystem.class.getDeclaredMethod("getAllModFoldersAux", String.class, List.class);
+        discover.setAccessible(true);
+        for (Object root : request.optJSONArray("mod_roots", new JSONArray())) discover.invoke(ZomboidFileSystem.instance, (String) root, folders);
+        Field modFolders = ZomboidFileSystem.class.getDeclaredField("modFolders");
+        modFolders.setAccessible(true); modFolders.set(ZomboidFileSystem.instance, folders);
+        List<String> mods = new ArrayList<>();
+        for (Object mod : request.optJSONArray("mods", new JSONArray())) mods.add((String) mod);
+        for (String mod : mods)
+            require(zombie.gameStates.ChooseGameInfo.getAvailableModDetails(mod) != null,
+                    "Installed mod definition unavailable: " + mod);
+        ZomboidFileSystem.instance.loadMods(mods);
+        zombie.scripting.ScriptManager.instance.Load();
         Class<?> type = Class.forName("zombie.world.DictionaryData");
         Constructor<?> ctor = type.getDeclaredConstructor();
         ctor.setAccessible(true);
@@ -39,6 +116,30 @@ public final class IndexTerrainColumns {
         Field field = zombie.world.WorldDictionary.class.getDeclaredField("data");
         field.setAccessible(true);
         field.set(null, data);
+        Field itemScript = zombie.world.ItemInfo.class.getDeclaredField("scriptItem");
+        itemScript.setAccessible(true);
+        Field entityScript = zombie.world.DictionaryInfo.class.getDeclaredField("entityScript");
+        entityScript.setAccessible(true);
+        Field loaded = zombie.world.DictionaryInfo.class.getDeclaredField("isLoaded");
+        loaded.setAccessible(true);
+        for (Object info : ((Map<?, ?>) field(data, type, "itemIdToInfoMap")).values()) {
+            var item = (zombie.world.ItemInfo) info;
+            var script = zombie.scripting.ScriptManager.instance.getSpecificItem(item.getFullType());
+            itemScript.set(item, script);
+            entityScript.set(item, script);
+            loaded.setBoolean(item, script != null);
+            if (script != null) script.setRegistry_id(item.getRegistryID());
+        }
+        for (Object info : ((Map<?, ?>) field(data, type, "entityIdToInfoMap")).values()) {
+            var entity = (zombie.world.EntityInfo) info;
+            var script = zombie.scripting.ScriptManager.instance.getSpecificEntity(entity.getFullType());
+            entityScript.set(entity, script);
+            loaded.setBoolean(entity, script != null);
+            if (script != null) script.setRegistry_id(entity.getRegistryID());
+        }
+        Method bind = zombie.world.ScriptsDictionary.class.getDeclaredMethod("parseRegisters");
+        bind.setAccessible(true);
+        bind.invoke(null);
         new zombie.erosion.season.ErosionIceQueen(zombie.iso.sprite.IsoSpriteManager.instance);
         zombie.erosion.ErosionRegions.init();
     }
@@ -68,7 +169,8 @@ public final class IndexTerrainColumns {
         Method load = IsoChunk.class.getDeclaredMethod("LoadFromDiskOrBufferInternal", ByteBuffer.class);
         load.setAccessible(true);
         ByteBuffer full = ByteBuffer.wrap(bytes);
-        load.invoke(whole, full);
+        try { load.invoke(whole, full); }
+        catch (Exception error) { throw new IllegalArgumentException("Terrain " + path + " at byte " + full.position() + "/" + bytes.length, error); }
         require(full.position() == bytes.length, "Unparsed terrain bytes");
 
         // Version-249 prefix, followed by 64 X-major/Y-minor columns. Each
@@ -117,7 +219,14 @@ public final class IndexTerrainColumns {
     public static void main(String[] args) throws Exception {
         require(args.length == 2, "Usage: IndexTerrainColumns INPUT_JSON OUTPUT_JSON");
         JSONObject request = new JSONObject(Files.readString(Path.of(args[0])));
-        initialize(Path.of(request.getString("dictionary")));
+        if (request.has("dictionaries")) {
+            JSONArray results = new JSONArray();
+            for (Object path : request.getJSONArray("dictionaries"))
+                results.put(dictionarySnapshot(Path.of((String) path)));
+            Files.writeString(Path.of(args[1]), new JSONObject().put("dictionaries", results).toString());
+            return;
+        }
+        initialize(Path.of(request.getString("dictionary")), request);
         JSONArray chunks = request.getJSONArray("chunks"), results = new JSONArray();
         for (int i = 0; i < chunks.length(); i++) {
             JSONObject entry = chunks.getJSONObject(i);

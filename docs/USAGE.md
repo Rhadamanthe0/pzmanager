@@ -178,15 +178,26 @@ save bug that continues to remove buildings.
 
 Every selected terrain chunk must exist and be nonempty in the source. Missing
 chunks cause refusal before any write. `WorldDictionary.bin`
-must be present and byte-identical in both worlds. If `map_ver.bin` exists, it
+must be present in both worlds. Identical dictionaries are accepted directly;
+otherwise a compatible JDK is required to read both binary dictionaries with
+the game's native reader. Every source item, entity, object, sprite and string
+ID must retain its meaning in the current dictionary, including script names
+and version hashes. Additional current entries and changes in mod provenance
+or removed/obsolete flags are allowed; disabled mods are not reactivated.
+If `map_ver.bin` exists, it
 must match too; current Build 42 saves can omit it. Every source terrain chunk
 must have a valid world-version-249 header, length and CRC32 checksum. Different
-versions or object ID dictionaries cannot be safely mixed. This conservative check may reject older
-snapshots after a dictionary update. Do not overwrite the live global dictionary
+versions or reassigned/missing object IDs cannot be safely mixed. Do not overwrite the live global dictionary
 to bypass the refusal. Keep the same mods. A partial chunk also requires a present,
 valid current chunk, because its unselected tiles must be preserved. Missing or
 corrupt current terrain can only be replaced when the entire chunk is selected.
 Verify the recovered construction in game.
+
+The native terrain reader loads installed game definitions and the active mod
+list from the server configuration. It associates those definitions with the
+current binary dictionary before reading copied records, including dropped
+items with fluid/entity data. The global dictionary and original item bytes
+are preserved; the reader never saves game objects.
 
 Partial-chunk application uses the installed game's native record readers on
 private copies to find tile boundaries, then splices the original serialized

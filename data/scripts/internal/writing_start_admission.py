@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import pwd
 import re
 import signal
 import socket
@@ -66,6 +67,40 @@ def directory(lock_path):
         os.close(fd)
         raise ConfigurationError('Admission directory must be private and owned by this UID')
     return path, fd
+
+
+def runtime_lock_path(name='world.lock'):
+    """Resolve a private runtime file (WORLD by default) with namespace-aware FD checks.
+
+    systemd creates RuntimeDirectory for start-pre; pzm creates the same private
+    directory before a brokered start. Never replace or unlink its lock inode.
+    """
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}',name):
+        raise ConfigurationError('Invalid private runtime file name')
+    runtime = Path(os.environ.get('XDG_RUNTIME_DIR') or f'/run/user/{os.getuid()}')
+    if not runtime.is_absolute():
+        raise ConfigurationError('Runtime directory must be absolute')
+    if runtime.exists() or runtime.is_symlink():
+        fd, _ = open_root(runtime)
+        try:
+            info = os.fstat(fd)
+            if info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise ConfigurationError('Runtime directory must be private and owned by this UID')
+            try: os.mkdir('pzmanager', mode=0o700, dir_fd=fd)
+            except FileExistsError: pass
+        finally: os.close(fd)
+        path = runtime / 'pzmanager' / name
+    else:
+        directory_name = 'pzmanager-' + pwd.getpwuid(os.getuid()).pw_name
+        fd, _ = open_root(Path('/tmp'))
+        try:
+            try: os.mkdir(directory_name, mode=0o700, dir_fd=fd)
+            except FileExistsError: pass
+        finally: os.close(fd)
+        path = Path('/tmp') / directory_name / name
+    path, fd = directory(path)
+    os.close(fd)
+    return path
 
 
 def read_marker(directory_fd):
@@ -289,6 +324,7 @@ def validate_worker_admission(unit=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
+    sub.add_parser('path').add_argument('--name',default='world.lock')
     for action in ('prepare', 'broker', 'clear', 'run'):
         p = sub.add_parser(action); p.add_argument('--lock-path', required=True)
         if action in ('prepare', 'broker'):
@@ -299,6 +335,7 @@ def main():
         if action == 'run': p.add_argument('command', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     try:
+        if args.action == 'path': print(runtime_lock_path(args.name)); return 0
         if args.action == 'prepare': print(prepare(args.lock_path, args.pid, args.fd, args.unit)); return 0
         if args.action == 'clear': clear(args.lock_path, args.token); return 0
         if args.action == 'broker': broker(args); return 0

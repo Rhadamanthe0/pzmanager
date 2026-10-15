@@ -80,6 +80,14 @@ class OfflineCleanup(unittest.TestCase):
         self.assertEqual(cleaner.clean_blob(new,REGISTRY,chunk=True),(new,[]))
         map_record=struct.pack('>i',1)+item(rid=3,doc={'v':1,'ink':{1:{'p':{1:5}}},'sym':{1:'map annotation'}})
         self.assertEqual(cleaner.clean_blob(map_record,REGISTRY),(map_record,[]))
+
+    def test_floor_bag_without_inventory_count_updates_ancestor_length(self):
+        # A world-floor bag is not preceded by a compressed-inventory count.
+        # The previous scan omitted this outer record and left its old length.
+        before=chunk(b'\0\0\0\0'+nested()[4:])
+        after,detail=cleaner.clean_blob(before,REGISTRY,chunk=True)
+        self.assertEqual(after,chunk(b'\0\0\0\0'+nested(False)[4:]))
+        self.assertEqual(detail[0]['ancestors'][0]['itemType'],'Base.Bag_SurvivorBag')
     def test_whole_plan_backup_sqlite_atomicity_and_idempotence(self):
         before=self.sources();summary=cleaner.cleanup(self.world,self.backups,validator=self.validator)
         self.assertEqual(summary['files'],2);stage=Path(summary['backup']);manifest=json.loads((stage/'manifest.json').read_text())
@@ -171,6 +179,26 @@ class OfflineCleanup(unittest.TestCase):
         original=chunk(prefix+nested());self.path.write_bytes(original)
         cleaner.cleanup(self.world,self.backups,validator=self.validator,scripts_dir=scripts)
         self.assertEqual(self.path.read_bytes(),chunk(prefix+nested(False)))
+
+    def test_mod_container_catalog_preserves_text_and_refuses_ambiguous_types(self):
+        dictionary=self.world/'WorldDictionaryReadable.lua'
+        dictionary.write_text(dictionary.read_text().replace(REGISTRY[2],'Base.Neon_Vandals_DarkZoneBag'))
+        vanilla=self.root/'vanilla';vanilla.mkdir(mode=0o700)
+        mod=self.root/'mod';mod.mkdir(mode=0o700)
+        (vanilla/'items.txt').write_text('module Base { item Diary2 { ItemType = base:literature, } }')
+        definition=mod/'items.txt'
+        definition.write_text('module Base { item Neon_Vandals_DarkZoneBag { ItemType = base:container, } }')
+        before=self.sources()
+        with self.assertRaises(cleaner.CleanupError):
+            cleaner.cleanup(self.world,self.backups,validator=self.validator,scripts_dir=[vanilla])
+        self.assertEqual(self.sources(),before)
+        summary=cleaner.cleanup(self.world,self.backups,validator=self.validator,scripts_dir=[vanilla,mod])
+        self.assertEqual(summary['players'],1)
+        self.assertEqual(self.path.read_bytes(),chunk(nested(False)))
+        self.assertEqual((Path(summary['backup'])/'original/players.db').read_bytes(),before['players.db'])
+        (mod/'conflict.txt').write_text('module Base { item Neon_Vandals_DarkZoneBag { Type = Weapon, } }')
+        with self.assertRaisesRegex(cleaner.CleanupError,'Conflicting script item classes'):
+            cleaner.script_classes([vanilla,mod])
 
     def test_scan_cache_skips_unchanged_but_rereads_changed_and_replaced_files(self):
         path = self.world/'plain.bin';path.write_bytes(b'no writing')

@@ -43,6 +43,10 @@ Le format pris en charge est celui des sauvegardes 249 de PZ 42.21. Les objets
 éditables ProjectWriting connus sont pris en charge ; les types ou enveloppes
 non reconnus sont refusés avant toute mutation. Ce nettoyage n'est pas un
 filtrage universel des données envoyées par des clients modifiés.
+Les sacs des mods actifs sont identifiés à partir de leurs définitions statiques
+installées, sans exécuter leur Lua. Les catalogues communs et versionnés doivent
+être cohérents sur le type d'objet ; une ambiguïté reste bloquante. Les documents
+dans ces sacs suivent la même validation et les mêmes copies de récupération.
 Le parcours utilise huit lecteurs avec une prélecture limitée à seize fichiers ;
 le traitement des documents reste séquentiel. Le parcours complet peut prendre
 plusieurs minutes sur un grand monde ; l'unité réserve jusqu'à vingt minutes au

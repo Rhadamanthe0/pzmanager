@@ -12,6 +12,51 @@ import zlib
 MAX_TERRAIN_BYTES = 64 * 1024 * 1024
 
 
+def native_script_context(install):
+    """Pass only mod IDs and installed search roots, never server credentials."""
+    mods = []
+    ini = os.environ.get('PZ_INI_PATH')
+    if ini:
+        for line in Path(ini).read_text().splitlines():
+            key, separator, value = line.partition('=')
+            if separator and key.strip() == 'Mods':
+                mods = [mod.strip().lstrip('\\') for mod in value.split(';') if mod.strip()]
+    roots = []
+    workshop = Path(install) / 'steamapps/workshop/content/108600'
+    if workshop.is_dir():
+        roots.extend(p / 'mods' for p in sorted(workshop.iterdir()) if (p / 'mods').is_dir())
+    source = os.environ.get('PZ_SOURCE_DIR')
+    if source and (Path(source) / 'mods').is_dir():
+        roots.append(Path(source) / 'mods')
+    return {'mods': mods, 'mod_roots': [str(p.resolve(strict=True)) for p in roots]}
+
+
+def mod_script_catalogs(install):
+    """Find static catalogs of enabled mods, without executing any mod code.
+
+    Include common and versioned definitions. Consumers must refuse conflicting
+    classes across versions rather than guess which serialized type to edit.
+    """
+    context = native_script_context(install)
+    enabled = set(context['mods'])
+    catalogs = []
+    for root in context['mod_roots']:
+        for mod in sorted(Path(root).iterdir()):
+            if not mod.is_dir():
+                continue
+            identifiers = set()
+            for info in [mod / 'mod.info', *sorted(mod.glob('*/mod.info'))]:
+                if info.is_file():
+                    for line in info.read_text(encoding='utf-8-sig').splitlines():
+                        key, separator, value = line.partition('=')
+                        if separator and key.strip() == 'id':
+                            identifiers.add(value.strip().lstrip('\\'))
+            if identifiers & enabled:
+                catalogs.extend(p for p in [mod / 'media/scripts', *sorted(mod.glob('*/media/scripts'))]
+                                if p.is_dir())
+    return catalogs
+
+
 def checked_columns(data, index):
     """Reject stale or inconsistent native indexes before any binary surgery."""
     if len(data) < 17 or len(data) > MAX_TERRAIN_BYTES or data[0] != 0:
@@ -69,14 +114,15 @@ def merge_columns(source, current, source_index, current_index, selected):
 
 class NativeIndexer:
     """Compile once; native readers run only against private recovery copies."""
-    def __init__(self, root, dictionary):
+    def __init__(self, root, dictionary, *, java=None, javac=None):
         self.root = Path(root).absolute()
         self.root.mkdir()
         self.dictionary = Path(dictionary).absolute()
         install = Path(os.environ.get('PZ_INSTALL_DIR', ''))
+        self.script_context = native_script_context(install)
         self.jar = (install / 'java/projectzomboid.jar').resolve(strict=True)
-        self.java = Path(os.environ.get('PZ_RESTORE_JAVA', str(install / 'jre64/bin/java'))).resolve(strict=True)
-        compiler = os.environ.get('PZ_RESTORE_JAVAC')
+        self.java = Path(java or os.environ.get('PZ_RESTORE_JAVA', str(install / 'jre64/bin/java'))).resolve(strict=True)
+        compiler = javac or os.environ.get('PZ_RESTORE_JAVAC')
         if compiler is None:
             sibling = self.java.with_name('javac')
             compiler = str(sibling) if os.access(sibling, os.X_OK) else shutil.which('javac')
@@ -121,13 +167,21 @@ class NativeIndexer:
         label = 'index-' + str(self.sequence)
         request = self.root / (label + '.json')
         response = self.root / (label + '-result.json')
-        request.write_text(json.dumps({'dictionary': str(self.dictionary), 'chunks': files}))
+        request.write_text(json.dumps(dict(self.script_context, dictionary=str(self.dictionary), chunks=files)))
         self.run([str(self.java), '-Xmx512m', '-cp', self.classpath, 'IndexTerrainColumns',
                   str(request), str(response)], label)
         indexes = json.loads(response.read_text())['chunks']
         if len(indexes) != len(files):
             raise ValueError('Validation native du terrain incomplète.')
         return indexes
+
+    def dictionaries(self, paths):
+        request = self.root / 'dictionaries.json'
+        response = self.root / 'dictionaries-result.json'
+        request.write_text(json.dumps({'dictionaries': [str(Path(p).absolute()) for p in paths]}))
+        self.run([str(self.java), '-Xmx512m', '-cp', self.classpath, 'IndexTerrainColumns',
+                  str(request), str(response)], 'dictionaries')
+        return json.loads(response.read_text())['dictionaries']
 
 
 def prepare_partial(root, dictionary, entries):

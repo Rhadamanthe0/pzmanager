@@ -32,6 +32,10 @@ class CompilerDependency(unittest.TestCase):
             "  blob=Path(record[side]).read_bytes()\n"
             "  assert int.from_bytes(blob[:4],'big')==len(blob)-4\n")
         self.compiler = self.executable('jdk/bin/javac', '')
+        # These storage fixtures are synthetic, not real PZ terrain. Exercise
+        # the complete-terrain orchestration separately below.
+        terrain=patch.object(fixture.cleaner.JavaValidator,'validate_terrain')
+        self.terrain_validation=terrain.start();self.addCleanup(terrain.stop)
 
     def executable(self, name, body):
         path = self.root / name
@@ -199,6 +203,38 @@ class JreOnlyStartup(unittest.TestCase):
         self.assertEqual(self.world_bytes(), before)
         self.assertFalse(self.java_log.exists())
         self.assertEqual(list((self.repo / 'data/dataBackups').rglob('manifest.json')), [])
+
+
+class CompleteTerrainValidation(unittest.TestCase):
+    def setUp(self):
+        self.storage=fixture.OfflineCleanup('test_whole_plan_backup_sqlite_atomicity_and_idempotence')
+        self.storage.setUp();self.addCleanup(self.storage.doCleanups)
+        (self.storage.world/'WorldDictionary.bin').write_bytes(b'copied binary dictionary fixture')
+
+    def test_native_chunk_failure_refuses_entire_cleanup_before_mutation(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        native=Mock();native.index.side_effect=ValueError('nested floor bag framing invalid')
+        factory=Mock(return_value=native)
+        validator=fixture.cleaner.JavaValidator('jar','java','javac',world=self.storage.world)
+        before=self.storage.sources()
+        with patch.dict(sys.modules,terrain_tiles=SimpleNamespace(NativeIndexer=factory)), \
+             patch.object(validator,'tools',return_value='25'),patch.object(validator,'run'):
+            with self.assertRaisesRegex(fixture.cleaner.CleanupError,'complete terrain validation failed'):
+                fixture.cleaner.cleanup(self.storage.world,self.storage.backups,validator=validator)
+        self.assertEqual(self.storage.sources(),before)
+        self.assertFalse(self.storage.backups.exists())
+        inputs=native.index.call_args.args[0]
+        self.assertEqual([(e['x'],e['y']) for e in inputs],[(1,2),(1,2)])
+        self.assertIn('/original/map/1/2.bin',inputs[0]['file'])
+        self.assertIn('/new/map/1/2.bin',inputs[1]['file'])
+        self.assertEqual(factory.call_args.kwargs,{'java':'java','javac':'javac'})
+
+    def test_chunk_validation_requires_binary_dictionary_context(self):
+        root=self.storage.root/'validation';root.mkdir()
+        validator=fixture.cleaner.JavaValidator('jar','java','javac')
+        with self.assertRaisesRegex(fixture.cleaner.CleanupError,'world dictionary'):
+            validator.validate_terrain(root,[{'path':'map/1/2.bin'}],root)
 
 
 if __name__ == '__main__':

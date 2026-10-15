@@ -32,6 +32,9 @@ class ReadyNotificationTests(unittest.TestCase):
         self.discord = self.internal / "sendDiscord.sh"
         shutil.copy2(ROOT / "data/scripts/internal/notifyServerReady.sh", self.script)
         shutil.copy2(ROOT / "data/scripts/internal/sendDiscord.sh", self.discord)
+        for name in ("writing_start_admission.py", "configureWritingTextOnly.py"):
+            shutil.copy2(ROOT / "data/scripts/internal" / name, self.internal / name)
+        shutil.copy2(ROOT / "data/scripts/lib/shared_memory_budget.py", self.lib / "shared_memory_budget.py")
         self.script.chmod(0o755)
         self.discord.chmod(0o755)
         common_source = (ROOT / "data/scripts/lib/common.sh").read_text()
@@ -133,6 +136,18 @@ class ReadyNotificationTests(unittest.TestCase):
         result = self.run_ready(env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.sent_count(), 1)
+
+    def test_ready_in_real_user_namespace(self):
+        if not shutil.which('unshare'):
+            self.skipTest('unshare unavailable')
+        probe=subprocess.run(['unshare','--user','--map-current-user','/bin/true'],capture_output=True)
+        if probe.returncode:self.skipTest('kernel disallows user namespaces')
+        result=subprocess.run(['unshare','--user','--map-current-user','bash',str(self.script)],
+                              env=self.env,text=True,capture_output=True,timeout=9)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(self.sent_count(),1)
+        self.assertEqual(self.run_ready().returncode,0)
+        self.assertEqual(self.sent_count(),1)
 
     def test_long_boot_after_old_five_minute_window(self):
         env = dict(self.env, MOCK_JOURNAL_MODE="delayed")

@@ -105,6 +105,43 @@ while [[ ! -f "$6" ]]; do sleep .02; done
         self.assertTrue(done.read_text().isdigit())
         self.assertFalse(self.busy())
 
+    def test_runtime_path_preserves_lock_and_rejects_symlink_or_public_directory(self):
+        runtime = self.root / 'xdg'; runtime.mkdir(mode=0o700)
+        private = runtime / 'pzmanager'; private.mkdir(mode=0o700)
+        lock = private / 'world.lock'; lock.touch(mode=0o600)
+        identity = (lock.stat().st_dev, lock.stat().st_ino)
+        with patch.dict(os.environ, XDG_RUNTIME_DIR=str(runtime)):
+            self.assertEqual(admission.runtime_lock_path(), lock)
+            self.assertEqual(admission.runtime_lock_path('notify-ready-'+'a'*32+'.lock'),
+                             private/('notify-ready-'+'a'*32+'.lock'))
+            for bad in ('../outside', '/tmp/other', '..', 'a/b'):
+                with self.assertRaises(admission.ConfigurationError):admission.runtime_lock_path(bad)
+            self.assertEqual((lock.stat().st_dev, lock.stat().st_ino), identity)
+            private.chmod(0o755)
+            with self.assertRaises(admission.ConfigurationError): admission.runtime_lock_path()
+            private.chmod(0o700)
+            private.rename(runtime / 'real-private'); private.symlink_to(runtime / 'real-private')
+            with self.assertRaises(OSError): admission.runtime_lock_path()
+
+    def test_runtime_path_in_real_user_namespace(self):
+        if not shutil.which('unshare'): self.skipTest('unshare unavailable')
+        probe = subprocess.run(['unshare', '--user', '--map-current-user', '/bin/true'], capture_output=True)
+        if probe.returncode: self.skipTest('kernel disallows user namespaces')
+        runtime = self.root / 'xdg'; runtime.mkdir(mode=0o700)
+        private = runtime / 'pzmanager'; private.mkdir(mode=0o700)
+        lock = private / 'world.lock'; lock.touch(mode=0o600)
+        with lock.open('rb') as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            identity = (lock.stat().st_dev, lock.stat().st_ino)
+            code = 'import sys; sys.path.insert(0,' + repr(str(HELPER.parent)) + '); from writing_start_admission import runtime_lock_path; print(runtime_lock_path())'
+            result = subprocess.run(['unshare', '--user', '--map-current-user', sys.executable, '-c', code],
+                                    env=dict(self.env, XDG_RUNTIME_DIR=str(runtime)), capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), str(lock))
+            self.assertEqual((lock.stat().st_dev, lock.stat().st_ino), identity)
+            with lock.open('rb') as other:
+                with self.assertRaises(BlockingIOError): fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
     def test_worker_cannot_claim_an_uninherited_world_fd(self):
         self.lock.touch(mode=0o600)
         self.env.update(PZ_WORLD_LOCK_FD='999999', PZ_WORLD_LOCK_DEPTH='1',
