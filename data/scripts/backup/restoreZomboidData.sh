@@ -118,6 +118,7 @@ reserve_old_backup() {
     mkdir -p "${PZ_HOME}/OLD"
     RESTORE_OLD_BACKUP="$(mktemp -d "${PZ_HOME}/OLD/ZomboidBROKEN_$(date +"%Y-%m-%d_%Hh%Mm%Ss")_XXXXXX")" \
         || die "Impossible de réserver le backup de sécurité — live intact."
+    RESTORE_OLD_RESERVED=1
 }
 
 backup_current_zomboid() {
@@ -143,12 +144,13 @@ backup_current_zomboid() {
     # déplace jamais le live sans copie prête à basculer. Réserver une
     # destination unique : deux opérations dans la même seconde ne doivent
     # jamais imbriquer le second monde dans le premier OLD.
-    [[ -n "$RESTORE_OLD_BACKUP" ]] || reserve_old_backup
+    [[ "${RESTORE_OLD_RESERVED:-0}" == 1 ]] || reserve_old_backup
 
     echo "Création backup de sécurité..."
     # -T interdit la sémantique « déplacer dans » ; le répertoire réservé
     # est vide et peut être remplacé, sans effacer un autre monde.
     mv -T -- "${PZ_SOURCE_DIR}" "$RESTORE_OLD_BACKUP"
+    RESTORE_OLD_RESERVED=0
     python3 - "$PZ_SOURCE_DIR" "$RESTORE_OLD_BACKUP" <<'PYSYNC'
 import os,sys
 from pathlib import Path

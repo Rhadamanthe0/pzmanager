@@ -22,13 +22,13 @@ class RestoreExactTests(unittest.TestCase):
         source = SCRIPT.read_text()
         self.functions = "\n".join(
             re.search(r"^" + name + r"\(\) \{.*?^\}", source, re.M | re.S).group(0)
-            for name in ("backup_current_zomboid", "rollback_live")
+            for name in ("reserve_old_backup", "backup_current_zomboid", "rollback_live")
         )
 
     def run_shell(self, command, prefix=""):
         return subprocess.run(
             ["bash", "-c", "set -euo pipefail\ndie() { echo \"$*\" >&2; exit 1; }\n"
-             "assert_server_stopped_proven() { :; }\n" + prefix + "\n" + self.functions + "\n" + command],
+             "assert_server_stopped_proven() { :; }\nRESTORE_OLD_BACKUP=\"\"\n" + prefix + "\n" + self.functions + "\n" + command],
             env=self.env, capture_output=True, text=True,
         )
 
