@@ -564,7 +564,11 @@ private_state_path() {
     if [[ -e "$dir" || -L "$dir" ]]; then
         [[ -d "$dir" && ! -L "$dir" && -O "$dir" ]] || return 1
     else
-        (umask 077; mkdir -m 0700 -- "$dir") || return 1
+        # Un autre appel peut gagner la création entre le test et mkdir.
+        # Revalider son inode avant chmod, sans créer d'ancêtres.
+        if ! (umask 077; mkdir -m 0700 -- "$dir" 2>/dev/null); then
+            [[ -d "$dir" && ! -L "$dir" && -O "$dir" ]] || return 1
+        fi
     fi
     chmod 0700 -- "$dir" 2>/dev/null || return 1
     [[ -d "$dir" && ! -L "$dir" && -O "$dir" &&
@@ -639,7 +643,11 @@ serverctl_lock_path() {
     if [[ -e "$dir" || -L "$dir" ]]; then
         [[ -d "$dir" && ! -L "$dir" && -O "$dir" ]] || return 1
     else
-        (umask 077; mkdir -m 0700 -- "$dir") || return 1
+        # Un autre appel peut gagner la création entre le test et mkdir.
+        # Revalider son inode avant chmod, sans créer d'ancêtres.
+        if ! (umask 077; mkdir -m 0700 -- "$dir" 2>/dev/null); then
+            [[ -d "$dir" && ! -L "$dir" && -O "$dir" ]] || return 1
+        fi
     fi
     # Même sélection que private_state_path, mais résolue une seule fois :
     # l'apparition du runtime ne doit pas déplacer le verrou après validation.
