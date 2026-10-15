@@ -110,6 +110,38 @@ class TileTests(unittest.TestCase):
                 tiles.prepare_partial(root, root/'dictionary', [entry])
 
 
+class ScriptCatalogTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.install = self.root / 'install'
+        self.mods = self.install / 'steamapps/workshop/content/108600/123/mods'
+        self.mods.mkdir(parents=True)
+        self.ini = self.root / 'server.ini'
+        self.ini.write_text('Mods=\\Enabled;\\Second\nPassword=fixture-secret\n')
+        self.env = patch.dict(os.environ, {'PZ_INI_PATH': str(self.ini)}, clear=True)
+        self.env.start(); self.addCleanup(self.env.stop)
+
+    def test_native_context_contains_only_mod_ids_and_search_roots(self):
+        context = tiles.native_script_context(self.install)
+        self.assertEqual(context['mods'], ['Enabled', 'Second'])
+        self.assertEqual(context['mod_roots'], [str(self.mods)])
+        self.assertNotIn('fixture-secret', json.dumps(context))
+
+    def test_only_enabled_mod_catalogs_are_used_including_common_and_versions(self):
+        expected = []
+        for mod, enabled in [('Enabled', True), ('Disabled', False)]:
+            for version in ('common', '42', '42.13'):
+                root = self.mods / mod / version
+                scripts = root / 'media/scripts'; scripts.mkdir(parents=True)
+                (root / 'mod.info').write_text('id=' + mod + '\n')
+                if enabled: expected.append(scripts)
+        self.assertEqual(set(tiles.mod_script_catalogs(self.install)), set(expected))
+        self.ini.write_text('Mods=\n')
+        self.assertEqual(tiles.mod_script_catalogs(self.install), [])
+
+
 class NativeToolContracts(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

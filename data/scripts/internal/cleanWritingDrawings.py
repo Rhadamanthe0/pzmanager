@@ -421,8 +421,9 @@ class Parser:
 
 def script_classes(root):
     """Classify static script item definitions; unclassified types remain refused."""
-    root=safe_root(root);classes={}
-    for path in root.rglob("*.txt"):
+    roots=[root] if isinstance(root,(str,os.PathLike)) else list(root)
+    roots=[safe_root(path) for path in roots];classes={}
+    for path in (path for catalog in roots for path in catalog.rglob("*.txt")):
         if path.is_symlink():raise CleanupError("Script catalog symlink refused")
         text=read_file(path).decode("utf-8-sig")
         text=re.sub(r"/\*.*?\*/|//[^\n]*","",text,flags=re.S)
@@ -984,7 +985,10 @@ def main(argv=None):
             lock_fd=validate_worker_admission(args.unit)
             if all((args.jar,args.java)):validator=JavaValidator(args.jar,args.java,args.javac,lock_fd)
         scripts=args.scripts_dir
-        if scripts is None and args.jar:scripts=Path(args.jar).resolve().parent.parent/"media/scripts"
+        if scripts is None and args.jar:
+            install=Path(args.jar).resolve().parent.parent
+            from terrain_tiles import mod_script_catalogs
+            scripts=[install/"media/scripts",*mod_script_catalogs(install)]
         print(json.dumps(cleanup(args.world_dir,args.backup_dir,args.dry_run,validator,scripts,args.scan_cache),sort_keys=True)); return 0
     except (CleanupError,OSError,sqlite3.Error,ValueError,TypeError,KeyError,ImportError,subprocess.SubprocessError) as error:
         print("ProjectWriting offline cleanup refused: "+str(error),file=sys.stderr); return 1

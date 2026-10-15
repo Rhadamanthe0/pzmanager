@@ -94,6 +94,50 @@ class ZoneTests(unittest.TestCase):
         self.assertEqual(self.state(), before)
         self.assertFalse((self.root / 'OLD').exists())
 
+    def dictionary_change(self, old, new):
+        (self.source / 'WorldDictionary.bin').write_bytes(struct.pack('>i', 1) + b'old')
+        (self.live / 'WorldDictionary.bin').write_bytes(struct.pack('>i', 1) + b'new')
+        return patch.object(zone, 'NativeIndexer', **{'return_value.dictionaries.return_value': [
+            {'registries': old, 'removed_or_obsolete': 0},
+            {'registries': new, 'removed_or_obsolete': 1}]})
+
+    def test_extended_dictionary_is_accepted_without_global_rollback(self):
+        old = {'items': {'1': 'Base.Wood'}, 'scripts': {'2': ['Base.Shelf', '123']}}
+        new = {'items': {'1': 'Base.Wood', '3': 'Base.New'}, 'scripts': old['scripts']}
+        with self.dictionary_change(old, new):
+            before = (self.live / 'WorldDictionary.bin').read_bytes()
+            zone.restore(self.args)
+        self.assertEqual((self.live / 'map/1/1.bin').read_bytes(), chunk(b'old'))
+        self.assertEqual((self.live / 'WorldDictionary.bin').read_bytes(), before)
+
+    def test_dictionary_remap_missing_id_or_script_version_refuses_before_write(self):
+        old = {'items': {'1': 'Base.Wood'}, 'scripts': {'2': ['Base.Shelf', '123']}}
+        for new in (
+            {'items': {'1': 'Base.Stone'}, 'scripts': old['scripts']},
+            {'items': {}, 'scripts': old['scripts']},
+            {'items': old['items'], 'scripts': {'2': ['Base.Shelf', '456']}},
+            {'items': old['items']},
+        ):
+            with self.subTest(new=new), self.dictionary_change(old, new):
+                before = self.state()
+                with self.assertRaisesRegex(ValueError, 'WorldDictionary.bin incompatible'):
+                    zone.restore(self.args)
+                self.assertEqual(self.state(), before)
+                self.assertFalse((self.root / 'OLD').exists())
+
+    def test_partial_terrain_uses_current_dictionary(self):
+        from test_terrain_tiles import fixture
+        (self.source / 'map/1/1.bin').write_bytes(fixture('backup'))
+        (self.live / 'map/1/1.bin').write_bytes(fixture('live'))
+        self.args.x1 = self.args.x2 = self.args.y1 = self.args.y2 = 8
+        old = {'items': {'1': 'Base.Wood'}}
+        new = {'items': {'1': 'Base.Wood', '2': 'Base.New'}}
+        with self.dictionary_change(old, new), patch.object(zone, 'prepare_partial') as prepare:
+            expected = (self.live / 'WorldDictionary.bin').read_bytes()
+            zone.restore(self.args)
+            dictionary = prepare.call_args.args[1]
+            self.assertEqual(dictionary.read_bytes(), expected)
+
     def test_failures_before_write(self):
         for kind in ('missing', 'version', 'dictionary', 'link', 'ambiguous', 'huge', 'negative', 'traversal'):
             with self.subTest(kind=kind):

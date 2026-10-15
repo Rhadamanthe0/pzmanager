@@ -23,6 +23,7 @@ class WritingBudgetEntrypoints(unittest.TestCase):
         self.lib = self.project / "data/scripts/lib"
         self.internal.mkdir(parents=True)
         self.lib.mkdir()
+        shutil.copyfile(ROOT / 'data/scripts/lib/terrain_tiles.py', self.lib / 'terrain_tiles.py')
         for name in ["cleanWritingDrawings.py", "writing_start_admission.py", "configureWritingTextOnly.py"]:
             shutil.copyfile(ROOT / "data/scripts/internal" / name, self.internal / name)
         self.proc = self.root / "proc_cgroup"

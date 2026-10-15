@@ -172,6 +172,26 @@ class OfflineCleanup(unittest.TestCase):
         cleaner.cleanup(self.world,self.backups,validator=self.validator,scripts_dir=scripts)
         self.assertEqual(self.path.read_bytes(),chunk(prefix+nested(False)))
 
+    def test_mod_container_catalog_preserves_text_and_refuses_ambiguous_types(self):
+        dictionary=self.world/'WorldDictionaryReadable.lua'
+        dictionary.write_text(dictionary.read_text().replace(REGISTRY[2],'Base.Neon_Vandals_DarkZoneBag'))
+        vanilla=self.root/'vanilla';vanilla.mkdir(mode=0o700)
+        mod=self.root/'mod';mod.mkdir(mode=0o700)
+        (vanilla/'items.txt').write_text('module Base { item Diary2 { ItemType = base:literature, } }')
+        definition=mod/'items.txt'
+        definition.write_text('module Base { item Neon_Vandals_DarkZoneBag { ItemType = base:container, } }')
+        before=self.sources()
+        with self.assertRaises(cleaner.CleanupError):
+            cleaner.cleanup(self.world,self.backups,validator=self.validator,scripts_dir=[vanilla])
+        self.assertEqual(self.sources(),before)
+        summary=cleaner.cleanup(self.world,self.backups,validator=self.validator,scripts_dir=[vanilla,mod])
+        self.assertEqual(summary['players'],1)
+        self.assertEqual(self.path.read_bytes(),chunk(nested(False)))
+        self.assertEqual((Path(summary['backup'])/'original/players.db').read_bytes(),before['players.db'])
+        (mod/'conflict.txt').write_text('module Base { item Neon_Vandals_DarkZoneBag { Type = Weapon, } }')
+        with self.assertRaisesRegex(cleaner.CleanupError,'Conflicting script item classes'):
+            cleaner.script_classes([vanilla,mod])
+
     def test_scan_cache_skips_unchanged_but_rereads_changed_and_replaced_files(self):
         path = self.world/'plain.bin';path.write_bytes(b'no writing')
         time.sleep(cleaner.CACHE_QUIET_NS / 1e9 + .02)

@@ -6,7 +6,11 @@ source "${SCRIPT_DIR}/../lib/common.sh"
 source_env
 mode="${PZ_WRITING_TEXT_ONLY:-1}"
 [[ "$mode" == 0 || "$mode" == 1 ]] || die "PZ_WRITING_TEXT_ONLY doit valoir 0 ou 1."
-world_lock="$(world_lock_path)"
+# PrivateTmp's user namespace maps root-owned ancestors to the overflow UID.
+# Reuse the admission helper's pinned, namespace-aware directory validation;
+# the CLI lock resolver deliberately checks host ownership instead.
+world_lock="$(python3 "${SCRIPT_DIR}/writing_start_admission.py" path)" \
+    || die "Impossible de résoudre le verrou monde pour le nettoyage ProjectWriting."
 # Use the JVM actually launched by PZ; JAVA_PATH may refer to an older JDK.
 cleanup_java="${PZ_WRITING_CLEANUP_JAVA:-$(realpath -m "${PZ_INSTALL_DIR}/jre64/bin/java")}"
 # The bundled runtime may be a JRE. Do not invent a missing sibling javac.
