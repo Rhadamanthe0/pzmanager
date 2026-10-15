@@ -121,6 +121,11 @@ if [[ "${PZ_BACKUP_CPU_SCOPED:-0}" != "1" ]]; then
     trap stop_cpu_scope INT TERM
     scope_status=0
     wait "$cpu_scope_pid" || scope_status=$?
+    # Le 15/10/2026, le refus cpuset n'apparaissait que dans la scope :
+    # le journal du service horaire ne donnait aucune piste sur la cause.
+    if (( scope_status != 0 )); then
+        echo "BACKUP_SCOPE_FAILED ${cpu_scope} status=${scope_status} CPUs=${cpu_list:-parent} — consulter journalctl --user -u ${cpu_scope}" >&2
+    fi
     exit "$scope_status"
 fi
 
