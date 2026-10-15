@@ -336,6 +336,76 @@ else
 fi
 export XDG_RUNTIME_DIR="${SANDBOX}/rt"
 
+# --- (5b) Chemins et fichiers prépositionnés : aucun effet hors du verrou ------
+echo "== (5b) identité/permissions du verrou monde =="
+STATE_DIR="${SANDBOX}/rt/pzmanager"
+LOCK="${STATE_DIR}/world.lock"
+TARGET="${SANDBOX}/external-data"
+printf 'intact\n' > "$TARGET"
+rm -f -- "$LOCK"
+ln -s -- "$TARGET" "$LOCK"
+if world_lock_path >/dev/null 2>&1; then
+    ko "lien symbolique world.lock accepté"
+else
+    ok "lien symbolique world.lock rejeté"
+fi
+if acquire_world_lock --try >/dev/null 2>&1; then
+    ko "acquire_world_lock a suivi le lien symbolique world.lock"
+    release_world_lock
+else
+    ok "acquire_world_lock refuse le lien symbolique"
+fi
+[[ "$(cat "$TARGET")" == intact ]] &&
+    ok "cible world.lock intacte" || ko "cible world.lock modifiée"
+rm -f -- "$LOCK"
+
+ln -- "$TARGET" "$LOCK"
+if world_lock_path >/dev/null 2>&1; then
+    ko "verrou hardlink accepté"
+else
+    ok "verrou hardlink rejeté"
+fi
+[[ "$(cat "$TARGET")" == intact ]] &&
+    ok "cible hardlink intacte" || ko "cible hardlink modifiée"
+rm -f -- "$LOCK"
+: > "$LOCK"
+
+mv -T -- "$STATE_DIR" "${SANDBOX}/pzmanager.saved"
+mkdir -m 0755 -- "${SANDBOX}/other-state"
+ln -s -- "${SANDBOX}/other-state" "$STATE_DIR"
+if world_lock_path >/dev/null 2>&1; then
+    ko "répertoire verrou symbolique accepté"
+else
+    ok "répertoire verrou symbolique rejeté"
+fi
+[[ "$(stat -c %a -- "${SANDBOX}/other-state")" == 755 ]] &&
+    ok "permissions de la cible symlink inchangées" ||
+    ko "chmod a suivi le lien symbolique du répertoire"
+rm -f -- "$STATE_DIR"
+mv -T -- "${SANDBOX}/pzmanager.saved" "$STATE_DIR"
+
+mkdir -p -- "${SANDBOX}/untrusted/runtime"
+chmod 0777 -- "${SANDBOX}/untrusted"
+export XDG_RUNTIME_DIR="${SANDBOX}/untrusted/runtime"
+if world_lock_path >/dev/null 2>&1; then
+    ko "parent inscriptible non sticky accepté"
+else
+    ok "parent inscriptible non sticky rejeté"
+fi
+[[ ! -e "${SANDBOX}/untrusted/runtime/pzmanager" ]] &&
+    ok "aucun état créé sous un parent remplaçable" ||
+    ko "état créé sous un parent remplaçable"
+export XDG_RUNTIME_DIR=rt
+if world_lock_path >/dev/null 2>&1; then
+    ko "XDG_RUNTIME_DIR relatif accepté"
+else
+    ok "XDG_RUNTIME_DIR relatif refusé"
+fi
+export XDG_RUNTIME_DIR="${SANDBOX}/rt"
+[[ "$(world_lock_path)" == "$LOCK" ]] &&
+    ok "chemin nominal restauré après refus" ||
+    ko "verrou indisponible après tests adverses"
+
 # --- (6) kill -9 libère le verrou -------------------------------------------------------
 echo "== (6) kill -9 =="
 cat > "${SANDBOX}/holder.sh" <<'HOLDEREOF'

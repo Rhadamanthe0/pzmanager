@@ -213,7 +213,7 @@ class ReadyNotificationTests(unittest.TestCase):
         (self.runtime_dir / "pzmanager").symlink_to(target, target_is_directory=True)
         result = self.run_ready()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Répertoire privé", result.stderr)
+        self.assertIn("Chemin privé", result.stderr)
         self.assertEqual(self.sent_count(), 0)
         # Ne pas seulement refuser le lien : l'ancien code faisait chmod AVANT
         # la vérification et modifiait la cible même sur retour en erreur.

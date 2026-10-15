@@ -54,23 +54,58 @@ PZ_WORLD_LOCK_LOADED=1
 export PZ_WORLD_LOCK_DEPTH PZ_WORLD_LOCK_FD
 
 # Imprime le chemin du verrou monde (stdout, une ligne). Crée le dossier
-# parent en 0700 (best-effort sur FS sans modes, ex. NTFS).
+# parent en 0700, avec validation du propriétaire, des ancêtres et des liens.
 world_lock_path() {
-    local user runtime dir
+    local user runtime dir parent owner mode lock_file
     user="$(id -un 2>/dev/null || echo unknown)"
     runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u 2>/dev/null || echo 0)}"
-    if [[ -n "$runtime" && -d "$runtime" ]] && mkdir -p "${runtime}/pzmanager" 2>/dev/null; then
-        chmod 0700 "${runtime}/pzmanager" 2>/dev/null || true
-        printf '%s\n' "${runtime}/pzmanager/world.lock"
-        return 0
+    [[ "$runtime" == /* ]] || return 1
+    if [[ -e "$runtime" || -L "$runtime" ]]; then
+        # Une valeur XDG_RUNTIME_DIR détournée ne doit pas déplacer le verrou
+        # global dans une arborescence appartenant à un autre utilisateur.
+        [[ -d "$runtime" && ! -L "$runtime" && -O "$runtime" ]] || return 1
+        dir="${runtime}/pzmanager"
+    else
+        # Repli historique pour les processus sans session systemd utilisateur.
+        dir="/tmp/pzmanager-${user}"
     fi
-    # Repli : pas de runtime (service sans session user...). /tmp partagé ici
-    # (hors PrivateTmp des unités) : mieux que rien, documenté comme dégradé.
-    dir="/tmp/pzmanager-${user}"
-    mkdir -p "$dir" 2>/dev/null || true
-    chmod 0700 "$dir" 2>/dev/null || true
-    printf '%s\n' "${dir}/world.lock"
-    return 0
+
+    # Contrôler les ancêtres : même un dossier final en 0700 est remplaçable
+    # si son parent appartient à un tiers ou est inscriptible sans sticky root.
+    parent="$(dirname -- "$dir")"
+    while :; do
+        [[ -d "$parent" && ! -L "$parent" ]] || return 1
+        owner="$(stat -c %u -- "$parent" 2>/dev/null)" || return 1
+        mode="$(stat -c %a -- "$parent" 2>/dev/null)" || return 1
+        [[ "$owner" == 0 || -O "$parent" ]] || return 1
+        if (( (8#$mode & 0022) != 0 )); then
+            [[ "$owner" == 0 && -k "$parent" ]] || return 1
+        fi
+        [[ "$parent" == / ]] && break
+        parent="$(dirname -- "$parent")"
+    done
+
+    # Vérifier AVANT chmod : chmod suit les symlinks, même si le code rejette
+    # ensuite la cible. mkdir sans -p ne crée aucun ancêtre non validé.
+    if [[ -e "$dir" || -L "$dir" ]]; then
+        [[ -d "$dir" && ! -L "$dir" && -O "$dir" ]] || return 1
+    else
+        # Un autre appel peut gagner la création entre le test et mkdir.
+        # Revalider son inode avant chmod, sans créer d'ancêtres.
+        if ! (umask 077; mkdir -m 0700 -- "$dir" 2>/dev/null); then
+            [[ -d "$dir" && ! -L "$dir" && -O "$dir" ]] || return 1
+        fi
+    fi
+    chmod 0700 -- "$dir" || return 1
+    [[ -d "$dir" && ! -L "$dir" && -O "$dir" &&
+       "$(stat -c %a -- "$dir" 2>/dev/null)" == 700 ]] || return 1
+
+    lock_file="${dir}/world.lock"
+    if [[ -e "$lock_file" || -L "$lock_file" ]]; then
+        [[ -f "$lock_file" && ! -L "$lock_file" && -O "$lock_file" ]] || return 1
+        [[ "$(stat -c %h -- "$lock_file" 2>/dev/null)" == 1 ]] || return 1
+    fi
+    printf '%s\n' "$lock_file"
 }
 
 # Usage: acquire_world_lock [--try|--required]
@@ -86,7 +121,10 @@ acquire_world_lock() {
         return 0
     fi
 
-    lock_file="$(world_lock_path)"
+    if ! lock_file="$(world_lock_path)"; then
+        [[ "$mode" == "--try" ]] || echo "ERREUR: chemin du verrou monde non sûr ou inaccessible." >&2
+        return 1
+    fi
     if ! exec {fd}>"$lock_file"; then
         [[ "$mode" == "--try" ]] || echo "ERREUR: impossible d'ouvrir le verrou monde (${lock_file})" >&2
         return 1

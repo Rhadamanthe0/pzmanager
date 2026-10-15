@@ -51,7 +51,7 @@ umask 077
 # refus des liens symboliques et des répertoires possédés par un autre UID.
 # Le chemin /tmp/pzmanager non personnalisé n'est pas sûr en mode dégradé.
 LOCK_FILE="$(private_state_path "notify-ready-${BOOT_ID}.lock")" || {
-    echo "[pz-ready] Répertoire privé de notification inaccessible." >&2
+    echo "[pz-ready] Chemin privé ou fichier de verrou invalide (permissions ou lien)." >&2
     exit 1
 }
 readonly LOCK_FILE
