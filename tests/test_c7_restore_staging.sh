@@ -400,7 +400,7 @@ fi
 # --- (6) validation finale ------------------------------------------------------------------
 echo "== (6) validation finale =="
 fresh_case srvonly
-rm -rf "$BKP/Saves" "$BKP/db"  # Server seul : 0 monde -> échec final + rollback
+rm -rf "$BKP/Saves" "$BKP/db"  # Server seul : refus avant bascule
 if run_restore "$BKP"; then
     ko "Server seul : succès à tort (0 monde accepté)"; show_out
 else
@@ -410,10 +410,10 @@ grep -q "Validation finale" "${SANDBOX}/out.log" \
     && ok "Server seul : échec imputé à la validation finale" \
     || { ko "Server seul : cause non identifiée"; show_out; }
 [[ "$(live_marker)" == "LIVE-players" ]] \
-    && ok "Server seul : live intact (rollback effectif)" \
+    && ok "Server seul : live intact (aucune bascule)" \
     || ko "Server seul : live altéré"
-(( $(old_count) == 1 )) && ok "Server seul : OLD conservé" \
-    || ko "Server seul : OLD manquant"
+(( $(old_count) == 0 )) && ok "Server seul : aucun OLD (refus avant bascule)" \
+    || ko "Server seul : OLD créé malgré le refus préalable"
 
 fresh_case stagingempty
 export MOCK_RSYNC_EMPTY=1  # copie ne produisant rien -> staging vide

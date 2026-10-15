@@ -110,11 +110,11 @@ class OfflineCleanup(unittest.TestCase):
         self.assertEqual(self.sources(),before)
     def test_resume_interrupted_commit_and_refuse_conflicts(self):
         actual=cleaner.atomic_copy;replaces=[]
-        def interrupted(path,source,mode=0o600):
+        def interrupted(path,source,mode=0o600,expected_sha256=None):
             if self.world in path.parents:
                 replaces.append(path)
                 if len(replaces)==2:raise OSError('Synthetic interrupted commit')
-            return actual(path,source,mode)
+            return actual(path,source,mode,expected_sha256=expected_sha256)
         with patch.object(cleaner,'atomic_copy',side_effect=interrupted),self.assertRaises(OSError):cleaner.cleanup(self.world,self.backups,validator=self.validator)
         stage=next(self.backups.glob('cleanup-*'));self.assertEqual(json.loads((stage/'manifest.json').read_text())['state'],'prepared')
         cleaner.cleanup(self.world,self.backups,validator=self.validator);self.assertEqual(self.path.read_bytes(),chunk(nested(False)))
@@ -145,9 +145,9 @@ class OfflineCleanup(unittest.TestCase):
         with self.assertRaises(cleaner.CleanupError):cleaner.cleanup(empty,self.backups)
     def test_conflicting_pending_world_refuses_and_unproven_ancestors_rejected(self):
         actual=cleaner.atomic_copy
-        def interrupted(path,source,mode=0o600):
+        def interrupted(path,source,mode=0o600,expected_sha256=None):
             if self.world in path.parents:raise OSError('Synthetic interruption')
-            return actual(path,source,mode)
+            return actual(path,source,mode,expected_sha256=expected_sha256)
         with patch.object(cleaner,'atomic_copy',side_effect=interrupted),self.assertRaises(OSError):cleaner.cleanup(self.world,self.backups,validator=self.validator)
         self.path.write_bytes(b'concurrent replacement');before=self.sources()
         with self.assertRaises(cleaner.CleanupError):cleaner.cleanup(self.world,self.backups,validator=self.validator)

@@ -10,8 +10,7 @@
 #       compat find_players_db conservée dans lib/common.sh.
 #   (1) succès normal : perso live remplacé par celui du backup, autres
 #       persos intacts.
-#   (2) insertion cassée après DELETE (colonne NOT NULL supplémentaire en
-#       live) -> ROLLBACK, exit != 0, live inchangé (checksum + count +
+#   (2) insertion cassée après DELETE (trigger SQLite ABORT en live) -> ROLLBACK, exit != 0, live inchangé (checksum + count +
 #       contenu).
 #   (3) perso absent du backup -> die, live inchangé.
 #   (4) source == dest (même players.db) -> die, live inchangé.
@@ -352,7 +351,8 @@ grep -q 'ROLLBACK' "$SCRIPT" \
 grep -q '\.bail on' "$SCRIPT" && grep -q -- '-bail' "$SCRIPT" \
     && ok ".bail on + sqlite3 -bail" \
     || ko ".bail on / -bail absents"
-grep -q 'mktemp' "$SCRIPT" && grep -q "trap.*rm -f.*SQL_TMP" "$SCRIPT" \
+grep -q 'mktemp' "$SCRIPT" && grep -q 'trap cleanup_character_restore EXIT' "$SCRIPT" \
+    && grep -q 'rm -f -- "$SQL_TMP"' "$SCRIPT" && grep -q 'rm -rf -- "$SOURCE_DB_DIR"' "$SCRIPT" \
     && ok "fichier SQL tmp via mktemp + trap rm" \
     || ko "mktemp/trap SQL_TMP absents"
 grep -q 'find_players_db_strict' "$SCRIPT" \
@@ -409,10 +409,11 @@ fi
 # --- (2) insertion cassée après DELETE -> ROLLBACK -------------------------------
 echo "== (2) ROLLBACK =="
 fresh_case rb
-LIVE_DB="$(world_db "$SRC" servertest extra_notnull)"
+LIVE_DB="$(world_db "$SRC" servertest normal)"
 BK_DIR="$BKP/backup_rb"; mkdir -p "$BK_DIR"
 BK_DB="$(world_db "$BK_DIR" servertest normal)"
-add_player "$LIVE_DB" Alice LIVE_ALICE_OLD extra_notnull
+add_player "$LIVE_DB" Alice LIVE_ALICE_OLD
+sqlite3 "$LIVE_DB" "CREATE TRIGGER character_restore_guard BEFORE INSERT ON networkPlayers BEGIN SELECT RAISE(ABORT,'C3-insert-failed'); END;"
 add_player "$BK_DB" Alice BK_ALICE_NEW
 BEFORE_SHA="$(sha "$LIVE_DB")"
 BEFORE_COUNT="$(row_count "$LIVE_DB")"
@@ -421,6 +422,9 @@ if run_restore Alice "$BK_DIR"; then
 else
     ok "insertion cassée : échec (exit non nul)"
 fi
+grep -q 'C3-insert-failed' "${SANDBOX}/out.log" \
+    && ok "ROLLBACK : INSERT réellement atteint après DELETE" \
+    || { ko "ROLLBACK : transaction non atteinte"; show_out; }
 [[ "$(sha "$LIVE_DB")" == "$BEFORE_SHA" ]] \
     && ok "ROLLBACK : base live inchangée (checksum)" \
     || { ko "ROLLBACK manqué : live modifiée malgré l'échec"; show_out; }

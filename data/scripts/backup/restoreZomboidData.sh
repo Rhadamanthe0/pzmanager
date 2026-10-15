@@ -22,13 +22,56 @@ readonly BACKUP_PATH="${1:-}"
 # posés par une étape et relus par une autre (swap/rollback/résumé).
 STAGING_DIR=""
 RESTORE_OLD_BACKUP=""
+RESTORE_MANIFEST=""
 
 # C7 : le staging est jetable (le live et OLD ne le sont pas) : seul lui est
 # nettoyé sur sortie/interruption. OLD n'est jamais supprimé par ce script.
 cleanup_restore_staging() {
+    [[ -z "${RESTORE_MANIFEST:-}" ]] || rm -f -- "$RESTORE_MANIFEST"
     if [[ -n "${STAGING_DIR:-}" && -d "${STAGING_DIR:-}" ]]; then
         rm -rf -- "${STAGING_DIR}" 2>/dev/null || true
     fi
+}
+
+# Bind both copies to the same complete file inventory, including empty dirs
+# and link targets. Never follow symlinks or silently omit special files.
+restore_tree_manifest() {
+    python3 - "$1" <<'PYMANIFEST'
+import hashlib, json, os, stat, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+entries = {}
+def refuse(error): raise error
+for base, directories, files in os.walk(root, followlinks=False, onerror=refuse):
+    for name in directories + files:
+        path = Path(base) / name
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            value = ['link', os.readlink(path)]
+        elif stat.S_ISDIR(info.st_mode):
+            value = ['directory']
+        elif stat.S_ISREG(info.st_mode):
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd, 'rb') as stream:
+                before = os.fstat(stream.fileno())
+                digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+                after = os.fstat(stream.fileno())
+            if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                raise ValueError('File changed during inventory')
+            value = ['file', after.st_size, digest]
+        else:
+            raise ValueError('Unsupported file type: ' + str(path))
+        entries[str(path.relative_to(root))] = value
+print(json.dumps(entries, sort_keys=True, ensure_ascii=True))
+PYMANIFEST
+}
+
+verify_restore_tree() {
+    local actual status=0
+    actual="$(mktemp "${PZ_HOME}/.restore-verify-XXXXXX")" || return 1
+    restore_tree_manifest "$1" > "$actual" && cmp -s -- "$actual" "$RESTORE_MANIFEST" || status=1
+    rm -f -- "$actual"
+    return "$status"
 }
 
 show_usage() {
@@ -49,6 +92,11 @@ show_usage() {
 validate_backup_path() {
     [[ -n "$BACKUP_PATH" ]] || { show_usage; exit 1; }
     [[ -d "$BACKUP_PATH" ]] || die "Backup introuvable: $BACKUP_PATH"
+    local source_real live_real
+    source_real="$(realpath -e -- "$BACKUP_PATH")" || die "Chemin source invalide."
+    live_real="$(realpath -m -- "$PZ_SOURCE_DIR")" || die "Chemin destination invalide."
+    case "$source_real/" in "$live_real/"*) die "Source et destination imbriquées : source intacte, restauration refusée." ;; esac
+    case "$live_real/" in "$source_real/"*) die "Source et destination imbriquées : source intacte, restauration refusée." ;; esac
 
     # Vérifier que le backup contient bien des données Zomboid
     if [[ ! -d "$BACKUP_PATH/Saves" ]] && [[ ! -d "$BACKUP_PATH/Server" ]]; then
@@ -166,6 +214,9 @@ restore_zomboid_data() {
     rsync -a --info=progress2 "${STAGING_DIR}/" "${PZ_SOURCE_DIR}/" \
         || rollback_live "$RESTORE_OLD_BACKUP"
 
+    verify_restore_tree "$PZ_SOURCE_DIR" \
+        || rollback_live "$RESTORE_OLD_BACKUP"
+
     # || true : `pzm backup restore` tourne en utilisateur non privilégié, un
     # seul fichier au propriétaire inattendu faisait échouer chown et, sous
     # `set -e`, interrompait la restauration à mi-parcours — pire que de laisser
@@ -220,12 +271,20 @@ main() {
     trap cleanup_restore_staging EXIT
     trap 'cleanup_restore_staging; exit 143' INT TERM
 
+    RESTORE_MANIFEST="$(mktemp "${PZ_HOME}/.restore-manifest-XXXXXX")" \
+        || die "Impossible de réserver le manifest de restauration."
+    restore_tree_manifest "$BACKUP_PATH" > "$RESTORE_MANIFEST" \
+        || die "Inventaire source impossible — live intact."
     copy_backup_to_staging
+    verify_restore_tree "$BACKUP_PATH" && verify_restore_tree "$STAGING_DIR" \
+        || die "Copie de staging différente du manifest source — live intact."
     validate_staging_dir "$STAGING_DIR"
     # La postcondition structurelle est déjà vérifiable sur la copie : ne
     # déplacer aucun monde live si elle impose ensuite un rollback certain.
     validate_restored_live "$STAGING_DIR" \
         || die "Staging sans monde restaurable — live intact, aucune bascule."
+    verify_restore_tree "$STAGING_DIR" \
+        || die "Staging modifié après validation — live intact."
     backup_current_zomboid
     restore_zomboid_data
     show_summary

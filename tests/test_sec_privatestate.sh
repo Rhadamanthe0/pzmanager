@@ -106,6 +106,7 @@ ok "repli : chemin sous /tmp/pzmanager-<identité synthétique>"
 # Ne remplacer ni supprimer le répertoire : garder le même inode réservé.
 same_directory "$FALLBACK_DIR" "$FALLBACK_INODE" && [[ -O "$FALLBACK_DIR" ]] \
     || { ko "repli : inode remplacé avant simulation"; exit 1; }
+if [[ "$(id -u)" == 0 ]]; then
 chown --no-dereference 65534:65534 "$FALLBACK_DIR"
 if XDG_RUNTIME_DIR=/nonexistent-xyz private_state_path "heapcheck.trigger" >/dev/null 2>&1; then
     ko "repli hostile : accepté (un tiers y écrirait)"
@@ -118,6 +119,10 @@ same_directory "$FALLBACK_DIR" "$FALLBACK_INODE" \
 chown --no-dereference "$(id -u):$(id -g)" "$FALLBACK_DIR"
 same_directory "$FALLBACK_DIR" "$FALLBACK_INODE" && [[ -O "$FALLBACK_DIR" ]] \
     || { ko "repli : restauration de propriétaire non vérifiée"; exit 1; }
+
+else
+    echo '[SKIP-local] cas propriétaire tiers : chown réel exige root dans le bac jetable.'
+fi
 
 # --- (5) nom avec '/' -> refus -----------------------------------------------------
 export XDG_RUNTIME_DIR="$SANDBOX_RUN"

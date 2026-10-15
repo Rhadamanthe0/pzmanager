@@ -34,7 +34,7 @@ class FullRestorePreflight(unittest.TestCase):
         (self.repo / 'data/scripts/backup').mkdir(parents=True)
         (self.repo / 'data/scripts/lib').mkdir()
         self.script = self.repo / 'data/scripts/backup/restoreZomboidData.sh'
-        shutil.copy2(ROOT / 'data/scripts/backup/restoreZomboidData.sh', self.script)
+        shutil.copy2(os.environ.get('PZ_FULL_RESTORE_SCRIPT', ROOT / 'data/scripts/backup/restoreZomboidData.sh'), self.script)
         self.calls = self.root / 'calls.log'
         (self.repo / 'data/scripts/lib/common.sh').write_text('''
 source_env() { :; }
@@ -140,6 +140,51 @@ mv() { printf 'MV:%s\\n' "$*" >> "$TEST_CALLS"; command mv "$@"; }
         self.assertEqual(snapshot(recovered[0]), before)
         self.assertEqual(snapshot(self.live), source)
         self.assertEqual(snapshot(self.backup), source)
+
+    def test_backup_inside_live_refused_without_moving_the_source(self):
+        self.live_world()
+        nested=self.live/'embedded-backup'
+        shutil.copytree(self.backup,nested);self.backup=nested
+        before=snapshot(self.live); source=snapshot(nested)
+        result=self.run_restore()
+        self.assertNotEqual(result.returncode,0,result.stdout)
+        self.assertEqual(snapshot(self.live),before)
+        self.assertEqual(snapshot(nested),source)
+        self.assertFalse((self.home/'OLD').exists())
+
+    def corrupt_copy(self, boundary):
+        bin_dir = self.root/'bin'; bin_dir.mkdir()
+        real = shutil.which('rsync')
+        wrapper = bin_dir/'rsync'
+        wrapper.write_text('#!/usr/bin/python3\nimport os,subprocess,sys\nfrom pathlib import Path\n'
+            + 'code=subprocess.call('+repr([real])+'+sys.argv[1:])\n'
+            + 'destination=Path(sys.argv[-1])\n'
+            + 'is_live=destination==Path(os.environ["PZ_SOURCE_DIR"])\n'
+            + 'stamp=Path(__file__).with_name("injected")\n'
+            + 'if code==0 and not stamp.exists() and is_live == '+repr(boundary=='install')+':\n'
+            + '    stamp.touch()\n'
+            + '    (destination/"Saves/Multiplayer/test/sentinel.bin").write_bytes(b"altered copy despite rsync success")\n'
+            + 'sys.exit(code)\n')
+        wrapper.chmod(0o700)
+        self.env['PATH']=str(bin_dir)+':'+os.environ['PATH']
+
+    def test_corrupt_staging_copy_refused_before_live_move(self):
+        self.live_world(); before=snapshot(self.live); source=snapshot(self.backup)
+        self.corrupt_copy('staging'); result=self.run_restore()
+        self.assertNotEqual(result.returncode,0,result.stdout)
+        self.assertEqual(snapshot(self.live),before)
+        self.assertFalse((self.home/'OLD').exists())
+        self.assertEqual(snapshot(self.backup),source)
+
+    def test_corrupt_install_copy_detected_and_exactly_reverted(self):
+        self.live_world(); before=snapshot(self.live); source=snapshot(self.backup)
+        self.corrupt_copy('install'); result=self.run_restore()
+        self.assertNotEqual(result.returncode,0,result.stdout)
+        self.assertEqual(snapshot(self.live),before)
+        recovered=list((self.home/'OLD').glob('ZomboidBROKEN_*'))
+        self.assertEqual(len(recovered),1)
+        self.assertEqual(snapshot(recovered[0]),before)
+        self.assertEqual(snapshot(self.backup),source)
 
 
 if __name__ == '__main__':
