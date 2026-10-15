@@ -153,7 +153,7 @@ public final class IndexTerrainColumns {
         return chunk;
     }
 
-    private static JSONObject index(Path path, int cx, int cy) throws Exception {
+    private static JSONObject index(Path path, int cx, int cy, boolean trace) throws Exception {
         require(Files.size(path) <= 64L * 1024 * 1024, "Terrain file exceeds 64 MiB");
         byte[] bytes = Files.readAllBytes(path);
         ByteBuffer b = ByteBuffer.wrap(bytes);
@@ -169,9 +169,11 @@ public final class IndexTerrainColumns {
         Method load = IsoChunk.class.getDeclaredMethod("LoadFromDiskOrBufferInternal", ByteBuffer.class);
         load.setAccessible(true);
         ByteBuffer full = ByteBuffer.wrap(bytes);
+        if(trace) NativeItemTrace.begin(full);
         try { load.invoke(whole, full); }
         catch (Exception error) { throw new IllegalArgumentException("Terrain " + path + " at byte " + full.position() + "/" + bytes.length, error); }
         require(full.position() == bytes.length, "Unparsed terrain bytes");
+        JSONArray items=trace?NativeItemTrace.finish():new JSONArray();
 
         // Version-249 prefix, followed by 64 X-major/Y-minor columns. Each
         // column has a 64-bit floor-presence mask and native square records.
@@ -213,7 +215,54 @@ public final class IndexTerrainColumns {
         }
         return new JSONObject().put("sha256", HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)))
                 .put("level_offset", levelOffset).put("min_level", min).put("max_level", max)
-                .put("columns", columns);
+                .put("columns", columns).put("items",items);
+    }
+
+    private static JSONObject storage(JSONObject entry) throws Exception {
+        Path path=Path.of(entry.getString("file"));
+        require(Files.size(path)<=64L*1024*1024,"Storage exceeds 64 MiB");
+        byte[] bytes=Files.readAllBytes(path);ByteBuffer input=ByteBuffer.wrap(bytes);
+        require(entry.getInt("version")==249,"Unsupported storage version");
+        IsoWorld.instance.currentCell=new IsoCell(1,1);
+        // Native characters query ServerMap while being constructed. A private,
+        // empty meta grid supplies the same absent-square result as unloaded
+        // terrain, without starting server threads or reading another world.
+        IsoMetaGrid meta=IsoWorld.instance.metaGrid;
+        meta.minX=0; meta.maxX=0; meta.minY=0; meta.maxY=0;
+        // ServerMap.init also starts unrelated stash initialization, requiring
+        // Lua gameplay state. Only its empty grid lookup state is needed here.
+        var serverMap=zombie.network.ServerMap.instance;
+        for(String name:List.of("grid","width","height","cellMap")) {
+            Field f=zombie.network.ServerMap.class.getDeclaredField(name);f.setAccessible(true);
+            if(name.equals("grid")) f.set(serverMap,meta);
+            else if(name.equals("cellMap")) f.set(serverMap,Array.newInstance(f.getType().getComponentType(),16));
+            else f.setInt(serverMap,4);
+        }
+        NativeItemTrace.begin(input);
+        if(entry.getString("kind").equals("player")) {
+            // A neutral constructor visual avoids random character creation
+            // (Lua's common hair palette is not loaded by this offline reader).
+            // The saved visual is subsequently consumed by the real load method.
+            zombie.core.skinnedmodel.population.HairStyles.init();
+            zombie.core.skinnedmodel.population.BeardStyles.init();
+            var descriptor=new zombie.characters.SurvivorDesc();
+            var visual=descriptor.getHumanVisual();
+            visual.setHairColor(zombie.core.ImmutableColor.white);
+            visual.setBeardColor(zombie.core.ImmutableColor.white);
+            visual.setNaturalHairColor(zombie.core.ImmutableColor.white);
+            visual.setNaturalBeardColor(zombie.core.ImmutableColor.white);
+            visual.setSkinColor(zombie.core.ImmutableColor.white);
+            visual.setHairModel("Bald");visual.setBeardModel("");visual.setSkinTextureName("offline-constructor");
+            var player=new zombie.characters.IsoPlayer(IsoWorld.instance.currentCell,descriptor,0,0,0);
+            player.load(input,249,false);
+        } else if(entry.getString("kind").equals("reanimated")) {
+            require(input.remaining()>=8 && input.getInt(0)==249 && input.getInt(4)>=0 && input.getInt(4)<=100000,"Invalid reanimated header");
+            Method load=zombie.ReanimatedPlayers.class.getDeclaredMethod("loadReanimatedPlayers",ByteBuffer.class);
+            load.setAccessible(true);load.invoke(zombie.ReanimatedPlayers.instance,input);
+        } else throw new IllegalArgumentException("Unsupported storage kind");
+        require(!input.hasRemaining(),"Unparsed storage bytes");
+        return new JSONObject().put("sha256",HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)))
+            .put("items",NativeItemTrace.finish());
     }
 
     public static void main(String[] args) throws Exception {
@@ -227,10 +276,15 @@ public final class IndexTerrainColumns {
             return;
         }
         initialize(Path.of(request.getString("dictionary")), request);
+        if(request.has("storage")) {
+            JSONArray results=new JSONArray();
+            for(Object entry:request.getJSONArray("storage")) results.put(storage((JSONObject)entry));
+            Files.writeString(Path.of(args[1]),new JSONObject().put("storage",results).toString());return;
+        }
         JSONArray chunks = request.getJSONArray("chunks"), results = new JSONArray();
         for (int i = 0; i < chunks.length(); i++) {
             JSONObject entry = chunks.getJSONObject(i);
-            results.put(index(Path.of(entry.getString("file")), entry.getInt("x"), entry.getInt("y")));
+            results.put(index(Path.of(entry.getString("file")), entry.getInt("x"), entry.getInt("y"),request.optBoolean("trace_items")));
         }
         Files.writeString(Path.of(args[1]), new JSONObject().put("chunks", results).toString());
     }

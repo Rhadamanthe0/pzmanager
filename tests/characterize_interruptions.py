@@ -107,6 +107,12 @@ def zone_case(fixture, phase: str, results: Path) -> dict:
         manifest = json.loads((recovery/'manifest.json').read_text())
         expected_status = 'reverted' if phase.startswith('term') else 'applying'
         assert manifest['status'] == expected_status
+        root=case.live.parents[2]
+        if phase.startswith('term'):
+            fixture.zone.transactions.check_clean(root)
+        else:
+            with case.assertRaisesRegex(ValueError,'unfinished'):
+                fixture.zone.transactions.check_clean(root)
         for entry in manifest['files']:
             for root, key in ((recovery/'before/Saves/Multiplayer/test', 'before_sha256'),
                               (recovery/'staged', 'after_sha256')):
@@ -114,7 +120,7 @@ def zone_case(fixture, phase: str, results: Path) -> dict:
                 assert (sha(path) if path.exists() else None) == entry[key]
         return dict(scenario='zone:'+phase, manifest=manifest['status'], changed_files=changed,
                     source_unchanged=True, recovery_images_verified=True,
-                    native_reader='synthetic protocol double', restart_tested=False)
+                    native_reader='synthetic protocol double', startup_journal_gate_verified=True)
     finally:
         case.doCleanups()
 
@@ -140,6 +146,8 @@ def writing_case(fixture, phase: str, results: Path) -> dict:
         changed = sorted(k for k,v in case.before.items() if fixture.files(case.world).get(k) != v)
         assert changed == ([] if phase == 'before_first_install' else ['map/0/0.bin'])
         case.assert_pending()
+        from world_transaction import check_clean
+        with case.assertRaisesRegex(ValueError,'unfinished'):check_clean(case.world)
         assert fixture.files(case.stage/'original') == case.original_copies
         # Explicit test-only resume. Never invoke the production startup path.
         case.recover()
@@ -150,6 +158,7 @@ def writing_case(fixture, phase: str, results: Path) -> dict:
             assert state[name] == case.before[name]
         assert fixture.files(case.stage/'original') == case.original_copies
         assert json.loads((case.stage/'manifest.json').read_text())['state'] == 'complete'
+        check_clean(case.world)
         return dict(scenario='writing:'+phase, manifest_at_crash='prepared',
                     changed_files_at_crash=changed, explicit_fixture_resume='complete',
                     original_images_unchanged=True, unrelated_sentinels_unchanged=True,
@@ -194,6 +203,9 @@ def full_restore_case(fixture, results: Path) -> dict:
         assert fixture.snapshot(case.backup) == source
         installed = fixture.snapshot(case.live)
         assert installed == {'Saves/Multiplayer/test/sentinel.bin': source['Saves/Multiplayer/test/sentinel.bin']}
+        sys.path.insert(0,str(case.repo/'data/scripts/lib'))
+        from world_transaction import check_clean
+        with case.assertRaisesRegex(ValueError,'unfinished'):check_clean(case.live)
         stages = list(case.home.glob('.restore-staging-*'))
         assert len(stages) == 1 and fixture.snapshot(stages[0]) == source
         return dict(scenario='full_restore:kill_process_group_after_first_file',

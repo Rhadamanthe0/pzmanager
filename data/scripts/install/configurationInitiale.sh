@@ -628,6 +628,12 @@ install_systemd_services() {
     cp "$templates_dir/pz.slice" "$systemd_dir/pz.slice"
     chown "$PZ_USER:$PZ_USER" "$systemd_dir/pz.slice"
 
+    # Outside Zomboid so that a full restore cannot move the pending intent.
+    # Create under the manager identity, with the same trusted-path checks as
+    # maintenance; never repair a public or foreign directory by chmod/chown.
+    sudo -u "$PZ_USER" python3 "${PZ_MANAGER_DIR}/data/scripts/lib/world_transaction.py" \
+        init --world "$PZ_SOURCE_DIR" || die "Journal de récupération indisponible."
+
     # Server services
     for service_file in zomboid.service zomboid.socket zomboid_logger.service; do
         if [[ -f "$templates_dir/$service_file" ]]; then

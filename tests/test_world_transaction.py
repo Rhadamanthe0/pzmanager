@@ -1,0 +1,82 @@
+"""Crash admission and durable intent on real private Linux files."""
+import json
+import os
+from pathlib import Path
+import signal
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+ROOT=Path(__file__).resolve().parents[1]
+sys.path[:0]=[str(ROOT/'data/scripts/lib'),str(ROOT/'data/scripts/internal')]
+import world_transaction as txn
+import writing_start_admission as admission
+
+class WorldTransaction(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+        self.root=Path(self.tmp.name);self.world=self.root/'Zomboid';self.world.mkdir()
+        self.recovery=self.root/'recovery';self.recovery.mkdir()
+        (self.world/'a').write_bytes(b'old-a');(self.world/'b').write_bytes(b'old-b')
+        self.files=[dict(path=n,before=txn.digest(self.world/n),after=__import__('hashlib').sha256(('new-'+n).encode()).hexdigest()) for n in ('a','b')]
+    def begin(self):return txn.begin(self.world,'test',self.recovery,self.files)
+    def test_check_is_read_only_and_no_compiler_needed(self):
+        txn.check_clean(self.world);self.assertFalse(txn.location(self.world)[1].exists())
+    def test_actual_sigkill_leaves_pending_and_admission_refuses_before_work(self):
+        child=os.fork()
+        if child==0:
+            self.begin();(self.world/'a').write_bytes(b'new-a');os.kill(os.getpid(),signal.SIGKILL)
+        _,status=os.waitpid(child,0);self.assertTrue(os.WIFSIGNALED(status))
+        with self.assertRaisesRegex(ValueError,'unfinished'):txn.check_clean(self.world)
+        with patch.dict(os.environ,PZ_SOURCE_DIR=str(self.world)),patch.object(admission,'unit_state',side_effect=AssertionError('must reject before running work')):
+            with self.assertRaisesRegex(ValueError,'unfinished'):admission.run(None)
+        self.assertEqual((self.world/'a').read_bytes(),b'new-a');self.assertEqual((self.world/'b').read_bytes(),b'old-b')
+    def test_false_completion_and_wrong_recovery_are_refused(self):
+        token=self.begin()
+        with self.assertRaises(ValueError):txn.finish(self.world,token,'complete')
+        with self.assertRaises(ValueError):txn.pending_for(self.world,self.root/'other')
+        with self.assertRaises(ValueError):txn.check_clean(self.world)
+        txn.finish(self.world,token,'reverted');txn.check_clean(self.world)
+    def test_success_requires_all_files_and_retains_record(self):
+        token=self.begin()
+        for n in ('a','b'):(self.world/n).write_bytes(('new-'+n).encode())
+        txn.finish(self.world,token,'complete');txn.check_clean(self.world)
+        self.assertEqual(json.loads((txn.location(self.world)[1]/(token+'.json')).read_text())['state'],'complete')
+    def test_durability_failure_keeps_gate_closed(self):
+        token=self.begin()
+        with patch.object(txn.os,'fsync',side_effect=OSError('storage error')):
+            with self.assertRaises(OSError):txn.finish(self.world,token,'reverted')
+        with self.assertRaises(ValueError):txn.check_clean(self.world)
+    def test_symlink_and_public_state_directory_refused(self):
+        state=txn.location(self.world)[1];state.symlink_to(self.recovery)
+        with self.assertRaises((OSError,ValueError)):self.begin()
+        state.unlink();state.mkdir();state.chmod(0o755)
+        with self.assertRaises((OSError,ValueError)):self.begin()
+    def test_corrupted_record_cannot_escape_world_or_open_gate(self):
+        token=self.begin();path=txn.location(self.world)[1]/(token+'.json')
+        record=json.loads(path.read_text());record['files'][0]['path']='../outside'
+        path.write_text(json.dumps(record));path.chmod(0o600)
+        with self.assertRaisesRegex(ValueError,'Invalid transaction path'):txn.check_clean(self.world)
+        with self.assertRaisesRegex(ValueError,'Invalid transaction path'):txn.finish(self.world,token,'reverted')
+        self.assertFalse((self.root/'outside').exists())
+
+    def test_absent_nested_paths_can_complete_and_revert(self):
+        plan=[dict(path='missing/cache/file',before=None,after=None)]
+        token=txn.begin(self.world,'zone',self.recovery,plan)
+        txn.finish(self.world,token,'complete');txn.check_clean(self.world)
+        self.assertFalse((self.world/'missing').exists())
+    def test_tree_plan_survives_world_directory_missing(self):
+        after=self.root/'staged';after.mkdir();(after/'new').write_bytes(b'new')
+        token=txn.begin(self.world,'full',self.recovery,after_tree=after)
+        self.world.rename(self.root/'OLD')
+        with self.assertRaisesRegex(ValueError,'unfinished'):txn.check_clean(self.world)
+        after.rename(self.world);txn.finish(self.world,token,'complete');txn.check_clean(self.world)
+    def test_revert_can_verify_originally_absent_world(self):
+        absent=self.root/'not-created';staged=self.root/'staged';staged.mkdir()
+        (staged/'a').write_bytes(b'new')
+        token=txn.begin(absent,'full',self.recovery,after_tree=staged)
+        txn.finish(absent,token,'reverted');txn.check_clean(absent)
+        self.assertFalse(absent.exists())
+
+if __name__=='__main__':unittest.main()

@@ -74,6 +74,24 @@ class WritingEnvelopes(unittest.TestCase):
                 self.assertIn('Texte à conserver intégralement'.encode(), cleaned)
                 self.assertEqual(writing.clean_blob(cleaned, registry(), chunk=True), (cleaned, []))
 
+    def test_native_compressed_replays_patch_each_envelope_once(self):
+        blob,_=floor_bag(depth=2)
+        records=[];start=33
+        for depth in (2,1,0):
+            size,rid=struct.unpack_from('>ih',blob,start)
+            records.append(dict(record_start=start,record_end=start+4+size,registry_id=rid,
+                parent=-1 if depth==2 else records[-1]['record_start'],
+                itemId=struct.unpack_from('>i',blob,start+7)[0],
+                itemType='Base.Bag_Schoolbag' if depth else 'Base.Notebook',
+                **{'class':'InventoryContainer' if depth else 'Literature'}))
+            start+=19
+        replay=records+[dict(r) for r in records]
+        cleaned,_=writing.clean_blob(blob,None,chunk=True,native_records=replay)
+        self.assertEqual(cleaned,floor_bag(dirty=False,depth=2)[0])
+        replay[-1]['itemType']='Conflicting.Type'
+        with self.assertRaisesRegex(writing.CleanupError,'Conflicting replayed'):
+            writing.clean_blob(blob,None,chunk=True,native_records=replay)
+
     def test_unclassified_direct_mod_container_is_refused(self):
         blob, _ = floor_bag(rid=3)
         with self.assertRaises(writing.CleanupError):

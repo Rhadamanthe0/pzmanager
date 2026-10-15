@@ -23,6 +23,7 @@ readonly BACKUP_PATH="${1:-}"
 STAGING_DIR=""
 RESTORE_OLD_BACKUP=""
 RESTORE_MANIFEST=""
+RESTORE_TXN=""
 
 # C7 : le staging est jetable (le live et OLD ne le sont pas) : seul lui est
 # nettoyé sur sortie/interruption. OLD n'est jamais supprimé par ce script.
@@ -112,6 +113,13 @@ validate_backup_path() {
     done
 }
 
+reserve_old_backup() {
+    [[ -d "${PZ_SOURCE_DIR}" ]] || return 0
+    mkdir -p "${PZ_HOME}/OLD"
+    RESTORE_OLD_BACKUP="$(mktemp -d "${PZ_HOME}/OLD/ZomboidBROKEN_$(date +"%Y-%m-%d_%Hh%Mm%Ss")_XXXXXX")" \
+        || die "Impossible de réserver le backup de sécurité — live intact."
+}
+
 backup_current_zomboid() {
     # Garde ajoutée le 2026-08-18 : ce chemin DÉPLACE le monde live (mv) puis
     # rsync par-dessus. Fait serveur allumé, la JVM continue d'écrire dans ses
@@ -135,14 +143,20 @@ backup_current_zomboid() {
     # déplace jamais le live sans copie prête à basculer. Réserver une
     # destination unique : deux opérations dans la même seconde ne doivent
     # jamais imbriquer le second monde dans le premier OLD.
-    mkdir -p "${PZ_HOME}/OLD"
-    RESTORE_OLD_BACKUP="$(mktemp -d "${PZ_HOME}/OLD/ZomboidBROKEN_$(date +"%Y-%m-%d_%Hh%Mm%Ss")_XXXXXX")" \
-        || die "Impossible de réserver le backup de sécurité — live intact."
+    [[ -n "$RESTORE_OLD_BACKUP" ]] || reserve_old_backup
 
     echo "Création backup de sécurité..."
     # -T interdit la sémantique « déplacer dans » ; le répertoire réservé
     # est vide et peut être remplacé, sans effacer un autre monde.
     mv -T -- "${PZ_SOURCE_DIR}" "$RESTORE_OLD_BACKUP"
+    python3 - "$PZ_SOURCE_DIR" "$RESTORE_OLD_BACKUP" <<'PYSYNC'
+import os,sys
+from pathlib import Path
+for parent in {Path(p).parent for p in sys.argv[1:]}:
+    fd=os.open(parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:os.fsync(fd)
+    finally:os.close(fd)
+PYSYNC
     echo "✓ Backup sécurité: $RESTORE_OLD_BACKUP"
 }
 
@@ -200,6 +214,10 @@ rollback_live() {
     # les retire ; OLD reste intact même si la copie de rollback échoue.
     rsync -a --delete "${old_backup}/" "${PZ_SOURCE_DIR}/" \
         || die "Échec du swap ET du rollback — restaure manuellement : $old_backup → ${PZ_SOURCE_DIR}."
+    if [[ -n "${RESTORE_TXN:-}" ]]; then
+        python3 "${SCRIPT_DIR}/../lib/world_transaction.py" finish --world "$PZ_SOURCE_DIR" --token "$RESTORE_TXN" --state reverted \
+            || die "Rollback non vérifié : journal conservé."
+    fi
     echo "✓ Rollback terminé: $old_backup → ${PZ_SOURCE_DIR}"
     die "Restauration interrompue (swap incomplet) — live restauré depuis $old_backup, OLD conservé."
 }
@@ -257,6 +275,7 @@ main() {
     # start, wipe, 2e restore...), sans le relâcher au milieu.
     acquire_world_lock --required || exit 1
     validate_backup_path
+    assert_server_stopped_proven "Restauration d'une sauvegarde"
 
     echo "=== Restauration données Zomboid ==="
     echo "Backup source: $BACKUP_PATH"
@@ -275,6 +294,7 @@ main() {
         || die "Impossible de réserver le manifest de restauration."
     restore_tree_manifest "$BACKUP_PATH" > "$RESTORE_MANIFEST" \
         || die "Inventaire source impossible — live intact."
+    python3 "${SCRIPT_DIR}/../lib/world_transaction.py" check --world "$PZ_SOURCE_DIR" || die "Récupération explicite requise."
     copy_backup_to_staging
     verify_restore_tree "$BACKUP_PATH" && verify_restore_tree "$STAGING_DIR" \
         || die "Copie de staging différente du manifest source — live intact."
@@ -285,8 +305,13 @@ main() {
         || die "Staging sans monde restaurable — live intact, aucune bascule."
     verify_restore_tree "$STAGING_DIR" \
         || die "Staging modifié après validation — live intact."
+    reserve_old_backup
+    RESTORE_TXN="$(python3 "${SCRIPT_DIR}/../lib/world_transaction.py" begin --world "$PZ_SOURCE_DIR" \
+        --kind full-restore --recovery "${RESTORE_OLD_BACKUP:-${PZ_HOME}/OLD}" --after-tree "$STAGING_DIR")" || die "Journal durable indisponible."
     backup_current_zomboid
     restore_zomboid_data
+    python3 "${SCRIPT_DIR}/../lib/world_transaction.py" finish --world "$PZ_SOURCE_DIR" --token "$RESTORE_TXN" --state complete \
+        || die "Restauration copiée mais non clôturée : vérification explicite requise."
     show_summary
     # C1 : fin de section critique.
     release_world_lock

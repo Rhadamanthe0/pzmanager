@@ -21,6 +21,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from terrain_tiles import NativeIndexer, checked_columns, prepare_partial
 from zone_zip import zone_map_source
+import world_transaction as transactions
 
 
 def plain(path, root, directory=False):
@@ -326,6 +327,10 @@ def restore_source(args, backup, save, live, source):
         require_hash(live / rel, before_hashes[rel])
         require_hash(new / rel, after_hashes[rel])
     sync_recovery_plan(recovery, old, new, paths)
+    world_root = live.parents[2]
+    prefix = live.relative_to(world_root)
+    token = transactions.begin(world_root, 'zone', recovery, files=[
+        {'path': str(prefix/rel), 'before': before_hashes[rel], 'after': after_hashes[rel]} for rel in paths])
     print(f'Copie de récupération : {recovery}', flush=True)
     changed = []
     try:
@@ -343,6 +348,7 @@ def restore_source(args, backup, save, live, source):
         for rel in paths:
             require_hash(live / rel, after_hashes[rel])
         record('complete')
+        transactions.finish(world_root, token, 'complete')
     except BaseException:
         previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
         for sig in previous:
@@ -372,6 +378,7 @@ def restore_source(args, backup, save, live, source):
                 raise ValueError('Récupération manuelle requise ; copies conservées : '
                                  + '; '.join(rollback_errors))
             record('reverted')
+            transactions.finish(world_root, token, 'reverted')
         except BaseException:
             record('rollback-failed')
             raise

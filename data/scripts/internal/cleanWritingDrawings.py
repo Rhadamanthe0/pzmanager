@@ -3,8 +3,8 @@
 
 Caller must prove the JVM is stopped (or run in ExecStartPre before the JVM).
 Supported storage version: 249. Changes are prepared and backed up before any
-world mutation. A pending manifest resumes only when every target matches its
-recorded original or cleaned hash; conflicting changes refuse startup.
+world mutation. Pending transactions refuse startup. Explicit recovery requires
+every target to match its recorded original or cleaned hash and native validation.
 """
 import argparse
 from collections import deque
@@ -24,6 +24,7 @@ import tempfile
 import time
 import zlib
 from dataclasses import dataclass
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"lib"))
 
 VERSION = 249
 CACHE_SCHEMA = 2
@@ -491,7 +492,7 @@ def is_class(registry,rid,kind):
     return name in (LITERATURE_TYPES if kind=="literature" else CONTAINER_TYPES)
 
 
-def clean_blob(blob, registry, version=VERSION, chunk=False):
+def drawing_documents(blob):
     documents = []; pos = 0
     while True:
         found = blob.find(MARKER, pos)
@@ -500,6 +501,11 @@ def clean_blob(blob, registry, version=VERSION, chunk=False):
         node = parser.value(); pos = node.end
         new, removed = clean_document(node, blob)
         if removed: documents.append((found, node.start, node.end, new, removed))
+    return documents
+
+
+def clean_blob(blob, registry, version=VERSION, chunk=False, native_records=None):
+    documents = drawing_documents(blob)
     if not documents: return blob, []
     if version != VERSION: raise CleanupError("Unsupported storage version; expected 249")
     if chunk:
@@ -508,33 +514,62 @@ def clean_blob(blob, registry, version=VERSION, chunk=False):
         if stored_version != VERSION or length != len(blob) or crc != zlib.crc32(blob[17:]):
             raise CleanupError("Chunk version, length or checksum mismatch")
     records = {}
-    for match in re.finditer(b"\xff", blob):
-        start = match.start() - 6
-        if start < (17 if chunk else 0) or start+11 > len(blob): continue
-        length, rid = struct.unpack_from(">ih", blob, start); end = start + 4 + length
-        if length < 8 or end > len(blob): continue
-        if struct.unpack_from(">i", blob, start+7)[0] in (0, -1): continue
-        covered = [doc for doc in documents if start+11 <= doc[0] and doc[2] <= end]
-        if not covered: continue
-        # Ignoring an unknown covering envelope can shrink its nested book
-        # while leaving the enclosing size stale. Refuse instead of guessing
-        # whether this is an unknown mod item or opaque non-item binary data.
-        if rid not in registry:
-            raise CleanupError("Unknown inventory envelope registry ID: "+str(rid))
-        # Keep every plausible covering envelope. Ignoring a non-container
-        # could mistake an item serialized inside opaque text for a real child.
-        # World floor items are direct records. Nested/compressed inventory
-        # records have a positive item count immediately before their envelope.
-        count_valid = start >= 4 and 1 <= struct.unpack_from(">i", blob, start-4)[0] <= 100000
-        # A bag dropped on the floor has no compressed-inventory count before
-        # its envelope. It still encloses every nested document, so its length
-        # must shrink too. Both item records and complete chunks are validated
-        # by PZ before any write; a catalog match alone cannot authorize a patch.
-        # Direct literature still requires an explicit NeatWriting layout:
-        # script classification must not admit arbitrary magazines here.
-        if not count_valid and registry[rid] not in LITERATURE_TYPES and not is_class(registry,rid,"container"):
-            raise CleanupError("Unproven direct inventory envelope type: "+registry[rid])
-        records[start] = (end, rid, covered)
+    if native_records is None:
+        for match in re.finditer(b"\xff", blob):
+            start = match.start() - 6
+            if start < (17 if chunk else 0) or start+11 > len(blob): continue
+            length, rid = struct.unpack_from(">ih", blob, start); end = start + 4 + length
+            if length < 8 or end > len(blob): continue
+            if struct.unpack_from(">i", blob, start+7)[0] in (0, -1): continue
+            covered = [doc for doc in documents if start+11 <= doc[0] and doc[2] <= end]
+            if not covered: continue
+            # Ignoring an unknown covering envelope can shrink its nested book
+            # while leaving the enclosing size stale. Refuse instead of guessing
+            # whether this is an unknown mod item or opaque non-item binary data.
+            if rid not in registry:
+                raise CleanupError("Unknown inventory envelope registry ID: "+str(rid))
+            # Keep every plausible covering envelope. Ignoring a non-container
+            # could mistake an item serialized inside opaque text for a real child.
+            # World floor items are direct records. Nested/compressed inventory
+            # records have a positive item count immediately before their envelope.
+            count_valid = start >= 4 and 1 <= struct.unpack_from(">i", blob, start-4)[0] <= 100000
+            # A bag dropped on the floor has no compressed-inventory count before
+            # its envelope. It still encloses every nested document, so its length
+            # must shrink too. Both item records and complete chunks are validated
+            # by PZ before any write; a catalog match alone cannot authorize a patch.
+            # Direct literature still requires an explicit NeatWriting layout:
+            # script classification must not admit arbitrary magazines here.
+            if not count_valid and registry[rid] not in LITERATURE_TYPES and not is_class(registry,rid,"container"):
+                raise CleanupError("Unproven direct inventory envelope type: "+registry[rid])
+            records[start] = (end, rid, covered)
+    else:
+        # Only real loader entry/exit events authorize an inventory envelope.
+        known={}; classes={}; indexed={}
+        for record in native_records:
+            start,end=record['record_start'],record['record_end']
+            rid=record['registry_id'];kind=record['class'];name=record['itemType']
+            if (type(start) is not int or type(end) is not int
+                    or not (17 if chunk else 0)<=start<end<=len(blob) or end-start<11
+                    or struct.unpack_from('>i',blob,start)[0]!=end-start-4
+                    or struct.unpack_from('>h',blob,start+4)[0]!=rid
+                    or struct.unpack_from('>i',blob,start+7)[0]!=record['itemId']):
+                raise CleanupError('Invalid native inventory envelope')
+            # CompressIdenticalItems replays the same bytes for each instance.
+            # Authorize a byte patch once, only when all replayed facts agree.
+            if start in indexed:
+                if indexed[start]!=record:raise CleanupError('Conflicting replayed native inventory envelope')
+                continue
+            parent=record['parent']
+            if parent!=-1 and (parent not in indexed or not indexed[parent]['record_start']<start<end<=indexed[parent]['record_end']):
+                raise CleanupError('Invalid native inventory ancestry')
+            if rid in known and known[rid]!=name:raise CleanupError('Conflicting native inventory registry')
+            known[rid]=name; classes[name]={'Literature':'literature','InventoryContainer':'container'}.get(kind,kind)
+            indexed[start]=record
+        registry=Registry(known,classes)
+        for start,record in indexed.items():
+            end,rid=record['record_end'],record['registry_id']
+            covered=[doc for doc in documents if start+11<=doc[0] and doc[2]<=end]
+            if covered: records[start]=(end,rid,covered)
     for doc in documents:
         containing = sorted((start, end, rid) for start, (end, rid, docs) in records.items() if doc in docs)
         if not containing: raise CleanupError("Book drawing has no validated inventory envelope")
@@ -713,9 +748,9 @@ def drawing_files(world, cached=None, scanned=None):
 
 
 def check_database_files(world):
-    for suffix in ("-wal", "-journal"):
+    for suffix in ("-wal", "-shm", "-journal"):
         path = world/("players.db"+suffix)
-        if path.exists() and (path.is_symlink() or path.stat().st_size):
+        if os.path.lexists(path) and (path.is_symlink() or not path.is_file() or path.stat().st_size or suffix=="-shm"):
             raise CleanupError("SQLite sidecar must be checkpointed before offline cleanup")
 
 
@@ -732,16 +767,22 @@ def stage_change(stage,world,rel,original,new,items=None):
         target=stage/folder/rel;target.parent.mkdir(parents=True,exist_ok=True,mode=0o700);atomic_file(target,data)
     return {"path":str(rel),"original_sha256":digest(original),"new_sha256":digest(new),"mode":stat.S_IMODE((world/rel).stat().st_mode),"items":items or []}
 
-def prepare(world,stage,scripts_dir=None,cached=None,scanned=None):
-    registry=dictionary(world/"WorldDictionaryReadable.lua",scripts_dir);files=[];rows=[]
+def prepare(world,stage,scripts_dir=None,cached=None,scanned=None,envelope_reader=None):
+    registry=None if envelope_reader else dictionary(world/"WorldDictionaryReadable.lua",scripts_dir)
+    files=[];rows=[]
+    def transform(blob,version=VERSION,chunk=False,path=None):
+        if envelope_reader is not None and drawing_documents(blob):
+            records=envelope_reader(stage,blob,'chunk' if chunk else ('player' if path is None else 'reanimated'),version,path)
+            return clean_blob(blob,None,version,chunk,native_records=records)
+        return clean_blob(blob,registry,version,chunk)
     db=world/"players.db";check_database_files(world)
     if db.exists():
-        original_hash=file_digest(db);reader=sqlite3.connect(db.resolve().as_uri()+"?mode=ro",uri=True);writer=None
+        original_hash=file_digest(db);reader=sqlite3.connect(db.resolve().as_uri()+"?mode=ro&immutable=1",uri=True);writer=None
         try:
             if reader.execute("PRAGMA quick_check").fetchone()[0]!="ok":raise CleanupError("SQLite integrity check failed")
             for table in ("networkPlayers","localPlayers"):
                 for ident,version,blob in reader.execute(f"SELECT id,worldversion,data FROM {table}"):
-                    new,detail=clean_blob(blob,registry,version)
+                    new,detail=transform(blob,version)
                     if not detail:continue
                     if writer is None:
                         for folder in ("original","new"):
@@ -761,7 +802,7 @@ def prepare(world,stage,scripts_dir=None,cached=None,scanned=None):
     for rel,original in drawing_files(world,cached,scanned):
         if original is None:continue
         known=rel.parts[0]=="map" or rel==Path("reanimated.bin")
-        new,detail=clean_blob(original,registry,VERSION,chunk=rel.parts[0]=="map")
+        new,detail=transform(original,VERSION,chunk=rel.parts[0]=="map",path=rel)
         if detail:
             if not known:raise CleanupError("Unsupported dirty world file: "+str(rel))
             files.append(stage_change(stage,world,rel,original,new,detail))
@@ -818,6 +859,9 @@ def recover(world, stage, validator=None):
     if manifest.get("schema") != 1 or manifest.get("world") != str(world) or manifest.get("version") != VERSION:
         raise CleanupError("Pending cleanup belongs to another world or format")
     entries = manifest["files"]
+    from world_transaction import begin, pending_for, finish
+    world_root=world.parents[2] if world.parent.name=='Multiplayer' else world
+    prefix=world.relative_to(world_root)
     def check_plan():
         for entry in entries:
             rel = Path(entry["path"])
@@ -835,6 +879,10 @@ def recover(world, stage, validator=None):
     # sidecars after they return, not only before the first native read.
     check_plan()
     sync_recovery_plan(stage,entries)
+    token=pending_for(world_root,stage)
+    if token is None:
+        token=begin(world_root,'writing',stage,files=[{'path':str(prefix/entry['path']),
+            'before':entry['original_sha256'],'after':entry['new_sha256']} for entry in entries])
     for entry in entries:
         rel = Path(entry["path"])
         current = file_digest(world/rel)
@@ -847,11 +895,15 @@ def recover(world, stage, validator=None):
             raise CleanupError("Installed cleanup image differs from validated bytes")
     check_database_files(world)
     manifest["state"] = "complete"; manifest["completed_at"] = time.time(); write_manifest(stage,manifest)
+    finish(world_root,token,'complete')
     return len(entries)
 
 
 def cleanup(world_dir, backup_dir, dry_run=False, validator=None, scripts_dir=None, scan_cache=None):
     world_path=Path(os.path.abspath(world_dir))
+    from world_transaction import check_clean
+    try:check_clean(world_path.parents[2] if world_path.parent.name=='Multiplayer' else world_path,legacy=True)
+    except ValueError as error:raise CleanupError(str(error)) from error
     if world_path.is_symlink():raise CleanupError("World symlink refused")
     if not world_path.exists():
         ancestor=world_path.parent
@@ -864,7 +916,7 @@ def cleanup(world_dir, backup_dir, dry_run=False, validator=None, scripts_dir=No
         db=world/"players.db"
         if db.exists():
             check_database_files(world);read_file(db)
-            reader=sqlite3.connect(db.resolve().as_uri()+"?mode=ro",uri=True)
+            reader=sqlite3.connect(db.resolve().as_uri()+"?mode=ro&immutable=1",uri=True)
             try:
                 if reader.execute("PRAGMA quick_check").fetchone()[0]!="ok":raise CleanupError("SQLite integrity check failed")
                 tables={row[0] for row in reader.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -907,12 +959,11 @@ def cleanup(world_dir, backup_dir, dry_run=False, validator=None, scripts_dir=No
             if not manifest_path(pending).exists(): continue
             manifest = json.loads(read_file(manifest_path(pending)))
             if manifest.get("state") == "prepared":
-                if dry_run: raise CleanupError("Pending cleanup requires recovery before dry-run")
-                recover(world,pending,validator)
+                raise CleanupError("Pending cleanup requires explicit recovery; startup will not resume it")
     # Planning lives in a disposable private directory. No source changes occur
     # until all formats, SQLite data and chunk checksums have been validated.
     with tempfile.TemporaryDirectory(prefix="pz-writing-plan-") as temporary:
-        files, rows = prepare(world, Path(temporary),scripts_dir,cached,scanned)
+        files, rows = prepare(world, Path(temporary),scripts_dir,cached,scanned,getattr(validator,"native_envelopes",None))
         summary = {"files":len(files),"players":len(rows),"version":VERSION,"dry_run":dry_run}
         if dry_run or not files:
             save_cache()
@@ -956,8 +1007,8 @@ def validation_manifest(stage,files,rows,fixtures):
         rel=Path(entry["path"])
         add(read_file(stage/"original"/rel),read_file(stage/"new"/rel),entry["items"],VERSION)
     if rows:
-        before=sqlite3.connect((stage/"original/players.db").resolve().as_uri()+"?mode=ro",uri=True)
-        after=sqlite3.connect((stage/"new/players.db").resolve().as_uri()+"?mode=ro",uri=True)
+        before=sqlite3.connect((stage/"original/players.db").resolve().as_uri()+"?mode=ro&immutable=1",uri=True)
+        after=sqlite3.connect((stage/"new/players.db").resolve().as_uri()+"?mode=ro&immutable=1",uri=True)
         try:
             for row in rows:
                 table=row["table"]
@@ -977,6 +1028,23 @@ class JavaValidator:
         self.lock_fd=lock_fd
         self.world=Path(world) if world is not None else None
 
+    def native_envelopes(self,stage,blob,kind,version,path=None):
+        from terrain_tiles import NativeIndexer
+        if self.world is None:raise CleanupError('Complete storage validation requires a world dictionary')
+        self.tools()
+        root=stage/'native-inputs';root.mkdir(exist_ok=True,mode=0o700)
+        if getattr(self,'_native_stage',None)!=stage:
+            self._native_stage=stage
+            dictionary=root/'WorldDictionary.bin'
+            atomic_file(dictionary,read_file(self.world/'WorldDictionary.bin'))
+            self._native=NativeIndexer(root/'reader',dictionary,java=self.java,javac=self.javac,trace_items=True)
+        file=root/('input-'+str(self._native.sequence)+'.bin');atomic_file(file,blob)
+        if kind=='chunk':
+            result=self._native.index([{'file':str(file),'x':int(path.parts[1]),'y':int(path.stem)}])[0]
+        else:result=self._native.storage([{'file':str(file),'kind':kind,'version':version}])[0]
+        if result['sha256']!=digest(blob):raise CleanupError('Native storage bytes changed')
+        return result['items']
+
     def validate_terrain(self,stage,files,root):
         chunks=[entry for entry in files if Path(entry["path"]).parts[0]=="map"]
         if not chunks:return
@@ -992,11 +1060,45 @@ class JavaValidator:
             for side in ("original","new"):
                 inputs.append({"file":str((stage/side/rel).absolute()),"x":x,"y":y})
         try:
-            native=NativeIndexer(root/"terrain",dictionary,java=self.java,javac=self.javac)
-            native.index(inputs)
+            native=NativeIndexer(root/"terrain",dictionary,java=self.java,javac=self.javac,trace_items=True)
+            results=native.index(inputs)
+            for i in range(0,len(results),2):
+                if self.item_identity(results[i]['items'])!=self.item_identity(results[i+1]['items']):
+                    raise CleanupError('Complete terrain item identity/ancestry changed')
         except (ValueError,OSError,subprocess.SubprocessError) as error:
             # Native logs can contain saved text; they remain private.
             raise CleanupError("Genuine PZ complete terrain validation failed; world unchanged") from error
+    @staticmethod
+    def item_identity(records):
+        offsets={r['record_start']:i for i,r in enumerate(records)}
+        return [(r['registry_id'],r['class'],r['itemType'],r['itemId'],
+                 -1 if r['parent']==-1 else offsets[r['parent']]) for r in records]
+
+    def validate_storage(self,stage,files,rows,root):
+        from terrain_tiles import NativeIndexer
+        inputs=[]
+        for entry in files:
+            if entry['path']=='reanimated.bin':
+                for side in ('original','new'):
+                    inputs.append(dict(file=str((stage/side/entry['path']).absolute()),kind='reanimated',version=VERSION))
+        for n,row in enumerate(rows):
+            for side in ('original','new'):
+                db=sqlite3.connect((stage/side/'players.db').resolve().as_uri()+'?mode=ro&immutable=1',uri=True)
+                try:
+                    if row['table'] not in ('networkPlayers','localPlayers'):raise CleanupError('Invalid player storage table')
+                    data=db.execute('SELECT data FROM '+row['table']+' WHERE id=?',(row['id'],)).fetchone()[0]
+                finally:db.close()
+                path=root/('player-'+str(n)+'-'+side+'.bin');atomic_file(path,data)
+                inputs.append(dict(file=str(path),kind='player',version=row['version']))
+        if not inputs:return
+        if self.world is None:raise CleanupError('Whole storage validation requires a dictionary')
+        dictionary=root/'storage-dictionary.bin';atomic_file(dictionary,read_file(self.world/'WorldDictionary.bin'))
+        native=NativeIndexer(root/'storage-reader',dictionary,java=self.java,javac=self.javac,trace_items=True)
+        results=native.storage(inputs)
+        for n in range(0,len(results),2):
+            if self.item_identity(results[n]['items'])!=self.item_identity(results[n+1]['items']):
+                raise CleanupError('Complete storage item identity/ancestry changed')
+
     def tools(self):
         self.jar=str(Path(self.jar).resolve(strict=True))
         self.java=str(Path(self.java).resolve(strict=True))
@@ -1032,6 +1134,7 @@ class JavaValidator:
             self.run([self.javac,"--release",release,"-cp",self.jar,"-d",str(classes),str(source)],root)
             self.run([self.java,"-Xmx512m","-cp",self.jar+os.pathsep+str(classes),"ValidateWritingRecords",str(manifest)],root)
             self.validate_terrain(stage,files,root)
+            self.validate_storage(stage,files,rows,root)
     def run(self,command,cwd):
         result=subprocess.run(command,cwd=cwd,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
                               pass_fds=() if self.lock_fd is None else (self.lock_fd,),timeout=180)
@@ -1045,6 +1148,7 @@ def main(argv=None):
     parser.add_argument("--world-dir",required=True)
     parser.add_argument("--backup-dir",required=True)
     parser.add_argument("--dry-run",action="store_true")
+    parser.add_argument("--resume-from",help="Explicitly resume this verified recovery; never used by startup")
     parser.add_argument("--jar")
     parser.add_argument("--java")
     parser.add_argument("--javac")
@@ -1063,6 +1167,9 @@ def main(argv=None):
             install=Path(args.jar).resolve().parent.parent
             from terrain_tiles import mod_script_catalogs
             scripts=[install/"media/scripts",*mod_script_catalogs(install)]
+        if args.resume_from:
+            if args.dry_run or validator is None:raise CleanupError('Explicit resume requires genuine validation')
+            print(json.dumps({'resumed':recover(safe_root(args.world_dir),safe_root(args.resume_from),validator)}));return 0
         print(json.dumps(cleanup(args.world_dir,args.backup_dir,args.dry_run,validator,scripts,args.scan_cache),sort_keys=True)); return 0
     except (CleanupError,OSError,sqlite3.Error,ValueError,TypeError,KeyError,ImportError,subprocess.SubprocessError) as error:
         print("ProjectWriting offline cleanup refused: "+str(error),file=sys.stderr); return 1

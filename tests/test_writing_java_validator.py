@@ -36,6 +36,13 @@ class CompilerDependency(unittest.TestCase):
         # the complete-terrain orchestration separately below.
         terrain=patch.object(fixture.cleaner.JavaValidator,'validate_terrain')
         self.terrain_validation=terrain.start();self.addCleanup(terrain.stop)
+        storage=patch.object(fixture.cleaner.JavaValidator,'validate_storage')
+        storage.start();self.addCleanup(storage.stop)
+        def native_envelopes(validator,stage,blob,kind,version,path):
+            validator.tools()  # Compiler/JVM admission is real; native record decoding is a fixture.
+            return fixture.synthetic_envelopes(blob)
+        native=patch.object(fixture.cleaner.JavaValidator,'native_envelopes',native_envelopes)
+        native.start();self.addCleanup(native.stop)
 
     def executable(self, name, body):
         path = self.root / name
@@ -219,7 +226,8 @@ class CompleteTerrainValidation(unittest.TestCase):
         validator=fixture.cleaner.JavaValidator('jar','java','javac',world=self.storage.world)
         before=self.storage.sources()
         with patch.dict(sys.modules,terrain_tiles=SimpleNamespace(NativeIndexer=factory)), \
-             patch.object(validator,'tools',return_value='25'),patch.object(validator,'run'):
+             patch.object(validator,'tools',return_value='25'),patch.object(validator,'run'), \
+             patch.object(validator,'native_envelopes',side_effect=lambda stage,blob,*a:fixture.synthetic_envelopes(blob)):
             with self.assertRaisesRegex(fixture.cleaner.CleanupError,'complete terrain validation failed'):
                 fixture.cleaner.cleanup(self.storage.world,self.storage.backups,validator=validator)
         self.assertEqual(self.storage.sources(),before)
@@ -228,7 +236,7 @@ class CompleteTerrainValidation(unittest.TestCase):
         self.assertEqual([(e['x'],e['y']) for e in inputs],[(1,2),(1,2)])
         self.assertIn('/original/map/1/2.bin',inputs[0]['file'])
         self.assertIn('/new/map/1/2.bin',inputs[1]['file'])
-        self.assertEqual(factory.call_args.kwargs,{'java':'java','javac':'javac'})
+        self.assertEqual(factory.call_args.kwargs,{'java':'java','javac':'javac','trace_items':True})
 
     def test_chunk_validation_requires_binary_dictionary_context(self):
         root=self.storage.root/'validation';root.mkdir()

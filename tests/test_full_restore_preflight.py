@@ -36,6 +36,9 @@ class FullRestorePreflight(unittest.TestCase):
         self.script = self.repo / 'data/scripts/backup/restoreZomboidData.sh'
         shutil.copy2(os.environ.get('PZ_FULL_RESTORE_SCRIPT', ROOT / 'data/scripts/backup/restoreZomboidData.sh'), self.script)
         self.calls = self.root / 'calls.log'
+        (self.repo/'data/scripts/internal').mkdir()
+        shutil.copy2(ROOT/'data/scripts/internal/configureWritingTextOnly.py',self.repo/'data/scripts/internal')
+        shutil.copy2(ROOT/'data/scripts/lib/world_transaction.py',self.repo/'data/scripts/lib')
         (self.repo / 'data/scripts/lib/common.sh').write_text('''
 source_env() { :; }
 die() { printf '%s\\n' "$*" >&2; exit 1; }
