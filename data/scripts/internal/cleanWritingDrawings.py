@@ -521,9 +521,13 @@ def clean_blob(blob, registry, version=VERSION, chunk=False):
         # World floor items are direct records. Nested/compressed inventory
         # records have a positive item count immediately before their envelope.
         count_valid = start >= 4 and 1 <= struct.unpack_from(">i", blob, start-4)[0] <= 100000
-        # Direct world-floor records are supported only for explicit NeatWriting
-        # layouts. Script classification must not admit arbitrary magazines here.
-        if not count_valid and registry[rid] not in LITERATURE_TYPES: continue
+        # A bag dropped on the floor has no compressed-inventory count before
+        # its envelope. It still encloses every nested document, so its length
+        # must shrink too. Both item records and complete chunks are validated
+        # by PZ before any write; a catalog match alone cannot authorize a patch.
+        # Direct literature still requires an explicit NeatWriting layout:
+        # script classification must not admit arbitrary magazines here.
+        if not count_valid and registry[rid] not in LITERATURE_TYPES and not is_class(registry,rid,"container"): continue
         records[start] = (end, rid, covered)
     for doc in documents:
         containing = sorted((start, end, rid) for start, (end, rid, docs) in records.items() if doc in docs)
@@ -920,10 +924,32 @@ def validation_manifest(stage,files,rows,fixtures):
 
 class JavaValidator:
     """Compile auditable source and run real PZ loaders with bounded heap."""
-    def __init__(self,jar,java,javac=None,lock_fd=None):
+    def __init__(self,jar,java,javac=None,lock_fd=None,world=None):
         if not all((jar,java)):raise CleanupError("Dirty APPLY requires --jar and --java")
         self.jar=jar;self.java=java;self.javac=javac
         self.lock_fd=lock_fd
+        self.world=Path(world) if world is not None else None
+
+    def validate_terrain(self,stage,files,root):
+        chunks=[entry for entry in files if Path(entry["path"]).parts[0]=="map"]
+        if not chunks:return
+        if self.world is None:raise CleanupError("Complete terrain validation requires the world dictionary")
+        from terrain_tiles import NativeIndexer
+        dictionary=root/"WorldDictionary.bin"
+        atomic_file(dictionary,read_file(self.world/"WorldDictionary.bin"))
+        inputs=[]
+        for entry in chunks:
+            rel=Path(entry["path"])
+            if len(rel.parts)!=3 or rel.suffix!=".bin":raise CleanupError("Unsupported terrain path")
+            x,y=int(rel.parts[1]),int(rel.stem)
+            for side in ("original","new"):
+                inputs.append({"file":str((stage/side/rel).absolute()),"x":x,"y":y})
+        try:
+            native=NativeIndexer(root/"terrain",dictionary,java=self.java,javac=self.javac)
+            native.index(inputs)
+        except (ValueError,OSError,subprocess.SubprocessError) as error:
+            # Native logs can contain saved text; they remain private.
+            raise CleanupError("Genuine PZ complete terrain validation failed; world unchanged") from error
     def tools(self):
         self.jar=str(Path(self.jar).resolve(strict=True))
         self.java=str(Path(self.java).resolve(strict=True))
@@ -958,6 +984,7 @@ class JavaValidator:
             # compiler fails before any mutation rather than skipping validation.
             self.run([self.javac,"--release",release,"-cp",self.jar,"-d",str(classes),str(source)],root)
             self.run([self.java,"-Xmx512m","-cp",self.jar+os.pathsep+str(classes),"ValidateWritingRecords",str(manifest)],root)
+            self.validate_terrain(stage,files,root)
     def run(self,command,cwd):
         result=subprocess.run(command,cwd=cwd,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
                               pass_fds=() if self.lock_fd is None else (self.lock_fd,),timeout=180)
@@ -983,7 +1010,7 @@ def main(argv=None):
         if not args.dry_run:
             from writing_start_admission import validate_worker_admission
             lock_fd=validate_worker_admission(args.unit)
-            if all((args.jar,args.java)):validator=JavaValidator(args.jar,args.java,args.javac,lock_fd)
+            if all((args.jar,args.java)):validator=JavaValidator(args.jar,args.java,args.javac,lock_fd,args.world_dir)
         scripts=args.scripts_dir
         if scripts is None and args.jar:
             install=Path(args.jar).resolve().parent.parent

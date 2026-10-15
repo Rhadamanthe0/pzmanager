@@ -114,15 +114,15 @@ def merge_columns(source, current, source_index, current_index, selected):
 
 class NativeIndexer:
     """Compile once; native readers run only against private recovery copies."""
-    def __init__(self, root, dictionary):
+    def __init__(self, root, dictionary, *, java=None, javac=None):
         self.root = Path(root).absolute()
         self.root.mkdir()
         self.dictionary = Path(dictionary).absolute()
         install = Path(os.environ.get('PZ_INSTALL_DIR', ''))
         self.script_context = native_script_context(install)
         self.jar = (install / 'java/projectzomboid.jar').resolve(strict=True)
-        self.java = Path(os.environ.get('PZ_RESTORE_JAVA', str(install / 'jre64/bin/java'))).resolve(strict=True)
-        compiler = os.environ.get('PZ_RESTORE_JAVAC')
+        self.java = Path(java or os.environ.get('PZ_RESTORE_JAVA', str(install / 'jre64/bin/java'))).resolve(strict=True)
+        compiler = javac or os.environ.get('PZ_RESTORE_JAVAC')
         if compiler is None:
             sibling = self.java.with_name('javac')
             compiler = str(sibling) if os.access(sibling, os.X_OK) else shutil.which('javac')

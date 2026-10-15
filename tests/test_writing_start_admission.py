@@ -112,6 +112,10 @@ while [[ ! -f "$6" ]]; do sleep .02; done
         identity = (lock.stat().st_dev, lock.stat().st_ino)
         with patch.dict(os.environ, XDG_RUNTIME_DIR=str(runtime)):
             self.assertEqual(admission.runtime_lock_path(), lock)
+            self.assertEqual(admission.runtime_lock_path('notify-ready-'+'a'*32+'.lock'),
+                             private/('notify-ready-'+'a'*32+'.lock'))
+            for bad in ('../outside', '/tmp/other', '..', 'a/b'):
+                with self.assertRaises(admission.ConfigurationError):admission.runtime_lock_path(bad)
             self.assertEqual((lock.stat().st_dev, lock.stat().st_ino), identity)
             private.chmod(0o755)
             with self.assertRaises(admission.ConfigurationError): admission.runtime_lock_path()

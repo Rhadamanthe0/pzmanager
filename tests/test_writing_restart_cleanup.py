@@ -80,6 +80,14 @@ class OfflineCleanup(unittest.TestCase):
         self.assertEqual(cleaner.clean_blob(new,REGISTRY,chunk=True),(new,[]))
         map_record=struct.pack('>i',1)+item(rid=3,doc={'v':1,'ink':{1:{'p':{1:5}}},'sym':{1:'map annotation'}})
         self.assertEqual(cleaner.clean_blob(map_record,REGISTRY),(map_record,[]))
+
+    def test_floor_bag_without_inventory_count_updates_ancestor_length(self):
+        # A world-floor bag is not preceded by a compressed-inventory count.
+        # The previous scan omitted this outer record and left its old length.
+        before=chunk(b'\0\0\0\0'+nested()[4:])
+        after,detail=cleaner.clean_blob(before,REGISTRY,chunk=True)
+        self.assertEqual(after,chunk(b'\0\0\0\0'+nested(False)[4:]))
+        self.assertEqual(detail[0]['ancestors'][0]['itemType'],'Base.Bag_SurvivorBag')
     def test_whole_plan_backup_sqlite_atomicity_and_idempotence(self):
         before=self.sources();summary=cleaner.cleanup(self.world,self.backups,validator=self.validator)
         self.assertEqual(summary['files'],2);stage=Path(summary['backup']);manifest=json.loads((stage/'manifest.json').read_text())

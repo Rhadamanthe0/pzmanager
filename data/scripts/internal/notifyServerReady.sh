@@ -47,10 +47,11 @@ fi
 # Verrou par invocation, non un cooldown global de cinq minutes : deux boots
 # rapprochés ont chacun droit à leur annonce. Le fichier conserve l'envoi réussi.
 umask 077
-# Réutiliser la protection commune : répertoire privé de l'utilisateur,
-# refus des liens symboliques et des répertoires possédés par un autre UID.
+# Réutiliser le résolveur du démarrage, adapté aux propriétaires remappés par
+# le confinement systemd, sans acquérir WORLD ni assouplir common.sh.
+# Le répertoire final reste privé, possédé par cet UID et sans lien symbolique.
 # Le chemin /tmp/pzmanager non personnalisé n'est pas sûr en mode dégradé.
-LOCK_FILE="$(private_state_path "notify-ready-${BOOT_ID}.lock")" || {
+LOCK_FILE="$(python3 "${SCRIPT_DIR}/writing_start_admission.py" path --name "notify-ready-${BOOT_ID}.lock")" || {
     echo "[pz-ready] Chemin privé ou fichier de verrou invalide (permissions ou lien)." >&2
     exit 1
 }
