@@ -21,19 +21,28 @@ has repeatedly been mistaken for a pzmanager bug.
 ## Backup CPU isolation
 
 This Ryzen 7 8745HS has 8 physical cores and 16 logical CPUs. `lscpu -e`
-and `cpu*/topology/thread_siblings_list` identify CPUs **4 and 12** as the
-two SMT threads of physical core 4. Both are reserved for the hourly backup;
-the game is restricted to **0–3 and 8–11**, the other four physical cores allocated to this account.
-The system-wide `user-1005.slice` now permits only 0–4 and 8–12 (five physical cores). The previous reservation 7/15 was outside that parent mask and ineffective; core 4 is reserved within the actual allocation. Reserving only CPU 4 would still let the game compete with the backup on CPU 12.
+and `cpu*/topology/thread_siblings_list` identify CPUs **1 and 9** as the
+two SMT threads of physical core 1. Both are assigned to the hourly backup;
+the game is restricted to **0, 2–3, 8, 10–11** (three physical cores).
+During CI jobs, the host CPU arbiter limits `user-1005.slice` to
+**0–3 and 8–11**; CI owns **4–7 and 12–15**. Both game and backup masks
+must fit inside that parent allocation, including while CI is active.
+
+On 2026-10-15, the previous backup mask **4,12** became inaccessible after
+the CI allocation expanded to four physical cores. The hourly backup failed
+at `taskset` before saving or copying. Moving the backup to **1,9** requires
+removing **both** siblings from the game's mask; changing only the backup
+would make it compete with the game. Do not widen the parent allocation into
+the CI reservation to repair this failure.
 
 These are **machine-specific**, persistent user-unit overrides, applied with:
 
 ```bash
-systemctl --user set-property zomboid.service 'AllowedCPUs=0-3 8-11'
-systemctl --user set-property pz-backup.service 'AllowedCPUs=4 12'
+systemctl --user set-property zomboid.service 'AllowedCPUs=0 2-3 8 10-11'
+systemctl --user set-property pz-backup.service 'AllowedCPUs=1 9'
 systemctl --user set-property pz-backup.service CPUQuota=200%
 # In this host's .env, for live-game scopes including manual backups:
-export BACKUP_CPU_LIST="4,12"
+export BACKUP_CPU_LIST="1,9"
 ```
 
 systemd stores them under `~/.config/systemd/user.control/<unit>.d/` and
@@ -61,6 +70,10 @@ Do not copy these CPU numbers to another machine without checking its topology.
 To remove the separation, set each unit's `AllowedCPUs` and the host's
 `BACKUP_CPU_LIST` to empty values. If the reserved CPUs become inaccessible,
 the script refuses the live-game copy rather than silently sharing game CPUs.
+A failed scope also emits `BACKUP_SCOPE_FAILED` in `pz-backup.service` with
+its exit status, requested CPUs and the command to inspect the scope journal.
+After changing this allocation, run the hourly service and verify a new
+`dataBackups/latest` snapshot and successful completion, including during CI.
 
 ## Memory budget
 

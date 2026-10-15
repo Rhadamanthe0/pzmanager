@@ -491,11 +491,13 @@ fresh_case cpu-scope-failed
 export MOCK_SCOPE_FAIL=1
 if run_backup; then ko "scope refusée : succès non bridé à tort"; else ok "scope refusée : échec sans fallback non bridé"; fi
 (( $(final_count "$BKP") == 0 )) && ok "scope refusée : aucun snapshot publié" || ko "scope refusée : snapshot publié"
+grep -q 'BACKUP_SCOPE_FAILED .*status=1' "${SANDBOX}/out.log" && ok "scope refusée : diagnostic dans le journal parent" || ko "scope refusée : diagnostic absent"
 unset MOCK_SCOPE_FAIL
 fresh_case cpu-affinity-failed
 export MOCK_CPU_PIN_FAIL=1 BACKUP_CPU_LIST=7,15
 if run_backup; then ko "affinité impossible : succès à tort"; else ok "affinité impossible : copie refusée"; fi
 (( $(final_count "$BKP") == 0 )) && ok "affinité impossible : rien publié" || ko "affinité impossible : snapshot publié"
+grep -q 'BACKUP_SCOPE_FAILED .*CPUs=7,15' "${SANDBOX}/out.log" && ok "affinité impossible : scope et CPU dans le journal parent" || ko "affinité impossible : diagnostic parent absent"
 unset MOCK_CPU_PIN_FAIL BACKUP_CPU_LIST
 
 # Une mise à jour pendant la copie ne doit pas déplacer le programme en cours.
