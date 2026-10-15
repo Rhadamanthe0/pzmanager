@@ -127,6 +127,55 @@ else
     ok "nom '../echappe' : refusé"
 fi
 
+
+# --- (6) état privé : fichiers prépositionnés et parent remplaçable -----------
+echo "== (6) chemin privé adversarial =="
+STATE_DIR="${SANDBOX_RUN}/pzmanager"
+TARGET="${SANDBOX_RUN}/outside-data"
+printf 'inchange\n' > "$TARGET"
+ln -s -- "$TARGET" "$STATE_DIR/heapcheck.trigger"
+if private_state_path "heapcheck.trigger" >/dev/null 2>&1; then
+    ko "fichier marqueur symlink accepté"
+else
+    ok "fichier marqueur symlink refusé"
+fi
+[[ "$(cat "$TARGET")" == inchange ]] &&
+    ok "cible symlink inchangée" || ko "cible symlink modifiée"
+rm -f -- "$STATE_DIR/heapcheck.trigger"
+ln -- "$TARGET" "$STATE_DIR/heapcheck.trigger"
+if private_state_path "heapcheck.trigger" >/dev/null 2>&1; then
+    ko "fichier marqueur hardlink accepté"
+else
+    ok "fichier marqueur hardlink refusé"
+fi
+rm -f -- "$STATE_DIR/heapcheck.trigger"
+
+mkdir -p -- "${SANDBOX_RUN}/open-parent/runtime"
+chmod 0777 -- "${SANDBOX_RUN}/open-parent"
+if XDG_RUNTIME_DIR="${SANDBOX_RUN}/open-parent/runtime" private_state_path "marker" >/dev/null 2>&1; then
+    ko "répertoire runtime sous parent non sticky accepté"
+else
+    ok "parent runtime inscriptible non sticky refusé"
+fi
+[[ ! -e "${SANDBOX_RUN}/open-parent/runtime/pzmanager" ]] &&
+    ok "aucun état créé sous parent contrôlable" ||
+    ko "état créé sous parent contrôlable"
+
+ln -s -- "$SANDBOX_RUN" "${SANDBOX}/linked-runtime"
+if XDG_RUNTIME_DIR="${SANDBOX}/linked-runtime" private_state_path "marker" >/dev/null 2>&1; then
+    ko "XDG_RUNTIME_DIR symbolique accepté"
+else
+    ok "XDG_RUNTIME_DIR symbolique refusé"
+fi
+if XDG_RUNTIME_DIR=runtime-relatif private_state_path "marker" >/dev/null 2>&1; then
+    ko "XDG_RUNTIME_DIR relatif accepté"
+else
+    ok "XDG_RUNTIME_DIR relatif refusé"
+fi
+[[ "$(private_state_path "heapcheck.trigger")" == "$STATE_DIR/heapcheck.trigger" ]] &&
+    ok "état privé encore utilisable après refus" ||
+    ko "état privé non récupérable après refus"
+
 echo ""
 if (( FAIL > 0 )); then
     echo "SEC PRIVATESTATE: ÉCHEC (${FAIL} échec(s), ${PASS} ok)"
