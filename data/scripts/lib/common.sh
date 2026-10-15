@@ -531,27 +531,53 @@ wait_for_server_ready() {
 # échouer l'appel (retour 1) au lieu d'y écrire.
 # Usage: private_state_path <nom-fichier>  -> imprime le chemin (crée le dossier 0700)
 private_state_path() {
-    local name="${1:-}" user runtime dir
+    local name="${1:-}" user runtime dir parent owner mode state_file
     # Nom simple uniquement : pas de chemin (échappée du dossier privé impossible).
     [[ -n "$name" && "$name" != *"/"* ]] || return 1
     user="$(id -un 2>/dev/null || echo unknown)"
     runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u 2>/dev/null || echo 0)}"
-    if [[ -n "$runtime" && -d "$runtime" ]]; then
+    [[ "$runtime" == /* ]] || return 1
+    if [[ -e "$runtime" || -L "$runtime" ]]; then
+        # Refuser une racine runtime détournée ou possédée par un autre UID.
+        [[ -d "$runtime" && ! -L "$runtime" && -O "$runtime" ]] || return 1
         dir="${runtime}/pzmanager"
     else
-        # Repli : pas de runtime (service sans session user...). Partagé, donc
-        # la possession exclusive est vérifiée ci-dessous avant tout usage.
+        # Repli sans session pam_systemd ; le dossier doit rester privé.
         dir="/tmp/pzmanager-${user}"
     fi
-    # Valider l'inode avant tout chmod : chmod suit un lien symbolique et
-    # pourrait autrement modifier les permissions d'une cible sans autorisation.
-    [[ ! -L "$dir" ]] || return 1
-    mkdir -p -- "$dir" 2>/dev/null || return 1
-    [[ -d "$dir" && ! -L "$dir" && -O "$dir" ]] || return 1
+
+    # Un répertoire final en 0700 ne suffit pas si son parent est remplaçable.
+    # Seul /tmp root:sticky peut être ouvert en écriture à d'autres utilisateurs.
+    parent="$(dirname -- "$dir")"
+    while :; do
+        [[ -d "$parent" && ! -L "$parent" ]] || return 1
+        owner="$(stat -c %u -- "$parent" 2>/dev/null)" || return 1
+        mode="$(stat -c %a -- "$parent" 2>/dev/null)" || return 1
+        [[ "$owner" == 0 || -O "$parent" ]] || return 1
+        if (( (8#$mode & 0022) != 0 )); then
+            [[ "$owner" == 0 && -k "$parent" ]] || return 1
+        fi
+        [[ "$parent" == / ]] && break
+        parent="$(dirname -- "$parent")"
+    done
+
+    if [[ -e "$dir" || -L "$dir" ]]; then
+        [[ -d "$dir" && ! -L "$dir" && -O "$dir" ]] || return 1
+    else
+        (umask 077; mkdir -m 0700 -- "$dir") || return 1
+    fi
     chmod 0700 -- "$dir" 2>/dev/null || return 1
     [[ -d "$dir" && ! -L "$dir" && -O "$dir" &&
        "$(stat -c %a -- "$dir" 2>/dev/null)" == 700 ]] || return 1
-    printf '%s\n' "${dir}/${name}"
+
+    # Ne pas remettre un chemin prépositionné (symlink, FIFO, hardlink) à un
+    # appelant qui l'ouvrirait en écriture avant d'avoir lui-même pu le vérifier.
+    state_file="${dir}/${name}"
+    if [[ -e "$state_file" || -L "$state_file" ]]; then
+        [[ -f "$state_file" && ! -L "$state_file" && -O "$state_file" ]] || return 1
+        [[ "$(stat -c %h -- "$state_file" 2>/dev/null)" == 1 ]] || return 1
+    fi
+    printf '%s\n' "$state_file"
 }
 
 # --- Verrous d'exclusion mutuelle ---------------------------------------------
