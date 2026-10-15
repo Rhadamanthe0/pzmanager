@@ -165,7 +165,7 @@ export SYNC_BACKUPS_DIR="${PZ_DATA_DIR}/fullBackups"
 export OFFSITE_BACKUP_COUNT=7
 ```
 
-Each off-site backup is a **single timestamped ZIP** (`YYYY-MM-DD_HH-MM.zip`) created by `fullBackup.sh`, mirrored off-site by a root **Syncthing** send-only folder. The ZIP holds only the **valuable, non-reconstructible** data — `config/` (`.ssh`, systemd `--user` units, `setupTemplates`, `data/scripts/`, the root `.env`, `sudoers.d/<user>`) and `zomboid/` (the latest `Saves`/`db`/`Server` snapshot) — and **excludes** anything re-downloadable (the SteamCMD install + Workshop mods under `data/pzserver`, the local backups themselves, logs, the Discord venv). **OFFSITE_BACKUP_COUNT** keeps the N most recent ZIPs (retention by count, not days; default 7).
+Each off-site backup is a **single timestamped ZIP** (`YYYY-MM-DD_HH-MM.zip`) created by `fullBackup.sh`, mirrored off-site by a root **Syncthing** send-only folder. The ZIP holds only the **valuable, non-reconstructible** data — `config/` (`.ssh`, systemd `--user` units, `setupTemplates`, `data/scripts/`, the root `.env`, `sudoers.d/<user>`) and `zomboid/` (the latest `Saves`/`db`/`Server`/`Lua` snapshot) — and **excludes** anything re-downloadable (the SteamCMD install + Workshop mods under `data/pzserver`, the local backups themselves, logs, the Discord venv). **OFFSITE_BACKUP_COUNT** keeps the N most recent ZIPs (retention by count, not days; default 7).
 
 ### Logs
 
@@ -268,7 +268,7 @@ Full guide: [DISCORD_BOT.md](DISCORD_BOT.md).
 
 **Contents** (one `YYYY-MM-DD_HH-MM.zip`):
 - `config/` — sudoers (`etc/sudoers.d/<user>`), SSH keys, systemd `--user` units, `setupTemplates`, all `data/scripts/` (excludes `.venv/`, `__pycache__/`), and the root `.env` (logs live outside `data/scripts/` and are not backed up)
-- `zomboid/` — the latest game snapshot (`Saves`/`db`/`Server` = world, players, server config)
+- `zomboid/` — the latest game snapshot (`Saves`/`db`/`Server`/`Lua` = world, players, server config, server-side mod data such as Aegis roles and moderation)
 - **Excluded** (re-downloadable/rebuildable): SteamCMD install + Workshop mods (`data/pzserver`), the local backups themselves, logs, Discord venv
 
 **Location**: `~/pzmanager/data/fullBackups/YYYY-MM-DD_HH-MM.zip`

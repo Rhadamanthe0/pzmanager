@@ -4,8 +4,9 @@
 # ------------------------------------------------------------------------------
 # Usage: ./restoreZomboidData.sh <chemin_backup>
 #
-# Restaure uniquement les données Zomboid (Saves, db, Server).
-# Crée backup de sécurité avant écrasement.
+# Restaure les données sauvegardées (Saves, db, Server, Lua) et laisse le reste
+# du live en place. Les répertoires remplacés sont gardés le temps de la
+# bascule, puis supprimés quand la restauration a réussi.
 # Pour restauration système complète, utiliser configurationInitiale.sh restore.
 # ------------------------------------------------------------------------------
 
@@ -18,17 +19,36 @@ source_env
 
 readonly BACKUP_PATH="${1:-}"
 
-# C7 : staging (copie validée avant bascule) et OLD de rollback. Globaux car
-# posés par une étape et relus par une autre (swap/rollback/résumé).
-STAGING_DIR=""
-RESTORE_OLD_BACKUP=""
+# Répertoires remplacés par la restauration (ceux que dataBackup.sh copie).
+# Un répertoire absent du backup reste tel quel dans le live.
+readonly RESTORED_DIRS=(Saves db Server Lua)
 
-# C7 : le staging est jetable (le live et OLD ne le sont pas) : seul lui est
-# nettoyé sur sortie/interruption. OLD n'est jamais supprimé par ce script.
+# C7 : staging (copie validée avant bascule) et copie temporaire des
+# répertoires remplacés. Globaux car posés par une étape et relus par une
+# autre (swap/rollback).
+STAGING_DIR=""
+PREVIOUS_DIR=""
+MOVED_DIRS=()
+INSTALLED_DIRS=()
+SWAP_IN_PROGRESS=false
+
+# C7 : le staging est jetable : il est nettoyé sur sortie/interruption. La
+# copie temporaire n'est supprimée qu'après succès (ou rollback réussi).
 cleanup_restore_staging() {
     if [[ -n "${STAGING_DIR:-}" && -d "${STAGING_DIR:-}" ]]; then
         rm -rf -- "${STAGING_DIR}" 2>/dev/null || true
     fi
+    # Réservée mais jamais remplie (échec avant la bascule).
+    [[ -z "${PREVIOUS_DIR:-}" ]] || rmdir -- "${PREVIOUS_DIR}" 2>/dev/null || true
+}
+
+on_restore_interrupt() {
+    trap '' INT TERM
+    if [[ "$SWAP_IN_PROGRESS" == true ]]; then
+        restore_previous_dirs || true
+    fi
+    cleanup_restore_staging
+    exit 143
 }
 
 show_usage() {
@@ -64,16 +84,16 @@ validate_backup_path() {
     done
 }
 
-backup_current_zomboid() {
+prepare_previous_dir() {
     [[ -d "${PZ_SOURCE_DIR}" ]] || return 0
 
-    # Garde ajoutée le 2026-08-18 : ce chemin DÉPLACE le monde live (mv) puis
-    # rsync par-dessus. Fait serveur allumé, la JVM continue d'écrire dans ses
-    # descripteurs déjà ouverts — donc dans l'arbre RENOMMÉ — et sauvegarde son
-    # état dedans à l'arrêt : la restauration est écrasée en silence, les deux
-    # mondes se mélangent. Les autres écrivains du monde (restore-character,
-    # map wipe, remove-account) avaient déjà cette garde, pas celui-ci, qui est
-    # pourtant le plus destructeur.
+    # Garde ajoutée le 2026-08-18 : ce chemin DÉPLACE les répertoires du monde
+    # live (mv) puis installe ceux du backup. Fait serveur allumé, la JVM
+    # continue d'écrire dans ses descripteurs déjà ouverts — donc dans l'arbre
+    # RENOMMÉ — et sauvegarde son état dedans à l'arrêt : la restauration est
+    # écrasée en silence, les deux mondes se mélangent. Les autres écrivains du
+    # monde (restore-character, map wipe, remove-account) avaient déjà cette
+    # garde, pas celui-ci, qui est pourtant le plus destructeur.
     # C1 : arrêt PROUVÉ (inactive seule ; failed/unknown/error -> refus
     # fail-closed — un bus systemd en panne n'est plus un « serveur arrêté »).
     if declare -F assert_server_stopped_proven >/dev/null 2>&1; then
@@ -82,19 +102,10 @@ backup_current_zomboid() {
         require_server_stopped "Restauration d'une sauvegarde"
     fi
 
-    # C7 : ce mv n'est appelé qu'APRÈS staging validé (voir main) — on ne
-    # déplace jamais le live sans copie prête à basculer. Réserver une
-    # destination unique : deux opérations dans la même seconde ne doivent
-    # jamais imbriquer le second monde dans le premier OLD.
-    mkdir -p "${PZ_HOME}/OLD"
-    RESTORE_OLD_BACKUP="$(mktemp -d "${PZ_HOME}/OLD/ZomboidBROKEN_$(date +"%Y-%m-%d_%Hh%Mm%Ss")_XXXXXX")" \
-        || die "Impossible de réserver le backup de sécurité — live intact."
-
-    echo "Création backup de sécurité..."
-    # -T interdit la sémantique « déplacer dans » ; le répertoire réservé
-    # est vide et peut être remplacé, sans effacer un autre monde.
-    mv -T -- "${PZ_SOURCE_DIR}" "$RESTORE_OLD_BACKUP"
-    echo "✓ Backup sécurité: $RESTORE_OLD_BACKUP"
+    # C7 : appelé seulement APRÈS staging validé (voir main). Destination
+    # unique sous PZ_HOME (même FS : les mv sont des renommages).
+    PREVIOUS_DIR="$(mktemp -d "${PZ_HOME}/.restore-previous-XXXXXX")" \
+        || die "Impossible de réserver la copie temporaire — live intact."
 }
 
 # C7 : copie backup → staging (le live n'est pas encore touché : toute erreur
@@ -139,46 +150,79 @@ validate_restored_live() {
     fi
 }
 
-# C7 : rollback — le swap a échoué, on remet OLD en place puis on meurt
-# (OLD est conservé dans tous les cas, même si le rollback lui-même échoue).
+# C7 : retire les répertoires installés et remet les anciens en place. La
+# copie temporaire n'est conservée que si cette remise échoue.
+restore_previous_dirs() {
+    SWAP_IN_PROGRESS=false
+    echo "Échec du swap — remise en place des répertoires d'origine..." >&2
+    local d
+    for d in "${INSTALLED_DIRS[@]}"; do
+        if ! rm -rf -- "${PZ_SOURCE_DIR:?}/${d}"; then
+            echo "ERREUR: rollback incomplet — restaure manuellement depuis ${PREVIOUS_DIR}." >&2
+            return 1
+        fi
+    done
+    for d in "${MOVED_DIRS[@]}"; do
+        [[ -e "${PREVIOUS_DIR}/${d}" || -L "${PREVIOUS_DIR}/${d}" ]] || continue
+        if ! mv -T -- "${PREVIOUS_DIR}/${d}" "${PZ_SOURCE_DIR}/${d}"; then
+            echo "ERREUR: rollback incomplet — restaure manuellement depuis ${PREVIOUS_DIR}." >&2
+            return 1
+        fi
+    done
+    rmdir -- "${PREVIOUS_DIR}" 2>/dev/null || true
+    echo "✓ Live remis dans son état d'origine." >&2
+}
+
 rollback_live() {
-    local old_backup="$1"
-    [[ -n "$old_backup" && -d "$old_backup" ]] \
-        || die "Échec du swap et aucun OLD à restaurer — live incomplet dans ${PZ_SOURCE_DIR}."
-    echo "Échec du swap — rollback depuis $old_backup ..."
-    mkdir -p "${PZ_SOURCE_DIR}"
-    # Le live peut contenir des fichiers du swap échoué. Un miroir exact
-    # les retire ; OLD reste intact même si la copie de rollback échoue.
-    rsync -a --delete "${old_backup}/" "${PZ_SOURCE_DIR}/" \
-        || die "Échec du swap ET du rollback — restaure manuellement : $old_backup → ${PZ_SOURCE_DIR}."
-    echo "✓ Rollback terminé: $old_backup → ${PZ_SOURCE_DIR}"
-    die "Restauration interrompue (swap incomplet) — live restauré depuis $old_backup, OLD conservé."
+    restore_previous_dirs || die "Échec du swap ET du rollback — copie temporaire : ${PREVIOUS_DIR}."
+    die "Restauration interrompue (swap incomplet) — live remis dans son état d'origine."
 }
 
 restore_zomboid_data() {
     echo "Restauration des données Zomboid..."
     mkdir -p "${PZ_SOURCE_DIR}"
 
-    # C7 : rsync (et non mv -T) : le staging vit sous PZ_HOME donc le plus
-    # souvent sur le même FS, mais rsync reste correct dans tous les cas et
-    # rend les pannes partielles détectables (code retour) pour le rollback.
-    rsync -a --info=progress2 "${STAGING_DIR}/" "${PZ_SOURCE_DIR}/" \
-        || rollback_live "$RESTORE_OLD_BACKUP"
+    # C7 : bascule répertoire par répertoire (renommages sous PZ_HOME). Un
+    # répertoire absent du backup n'est pas touché ; le reste du live
+    # (Logs, options.ini...) reste en place.
+    SWAP_IN_PROGRESS=true
+    local d
+    for d in "${RESTORED_DIRS[@]}"; do
+        [[ -e "${STAGING_DIR}/${d}" ]] || continue
+        # Noté AVANT le mv : un signal traité juste après le mv ne doit pas
+        # laisser un répertoire déplacé que le rollback ignorerait.
+        if [[ -e "${PZ_SOURCE_DIR}/${d}" || -L "${PZ_SOURCE_DIR}/${d}" ]]; then
+            MOVED_DIRS+=("$d")
+            mv -T -- "${PZ_SOURCE_DIR}/${d}" "${PREVIOUS_DIR}/${d}" || rollback_live
+        fi
+        INSTALLED_DIRS+=("$d")
+        mv -T -- "${STAGING_DIR}/${d}" "${PZ_SOURCE_DIR}/${d}" || rollback_live
+    done
 
     # || true : `pzm backup restore` tourne en utilisateur non privilégié, un
     # seul fichier au propriétaire inattendu faisait échouer chown et, sous
     # `set -e`, interrompait la restauration à mi-parcours — pire que de laisser
     # un fichier mal possédé.
-    chown -R "${PZ_USER}:${PZ_USER}" "${PZ_SOURCE_DIR}" 2>/dev/null || \
-        echo "  (chown partiel : certains fichiers gardent leur propriétaire d'origine)"
+    for d in "${INSTALLED_DIRS[@]}"; do
+        chown -R "${PZ_USER}:${PZ_USER}" "${PZ_SOURCE_DIR}/${d}" 2>/dev/null || \
+            echo "  (chown partiel : certains fichiers gardent leur propriétaire d'origine)"
+    done
 
     # C7 : validation finale AVANT de rendre la main — un live vide repart en
     # rollback plutôt que de rester en place.
     if ! validate_restored_live "${PZ_SOURCE_DIR}"; then
-        rollback_live "$RESTORE_OLD_BACKUP"
+        rollback_live
     fi
+    SWAP_IN_PROGRESS=false
 
-    echo "✓ Restauration terminée: $BACKUP_PATH → ${PZ_SOURCE_DIR}"
+    # Succès : la copie temporaire n'a plus d'usage.
+    if [[ -n "$PREVIOUS_DIR" ]]; then
+        rm -rf -- "${PREVIOUS_DIR}" \
+            || echo "⚠ Copie temporaire non supprimée : ${PREVIOUS_DIR}"
+    fi
+    PREVIOUS_DIR=""
+
+    echo "✓ Restauration terminée: $BACKUP_PATH → ${PZ_SOURCE_DIR} (${INSTALLED_DIRS[*]})"
 }
 
 show_summary() {
@@ -186,10 +230,6 @@ show_summary() {
     echo "=== Résumé ==="
     echo "Source: $BACKUP_PATH"
     echo "Destination: ${PZ_SOURCE_DIR}"
-    if [[ -n "$RESTORE_OLD_BACKUP" ]]; then
-        echo "Backup sécurité conservé: $RESTORE_OLD_BACKUP"
-    fi
-
     if [[ -d "${PZ_SOURCE_DIR}/Saves" ]]; then
         local save_count=$(find "${PZ_SOURCE_DIR}/Saves" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
         echo "Sauvegardes restaurées: $save_count monde(s)"
@@ -211,17 +251,16 @@ main() {
     echo ""
 
     # C7 : staging sous PZ_HOME (même FS que le live), nettoyé sur toute
-    # sortie. Le live n'est déplacé vers OLD qu'une fois le staging validé :
-    # on ne supprime jamais le live sans copie prête, et une interruption
-    # (INT/TERM) laisse toujours live ou OLD récupérable, jamais le vide.
+    # sortie. Le live n'est touché qu'une fois le staging validé ; une
+    # interruption pendant la bascule remet les répertoires d'origine.
     STAGING_DIR="$(mktemp -d "${PZ_HOME}/.restore-staging-XXXXXX")" \
         || die "Impossible de créer le staging sous ${PZ_HOME}."
     trap cleanup_restore_staging EXIT
-    trap 'cleanup_restore_staging; exit 143' INT TERM
+    trap on_restore_interrupt INT TERM
 
     copy_backup_to_staging
     validate_staging_dir "$STAGING_DIR"
-    backup_current_zomboid
+    prepare_previous_dir
     restore_zomboid_data
     show_summary
     # C1 : fin de section critique.

@@ -28,7 +28,7 @@ fi
 python3 "${SCRIPT_DIR}/../lib/restore_zone.py" \
     --live-root "$PZ_SOURCE_DIR" --backup-root "$BACKUP_DIR" \
     --archive-root "$SYNC_BACKUPS_DIR" --staging-root "$PZ_DATA_DIR" \
-    --recovery-root "${PZ_HOME}/OLD" "$@" &
+    --recovery-root "${PZ_HOME}" "$@" &
 restore_pid=$!
 # Keep the world lock until the child finishes recovering on interruption.
 trap 'trap "" INT TERM; kill -TERM "$restore_pid" 2>/dev/null || true; wait "$restore_pid" || true; exit 143' INT TERM

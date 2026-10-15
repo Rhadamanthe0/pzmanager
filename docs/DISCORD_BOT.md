@@ -145,7 +145,7 @@ in the same chunk are preserved. Partial chunks require a compatible JDK on the
 server; if native validation fails, the operation refuses before changing the world.
 
 See [the full restore procedure and limits](USAGE.md#restore-a-map-zone-build-42),
-including the recovery copy and compatibility checks.
+including rollback and compatibility checks.
 
 ## Batch: run several commands at once
 

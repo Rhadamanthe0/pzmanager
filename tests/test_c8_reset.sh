@@ -7,14 +7,15 @@
 #       ($! puis kill PID / kill -- groupe), vérification cmdline cachedir
 #       staging exact avant kill, aucun pkill/pgrep large au nom,
 #       validation staging (DB + admin + Server/.ini), rollback_live,
-#       bascule mv -T (ou copie), OLD jamais supprimé, ordre main
-#       (staging -> génération -> validation/swap).
-#   (1) génération échouée (mock start-server exit 1) -> die, live restauré
-#       depuis OLD (rollback auto, OLD conservé), staging nettoyé.
+#       bascule mv -T (ou copie), plus de OLD, copie temporaire supprimée
+#       seulement après bascule + whitelist, ordre main
+#       (staging -> génération -> validation/swap -> suppression).
+#   (1) génération échouée (mock start-server exit 1) -> die, ancien monde
+#       remis en place (rollback auto, copie rendue), staging nettoyé.
 #   (2) timeout (mock jamais crée DB) -> die, pas de bascule (live intact,
 #       aucune trace staging dans live).
 #   (3) SIGTERM pendant génération -> générateur tué (PID exact), staging
-#       nettoyé, live ou OLD récupérable.
+#       nettoyé, live récupérable.
 #   (4) homonyme (ProjectZomboid64-like, autre cachedir) non tué par
 #       kill_generator_exact ; vrai générateur (cachedir staging exact) tué.
 #
@@ -133,7 +134,7 @@ make_live() {
     echo "${mark}-spawnregions" > "$root/Server/servertest_spawnregions.lua"
     echo "${mark}-db" > "$root/db/servertest.db"
 }
-LIVE=""; HOME_DIR=""; INSTALL_DIR=""; OLD_DIR=""
+LIVE=""; HOME_DIR=""; INSTALL_DIR=""; PREVIOUS_DIR=""
 # fresh_case <nom> : LIVE (marqueur LIVE) + env sandbox, mocks réinitialisés.
 fresh_case() {
     local name="$1"
@@ -146,8 +147,7 @@ fresh_case() {
     export PZ_SOURCE_DIR="$LIVE" PZ_HOME="$HOME_DIR" PZ_INSTALL_DIR="$INSTALL_DIR"
     export PZ_SERVER_NAME="servertest" PZ_USER="$(id -un)"
     export PZ_DB_PATH="${LIVE}/db/servertest.db"
-    OLD_DIR="${HOME_DIR}/OLD/Zomboid_OLD_${name}"
-    export OLD_DIR
+    PREVIOUS_DIR=""
     STAGING_DIR=""; GENERATOR_PID=""; STAGING_CACHEDIR=""
     export STAGING_DIR GENERATOR_PID STAGING_CACHEDIR
     STEP=0; OPT_KEEP_CONFIG=false; OPT_KEEP_WHITELIST=false
@@ -182,7 +182,8 @@ MOCKEOF
 }
 live_marker() { cat "$LIVE/Saves/Multiplayer/world1/players.db" 2>/dev/null || echo "(absent)"; }
 live_db() { cat "$LIVE/db/servertest.db" 2>/dev/null || echo "(absent)"; }
-old_marker() { cat "${OLD_DIR}/Saves/Multiplayer/world1/players.db" 2>/dev/null || echo "(absent)"; }
+old_marker() { cat "${PREVIOUS_DIR}/Saves/Multiplayer/world1/players.db" 2>/dev/null || echo "(absent)"; }
+previous_left() { find "$HOME_DIR" -maxdepth 1 -name '.reset-previous-*' 2>/dev/null | wc -l | tr -d ' '; }
 staging_left() { find "$HOME_DIR" -maxdepth 1 -name 'Zomboid.new.*' 2>/dev/null | wc -l | tr -d ' '; }
 no_large_kill() {
     if grep -q "ProjectZomboid" "$MOCK_PGREP_LOG" 2>/dev/null \
@@ -232,20 +233,24 @@ grep -q 'rollback_live' "$SCRIPT" \
 grep -q 'mv -T "${STAGING_DIR}" "${PZ_SOURCE_DIR}"' "$SCRIPT" \
     && ok "bascule staging→live (mv -T)" \
     || ko "bascule mv -T absente"
-if grep -q 'rm -rf.*OLD' "$SCRIPT"; then
-    ko "OLD supprimé quelque part (doit être conservé)"
+if grep -q 'OLD' "$SCRIPT"; then
+    ko "référence à OLD restante"
 else
-    ok "OLD jamais supprimé (conservé jusqu'à finalize OK)"
+    ok "plus de copie persistante dans OLD"
 fi
+grep -q 'mktemp -d "${PZ_HOME}/.reset-previous-' "$SCRIPT" \
+    && ok "copie temporaire réservée sous PZ_HOME" \
+    || ko "copie temporaire non réservée par mktemp"
 main_body="$(sed -n '/^main()/,/^}/p' "$SCRIPT")"
 line_of() { grep -n "$1" <<<"$main_body" | head -1 | cut -d: -f1; }
 l_stage="$(line_of 'mktemp -d "${PZ_HOME}/Zomboid.new')"; l_gen="$(line_of 'generate_world')"
-l_swap="$(line_of 'swap_staging_to_live')"
-if [[ -n "$l_stage" && -n "$l_gen" && -n "$l_swap" ]] \
-    && (( l_stage < l_gen && l_gen < l_swap )); then
-    ok "ordre main : staging créé puis généré puis basculé (validé)"
+l_swap="$(line_of 'swap_staging_to_live')"; l_wl="$(line_of 'restore_whitelist')"
+l_rm="$(line_of 'rm -rf -- "$PREVIOUS_DIR"')"; l_fin="$(line_of 'finalize')"
+if [[ -n "$l_stage" && -n "$l_gen" && -n "$l_swap" && -n "$l_wl" && -n "$l_rm" && -n "$l_fin" ]] \
+    && (( l_stage < l_gen && l_gen < l_swap && l_swap < l_wl && l_wl < l_rm && l_rm < l_fin )); then
+    ok "ordre main : staging -> génération -> bascule -> whitelist -> suppression copie"
 else
-    ko "ordre main incorrect (staging=$l_stage gen=$l_gen swap=$l_swap)"
+    ko "ordre main incorrect (staging=$l_stage gen=$l_gen swap=$l_swap wl=$l_wl rm=$l_rm fin=$l_fin)"
 fi
 
 # --- (1) génération échouée ------------------------------------------------------
@@ -269,11 +274,9 @@ rollback_live >/dev/null 2>&1 || true
 [[ "$(live_db)" == "LIVE-db" ]] \
     && ok "génération fail : DB live d'origine (pas de bascule)" \
     || ko "génération fail : DB live altérée ($(live_db))"
-if [[ -d "$OLD_DIR" ]] && [[ "$(old_marker)" == "LIVE-players" ]]; then
-    ok "génération fail : OLD conservé (sans perte)"
-else
-    ko "génération fail : OLD manquant ou altéré"
-fi
+(( $(previous_left) == 0 )) \
+    && ok "génération fail : copie temporaire rendue au live (aucune restante)" \
+    || ko "génération fail : copie temporaire restante"
 (( $(staging_left) == 0 )) && ok "génération fail : staging nettoyé" || ko "génération fail : staging résiduel"
 no_large_kill && ok "génération fail : aucun kill large au nom" || ko "génération fail : pgrep/pkill large appelé"
 
@@ -345,11 +348,10 @@ else
 fi
 [[ -d "$STAGING_TERM" ]] && ko "SIGTERM : staging résiduel" || ok "SIGTERM : staging nettoyé"
 live_n="$(find "$LIVE" -type f 2>/dev/null | wc -l | tr -d ' ')"
-old_n="0"; [[ -d "$HOME_DIR/OLD" ]] && old_n="$(find "$HOME_DIR/OLD" -type f 2>/dev/null | wc -l | tr -d ' ')"
-if (( live_n > 0 )) || (( old_n > 0 )); then
-    ok "SIGTERM : live ou OLD récupérable (live=${live_n} fichiers, OLD=${old_n} fichiers)"
+if (( live_n > 0 )); then
+    ok "SIGTERM : live récupérable (${live_n} fichiers)"
 else
-    ko "SIGTERM : live ET OLD vides/absents"
+    ko "SIGTERM : live vide/absent"
 fi
 
 # --- (4) homonyme ------------------------------------------------------------------
@@ -414,10 +416,10 @@ swap_staging_to_live
 [[ "$(live_marker)" == "STAGING-players" && "$(live_db)" == "STAGING-db" ]] \
     && ok "succès : live basculé depuis staging" \
     || { ko "succès : live non basculé (marker=$(live_marker) db=$(live_db))"; sed 's/^/  [out] /' "${SANDBOX}/gen-ok.log"; }
-if [[ -d "$OLD_DIR" ]] && [[ "$(old_marker)" == "LIVE-players" ]]; then
-    ok "succès : OLD conservé (live d'origine)"
+if [[ -d "$PREVIOUS_DIR" ]] && [[ "$(old_marker)" == "LIVE-players" ]]; then
+    ok "succès : ancien monde gardé jusqu'à la reprise de la whitelist"
 else
-    ko "succès : OLD absent ou altéré"
+    ko "succès : copie temporaire absente ou altérée avant la whitelist"
 fi
 (( $(staging_left) == 0 )) && ok "succès : staging nettoyé (basculé)" || ko "succès : staging résiduel"
 no_large_kill && ok "succès : aucun kill large au nom" || ko "succès : pgrep/pkill large appelé"
