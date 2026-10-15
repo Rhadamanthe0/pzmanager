@@ -10,8 +10,8 @@
 #   config/   .ssh, units systemd --user, setupTemplates, data/scripts (SANS
 #             .venv/ __pycache__), le .env de la racine, versionning/ (ledger des
 #             versions de mods, gitignoré), /etc/sudoers.d/<user>
-#   zomboid/  le dernier snapshot de jeu (Saves/ db/ Server/ = monde, joueurs,
-#             config serveur), déréférencé depuis dataBackups/latest.
+#   zomboid/  le dernier snapshot de jeu (Saves/ db/ Server/ Lua/ = monde, joueurs,
+#             config serveur, données des mods), déréférencé depuis dataBackups/latest.
 #
 # EXCLU car reconstructible : data/pzserver (install SteamCMD + mods Workshop,
 # re-téléchargés par SteamCMD / pzm install), data/dataBackups & data/fullBackups

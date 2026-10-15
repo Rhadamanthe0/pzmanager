@@ -213,20 +213,19 @@ when available, otherwise `javac` on PATH. Set `PZ_RESTORE_JAVA` and/or
 `PZ_RESTORE_JAVAC` in `.env` to override these tools. An explicitly configured
 compiler is authoritative; incompatible or missing tools stop before changing
 the world. Compilation uses `--release` for the selected JVM. Preview and whole
-chunk copies do not need a JDK. Diagnostics remain in the private recovery folder.
+chunk copies do not need a JDK. A refused native validation keeps only its diagnostic log, at the printed path.
 
 Before writing, the command stages the selected source files and copies the
-current selected files into a private, unique `${PZ_HOME}/OLD/zone-rollback-*`
-directory. The path is printed. It is retained independently of hourly snapshot
-retention and consumes space until manually removed. `manifest.json` records the
-selected files, files absent before the operation, and completion status;
-`before/Saves/Multiplayer/<world>/` holds the recovery copies. Ordinary write
-failures and handled interruption trigger restoration of files already touched.
-A power loss or forced kill can leave a partial operation: keep the server stopped
-and use those copies and the manifest to recover (restore listed previous files,
-remove only the listed `absent_before` files). Individual replacements are atomic,
-but the whole rectangle is not one filesystem transaction. A failed recovery
-retains all copies for operator intervention. The source snapshot and hardlinked
+current selected files into a private, unique, temporary
+`${PZ_HOME}/.zone-rollback-*` directory. It is deleted once the zone is applied
+or reverted. Ordinary write failures and handled interruption trigger restoration
+of files already touched. A power loss or forced kill can leave a partial
+operation and the directory: keep the server stopped and use it to recover.
+`manifest.json` records the selected files, files absent before the operation,
+and completion status; `before/Saves/Multiplayer/<world>/` holds the previous
+files (restore them, remove only the listed `absent_before` files). Individual
+replacements are atomic, but the whole rectangle is not one filesystem
+transaction. A failed revert keeps the directory and prints its path. The source snapshot and hardlinked
 backups are never modified by the restore.
 
 Discord exposes the same operation as `/pzm backup restore-zone`, with `backup`,

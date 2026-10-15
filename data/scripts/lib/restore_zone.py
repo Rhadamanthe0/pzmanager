@@ -181,7 +181,9 @@ def restore_source(args, backup, save, live, source):
     recovery_root = Path(args.recovery_root).absolute()
     plain(recovery_root, Path(recovery_root.anchor), directory=True)
     recovery_root.mkdir(parents=True, exist_ok=True)
-    recovery = Path(tempfile.mkdtemp(prefix='zone-rollback-', dir=recovery_root))
+    # Temporary working copy: removed once the zone is applied or reverted;
+    # kept only when reverting itself fails.
+    recovery = Path(tempfile.mkdtemp(prefix='.zone-rollback-', dir=recovery_root))
     old = recovery / 'before' / 'Saves/Multiplayer' / save
     new = recovery / 'staged'
     old.mkdir(parents=True); new.mkdir()
@@ -195,6 +197,62 @@ def restore_source(args, backup, save, live, source):
         pending = recovery / '.manifest.pending'
         pending.write_text(json.dumps(manifest, indent=2) + '\n')
         os.replace(pending, manifest_path)
+    try:
+        prepare_recovery(recovery, record, manifest, paths, partial, invalidate, source, live, old, new)
+    except BaseException:
+        discard_recovery(recovery, keep_diagnostics=True)  # live untouched so far
+        raise
+    changed = []
+    try:
+        record('applying')
+        for rel in paths:
+            changed.append(rel)
+            if (new / rel).is_file():
+                replace_file(new / rel, live / rel)
+            else:
+                (live / rel).unlink(missing_ok=True)  # discard stale selected iso cache
+        record('complete')
+    except BaseException:
+        previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+        for sig in previous:
+            signal.signal(sig, signal.SIG_IGN)
+        try:
+            for rel in reversed(changed):
+                if (old / rel).is_file():
+                    replace_file(old / rel, live / rel)
+                else:
+                    (live / rel).unlink(missing_ok=True)
+            record('reverted')
+        except BaseException:
+            print(f'Annulation incomplète — copie de récupération conservée : {recovery}',
+                  file=sys.stderr, flush=True)
+            raise
+        else:
+            discard_recovery(recovery)
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+        raise
+    discard_recovery(recovery)
+    print('Zone restaurée. Vous pouvez démarrer le serveur.')
+
+
+def discard_recovery(recovery, keep_diagnostics=False):
+    """Remove the temporary copy; a refused native validation keeps its logs only."""
+    native = recovery / 'native'
+    if keep_diagnostics and any(native.glob('*.log')):
+        discard = [item for item in recovery.iterdir() if item != native]
+        discard += [item for item in native.iterdir() if item.suffix != '.log']
+        for item in discard:
+            try:
+                shutil.rmtree(item) if item.is_dir() and not item.is_symlink() else item.unlink()
+            except OSError:
+                pass  # never mask the refusal being reported
+        return
+    shutil.rmtree(recovery, ignore_errors=True)
+
+
+def prepare_recovery(recovery, record, manifest, paths, partial, invalidate, source, live, old, new):
     record('preparing')
     # Finish staging AND recovery before the first mutation.
     for rel in paths:
@@ -219,33 +277,6 @@ def restore_source(args, backup, save, live, source):
             entries.append(dict(selection, source=original, current=old / rel, output=new / rel))
         prepare_partial(recovery, dictionary, entries)
     record('ready')
-    print(f'Copie de récupération : {recovery}', flush=True)
-    changed = []
-    try:
-        record('applying')
-        for rel in paths:
-            changed.append(rel)
-            if (new / rel).is_file():
-                replace_file(new / rel, live / rel)
-            else:
-                (live / rel).unlink(missing_ok=True)  # discard stale selected iso cache
-        record('complete')
-    except BaseException:
-        previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
-        for sig in previous:
-            signal.signal(sig, signal.SIG_IGN)
-        try:
-            for rel in reversed(changed):
-                if (old / rel).is_file():
-                    replace_file(old / rel, live / rel)
-                else:
-                    (live / rel).unlink(missing_ok=True)
-            record('reverted')
-        finally:
-            for sig, handler in previous.items():
-                signal.signal(sig, handler)
-        raise
-    print('Zone restaurée. Vous pouvez démarrer le serveur.')
 
 
 class PublicParser(argparse.ArgumentParser):

@@ -73,7 +73,7 @@ def main():
         b = tiles.checked_columns(current, indexes[1])
     x, y = cx * 8 + selected // 8, cy * 8 + selected % 8
     zone.restore(argparse.Namespace(live_root=str(base / 'live'), backup_root=str(base),
-        recovery_root=str(base / 'OLD'), backup='backup', save=None, apply=True,
+        recovery_root=str(base / 'recovery'), backup='backup', save=None, apply=True,
         x1=x, y1=y, x2=x, y2=y))
     result = Path(files[1]['file']).read_bytes()
     index = native.index([files[1]])[0]

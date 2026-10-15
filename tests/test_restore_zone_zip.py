@@ -47,7 +47,7 @@ class ZipZoneTests(unittest.TestCase):
         self.args = Namespace(live_root=str(self.root / 'live'),
                               backup_root=str(self.root),
                               archive_root=str(self.offsite), staging_root=str(self.staging),
-                              recovery_root=str(self.root / 'OLD'),
+                              recovery_root=str(self.root / 'recovery'),
                               backup=str(self.archive),
                               x1=8, y1=8, x2=15, y2=15, save=None, apply=True)
         self.write_zip()
@@ -88,8 +88,7 @@ class ZipZoneTests(unittest.TestCase):
         self.assert_no_stage()
         self.assertFalse((self.root / 'escape-marker').exists())
         self.assertFalse((self.offsite / 'config').exists())
-        manifest = next((self.root / 'OLD').glob('zone-rollback-*/manifest.json'))
-        self.assertIn(str(self.archive), manifest.read_text())
+        self.assertEqual(list((self.root / 'recovery').iterdir()), [])  # temporary copy removed
 
     def test_zip_preview_from_basename_is_read_only(self):
         self.args.backup = self.archive.name
@@ -97,7 +96,7 @@ class ZipZoneTests(unittest.TestCase):
         before = (self.live / 'map/1/1.bin').read_bytes()
         zone.restore(self.args)
         self.assertEqual((self.live / 'map/1/1.bin').read_bytes(), before)
-        self.assertFalse((self.root / 'OLD').exists())
+        self.assertFalse((self.root / 'recovery').exists())
         self.assert_no_stage()
 
     def test_incomplete_zip_is_rejected_before_mutation(self):
@@ -106,7 +105,7 @@ class ZipZoneTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Carte Build 42'):
             zone.restore(self.args)
         self.assertEqual((self.live / 'map/1/1.bin').read_bytes(), chunk(b'current'))
-        self.assertFalse((self.root / 'OLD').exists())
+        self.assertFalse((self.root / 'recovery').exists())
         self.assert_no_stage()
 
     def test_invalid_zip_and_symlinks_are_rejected(self):
@@ -136,7 +135,7 @@ class ZipZoneTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'volumineuse'):
                 zone.restore(self.args)
         self.assert_no_stage()
-        self.assertFalse((self.root / 'OLD').exists())
+        self.assertFalse((self.root / 'recovery').exists())
 
     def test_crc_error_in_selected_member_does_not_modify_live(self):
         with zipfile.ZipFile(self.archive) as archive:
@@ -151,7 +150,7 @@ class ZipZoneTests(unittest.TestCase):
             zone.restore(self.args)
         self.assertEqual((self.live / 'map/1/1.bin').read_bytes(), chunk(b'current'))
         self.assert_no_stage()
-        self.assertFalse((self.root / 'OLD').exists())
+        self.assertFalse((self.root / 'recovery').exists())
 
     def test_dictionary_mismatch_refuses_zip_before_write(self):
         (self.snap / 'WorldDictionary.bin').write_bytes(b'changed')
@@ -160,7 +159,7 @@ class ZipZoneTests(unittest.TestCase):
             zone.restore(self.args)
         self.assertEqual((self.live / 'map/1/1.bin').read_bytes(), chunk(b'current'))
         self.assert_no_stage()
-        self.assertFalse((self.root / 'OLD').exists())
+        self.assertFalse((self.root / 'recovery').exists())
 
     def test_failed_zip_apply_reverts_and_cleans_staging(self):
         before = (self.live / 'map/1/1.bin').read_bytes()
@@ -177,8 +176,7 @@ class ZipZoneTests(unittest.TestCase):
                 zone.restore(self.args)
         self.assertEqual((self.live / 'map/1/1.bin').read_bytes(), before)
         self.assert_no_stage()
-        manifest = next((self.root / 'OLD').glob('zone-rollback-*/manifest.json'))
-        self.assertIn('"status": "reverted"', manifest.read_text())
+        self.assertEqual(list((self.root / 'recovery').iterdir()), [])  # reverted: copy removed
 
     def test_symlinked_staging_root_uses_canonical_directory(self):
         alias = self.root / 'staging-alias'
@@ -193,7 +191,7 @@ class ZipZoneTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'staging requis'):
             zone.restore(self.args)
         self.assert_no_stage()
-        self.assertFalse((self.root / 'OLD').exists())
+        self.assertFalse((self.root / 'recovery').exists())
 
     def test_staging_does_not_mask_downstream_errors(self):
         with patch.object(zone, 'restore_source', side_effect=RuntimeError('downstream failure')):
