@@ -1,6 +1,9 @@
 """Real SQLite selection and frozen copies; proprietary reader explicitly doubled."""
 from pathlib import Path
 import sqlite3
+import os
+import subprocess
+import shlex
 import sys
 import tempfile
 import unittest
@@ -20,6 +23,15 @@ class CharacterNativePreflight(unittest.TestCase):
         self.reader=patch.object(gate,'NativeIndexer');self.native=self.reader.start().return_value;self.addCleanup(self.reader.stop)
         self.native.dictionaries.return_value=[{'registries':{'items':{'1':'Base.Book'}}}]*2
     def validate(self):gate.validate(self.db,self.dictionary,self.world,"selected'",self.root/'stage')
+    def test_unexported_env_tool_overrides_reach_native_child(self):
+        common=Path(__file__).resolve().parents[1]/'data/scripts/lib/common.sh'
+        command='source '+shlex.quote(str(common))+"\nPZ_RESTORE_JAVA=/private/java\nPZ_RESTORE_JAVAC=/private/javac\napply_env_defaults\n"
+        command+=shlex.quote(sys.executable)+" -c 'import os; print(os.environ.get(\"PZ_RESTORE_JAVA\")); print(os.environ.get(\"PZ_RESTORE_JAVAC\"))'"
+        env={k:v for k,v in os.environ.items() if not k.startswith(('PZ_','BACKUP_','DISCORD_')) and k not in ('BASH_ENV','ENV')}
+        result=subprocess.run(['bash','-euc',command],env=env,capture_output=True,text=True,timeout=10)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(result.stdout,'/private/java\n/private/javac\n')
+
     def test_entire_selected_blob_is_private_and_other_user_not_passed_to_reader(self):
         before=self.db.read_bytes();dictionary=self.dictionary.read_bytes();self.validate()
         entries=self.native.storage.call_args.args[0];self.assertEqual(len(entries),1)

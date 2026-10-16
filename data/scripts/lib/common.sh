@@ -137,6 +137,8 @@ apply_env_defaults() {
     # travers d'un wipe, sans toucher au schéma de la base du monde.
     : "${WHITELIST_LEDGER:=${PZ_DATA_DIR}/whitelistLedger.csv}"
 
+    # Optional restoration tool overrides from .env must reach Python readers.
+    export PZ_RESTORE_JAVA PZ_RESTORE_JAVAC
     export PZ_USER PZ_GAME_USER PZ_MANAGER_USER PZ_GAME_HOME PZ_MANAGER_HOME PZ_HOME PZ_MANAGER_DIR PZ_DATA_DIR PZ_SCRIPTS_DIR \
            PZ_INSTALL_DIR PZ_CONTROL_PIPE PZ_SERVICE_NAME PZ_SOURCE_DIR \
            PZ_SERVER_NAME PZ_DB_PATH PZ_INI_PATH \

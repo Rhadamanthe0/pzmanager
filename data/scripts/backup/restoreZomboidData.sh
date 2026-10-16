@@ -324,6 +324,8 @@ main() {
     # start, wipe, 2e restore...), sans le relâcher au milieu.
     acquire_world_lock --required || exit 1
     validate_backup_path
+    assert_server_stopped_proven "Restauration d'une sauvegarde"
+    python3 "${SCRIPT_DIR}/../lib/world_transaction.py" check --world "$PZ_SOURCE_DIR" || die "Récupération explicite requise."
 
     echo "=== Restauration données Zomboid ==="
     echo "Backup source: $BACKUP_PATH"
