@@ -233,13 +233,19 @@ public final class IndexTerrainColumns {
             else if(name.equals("cellMap")) f.set(serverMap,Array.newInstance(f.getType().getComponentType(),16));
             else f.setInt(serverMap,4);
         }
+        // IsoZombie's constructor asks for a random temporary name before
+        // loading the saved descriptor. Supply neutral constructor-only names;
+        // do not run gameplay Lua or change the serialized character data.
+        if(zombie.characters.SurvivorFactory.FemaleForenames.isEmpty()) zombie.characters.SurvivorFactory.FemaleForenames.add("offline");
+        if(zombie.characters.SurvivorFactory.MaleForenames.isEmpty()) zombie.characters.SurvivorFactory.MaleForenames.add("offline");
+        if(zombie.characters.SurvivorFactory.Surnames.isEmpty()) zombie.characters.SurvivorFactory.Surnames.add("constructor");
+        zombie.core.skinnedmodel.population.HairStyles.init();
+        zombie.core.skinnedmodel.population.BeardStyles.init();
         NativeItemTrace.begin(input);
         if(entry.getString("kind").equals("player")) {
             // A neutral constructor visual avoids random character creation
             // (Lua's common hair palette is not loaded by this offline reader).
             // The saved visual is subsequently consumed by the real load method.
-            zombie.core.skinnedmodel.population.HairStyles.init();
-            zombie.core.skinnedmodel.population.BeardStyles.init();
             var descriptor=new zombie.characters.SurvivorDesc();
             var visual=descriptor.getHumanVisual();
             visual.setHairColor(zombie.core.ImmutableColor.white);
@@ -249,7 +255,8 @@ public final class IndexTerrainColumns {
             visual.setSkinColor(zombie.core.ImmutableColor.white);
             visual.setHairModel("Bald");visual.setBeardModel("");visual.setSkinTextureName("offline-constructor");
             var player=new zombie.characters.IsoPlayer(IsoWorld.instance.currentCell,descriptor,0,0,0);
-            player.load(input,249,false);
+            try { player.load(input,249,false); }
+            catch(Exception error) { throw new IllegalArgumentException("Player at byte " + input.position() + "/" + bytes.length,error); }
         } else if(entry.getString("kind").equals("reanimated")) {
             require(input.remaining()>=8 && input.getInt(0)==249 && input.getInt(4)>=0 && input.getInt(4)<=100000,"Invalid reanimated header");
             Method load=zombie.ReanimatedPlayers.class.getDeclaredMethod("loadReanimatedPlayers",ByteBuffer.class);
@@ -273,7 +280,10 @@ public final class IndexTerrainColumns {
         initialize(Path.of(request.getString("dictionary")), request);
         if(request.has("storage")) {
             JSONArray results=new JSONArray();
-            for(Object entry:request.getJSONArray("storage")) results.put(storage((JSONObject)entry));
+            for(Object entry:request.getJSONArray("storage")) {
+                try { results.put(storage((JSONObject)entry)); }
+                catch(Exception error) { throw new IllegalArgumentException("Storage " + ((JSONObject)entry).getString("file"),error); }
+            }
             Files.writeString(Path.of(args[1]),new JSONObject().put("storage",results).toString());return;
         }
         JSONArray chunks = request.getJSONArray("chunks"), results = new JSONArray();
