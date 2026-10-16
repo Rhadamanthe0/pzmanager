@@ -16,6 +16,7 @@ import sys
 import time
 import uuid
 
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"lib"))
 from configureWritingTextOnly import ConfigurationError, open_root, atomic_file
 
 MARKER = 'writing-start.json'
@@ -243,6 +244,9 @@ def broker(args):
 
 
 def run(args):
+    if os.environ.get('PZ_SOURCE_DIR'):
+        from world_transaction import check_clean
+        check_clean(os.environ['PZ_SOURCE_DIR'],legacy=True)
     path, directory_fd = directory(args.lock_path)
     held_fd = None
     try:
@@ -289,6 +293,8 @@ def run(args):
         if not (startup_state(fresh, os.getpid()) if startup else
                 fresh['ActiveState'] == 'inactive' and fresh['MainPID'] == 0 and fresh['ControlPID'] == 0):
             raise ConfigurationError('Server state changed before offline cleanup')
+        if os.environ.get('PZ_SOURCE_DIR'):
+            check_clean(os.environ['PZ_SOURCE_DIR'],legacy=True)
         environment = dict(os.environ, PZ_WORLD_LOCK_FD=str(held_fd), PZ_WORLD_LOCK_DEPTH='1',
             PZ_WORLD_LOCK_FILE=str(path), PZ_SERVICE_NAME=args.unit)
         return subprocess.call(args.command, pass_fds=(held_fd,), env=environment)

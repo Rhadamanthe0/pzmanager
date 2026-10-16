@@ -84,6 +84,7 @@ Inspect the journal before deciding whether a direct systemd stop is appropriate
 
 ```bash
 pzm backup create             # Incremental backup
+pzm backup create --consistent # Checked recovery point; server already stopped
 pzm backup full               # Complete backup
 pzm backup list               # List backups
 pzm backup restore <path>     # Restore ALL data from a backup
@@ -94,6 +95,19 @@ pzm backup restore-zone <backup> <x1> <y1> <x2> <y2> [--apply] [--save <world>]
 
 Full restore takes an existing directory path, not a bare snapshot name or ZIP.
 Stop the server first; the command does not stop it for you.
+
+Normal live backups retain the hourly in-game save, but copying while the engine
+runs cannot guarantee application consistency. Each new snapshot records
+`best-effort` or `stopped` provenance in `.pzm-snapshot.json`. `--consistent`
+requires a proven inactive service before and after the copy, an unchanged
+invocation, and valid staged SQLite databases without pending journals. It never
+stops the server automatically. ZIP creation retains this provenance and does not
+certify historical snapshots that lack it.
+
+An interrupted multi-file maintenance operation leaves a durable journal outside
+Zomboid and blocks startup. Recovery is explicit; see
+[Writing recovery and admission](WRITING_TEXT_ONLY.md). Never delete a pending
+journal merely to bypass this check.
 
 Example:
 ```bash
@@ -108,6 +122,15 @@ pzm server stop 2m --reason "Restauration perso"   # server MUST be stopped (the
 pzm backup restore-character Snardat backup_2026-06-23_23h15m29s
 pzm server start
 ```
+
+Character restoration validates each complete selected blob with the installed
+game, enabled mods and the destination's binary dictionary before any SQL write.
+Keep the source `WorldDictionary.bin` beside `players.db`. Apply requires a
+compatible JDK (`PZ_RESTORE_JAVA` / `PZ_RESTORE_JAVAC`); preview needs no compiler.
+Unknown versions, changed registry meanings and unreadable or ignored items
+are refused. SQLite source/destination sidecars must first be resolved on a
+separate consistent copy.
+
 - `<name>`: the player's username (case-sensitive).
 - `<backup>`: **required** — the backup folder name (resolved under `data/dataBackups/`)
   or a full path. Use a specific backup from **before** the incident.

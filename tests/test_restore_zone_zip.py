@@ -19,13 +19,20 @@ spec.loader.exec_module(zone)
 import zone_zip
 
 
+# Complete synthetic index protocol; only the proprietary reader is doubled.
+from test_terrain_tiles import fixture, fixture_index, FixtureIndexer, tiles
+
+
 def chunk(payload):
-    return b'\0' + struct.pack('>iiq', 249, len(payload) + 17,
-                                 zlib.crc32(payload)) + payload
+    return fixture(payload.hex())
 
 
 class ZipZoneTests(unittest.TestCase):
     def setUp(self):
+        for module in (zone, tiles):
+            reader = patch.object(module, 'NativeIndexer', FixtureIndexer)
+            reader.start(); self.addCleanup(reader.stop)
+
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.live = self.root / 'live/Saves/Multiplayer/world'
@@ -165,11 +172,11 @@ class ZipZoneTests(unittest.TestCase):
         before = (self.live / 'map/1/1.bin').read_bytes()
         replace = zone.replace_file
         calls = 0
-        def interrupted_copy(source, destination):
+        def interrupted_copy(source, destination, *args, **kwargs):
             nonlocal calls
-            calls += 1
-            replace(source, destination)
-            if calls == 1:
+            if Path(destination).is_relative_to(self.live): calls += 1
+            replace(source, destination, *args, **kwargs)
+            if calls == 1 and Path(destination).is_relative_to(self.live):
                 raise OSError('simulated failure after write')
         with patch.object(zone, 'replace_file', side_effect=interrupted_copy):
             with self.assertRaisesRegex(OSError, 'simulated failure'):

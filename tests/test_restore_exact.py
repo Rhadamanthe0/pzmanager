@@ -22,7 +22,7 @@ class RestoreExactTests(unittest.TestCase):
         source = SCRIPT.read_text()
         self.functions = "\n".join(
             re.search(r"^" + name + r"\(\) \{.*?^\}", source, re.M | re.S).group(0)
-            for name in ("prepare_previous_dir", "restore_previous_dirs", "rollback_live",
+            for name in ("restore_tree_manifest", "verify_restore_tree", "sync_restore_parents", "prepare_previous_dir", "restore_previous_dirs", "rollback_live",
                          "restore_zomboid_data", "validate_restored_live")
         )
         self.globals = re.search(r"^readonly RESTORED_DIRS=.*$", source, re.M).group(0)
@@ -32,8 +32,12 @@ class RestoreExactTests(unittest.TestCase):
             ["bash", "-c", "set -euo pipefail\ndie() { echo \"$*\" >&2; exit 1; }\n"
              "assert_server_stopped_proven() { :; }\n" + self.globals + "\n"
              f"STAGING_DIR={str(self.staging)!r}\nBACKUP_PATH=backup\nPREVIOUS_DIR=''\n"
-             "MOVED_DIRS=()\nINSTALLED_DIRS=()\nSWAP_IN_PROGRESS=false\n"
-             + self.functions + "\n" + prefix + "\n" + command],
+             "MOVED_DIRS=()\nINSTALLED_DIRS=()\nSWAP_IN_PROGRESS=false\nRESTORE_TXN=''\nRESTORE_PLAN_DIRS=(Saves Lua)\n"
+             + "SCRIPT_DIR=" + repr(str(SCRIPT.parent)) + "\n"
+             + self.functions + "\n" + prefix + "\n"
+             + "RESTORE_MANIFEST=\"$(mktemp)\"; trap 'rm -f -- \"$RESTORE_MANIFEST\"' EXIT\n"
+             + 'restore_tree_manifest "$STAGING_DIR" > "$RESTORE_MANIFEST"\n'
+             + command.replace('restore_zomboid_data', 'RESTORE_TXN="$(python3 "$SCRIPT_DIR/../lib/world_transaction.py" begin --world "$PZ_SOURCE_DIR" --kind full-restore --recovery "$PREVIOUS_DIR" --after-tree "$STAGING_DIR" --directory Saves --directory Lua)"\nrestore_zomboid_data')],
             env=self.env, capture_output=True, text=True,
         )
 

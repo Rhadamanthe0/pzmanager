@@ -145,6 +145,11 @@ stage_game_data() {
     if [[ ! -d "${game_dir}/Saves" && ! -d "${game_dir}/db" && ! -d "${game_dir}/Server" ]]; then
         die "Snapshot 'latest' invalide (${game_dir}) : aucun répertoire Saves/db/Server — pas de ZIP vide."
     fi
+    if [[ -f "$game_dir/.pzm-snapshot.json" && ! -L "$game_dir/.pzm-snapshot.json" ]]; then
+        log "La provenance de cohérence du snapshot est conservée dans le ZIP."
+    else
+        log "Snapshot historique : cohérence applicative non attestée ; le ZIP ne l'améliore pas."
+    fi
     PINNED_GAME_DIR="$game_dir"
     ln -s "$game_dir" "${WORK}/zomboid"
 }

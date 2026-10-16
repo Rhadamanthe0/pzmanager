@@ -33,11 +33,13 @@ backup_main() {
 # comme un succès). Avec --required, l'appelant exige la garantie du snapshot.
 SNAPSHOT_ONLY=0
 REQUIRED=0
+CONSISTENT=0
 for arg in "$@"; do
     case "$arg" in
         --snapshot-only) SNAPSHOT_ONLY=1 ;;
         --required) REQUIRED=1 ;;
-        *) die "Option inconnue: $arg (seuls --snapshot-only et --required sont acceptés)" ;;
+        --consistent) CONSISTENT=1; REQUIRED=1 ;;
+        *) die "Option inconnue: $arg (options : --snapshot-only, --required, --consistent)" ;;
     esac
 done
 
@@ -161,6 +163,17 @@ if ! try_lock "${BACKUP_LOCK_FILE}" BACKUP_LOCK_FD; then
     fi
     echo "BACKUP_SKIPPED_LOCK ${BACKUP_LOCK_FILE} — run ignoré (un backup est déjà en cours)."
     exit 0
+fi
+
+CONSISTENCY_BEFORE="$(python3 "${SCRIPT_DIR}/../lib/snapshot_consistency.py" probe --unit "$PZ_SERVICE_NAME")" \
+    || die "État de sauvegarde impossible à observer."
+if [[ "$CONSISTENT" == 1 ]]; then
+    python3 - "$CONSISTENCY_BEFORE" <<'PYSTOP'
+import json,sys
+s=json.loads(sys.argv[1])
+if not (s.get('ok') and s.get('LoadState')=='loaded' and s.get('ActiveState')=='inactive' and s.get('MainPID')=='0' and s.get('ControlPID')=='0'):
+    raise SystemExit('Point de reprise cohérent : arrêt prouvé requis ; aucun arrêt automatique.')
+PYSTOP
 fi
 
 # Trigger in-game save if server is running (sauté en --snapshot-only : le serveur
@@ -300,6 +313,14 @@ fi
 if [[ ! -d "${STAGING_PATH}/Saves" && ! -d "${STAGING_PATH}/db" && ! -d "${STAGING_PATH}/Server" ]]; then
     die "Backup invalide dans ${STAGING_PATH} : aucun répertoire Saves/db/Server — rien n'est publié."
 fi
+
+consistency_args=()
+[[ "$CONSISTENT" != 1 ]] || consistency_args+=(--required)
+consistency="$(python3 "${SCRIPT_DIR}/../lib/snapshot_consistency.py" write --unit "$PZ_SERVICE_NAME" \
+    --root "$STAGING_PATH" --before "$CONSISTENCY_BEFORE" "${consistency_args[@]}")" \
+    || die "Cohérence du point de reprise non prouvée — rien n'est publié."
+echo "BACKUP_CONSISTENCY $consistency"
+[[ "$consistency" == stopped ]] || echo "Sauvegarde à chaud : cohérence applicative non garantie."
 
 # Publication atomique : le final n'apparaît que complet. Si la destination
 # existe déjà (collision de timestamp), mv échoue et on refuse (fail-closed).

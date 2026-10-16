@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -20,6 +21,7 @@ import time
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--results', type=Path, required=True)
+    parser.add_argument('--only', action='append', help='Run a named suite (repeatable)')
     args = parser.parse_args()
     source = Path(__file__).resolve().parents[1]
     names = subprocess.check_output(['git', '-C', str(source), 'ls-files', '-z', '--cached', '--others', '--exclude-standard']).decode().split('\0')
@@ -52,17 +54,23 @@ def main():
         env.update(PZ_TEST_ROOT=str(root), TMPDIR=str(base))
         results = []
         for test in sorted((root / 'tests').glob('test_*')):
-            if test.suffix not in {'.py', '.sh'}: continue
+            if test.suffix not in {'.py', '.sh'} or (args.only and test.name not in args.only): continue
             boundary_suite = test.name.startswith(('test_shared_', 'test_jvm_memory_', 'test_writing_', 'test_console_')) and test.name != 'test_writing_start_admission.py'
             helper.write_text(original if boundary_suite else fixture)
             start = time.monotonic()
             command = ['python3' if test.suffix == '.py' else 'bash', str(test)]
-            try:
-                result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True, timeout=180)
-                code = result.returncode; log = result.stdout + result.stderr
-            except subprocess.TimeoutExpired as error:
-                code = 124; log = str(error)
-            (args.results / (test.name + '.log')).write_text(log)
+            with (args.results / (test.name + '.log')).open('w') as output:
+                process = subprocess.Popen(command, cwd=root, env=env, stdout=output,
+                                           stderr=subprocess.STDOUT, start_new_session=True)
+                try:
+                    code = process.wait(timeout=180)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    try: process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(process.pid, signal.SIGKILL); process.wait()
+                    output.write('\nSuite timed out after 180 seconds; process group terminated.\n')
+                    code = 124
             results.append(dict(test=test.name, exit=code, seconds=round(time.monotonic() - start, 2),
                                 budget_source='original' if boundary_suite else 'private fixture paths only'))
             (args.results / 'results.json').write_text(json.dumps(results, indent=2))

@@ -43,10 +43,18 @@ Le format pris en charge est celui des sauvegardes 249 de PZ 42.21. Les objets
 éditables ProjectWriting connus sont pris en charge ; les types ou enveloppes
 non reconnus sont refusés avant toute mutation. Ce nettoyage n'est pas un
 filtrage universel des données envoyées par des clients modifiés.
-Les sacs des mods actifs sont identifiés à partir de leurs définitions statiques
-installées, sans exécuter leur Lua. Les catalogues communs et versionnés doivent
-être cohérents sur le type d'objet ; une ambiguïté reste bloquante. Les documents
-dans ces sacs suivent la même validation et les mêmes copies de récupération.
+Les limites, identités et ancêtres des objets proviennent des appels du lecteur
+natif du JAR et de son dictionnaire binaire, liés aux empreintes des fichiers.
+Une copie privée de la classe de lecture est instrumentée ; le JAR installé
+n'est jamais modifié. Les fichiers entiers sont relus, y compris les blobs des
+personnages et `reanimated.bin`. Un objet ignoré, absent ou tronqué par le lecteur
+tolérant du jeu est un refus, même si le chargement normal ne lève aucune erreur.
+La compatibilité exacte avec le JAR reste nécessaire ; une instrumentation
+incompatible bloque avant mutation, sans repli sur les motifs binaires.
+Le lecteur suit la réconciliation native du dictionnaire avec le profil de mods
+sélectionné : un mod effectivement réactivé retrouve ses identifiants existants.
+Les objets d'un mod toujours inactif ou obsolète restent refusés. Cette lecture
+ne réactive aucun mod dans la configuration du serveur.
 Le parcours utilise huit lecteurs avec une prélecture limitée à seize fichiers ;
 le traitement des documents reste séquentiel. Le parcours complet peut prendre
 plusieurs minutes sur un grand monde ; l'unité réserve jusqu'à vingt minutes au
@@ -56,6 +64,29 @@ Les copies de récupération sont placées sous
 `${BACKUP_DIR}/projectwriting-cleanups`. L'unité fournie autorise par défaut
 `data/dataBackups`. Si `BACKUP_DIR` pointe ailleurs, ajouter ce chemin à
 `ReadWritePaths` dans un override systemd ; ne pas retirer le confinement global.
+
+Un journal durable privé reste à côté de la racine Zomboid :
+`.Zomboid.pzm-transactions`. Il survit au déplacement de cette racine pendant une
+restauration complète. L'installateur le crée ; lors d'une mise à niveau, préparer
+ce dossier sous l'identité du manager avec `world_transaction.py init --world
+<racine-Zomboid>`, puis appliquer le chemin `ReadWritePaths` du nouveau template.
+Pour une racine personnalisée, adapter ce chemin exact. Aucun déploiement de ces
+changements n'est automatique.
+
+Une intention inachevée bloque tous les démarrages, même si Writing est désactivé.
+Le démarrage ne reprend ni ne restaure de données. Après examen des copies,
+`pzm backup resume-writing <copie-de-récupération>` permet une reprise explicite
+avec validation complète, serveur arrêté. Pour les autres récupérations, restaurer
+explicitement l'image choisie, puis `pzm backup verify-recovery <id>
+--restored|--reverted` : cette commande ne réécrit rien et ne clôture que si les
+empreintes attendues correspondent. Les journaux et copies Writing sont conservés.
+Les restaurations de dossiers et de zones gardent leurs copies temporaires tant
+que l'opération reste inachevée ; après résultat complet ou rollback vérifié et
+journal synchronisé, ces copies temporaires sont supprimées. Les sauvegardes et
+récupérations historiques ne sont pas nettoyées par cette opération.
+La restauration de dossiers conserve les autres données présentes (Logs, options,
+dossiers absents du backup) ; les empreintes du journal portent sur chaque dossier
+sélectionné, y compris Lua quand il est présent.
 
 Le nettoyage exige un verrou WORLD et une preuve que la JVM est arrêtée.
 `activating` n'est accepté que par le propre processus `ExecStartPre` de l'unité,
@@ -94,3 +125,11 @@ vérifie que le transfert authentifié fonctionne malgré lui ; elle est sautée
 si le noyau interdit les namespaces, et doit alors être validée sur l'hôte cible.
 Les tests du nettoyeur vérifient séparément les sauvegardes arrêtées et les copies
 de récupération.
+
+`tests/native_context_reinstatement.py` est une régression native facultative,
+à exécuter dans un espace de noms Linux isolé avec des copies de l'installation
+et du monde. Elle exige deux profils explicites (actif et restauré), un chunk et
+un identifiant d'objet : le premier doit atteindre le refus natif de cet objet,
+le second doit réellement le charger. Une panne de compilation ou une autre
+erreur de lecture ne satisfait pas le témoin de refus. Les sources restent
+inchangées et aucun serveur n'est démarré.

@@ -31,7 +31,8 @@ Commandes disponibles:
     Exemple sans délai : `server restart --reason "Ajout de mods"`.
 
   backup <action> [arguments]
-    create             Backup incrémental horaire
+    create [--consistent]  Snapshot ; --consistent exige un serveur déjà arrêté
+                       À chaud : copie au mieux, cohérence applicative non garantie
     full               Backup complet avec sync
     restore <chemin>   Restaurer données Zomboid (dossier ; serveur arrêté)
     restore-character <pseudo> <backup> [--dry-run]
@@ -51,6 +52,9 @@ Commandes disponibles:
                        Backup : nom de snapshot ou chemin de dossier (pas de ZIP)
                        Procédure et limites : docs/USAGE.md#restore-a-map-zone-build-42
     list               Lister backups disponibles
+    resume-writing <copie>  Reprise explicite d'un nettoyage interrompu
+    verify-recovery <id> --restored|--reverted
+                       Vérifier les octets récupérés et clôturer le journal
 
   whitelist <action> [arguments]
     list               Liste blanche SteamID + comptes + bannis
@@ -153,7 +157,7 @@ cmd_backup() {
 
     case "$action" in
         create)
-            exec "${SCRIPT_DIR}/data/scripts/backup/dataBackup.sh"
+            exec "${SCRIPT_DIR}/data/scripts/backup/dataBackup.sh" "$@"
             ;;
         full)
             exec "${SCRIPT_DIR}/data/scripts/backup/fullBackup.sh"
@@ -165,6 +169,12 @@ cmd_backup() {
         restore-zone)
             exec "${SCRIPT_DIR}/data/scripts/backup/restoreZone.sh" "$@"
             ;;
+        resume-writing)
+            exec "${SCRIPT_DIR}/data/scripts/backup/resumeWritingCleanup.sh" "$@"
+            ;;
+        verify-recovery)
+            exec "${SCRIPT_DIR}/data/scripts/backup/verifyWorldRecovery.sh" "$@"
+            ;;
         restore-character)
             [[ $# -ge 2 ]] || usage_error "pseudo et backup requis" "pzm backup restore-character <pseudo> <backup>"
             exec "${SCRIPT_DIR}/data/scripts/backup/restoreCharacter.sh" "$@"
@@ -173,7 +183,7 @@ cmd_backup() {
             exec "${SCRIPT_DIR}/data/scripts/backup/listBackups.sh"
             ;;
         *)
-            invalid_action "backup" "$action" "create, full, restore, restore-character, restore-zone, list"
+            invalid_action "backup" "$action" "create, full, restore, restore-character, restore-zone, list, resume-writing, verify-recovery"
             ;;
     esac
 }

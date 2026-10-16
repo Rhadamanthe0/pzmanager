@@ -47,6 +47,18 @@ def nested(dirty=True):
 
 def chunk(body):return b'\0'+struct.pack('>iiq',249,len(body)+17,zlib.crc32(body))+body
 
+def synthetic_envelopes(blob):
+    # Test-only protocol for the declared synthetic bag/book fixture.
+    bag=blob.index(b'bag-metadata')-11
+    child=blob.index(b'bag-metadata')+len(b'bag-metadata')+4
+    result=[]
+    for start,rid,name,cls,parent in [(bag,2,'Base.Bag_SurvivorBag','InventoryContainer',-1),
+                                      (child,1,'Base.Diary2','Literature',bag)]:
+        result.append(dict(record_start=start,record_end=start+4+struct.unpack_from('>i',blob,start)[0],
+            registry_id=rid,itemType=name,itemId=struct.unpack_from('>i',blob,start+7)[0],
+            **{'class':cls,'parent':parent}))
+    return result
+
 class OfflineCleanup(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(prefix='pz-offline-test-')
@@ -72,6 +84,19 @@ class OfflineCleanup(unittest.TestCase):
         db.execute('INSERT INTO localPlayers VALUES(2,249,?,?)',(b'no writing','Synthetic local'))
         db.commit();db.close()
     def sources(self):return {str(p.relative_to(self.world)):p.read_bytes() for p in self.world.rglob('*') if p.is_file()}
+    def test_clean_wal_mode_database_is_read_without_creating_sidecars(self):
+        self.path.write_bytes(chunk(nested(False)))
+        db=sqlite3.connect(self.world/'players.db')
+        db.execute('UPDATE networkPlayers SET data=?',(nested(False),));db.commit()
+        self.assertEqual(db.execute('PRAGMA journal_mode=WAL').fetchone()[0],'wal');db.close()
+        before=self.sources();self.world.chmod(0o555)
+        try:
+            result=cleaner.cleanup(self.world,self.backups,validator=self.validator)
+            self.assertEqual(result['files'],0);self.assertEqual(self.sources(),before)
+        finally:self.world.chmod(0o700)
+        self.assertFalse((self.world/'players.db-wal').exists())
+        self.assertFalse((self.world/'players.db-shm').exists())
+
     def test_nested_storage_and_opaque_text_preservation(self):
         original=chunk(nested());new,detail=cleaner.clean_blob(original,REGISTRY,chunk=True)
         self.assertEqual(new,chunk(nested(False)))
@@ -110,14 +135,17 @@ class OfflineCleanup(unittest.TestCase):
         self.assertEqual(self.sources(),before)
     def test_resume_interrupted_commit_and_refuse_conflicts(self):
         actual=cleaner.atomic_copy;replaces=[]
-        def interrupted(path,source,mode=0o600):
+        def interrupted(path,source,mode=0o600,expected_sha256=None):
             if self.world in path.parents:
                 replaces.append(path)
                 if len(replaces)==2:raise OSError('Synthetic interrupted commit')
-            return actual(path,source,mode)
+            return actual(path,source,mode,expected_sha256=expected_sha256)
         with patch.object(cleaner,'atomic_copy',side_effect=interrupted),self.assertRaises(OSError):cleaner.cleanup(self.world,self.backups,validator=self.validator)
         stage=next(self.backups.glob('cleanup-*'));self.assertEqual(json.loads((stage/'manifest.json').read_text())['state'],'prepared')
-        cleaner.cleanup(self.world,self.backups,validator=self.validator);self.assertEqual(self.path.read_bytes(),chunk(nested(False)))
+        with self.assertRaisesRegex(cleaner.CleanupError,'explicit'):
+            cleaner.cleanup(self.world,self.backups,validator=self.validator)
+        cleaner.recover(self.world,stage,self.validator)
+        self.assertEqual(self.path.read_bytes(),chunk(nested(False)))
         self.assertEqual(json.loads((stage/'manifest.json').read_text())['state'],'complete')
     def test_dry_run_and_path_safety(self):
         before=self.sources();self.assertEqual(cleaner.cleanup(self.world,self.backups,True)['files'],2)
@@ -145,9 +173,9 @@ class OfflineCleanup(unittest.TestCase):
         with self.assertRaises(cleaner.CleanupError):cleaner.cleanup(empty,self.backups)
     def test_conflicting_pending_world_refuses_and_unproven_ancestors_rejected(self):
         actual=cleaner.atomic_copy
-        def interrupted(path,source,mode=0o600):
+        def interrupted(path,source,mode=0o600,expected_sha256=None):
             if self.world in path.parents:raise OSError('Synthetic interruption')
-            return actual(path,source,mode)
+            return actual(path,source,mode,expected_sha256=expected_sha256)
         with patch.object(cleaner,'atomic_copy',side_effect=interrupted),self.assertRaises(OSError):cleaner.cleanup(self.world,self.backups,validator=self.validator)
         self.path.write_bytes(b'concurrent replacement');before=self.sources()
         with self.assertRaises(cleaner.CleanupError):cleaner.cleanup(self.world,self.backups,validator=self.validator)
@@ -177,6 +205,17 @@ class OfflineCleanup(unittest.TestCase):
         with (self.world/'WorldDictionaryReadable.lua').open('a') as stream:stream.write('\n{ registryID = 6, fulltype = "Base.TailoringMag10" }')
         prefix=struct.pack('>iihBiB',-1,len(nested())+8,6,255,7777,4)
         original=chunk(prefix+nested());self.path.write_bytes(original)
+        def native_envelopes(stage,blob,kind,version,path):
+            bag=blob.index(b'bag-metadata')-11
+            child=blob.index(b'bag-metadata')+len(b'bag-metadata')+4
+            result=[]
+            for start,rid,name,cls,parent in [(bag,2,'Base.Bag_SurvivorBag','InventoryContainer',-1),
+                                              (child,1,'Base.Diary2','Literature',bag)]:
+                result.append(dict(record_start=start,record_end=start+4+struct.unpack_from('>i',blob,start)[0],
+                    registry_id=rid,itemType=name,itemId=struct.unpack_from('>i',blob,start+7)[0],
+                    **{'class':cls,'parent':parent}))
+            return result
+        self.validator.native_envelopes=native_envelopes
         cleaner.cleanup(self.world,self.backups,validator=self.validator,scripts_dir=scripts)
         self.assertEqual(self.path.read_bytes(),chunk(prefix+nested(False)))
 

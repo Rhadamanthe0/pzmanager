@@ -5,11 +5,25 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import struct
 import subprocess
 import zlib
 
 MAX_TERRAIN_BYTES = 64 * 1024 * 1024
+
+
+def read_native_input(path):
+    """Bound reads and reject links/special files before a native validation."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_TERRAIN_BYTES:
+            raise ValueError('Entrée native non régulière ou trop volumineuse.')
+        data = stream.read(MAX_TERRAIN_BYTES + 1)
+    if len(data) > MAX_TERRAIN_BYTES:
+        raise ValueError('Entrée native trop volumineuse.')
+    return data
 
 
 def native_script_context(install):
@@ -114,7 +128,8 @@ def merge_columns(source, current, source_index, current_index, selected):
 
 class NativeIndexer:
     """Compile once; native readers run only against private recovery copies."""
-    def __init__(self, root, dictionary, *, java=None, javac=None):
+    def __init__(self, root, dictionary, *, java=None, javac=None, trace_items=False):
+        self.trace_items = trace_items
         self.root = Path(root).absolute()
         self.root.mkdir()
         self.dictionary = Path(dictionary).absolute()
@@ -142,9 +157,15 @@ class NativeIndexer:
             (self.root / name).symlink_to(target)
         classes = self.root / 'classes'
         classes.mkdir()
-        self.classpath = str(self.jar) + os.pathsep + str(classes)
+        self.classpath = str(classes) + os.pathsep + str(self.jar)
         self.run([self.javac, '--release', match[1].decode(), '-cp', str(self.jar), '-d', str(classes),
-                  str(Path(__file__).with_name('IndexTerrainColumns.java'))], 'compile')
+                  *[str(Path(__file__).with_name(name)) for name in ('IndexTerrainColumns.java', 'NativeItemTrace.java', 'InstrumentItemReads.java')]], 'compile')
+        if trace_items:
+            exports=[] if int(match[1])>=24 else [
+                '--add-exports=java.base/jdk.internal.org.objectweb.asm=ALL-UNNAMED',
+                '--add-exports=java.base/jdk.internal.org.objectweb.asm.tree=ALL-UNNAMED']
+            self.run([str(self.java), *exports, '-cp', str(classes),
+                      'InstrumentItemReads', str(self.jar), str(classes)], 'instrument')
         self.sequence = 0
 
     def run(self, command, label):
@@ -163,17 +184,43 @@ class NativeIndexer:
         return result.stdout
 
     def index(self, files):
+        # A successful subprocess and the right result count do not bind the
+        # returned indexes to the exact bytes the caller is about to install.
+        before = [hashlib.sha256(read_native_input(entry['file'])).hexdigest()
+                  for entry in files]
         self.sequence += 1
         label = 'index-' + str(self.sequence)
         request = self.root / (label + '.json')
         response = self.root / (label + '-result.json')
-        request.write_text(json.dumps(dict(self.script_context, dictionary=str(self.dictionary), chunks=files)))
+        request.write_text(json.dumps(dict(self.script_context, dictionary=str(self.dictionary), chunks=files, trace_items=self.trace_items)))
         self.run([str(self.java), '-Xmx512m', '-cp', self.classpath, 'IndexTerrainColumns',
                   str(request), str(response)], label)
-        indexes = json.loads(response.read_text())['chunks']
-        if len(indexes) != len(files):
-            raise ValueError('Validation native du terrain incomplète.')
+        try:
+            indexes = json.loads(response.read_text())['chunks']
+            if not isinstance(indexes, list) or len(indexes) != len(files):
+                raise ValueError('Validation native du terrain incomplète.')
+            for entry, expected, index in zip(files, before, indexes):
+                data = read_native_input(entry['file'])
+                if hashlib.sha256(data).hexdigest() != expected:
+                    raise ValueError('Terrain modifié pendant la validation native.')
+                checked_columns(data, index)
+        except (KeyError, TypeError, IndexError, OverflowError, struct.error) as error:
+            raise ValueError('Résultat natif du terrain invalide.') from error
         return indexes
+
+    def storage(self, entries):
+        if not self.trace_items: raise ValueError('Strict native item tracing required')
+        before=[hashlib.sha256(read_native_input(e['file'])).hexdigest() for e in entries]
+        self.sequence+=1; label='storage-'+str(self.sequence)
+        request=self.root/(label+'.json');response=self.root/(label+'-result.json')
+        request.write_text(json.dumps(dict(self.script_context,dictionary=str(self.dictionary),storage=entries)))
+        self.run([str(self.java),'-Xmx768m','-cp',self.classpath,'IndexTerrainColumns',str(request),str(response)],label)
+        results=json.loads(response.read_text())['storage']
+        if len(results)!=len(entries): raise ValueError('Incomplete storage validation')
+        for entry,expected,result in zip(entries,before,results):
+            if result['sha256']!=expected or hashlib.sha256(read_native_input(entry['file'])).hexdigest()!=expected:
+                raise ValueError('Storage changed during validation')
+        return results
 
     def dictionaries(self, paths):
         request = self.root / 'dictionaries.json'

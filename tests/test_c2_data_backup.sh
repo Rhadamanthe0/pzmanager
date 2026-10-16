@@ -94,6 +94,11 @@ printf '# stub test C2 (restauré en fin de test)\n' > "$REPO_ENV"
 # MOCK_RSYNC_EXIT. MOCK_RSYNC_EMPTY=1 -> staging sans Saves/db/Server.
 cat > "${BIN}/rsync" <<'MOCKEOF'
 #!/usr/bin/env bash
+if [[ "${MOCK_COPY_REAL:-0}" == 1 ]]; then
+    /usr/bin/rsync "$@" || exit $?
+    [[ -z "${MOCK_DRIFT_FILE:-}" ]] || touch "$MOCK_DRIFT_FILE"
+    exit 0
+fi
 dest="${@: -1}"
 mkdir -p "$dest" 2>/dev/null || true
 if [[ "${MOCK_RSYNC_EMPTY:-0}" == "1" ]]; then
@@ -132,6 +137,10 @@ cat > "${BIN}/systemctl" <<'MOCKEOF'
 #!/usr/bin/env bash
 if [[ " $* " == *" show "* ]]; then
     [[ "${MOCK_CPU_STATE:-active}" != "error" ]] || exit 1
+    if [[ -n "${MOCK_DRIFT_FILE:-}" && -e "$MOCK_DRIFT_FILE" ]]; then
+        MOCK_CPU_STATE=active; MOCK_CPU_MAINPID=123
+    fi
+    printf 'LoadState=loaded\nControlPID=0\nInvocationID=fixture\n'
     printf 'ActiveState=%s\nSubState=%s\nMainPID=%s\n' \
         "${MOCK_CPU_STATE:-active}" "${MOCK_CPU_SUBSTATE:-running}" "${MOCK_CPU_MAINPID:-123}"
 fi
@@ -171,7 +180,7 @@ fresh_case() {
     unset MOCK_RSYNC_EXIT MOCK_RSYNC_SLEEP MOCK_RSYNC_EMPTY MOCK_LN_FAIL MOCK_MV_FAIL
     unset MOCK_CPU_STATE MOCK_CPU_SUBSTATE MOCK_CPU_MAINPID MOCK_SCOPE_LOG MOCK_SCOPE_FAIL
     unset MOCK_CPU_PIN_FAIL
-    unset MOCK_RSYNC_READY
+    unset MOCK_RSYNC_READY MOCK_COPY_REAL MOCK_DRIFT_FILE
 }
 final_count() { find "$1" -maxdepth 1 -type d -name 'backup_*' 2>/dev/null | wc -l | tr -d ' '; }
 tmp_left() { find "$1" -maxdepth 1 -name '*.tmp*' 2>/dev/null | wc -l | tr -d ' '; }
@@ -533,6 +542,37 @@ else
     ko "mise à jour pendant rsync : rc=$rewrite_status, snapshot incorrect"; show_out
 fi
 unset MOCK_RSYNC_SLEEP MOCK_RSYNC_READY
+
+# Real copy and SQLite check; service state remains an explicit private double.
+for scenario in consistent-stopped consistent-active consistent-drift normal-active; do
+    fresh_case "$scenario"
+    export MOCK_COPY_REAL=1
+    python3 - "$PZ_SOURCE_DIR/db/servertest.db" <<'PYSQL'
+import os,sqlite3,sys
+os.unlink(sys.argv[1])
+with sqlite3.connect(sys.argv[1]) as db:db.execute('CREATE TABLE fixture(id INTEGER PRIMARY KEY)')
+PYSQL
+    args=(--snapshot-only)
+    if [[ "$scenario" != normal-active ]]; then args+=(--consistent); fi
+    if [[ "$scenario" == consistent-stopped || "$scenario" == consistent-drift ]]; then
+        export MOCK_CPU_STATE=inactive MOCK_CPU_SUBSTATE=dead MOCK_CPU_MAINPID=0
+    fi
+    if [[ "$scenario" == consistent-drift ]]; then export MOCK_DRIFT_FILE="$SANDBOX/drift"; rm -f "$MOCK_DRIFT_FILE"; fi
+    rc=0;run_backup "${args[@]}" || rc=$?
+    if [[ "$scenario" == consistent-active || "$scenario" == consistent-drift ]]; then
+        if (( rc != 0 && $(final_count "$BKP") == 0 && $(tmp_left "$BKP") == 0 )); then
+            ok "$scenario : refus sans publication"
+        else ko "$scenario : copie incohérente publiée ou refus incorrect";show_out;fi
+    else
+        expected=best-effort;[[ "$scenario" != consistent-stopped ]] || expected=stopped
+        if (( rc == 0 )) && python3 - "$BKP/latest/.pzm-snapshot.json" "$expected" <<'PYMETA'
+import json,sys
+assert json.load(open(sys.argv[1]))['consistency']==sys.argv[2]
+PYMETA
+        then ok "$scenario : provenance vérifiée"
+        else ko "$scenario : provenance incorrecte";show_out;fi
+    fi
+done
 
 # --- Bilan -------------------------------------------------------------------------
 echo ""

@@ -105,6 +105,9 @@ public final class IndexTerrainColumns {
             require(zombie.gameStates.ChooseGameInfo.getAvailableModDetails(mod) != null,
                     "Installed mod definition unavailable: " + mod);
         ZomboidFileSystem.instance.loadMods(mods);
+        // GameWindow initializes mod registries before script definitions.
+        // This executes only the selected mods' registries.lua, not gameplay.
+        zombie.scripting.objects.ModRegistries.init();
         zombie.scripting.ScriptManager.instance.Load();
         Class<?> type = Class.forName("zombie.world.DictionaryData");
         Constructor<?> ctor = type.getDeclaredConstructor();
@@ -116,27 +119,22 @@ public final class IndexTerrainColumns {
         Field field = zombie.world.WorldDictionary.class.getDeclaredField("data");
         field.setAccessible(true);
         field.set(null, data);
-        Field itemScript = zombie.world.ItemInfo.class.getDeclaredField("scriptItem");
-        itemScript.setAccessible(true);
-        Field entityScript = zombie.world.DictionaryInfo.class.getDeclaredField("entityScript");
-        entityScript.setAccessible(true);
-        Field loaded = zombie.world.DictionaryInfo.class.getDeclaredField("isLoaded");
-        loaded.setAccessible(true);
-        for (Object info : ((Map<?, ?>) field(data, type, "itemIdToInfoMap")).values()) {
-            var item = (zombie.world.ItemInfo) info;
-            var script = zombie.scripting.ScriptManager.instance.getSpecificItem(item.getFullType());
-            itemScript.set(item, script);
-            entityScript.set(item, script);
-            loaded.setBoolean(item, script != null);
-            if (script != null) script.setRegistry_id(item.getRegistryID());
+        // Match WorldDictionary.init's in-memory reconciliation, without its
+        // source backup/save operations. A restored active mod must reinstate
+        // its saved registry IDs; inactive/obsolete definitions remain invalid.
+        Method parse = type.getDeclaredMethod("parseInfoLoadList", Map.class);
+        parse.setAccessible(true);
+        for (String name : List.of("getItemLoadList", "getEntityLoadList")) {
+            Method list = zombie.world.WorldDictionary.class.getDeclaredMethod(name);
+            list.setAccessible(true);
+            parse.invoke(data, list.invoke(null));
         }
-        for (Object info : ((Map<?, ?>) field(data, type, "entityIdToInfoMap")).values()) {
-            var entity = (zombie.world.EntityInfo) info;
-            var script = zombie.scripting.ScriptManager.instance.getSpecificEntity(entity.getFullType());
-            entityScript.set(entity, script);
-            loaded.setBoolean(entity, script != null);
-            if (script != null) script.setRegistry_id(entity.getRegistryID());
-        }
+        Method current = type.getDeclaredMethod("parseCurrentInfoSet");
+        current.setAccessible(true);
+        current.invoke(data);
+        Method strings = zombie.world.StringDictionary.class.getDeclaredMethod("parseRegisters");
+        strings.setAccessible(true);
+        strings.invoke(null);
         Method bind = zombie.world.ScriptsDictionary.class.getDeclaredMethod("parseRegisters");
         bind.setAccessible(true);
         bind.invoke(null);
@@ -153,7 +151,7 @@ public final class IndexTerrainColumns {
         return chunk;
     }
 
-    private static JSONObject index(Path path, int cx, int cy) throws Exception {
+    private static JSONObject index(Path path, int cx, int cy, boolean trace) throws Exception {
         require(Files.size(path) <= 64L * 1024 * 1024, "Terrain file exceeds 64 MiB");
         byte[] bytes = Files.readAllBytes(path);
         ByteBuffer b = ByteBuffer.wrap(bytes);
@@ -169,9 +167,11 @@ public final class IndexTerrainColumns {
         Method load = IsoChunk.class.getDeclaredMethod("LoadFromDiskOrBufferInternal", ByteBuffer.class);
         load.setAccessible(true);
         ByteBuffer full = ByteBuffer.wrap(bytes);
+        if(trace) NativeItemTrace.begin(full);
         try { load.invoke(whole, full); }
         catch (Exception error) { throw new IllegalArgumentException("Terrain " + path + " at byte " + full.position() + "/" + bytes.length, error); }
         require(full.position() == bytes.length, "Unparsed terrain bytes");
+        JSONArray items=trace?NativeItemTrace.finish():new JSONArray();
 
         // Version-249 prefix, followed by 64 X-major/Y-minor columns. Each
         // column has a 64-bit floor-presence mask and native square records.
@@ -213,7 +213,67 @@ public final class IndexTerrainColumns {
         }
         return new JSONObject().put("sha256", HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)))
                 .put("level_offset", levelOffset).put("min_level", min).put("max_level", max)
-                .put("columns", columns);
+                .put("columns", columns).put("items",items);
+    }
+
+    private static JSONObject storage(JSONObject entry) throws Exception {
+        Path path=Path.of(entry.getString("file"));
+        require(Files.size(path)<=64L*1024*1024,"Storage exceeds 64 MiB");
+        byte[] bytes=Files.readAllBytes(path);ByteBuffer input=ByteBuffer.wrap(bytes);
+        require(entry.getInt("version")==249,"Unsupported storage version");
+        IsoWorld.instance.currentCell=new IsoCell(1,1);
+        // Native characters query ServerMap while being constructed. A private,
+        // empty meta grid supplies the same absent-square result as unloaded
+        // terrain, without starting server threads or reading another world.
+        IsoMetaGrid meta=IsoWorld.instance.metaGrid;
+        meta.minX=0; meta.maxX=0; meta.minY=0; meta.maxY=0;
+        // ServerMap.init also starts unrelated stash initialization, requiring
+        // Lua gameplay state. Only its empty grid lookup state is needed here.
+        var serverMap=zombie.network.ServerMap.instance;
+        for(String name:List.of("grid","width","height","cellMap")) {
+            Field f=zombie.network.ServerMap.class.getDeclaredField(name);f.setAccessible(true);
+            if(name.equals("grid")) f.set(serverMap,meta);
+            else if(name.equals("cellMap")) f.set(serverMap,Array.newInstance(f.getType().getComponentType(),16));
+            else f.setInt(serverMap,4);
+        }
+        // IsoZombie's constructor asks for a random temporary name before
+        // loading the saved descriptor. Supply neutral constructor-only names;
+        // do not run gameplay Lua or change the serialized character data.
+        if(zombie.characters.SurvivorFactory.FemaleForenames.isEmpty()) zombie.characters.SurvivorFactory.FemaleForenames.add("offline");
+        if(zombie.characters.SurvivorFactory.MaleForenames.isEmpty()) zombie.characters.SurvivorFactory.MaleForenames.add("offline");
+        if(zombie.characters.SurvivorFactory.Surnames.isEmpty()) zombie.characters.SurvivorFactory.Surnames.add("constructor");
+        zombie.core.skinnedmodel.population.HairStyles.init();
+        zombie.core.skinnedmodel.population.BeardStyles.init();
+        // Equipping saved items with entity components registers them with
+        // an Engine. Use a fresh private in-memory engine per blob, without
+        // GameEntityManager.Init's entity_data.bin load or gameplay systems.
+        zombie.entity.GameEntityManager.Reset();
+        Field engine=zombie.entity.GameEntityManager.class.getDeclaredField("engine");
+        engine.setAccessible(true);engine.set(null,new zombie.entity.Engine());
+        NativeItemTrace.begin(input);
+        if(entry.getString("kind").equals("player")) {
+            // A neutral constructor visual avoids random character creation
+            // (Lua's common hair palette is not loaded by this offline reader).
+            // The saved visual is subsequently consumed by the real load method.
+            var descriptor=new zombie.characters.SurvivorDesc();
+            var visual=descriptor.getHumanVisual();
+            visual.setHairColor(zombie.core.ImmutableColor.white);
+            visual.setBeardColor(zombie.core.ImmutableColor.white);
+            visual.setNaturalHairColor(zombie.core.ImmutableColor.white);
+            visual.setNaturalBeardColor(zombie.core.ImmutableColor.white);
+            visual.setSkinColor(zombie.core.ImmutableColor.white);
+            visual.setHairModel("Bald");visual.setBeardModel("");visual.setSkinTextureName("offline-constructor");
+            var player=new zombie.characters.IsoPlayer(IsoWorld.instance.currentCell,descriptor,0,0,0);
+            try { player.load(input,249,false); }
+            catch(Exception error) { throw new IllegalArgumentException("Player at byte " + input.position() + "/" + bytes.length,error); }
+        } else if(entry.getString("kind").equals("reanimated")) {
+            require(input.remaining()>=8 && input.getInt(0)==249 && input.getInt(4)>=0 && input.getInt(4)<=100000,"Invalid reanimated header");
+            Method load=zombie.ReanimatedPlayers.class.getDeclaredMethod("loadReanimatedPlayers",ByteBuffer.class);
+            load.setAccessible(true);load.invoke(zombie.ReanimatedPlayers.instance,input);
+        } else throw new IllegalArgumentException("Unsupported storage kind");
+        require(!input.hasRemaining(),"Unparsed storage bytes");
+        return new JSONObject().put("sha256",HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)))
+            .put("items",NativeItemTrace.finish());
     }
 
     public static void main(String[] args) throws Exception {
@@ -227,10 +287,18 @@ public final class IndexTerrainColumns {
             return;
         }
         initialize(Path.of(request.getString("dictionary")), request);
+        if(request.has("storage")) {
+            JSONArray results=new JSONArray();
+            for(Object entry:request.getJSONArray("storage")) {
+                try { results.put(storage((JSONObject)entry)); }
+                catch(Exception error) { throw new IllegalArgumentException("Storage " + ((JSONObject)entry).getString("file"),error); }
+            }
+            Files.writeString(Path.of(args[1]),new JSONObject().put("storage",results).toString());return;
+        }
         JSONArray chunks = request.getJSONArray("chunks"), results = new JSONArray();
         for (int i = 0; i < chunks.length(); i++) {
             JSONObject entry = chunks.getJSONObject(i);
-            results.put(index(Path.of(entry.getString("file")), entry.getInt("x"), entry.getInt("y")));
+            results.put(index(Path.of(entry.getString("file")), entry.getInt("x"), entry.getInt("y"),request.optBoolean("trace_items")));
         }
         Files.writeString(Path.of(args[1]), new JSONObject().put("chunks", results).toString());
     }

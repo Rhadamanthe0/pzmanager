@@ -46,6 +46,7 @@ class PrivateCreationTests(unittest.TestCase):
             runtime.mkdir(mode=0o700)
             outside = base / 'outside'
             outside.mkdir(mode=0o750)
+            outside.chmod(0o750)  # Explicit fixture, independent of the caller umask.
             sentinel = outside / 'sentinel'
             sentinel.write_text('inchange\n')
             state = runtime / 'pzmanager'

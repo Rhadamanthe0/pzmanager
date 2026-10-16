@@ -290,6 +290,8 @@ clear_writing_start_admission() {
     fi
 }
 start_with_writing_admission() {
+    python3 "${SCRIPT_DIR}/../lib/world_transaction.py" check --world "$PZ_SOURCE_DIR" \
+        || die "Une opération monde inachevée exige une récupération explicite."
     local start_owner_pid="$BASHPID"
     PZ_WRITING_START_LOCK="$(world_lock_path)"
     PZ_WRITING_START_TOKEN="$(python3 "${SCRIPT_DIR}/../internal/writing_start_admission.py" prepare \

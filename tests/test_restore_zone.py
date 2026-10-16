@@ -20,12 +20,20 @@ zone = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(zone)
 
 
+# Complete synthetic index protocol; only the proprietary reader is doubled.
+from test_terrain_tiles import fixture, fixture_index, FixtureIndexer, tiles
+
+
 def chunk(payload):
-    return b'\0' + struct.pack('>iiq', 249, len(payload) + 17, zlib.crc32(payload)) + payload
+    return fixture(payload.hex())
 
 
 class ZoneTests(unittest.TestCase):
     def setUp(self):
+        for module in (zone, tiles):
+            reader = patch.object(module, 'NativeIndexer', FixtureIndexer)
+            reader.start(); self.addCleanup(reader.stop)
+
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.live = self.root / 'live/Saves/Multiplayer/world'
@@ -96,9 +104,11 @@ class ZoneTests(unittest.TestCase):
     def dictionary_change(self, old, new):
         (self.source / 'WorldDictionary.bin').write_bytes(struct.pack('>i', 1) + b'old')
         (self.live / 'WorldDictionary.bin').write_bytes(struct.pack('>i', 1) + b'new')
-        return patch.object(zone, 'NativeIndexer', **{'return_value.dictionaries.return_value': [
-            {'registries': old, 'removed_or_obsolete': 0},
-            {'registries': new, 'removed_or_obsolete': 1}]})
+        class DictionaryIndexer(FixtureIndexer):
+            def dictionaries(self, paths):
+                return [{'registries': old, 'removed_or_obsolete': 0},
+                        {'registries': new, 'removed_or_obsolete': 1}]
+        return patch.object(zone, 'NativeIndexer', DictionaryIndexer)
 
     def test_extended_dictionary_is_accepted_without_global_rollback(self):
         old = {'items': {'1': 'Base.Wood'}, 'scripts': {'2': ['Base.Shelf', '123']}}
@@ -163,13 +173,13 @@ class ZoneTests(unittest.TestCase):
         before = self.state()
         real = zone.replace_file
         calls = 0
-        def fail(source, dest):
+        def fail(source, dest, *args, **kwargs):
             nonlocal calls
             calls += 1
             if calls == 1:
-                real(source, dest)
+                real(source, dest, *args, **kwargs)
                 raise OSError('simulated failure after replacement')
-            return real(source, dest)
+            return real(source, dest, *args, **kwargs)
         with patch.object(zone, 'replace_file', side_effect=fail):
             with self.assertRaises(OSError): zone.restore(self.args)
         self.assertEqual(self.state(), before)
@@ -224,10 +234,10 @@ class ZoneTests(unittest.TestCase):
         before = self.state()
         real = zone.replace_file
         calls = 0
-        def fail(source, dest):
+        def fail(source, dest, *args, **kwargs):
             nonlocal calls
-            calls += 1
-            real(source, dest)
+            if Path(dest).is_relative_to(self.live): calls += 1
+            real(source, dest, *args, **kwargs)
             if calls == 2: raise OSError('failure after second chunk replacement')
         with patch.object(tiles, 'NativeIndexer', FixtureIndexer), patch.object(zone, 'replace_file', side_effect=fail):
             with self.assertRaises(OSError): zone.restore(self.args)
@@ -243,15 +253,17 @@ class ZoneTests(unittest.TestCase):
     def test_failed_revert_keeps_recovery_copy(self):
         original = zone.replace_file
         calls = 0
-        def failing(source, destination):
+        def failing(source, destination, expected_sha256=None):
             nonlocal calls
-            calls += 1
-            if calls == 1:
-                original(source, destination)
-                raise OSError('write failure')
-            raise OSError('revert failure')
+            if Path(destination).is_relative_to(self.live):
+                calls += 1
+                if calls == 1:
+                    original(source, destination, expected_sha256)
+                    raise OSError('write failure')
+                raise OSError('revert failure')
+            return original(source, destination, expected_sha256)
         with patch.object(zone, 'replace_file', side_effect=failing):
-            with self.assertRaisesRegex(OSError, 'revert failure'):
+            with self.assertRaisesRegex(ValueError, 'copies conservées'):
                 zone.restore(self.args)
         [recovery] = (self.root / 'recovery').glob('.zone-rollback-*')
         self.assertEqual((recovery / 'before/Saves/Multiplayer/world/map/1/1.bin').read_bytes(), chunk(b'broken'))
@@ -277,12 +289,16 @@ class ZoneTests(unittest.TestCase):
             'from pathlib import Path\n'
             f'spec = importlib.util.spec_from_file_location("zone", {str(ROOT / "data/scripts/lib/restore_zone.py")!r})\n'
             'zone = importlib.util.module_from_spec(spec); spec.loader.exec_module(zone)\n'
+            f'sys.path.insert(0, {str(ROOT / "tests")!r})\n'
+            'from test_terrain_tiles import FixtureIndexer\n'
+            'zone.NativeIndexer = FixtureIndexer\n'
             'original = zone.replace_file\n'
             'calls = 0\n'
-            'def slow(source, destination):\n'
+            'def slow(source, destination, *args, **kwargs):\n'
             '    global calls\n'
+            '    original(source, destination, *args, **kwargs)\n'
+            f'    if not Path(destination).is_relative_to(Path({str(self.live)!r})): return\n'
             '    calls += 1\n'
-            '    original(source, destination)\n'
             '    if calls == 1:\n'
             f'        Path({str(applying)!r}).touch()\n'
             '        time.sleep(10)\n'

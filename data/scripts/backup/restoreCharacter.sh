@@ -83,13 +83,22 @@ _same_file() {
 REQUIRED_PLAYER_COLS="world username playerIndex name steamid x y z worldversion data isDead"
 assert_players_schema() {
     local db="$1" label="$2" tbl cols c
-    tbl="$(sqlite3 "$db" "SELECT name FROM sqlite_master WHERE type='table' AND name='networkPlayers';" 2>/dev/null || true)"
+    tbl="$(sqlite3 -readonly "$db" "SELECT name FROM sqlite_master WHERE type='table' AND name='networkPlayers';" 2>/dev/null || true)"
     [[ "$tbl" == "networkPlayers" ]] || die "Schéma incompatible (${label}) : table 'networkPlayers' absente dans ${db}."
-    cols="$(sqlite3 "$db" "PRAGMA table_info(networkPlayers);" 2>/dev/null || true)"
+    cols="$(sqlite3 -readonly "$db" "PRAGMA table_info(networkPlayers);" 2>/dev/null || true)"
     for c in $REQUIRED_PLAYER_COLS; do
         awk -F'|' -v want="$c" '$2 == want { found=1 } END { exit !found }' <<<"$cols" \
             || die "Schéma incompatible (${label}) : colonne '${c}' absente dans ${db} (attendu : ${REQUIRED_PLAYER_COLS})."
     done
+    # The INSERT below names every supported column. Silently ignoring a new
+    # column can discard mod metadata or replace it by a destination default.
+    while IFS='|' read -r _ c _; do
+        case " id splitUsername ${REQUIRED_PLAYER_COLS} " in
+            *" ${c} "*) ;;
+            *) die "Schéma incompatible (${label}) : colonne non prise en charge '${c}'. Rien n'a été modifié." ;;
+        esac
+    done <<<"$cols"
+    PLAYER_SCHEMA_COLS="$cols"
 }
 
 # --- Parsing des arguments --------------------------------------------------
@@ -164,23 +173,71 @@ fi
 LIVE_DB="$(find_players_db_strict "${PZ_SOURCE_DIR}")" || die "players.db live introuvable ou ambigu sous ${PZ_SOURCE_DIR}/Saves/Multiplayer (voir détail ci-dessus). Rien n'a été modifié."
 
 # --- C3 : pré-validations avant toute modification ---------------------------
+[[ -f "$BK_DB" && ! -L "$BK_DB" && -f "$LIVE_DB" && ! -L "$LIVE_DB" ]] \
+    || die "players.db doit être un fichier régulier sans lien symbolique."
+
 if _same_file "$LIVE_DB" "$BK_DB"; then
     die "Source et destination identiques (${LIVE_DB}) : refuse de restaurer un monde sur lui-même. Rien n'a été modifié."
 fi
-assert_players_schema "$BK_DB" "backup"
+# Preview/schema queries must not recover a destination journal or create SHM.
+for suffix in -wal -shm -journal; do
+    [[ ! -e "${LIVE_DB}${suffix}" && ! -L "${LIVE_DB}${suffix}" ]] \
+        || die "Destination SQLite avec fichier auxiliaire ${suffix} : état arrêté cohérent requis."
+done
+# Never let SQLite recover/checkpoint a source journal or create source SHM.
+# A journal needs a separate, explicitly prepared consistent copy first.
+for suffix in -wal -shm -journal; do
+    [[ ! -e "${BK_DB}${suffix}" && ! -L "${BK_DB}${suffix}" ]] \
+        || die "Source SQLite avec fichier auxiliaire ${suffix} : copie cohérente requise, source intacte."
+done
+# The immutable URI applies only to our own frozen copy. The original may
+# still be writable by another process; never assert that it is immutable.
+SOURCE_DB_DIR="$(mktemp -d)" || die "Impossible de préparer la source SQLite."
+SQL_TMP=""
+cleanup_character_restore() {
+    [[ -z "$SQL_TMP" ]] || rm -f -- "$SQL_TMP"
+    rm -rf -- "$SOURCE_DB_DIR"
+}
+trap cleanup_character_restore EXIT
+SOURCE_SHA="$(sha256sum -- "$BK_DB")" || die "Lecture de la source SQLite impossible."
+SOURCE_SHA="${SOURCE_SHA%% *}"
+cp --reflink=never -- "$BK_DB" "$SOURCE_DB_DIR/players.db" \
+    || die "Copie de la source SQLite impossible."
+for suffix in -wal -shm -journal; do
+    [[ ! -e "${BK_DB}${suffix}" && ! -L "${BK_DB}${suffix}" ]] \
+        || die "Source SQLite modifiée pendant la copie : restauration refusée."
+done
+COPIED_SHA="$(sha256sum -- "$SOURCE_DB_DIR/players.db")" || die "Lecture de la copie SQLite impossible."
+[[ "${COPIED_SHA%% *}" == "$SOURCE_SHA" ]] && cmp -s -- "$BK_DB" "$SOURCE_DB_DIR/players.db" \
+    || die "Source SQLite modifiée pendant la copie : restauration refusée."
+BK_URI="$(python3 - "$SOURCE_DB_DIR/players.db" <<'PYURI'
+from pathlib import Path
+import sys
+print(Path(sys.argv[1]).resolve(strict=True).as_uri() + '?mode=ro&immutable=1')
+PYURI
+)" || die "Impossible de résoudre la source SQLite en lecture seule."
+assert_players_schema "$BK_URI" "backup"
+BACKUP_PLAYER_SCHEMA="$PLAYER_SCHEMA_COLS"
 assert_players_schema "$LIVE_DB" "live"
+PLAYER_COPY_COLS="world,username,playerIndex,name,steamid,x,y,z,worldversion,data,isDead"
+backup_split=0; live_split=0
+awk -F'|' '$2 == "splitUsername" { found=1 } END { exit !found }' <<<"$BACKUP_PLAYER_SCHEMA" && backup_split=1
+awk -F'|' '$2 == "splitUsername" { found=1 } END { exit !found }' <<<"$PLAYER_SCHEMA_COLS" && live_split=1
+[[ "$backup_split" == "$live_split" ]] \
+    || die "Schéma incompatible : splitUsername absent d'une des deux bases. Rien n'a été modifié."
+if [[ "$backup_split" == 1 ]]; then PLAYER_COPY_COLS+=",splitUsername"; fi
 
 # sql_escape vient de lib/common.sh
 ESC_USER="$(sql_escape "$USERNAME")"
 
 # Affiche le(s) perso(s) du joueur (table networkPlayers) dans la base donnée.
 show_char() {
-    sqlite3 -header -column "$1" \
+    sqlite3 -readonly -header -column "$1" \
         "SELECT id, username, name, steamid, isDead, length(data) AS datalen FROM networkPlayers WHERE username='${ESC_USER}';" 2>/dev/null || true
 }
 
 # --- Le perso existe-t-il dans le backup ? ----------------------------------
-in_backup=$(sqlite3 "$BK_DB" "SELECT COUNT(*) FROM networkPlayers WHERE username='${ESC_USER}';" 2>/dev/null || echo "0")
+in_backup=$(sqlite3 -readonly "$BK_URI" "SELECT COUNT(*) FROM networkPlayers WHERE username='${ESC_USER}';" 2>/dev/null || echo "0")
 if [[ "$in_backup" -eq 0 ]]; then
     die "Aucun personnage '${USERNAME}' dans ce backup ($(basename "$BACKUP_PATH")).
 Vérifie le pseudo (sensible à la casse) ou choisis un autre backup."
@@ -188,16 +245,23 @@ fi
 
 log "=== Restauration du personnage '${USERNAME}' ==="
 log "Source : $(basename "$BACKUP_PATH")  (${in_backup} ligne(s))"
-show_char "$BK_DB"
+show_char "$BK_URI"
 
 if [[ "$DRY_RUN" == true ]]; then
-    in_live=$(sqlite3 "$LIVE_DB" "SELECT COUNT(*) FROM networkPlayers WHERE username='${ESC_USER}';" 2>/dev/null || echo "0")
+    in_live=$(sqlite3 -readonly "$LIVE_DB" "SELECT COUNT(*) FROM networkPlayers WHERE username='${ESC_USER}';" 2>/dev/null || echo "0")
     log "Remplacerait ${in_live} perso(s) live de '${USERNAME}' par celui du backup."
     # Le refus dit déjà « rien n'a été modifié » : ne pas le répéter ici.
     [[ "$REFUSED" == false ]] || die_server_active "Restauration personnage"
     log "[dry-run] Rien n'a été modifié."
     exit 0
 fi
+
+# The native reader sees the frozen SQLite copy and private dictionary/blob
+# copies. Validate the whole selected character before DELETE, under WORLD.
+python3 "${SCRIPT_DIR}/../lib/character_preflight.py" \
+    --source-db "$SOURCE_DB_DIR/players.db" --source-dictionary "$(dirname "$BK_DB")/WorldDictionary.bin" \
+    --world "$(dirname "$LIVE_DB")" --username "$USERNAME" --stage "$SOURCE_DB_DIR/native-check" \
+    || die "Personnage incompatible avec le moteur/mods/dictionnaire courant — destination intacte."
 
 # --- Écriture transactionnelle : écrase le perso live puis ré-insère -------
 # On copie toutes les colonnes SAUF id (PK auto-assignée pour éviter les
@@ -209,14 +273,14 @@ fi
 # (« database bk is locked », prouvé) — ATTACH la précède donc et DETACH la
 # suit ; DELETE + INSERT restent atomiques.
 SQL_TMP="$(mktemp)" || die "Impossible de créer le fichier SQL temporaire."
-trap 'rm -f "$SQL_TMP"' EXIT
+trap cleanup_character_restore EXIT
 {
     printf '.bail on\n'
-    printf "ATTACH DATABASE '%s' AS bk;\n" "$(sql_escape "$BK_DB")"
+    printf "ATTACH DATABASE '%s' AS bk;\n" "$(sql_escape "$BK_URI")"
     printf 'BEGIN IMMEDIATE;\n'
     printf "DELETE FROM networkPlayers WHERE username='%s';\n" "$ESC_USER"
-    printf 'INSERT INTO networkPlayers (world,username,playerIndex,name,steamid,x,y,z,worldversion,data,isDead)\n'
-    printf "SELECT world,username,playerIndex,name,steamid,x,y,z,worldversion,data,isDead\n"
+    printf 'INSERT INTO networkPlayers (%s)\n' "$PLAYER_COPY_COLS"
+    printf 'SELECT %s\n' "$PLAYER_COPY_COLS"
     printf "FROM bk.networkPlayers WHERE username='%s';\n" "$ESC_USER"
     printf 'COMMIT;\n'
     printf 'DETACH DATABASE bk;\n'
@@ -227,7 +291,7 @@ if ! sqlite3 -bail "$LIVE_DB" < "$SQL_TMP"; then
     die "Échec de la restauration du personnage '${USERNAME}' (transaction annulée, base live inchangée)."
 fi
 rm -f "$SQL_TMP"
-trap - EXIT
+SQL_TMP=""
 # (cf. acquisition ci-dessus : ni acquire ni release ne touche à stderr.)
 release_world_lock 2>/dev/null || true
 
