@@ -219,7 +219,7 @@ class WorldSafety(unittest.TestCase):
         self.assertTrue(injected)
         self.assertEqual((self.live / 'map/0/0.bin').read_bytes(), external)
         self.assert_sources_unchanged()
-        manifest = json.loads(next(self.recovery.glob('zone-rollback-*/manifest.json')).read_text())
+        manifest = json.loads(next(self.recovery.glob('.zone-rollback-*/manifest.json')).read_text())
         self.assertEqual(manifest['status'], 'rollback-failed')
 
     def test_whole_chunk_success_installs_validated_bytes_only(self):
@@ -262,8 +262,11 @@ class WorldSafety(unittest.TestCase):
                 self.run_restore()
         self.assertEqual(snapshot(self.live), self.before)
         self.assert_sources_unchanged()
-        manifest = json.loads(next(self.recovery.glob('zone-rollback-*/manifest.json')).read_text())
-        self.assertEqual(manifest['status'], 'reverted')
+        self.assertEqual(list(self.recovery.iterdir()), [])
+        zone.transactions.check_clean(self.live.parents[2])
+        state=zone.transactions.location(self.live.parents[2])[1]
+        [record]=state.glob('*.json')
+        self.assertEqual(json.loads(record.read_text())['state'], 'reverted')
 
     def test_hardlinked_backup_not_modified_by_restore(self):
         target = self.live / 'map/0/0.bin'
