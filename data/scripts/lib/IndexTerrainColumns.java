@@ -116,27 +116,22 @@ public final class IndexTerrainColumns {
         Field field = zombie.world.WorldDictionary.class.getDeclaredField("data");
         field.setAccessible(true);
         field.set(null, data);
-        Field itemScript = zombie.world.ItemInfo.class.getDeclaredField("scriptItem");
-        itemScript.setAccessible(true);
-        Field entityScript = zombie.world.DictionaryInfo.class.getDeclaredField("entityScript");
-        entityScript.setAccessible(true);
-        Field loaded = zombie.world.DictionaryInfo.class.getDeclaredField("isLoaded");
-        loaded.setAccessible(true);
-        for (Object info : ((Map<?, ?>) field(data, type, "itemIdToInfoMap")).values()) {
-            var item = (zombie.world.ItemInfo) info;
-            var script = zombie.scripting.ScriptManager.instance.getSpecificItem(item.getFullType());
-            itemScript.set(item, script);
-            entityScript.set(item, script);
-            loaded.setBoolean(item, script != null);
-            if (script != null) script.setRegistry_id(item.getRegistryID());
+        // Match WorldDictionary.init's in-memory reconciliation, without its
+        // source backup/save operations. A restored active mod must reinstate
+        // its saved registry IDs; inactive/obsolete definitions remain invalid.
+        Method parse = type.getDeclaredMethod("parseInfoLoadList", Map.class);
+        parse.setAccessible(true);
+        for (String name : List.of("getItemLoadList", "getEntityLoadList")) {
+            Method list = zombie.world.WorldDictionary.class.getDeclaredMethod(name);
+            list.setAccessible(true);
+            parse.invoke(data, list.invoke(null));
         }
-        for (Object info : ((Map<?, ?>) field(data, type, "entityIdToInfoMap")).values()) {
-            var entity = (zombie.world.EntityInfo) info;
-            var script = zombie.scripting.ScriptManager.instance.getSpecificEntity(entity.getFullType());
-            entityScript.set(entity, script);
-            loaded.setBoolean(entity, script != null);
-            if (script != null) script.setRegistry_id(entity.getRegistryID());
-        }
+        Method current = type.getDeclaredMethod("parseCurrentInfoSet");
+        current.setAccessible(true);
+        current.invoke(data);
+        Method strings = zombie.world.StringDictionary.class.getDeclaredMethod("parseRegisters");
+        strings.setAccessible(true);
+        strings.invoke(null);
         Method bind = zombie.world.ScriptsDictionary.class.getDeclaredMethod("parseRegisters");
         bind.setAccessible(true);
         bind.invoke(null);

@@ -92,6 +92,27 @@ class WritingEnvelopes(unittest.TestCase):
         with self.assertRaisesRegex(writing.CleanupError,'Conflicting replayed'):
             writing.clean_blob(blob,None,chunk=True,native_records=replay)
 
+    def test_native_moveable_runtime_names_share_one_canonical_registry(self):
+        blob,_=floor_bag()
+        tail=item(9,900,b'MOVE-ONE')+item(9,901,b'MOVE-TWO')
+        data=blob[17:]+tail
+        original=b'\0'+struct.pack('>iiq',249,len(data)+17,zlib.crc32(data))+data
+        records=[]
+        for start,rid,name,kind,parent in [(33,2,'Base.Bag_Schoolbag','InventoryContainer',-1),
+                (52,1,'Base.Notebook','Literature',33),
+                (len(blob),9,'Base.Moveable','Moveable',-1),
+                (len(blob)+len(item(9,900,b'MOVE-ONE')),9,'Base.Moveable','Moveable',-1)]:
+            records.append(dict(record_start=start,record_end=start+4+struct.unpack_from('>i',original,start)[0],
+                registry_id=rid,registryType=name,itemType=name,itemId=struct.unpack_from('>i',original,start+7)[0],
+                parent=parent,**{'class':kind}))
+        records[-2]['itemType']='Base.furniture_chair';records[-1]['itemType']='Base.furniture_table'
+        cleaned,_=writing.clean_blob(original,None,chunk=True,native_records=records)
+        body=floor_bag(dirty=False)[0][17:]+tail
+        self.assertEqual(cleaned,b'\0'+struct.pack('>iiq',249,len(body)+17,zlib.crc32(body))+body)
+        records[-1]['registryType']='Conflicting.Definition'
+        with self.assertRaisesRegex(writing.CleanupError,'Conflicting native inventory registry'):
+            writing.clean_blob(original,None,chunk=True,native_records=records)
+
     def test_unclassified_direct_mod_container_is_refused(self):
         blob, _ = floor_bag(rid=3)
         with self.assertRaises(writing.CleanupError):

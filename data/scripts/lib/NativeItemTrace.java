@@ -46,6 +46,9 @@ public final class NativeItemTrace {
         if(item==null || !record.optBoolean("consumed") || input.position()!=record.getInt("record_end"))
             throw new Refusal("Native loader ignored or truncated item rid="+record.getInt("registry_id")+" at "+record.getInt("record_start")+" consumed="+record.optBoolean("consumed")+" null="+(item==null));
         String kind=item instanceof Literature?"Literature":item instanceof InventoryContainer?"InventoryContainer":item.getClass().getSimpleName();
-        record.remove("consumed");record.put("class",kind).put("itemType",item.getFullType()).put("itemId",item.getID());
+        String registryType=zombie.world.WorldDictionary.getItemTypeFromID((short)record.getInt("registry_id"));
+        if(registryType==null) throw new Refusal("Missing canonical inventory registry type");
+        record.remove("consumed");record.put("class",kind).put("itemType",item.getFullType())
+            .put("registryType",registryType).put("itemId",item.getID());
     }
 }

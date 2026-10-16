@@ -547,7 +547,12 @@ def clean_blob(blob, registry, version=VERSION, chunk=False, native_records=None
         known={}; classes={}; indexed={}
         for record in native_records:
             start,end=record['record_start'],record['record_end']
-            rid=record['registry_id'];kind=record['class'];name=record['itemType']
+            rid=record['registry_id'];kind=record['class']
+            # Moveable uses one registry type while its runtime full type
+            # identifies the picked-up sprite. Keep the registry canonical;
+            # complete before/after identities still compare runtime types.
+            name=record.get('registryType',record['itemType'])
+            if not isinstance(name,str) or not name:raise CleanupError('Invalid native registry type')
             if (type(start) is not int or type(end) is not int
                     or not (17 if chunk else 0)<=start<end<=len(blob) or end-start<11
                     or struct.unpack_from('>i',blob,start)[0]!=end-start-4
@@ -563,7 +568,9 @@ def clean_blob(blob, registry, version=VERSION, chunk=False, native_records=None
             if parent!=-1 and (parent not in indexed or not indexed[parent]['record_start']<start<end<=indexed[parent]['record_end']):
                 raise CleanupError('Invalid native inventory ancestry')
             if rid in known and known[rid]!=name:raise CleanupError('Conflicting native inventory registry')
-            known[rid]=name; classes[name]={'Literature':'literature','InventoryContainer':'container'}.get(kind,kind)
+            classification={'Literature':'literature','InventoryContainer':'container'}.get(kind,kind)
+            if name in classes and classes[name]!=classification:raise CleanupError('Conflicting native inventory class')
+            known[rid]=name; classes[name]=classification
             indexed[start]=record
         registry=Registry(known,classes)
         for start,record in indexed.items():
@@ -1071,7 +1078,7 @@ class JavaValidator:
     @staticmethod
     def item_identity(records):
         offsets={r['record_start']:i for i,r in enumerate(records)}
-        return [(r['registry_id'],r['class'],r['itemType'],r['itemId'],
+        return [(r['registry_id'],r.get('registryType',r['itemType']),r['class'],r['itemType'],r['itemId'],
                  -1 if r['parent']==-1 else offsets[r['parent']]) for r in records]
 
     def validate_storage(self,stage,files,rows,root):

@@ -51,6 +51,10 @@ personnages et `reanimated.bin`. Un objet ignoré, absent ou tronqué par le lec
 tolérant du jeu est un refus, même si le chargement normal ne lève aucune erreur.
 La compatibilité exacte avec le JAR reste nécessaire ; une instrumentation
 incompatible bloque avant mutation, sans repli sur les motifs binaires.
+Le lecteur suit la réconciliation native du dictionnaire avec le profil de mods
+sélectionné : un mod effectivement réactivé retrouve ses identifiants existants.
+Les objets d'un mod toujours inactif ou obsolète restent refusés. Cette lecture
+ne réactive aucun mod dans la configuration du serveur.
 Le parcours utilise huit lecteurs avec une prélecture limitée à seize fichiers ;
 le traitement des documents reste séquentiel. Le parcours complet peut prendre
 plusieurs minutes sur un grand monde ; l'unité réserve jusqu'à vingt minutes au
@@ -114,3 +118,11 @@ vérifie que le transfert authentifié fonctionne malgré lui ; elle est sautée
 si le noyau interdit les namespaces, et doit alors être validée sur l'hôte cible.
 Les tests du nettoyeur vérifient séparément les sauvegardes arrêtées et les copies
 de récupération.
+
+`tests/native_context_reinstatement.py` est une régression native facultative,
+à exécuter dans un espace de noms Linux isolé avec des copies de l'installation
+et du monde. Elle exige deux profils explicites (actif et restauré), un chunk et
+un identifiant d'objet : le premier doit atteindre le refus natif de cet objet,
+le second doit réellement le charger. Une panne de compilation ou une autre
+erreur de lecture ne satisfait pas le témoin de refus. Les sources restent
+inchangées et aucun serveur n'est démarré.
