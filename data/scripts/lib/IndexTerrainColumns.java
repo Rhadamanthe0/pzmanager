@@ -244,6 +244,12 @@ public final class IndexTerrainColumns {
         if(zombie.characters.SurvivorFactory.Surnames.isEmpty()) zombie.characters.SurvivorFactory.Surnames.add("constructor");
         zombie.core.skinnedmodel.population.HairStyles.init();
         zombie.core.skinnedmodel.population.BeardStyles.init();
+        // Equipping saved items with entity components registers them with
+        // an Engine. Use a fresh private in-memory engine per blob, without
+        // GameEntityManager.Init's entity_data.bin load or gameplay systems.
+        zombie.entity.GameEntityManager.Reset();
+        Field engine=zombie.entity.GameEntityManager.class.getDeclaredField("engine");
+        engine.setAccessible(true);engine.set(null,new zombie.entity.Engine());
         NativeItemTrace.begin(input);
         if(entry.getString("kind").equals("player")) {
             // A neutral constructor visual avoids random character creation
