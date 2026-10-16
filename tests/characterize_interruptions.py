@@ -103,16 +103,18 @@ def zone_case(fixture, phase: str, results: Path) -> dict:
         assert changed == expected, (phase, changed)
         assert fixture.snapshot(case.source) == case.backup_before
         case.assert_untouched()
-        recovery = next(case.recovery.glob('zone-rollback-*'))
-        manifest = json.loads((recovery/'manifest.json').read_text())
-        expected_status = 'reverted' if phase.startswith('term') else 'applying'
-        assert manifest['status'] == expected_status
         root=case.live.parents[2]
         if phase.startswith('term'):
             fixture.zone.transactions.check_clean(root)
-        else:
-            with case.assertRaisesRegex(ValueError,'unfinished'):
-                fixture.zone.transactions.check_clean(root)
+            assert list(case.recovery.iterdir())==[]
+            return dict(scenario='zone:'+phase, manifest='reverted', changed_files=changed,
+                        source_unchanged=True, recovery_removed_after_verified_revert=True,
+                        native_reader='synthetic protocol double', startup_journal_gate_verified=True)
+        recovery = next(case.recovery.glob('.zone-rollback-*'))
+        manifest = json.loads((recovery/'manifest.json').read_text())
+        assert manifest['status'] == 'applying'
+        with case.assertRaisesRegex(ValueError,'unfinished'):
+            fixture.zone.transactions.check_clean(root)
         for entry in manifest['files']:
             for root, key in ((recovery/'before/Saves/Multiplayer/test', 'before_sha256'),
                               (recovery/'staged', 'after_sha256')):
@@ -168,7 +170,7 @@ def writing_case(fixture, phase: str, results: Path) -> dict:
 
 
 def full_restore_case(fixture, results: Path) -> dict:
-    case = fixture.FullRestorePreflight('test_stopped_existing_live_retains_original_recovery')
+    case = fixture.FullRestorePreflight('test_stopped_existing_live_checks_then_removes_temporary_recovery')
     case.setUp()
     try:
         case.live_world()
@@ -176,18 +178,16 @@ def full_restore_case(fixture, results: Path) -> dict:
         before = fixture.snapshot(case.live)
         source = fixture.snapshot(case.backup)
         bin_dir = case.root/'bin'; bin_dir.mkdir()
-        rsync = bin_dir/'rsync'
-        real_rsync = shutil.which('rsync')
-        rsync.write_text('#!'+sys.executable+'\n'+
+        wrapper = bin_dir/'mv'
+        real_mv = shutil.which('mv')
+        wrapper.write_text('#!'+sys.executable+'\n'+
             'import os,signal,subprocess,sys\nfrom pathlib import Path\n'+
-            'source,dest=map(Path,sys.argv[-2:])\n'+
-            'if dest==Path(os.environ["PZ_SOURCE_DIR"]):\n'+
-            '    rel="Saves/Multiplayer/test/sentinel.bin"\n'+
-            '    out=dest/rel;out.parent.mkdir(parents=True,exist_ok=True)\n'+
-            '    subprocess.run(['+repr(real_rsync)+',"-a",str(source/rel),str(out)],check=True)\n'+
+            'code=subprocess.call(['+repr(real_mv)+']+sys.argv[1:])\n'+
+            'destination=Path(sys.argv[-1])\n'+
+            'if code==0 and destination.name=="Saves" and destination.parent.name.startswith(".restore-previous-"):\n'+
             '    os.killpg(os.getpgrp(),signal.SIGKILL)\n'+
-            'os.execv('+repr(real_rsync)+',['+repr(real_rsync)+']+sys.argv[1:])\n')
-        rsync.chmod(0o700)
+            'sys.exit(code)\n')
+        wrapper.chmod(0o700)
         env = dict(case.env, PATH=str(bin_dir)+':'+os.environ['PATH'])
         with (results/'full-restore-after-first-file.log').open('wb') as output:
             process = subprocess.Popen(['bash',str(case.script),str(case.backup)], env=env,
@@ -197,21 +197,21 @@ def full_restore_case(fixture, results: Path) -> dict:
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid,signal.SIGKILL);process.wait();raise
         assert code == -signal.SIGKILL, code
-        recovered = list((case.home/'OLD').glob('ZomboidBROKEN_*'))
+        recovered = list(case.home.glob('.restore-previous-*'))
         assert len(recovered) == 1
         assert fixture.snapshot(recovered[0]) == before
         assert fixture.snapshot(case.backup) == source
         installed = fixture.snapshot(case.live)
-        assert installed == {'Saves/Multiplayer/test/sentinel.bin': source['Saves/Multiplayer/test/sentinel.bin']}
+        assert installed == {}
         sys.path.insert(0,str(case.repo/'data/scripts/lib'))
         from world_transaction import check_clean
         with case.assertRaisesRegex(ValueError,'unfinished'):check_clean(case.live)
         stages = list(case.home.glob('.restore-staging-*'))
         assert len(stages) == 1 and fixture.snapshot(stages[0]) == source
-        return dict(scenario='full_restore:kill_process_group_after_first_file',
+        return dict(scenario='full_restore:kill_after_first_directory_move',
                     exit=code, current_directory='incomplete', recovery_old='intact',
                     staging='intact', backup_source='unchanged', restart_tested=False,
-                    service_boundary='explicit test double', copying='real rsync on selected fixture file')
+                    service_boundary='explicit test double', copying='real staging rsync and directory rename')
     finally:
         case.doCleanups()
 

@@ -3,30 +3,32 @@
 #
 # Couvre (data/scripts/backup/restoreZomboidData.sh uniquement) :
 #   (0) câblage statique : staging mktemp -d sous PZ_HOME + trap EXIT/INT/TERM,
-#       ordre main (copie -> validation staging -> mv OLD -> swap),
+#       ordre main (copie -> validation staging -> copie temporaire -> swap),
 #       validate_staging_dir, validate_restored_live (compte mondes > 0),
 #       rollback_live, verrou monde --required + arrêt prouvé (non-régression
-#       C1), OLD jamais supprimé, pas de start auto.
-#   (1) succès nominal : live remplacé par le backup, OLD conservé (contenu
-#       live d'origine), staging nettoyé, résumé à 1 monde.
+#       C1), répertoires restaurés (dont Lua), plus de OLD, pas de start auto.
+#   (1) succès nominal : Saves/db/Server/Lua remplacés par le backup, autres
+#       fichiers du live conservés, copie temporaire et staging supprimés ;
+#       backup sans Lua -> Lua du live conservé ; Server seul -> seul Server
+#       remplacé.
 #   (2) archive corrompue (Saves vide ; dir totalement vide) -> die, live
-#       intact, aucun OLD créé.
-#   (3) manque d'espace (mock rsync exit 11 sur swap) -> rollback, live
-#       intact (= contenu d'origine), OLD conservé.
-#   (4) erreur extraction/copie (mock rsync exit 23 sur copie staging) ->
-#       die, live intact, aucun OLD créé (mv jamais atteint).
-#   (5) SIGTERM pendant le swap -> exit non-zéro, live ou OLD récupérable
-#       (non vide), staging nettoyé.
-#   (6) validation finale : backup Server seul (0 monde) -> swap puis échec
-#       final + rollback, live intact, OLD conservé ; staging vide (mock
-#       EMPTY) -> refus avant bascule, live intact.
+#       intact, aucune copie laissée.
+#   (3) échec d'un mv pendant la bascule -> rollback, live = arbre d'origine
+#       exact, copie supprimée ; échec du rollback -> copie conservée ; deux
+#       restaurations successives à horodatage identique.
+#   (4) erreur de copie (mock rsync exit 23 sur copie staging) -> die, live
+#       intact, aucune copie laissée.
+#   (5) SIGTERM pendant la bascule -> exit non-zéro, live remis à l'origine,
+#       staging et copie supprimés.
+#   (6) validation finale : Saves sans monde -> bascule puis rollback, live
+#       intact ; staging vide (mock EMPTY) -> refus avant bascule.
 #
 # Preuves réelles : vrai script restoreZomboidData.sh, vrai flock/mv/rsync
-# (rsync mocké par PATH mais DÉLÉGUÉ au vrai /usr/bin/rsync pour la copie —
-# seuls le code de sortie et le sommeil sont pilotés), mock systemctl par
-# PATH (état serveur piloté). Isolé : XDG_RUNTIME_DIR + PZ_HOME +
-# PZ_SOURCE_DIR sous sandbox, stub .env (sauvegarde + restauration du .env
-# préexistant via trap EXIT). Ne touche à aucun monde réel.
+# (rsync et mv mockés par PATH mais DÉLÉGUÉS aux vrais binaires — seuls le
+# code de sortie et le sommeil sont pilotés), mock systemctl par PATH (état
+# serveur piloté). Isolé : XDG_RUNTIME_DIR + PZ_HOME + PZ_SOURCE_DIR sous
+# sandbox, stub .env (sauvegarde + restauration du .env préexistant via trap
+# EXIT). Ne touche à aucun monde réel.
 set -euo pipefail
 
 ROOT="${PZ_TEST_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -109,36 +111,44 @@ echo "mock-systemctl: args inattendus: $*" >&2
 exit 99
 MOCKEOF
 chmod +x "${BIN}/systemctl"
-# rsync : DÉLÈGUE la copie au vrai /usr/bin/rsync (fichiers réels), puis
-# pilote le code de sortie par n° d'appel (1 = backup->staging,
-# 2 = staging->live, 3 = rollback OLD->live, jamais forcé en échec).
-# MOCK_RSYNC_FAIL_FIRST / MOCK_RSYNC_FAIL_SECOND : code forcé sur l'appel
-# 1 / 2. MOCK_RSYNC_SLEEP_SECOND : sommeil avant la copie de l'appel 2.
-# MOCK_RSYNC_EMPTY=1 : ne copie rien (staging vide).
+# rsync : DÉLÈGUE la copie au vrai /usr/bin/rsync (seul appel : backup ->
+# staging). MOCK_RSYNC_FAIL_FIRST : code forcé. MOCK_RSYNC_EMPTY=1 : ne copie
+# rien (staging vide).
 cat > "${BIN}/rsync" <<'MOCKEOF'
 #!/usr/bin/env bash
 dest="${@: -1}"
-countfile="${MOCK_RSYNC_COUNT:-/tmp/pzm-c7-rsync-count}"
-n=0
-[[ -f "$countfile" ]] && n=$(cat "$countfile" 2>/dev/null || echo 0)
-n=$(( n + 1 )); echo "$n" > "$countfile"
-if [[ "$n" -eq 3 && -n "${MOCK_RSYNC_FAIL_ROLLBACK:-}" ]]; then
-    exit "$MOCK_RSYNC_FAIL_ROLLBACK"
-fi
 if [[ -n "${MOCK_RSYNC_EMPTY:-}" ]]; then
     mkdir -p "$dest"
     exit 0
 fi
-if [[ "$n" -eq 2 && -n "${MOCK_RSYNC_SLEEP_SECOND:-}" ]]; then
-    sleep "${MOCK_RSYNC_SLEEP_SECOND}"
-fi
 /usr/bin/rsync "$@"
 rc=$?
-if [[ "$n" -eq 1 && -n "${MOCK_RSYNC_FAIL_FIRST:-}" ]]; then exit "${MOCK_RSYNC_FAIL_FIRST}"; fi
-if [[ "$n" -eq 2 && -n "${MOCK_RSYNC_FAIL_SECOND:-}" ]]; then exit "${MOCK_RSYNC_FAIL_SECOND}"; fi
+if [[ -n "${MOCK_RSYNC_FAIL_FIRST:-}" ]]; then exit "${MOCK_RSYNC_FAIL_FIRST}"; fi
 exit "$rc"
 MOCKEOF
 chmod +x "${BIN}/rsync"
+# mv : DÉLÈGUE au vrai mv. Seuls les appels touchant le staging ou la copie
+# temporaire (.restore-*) sont numérotés : 1 = live/Saves -> copie,
+# 2 = staging/Saves -> live, 3 = live/db -> copie, 4 = staging/db -> live...
+# MOCK_MV_FAIL_AT=N : seul l'appel N échoue ; MOCK_MV_FAIL_FROM=N : tous les
+# appels >= N échouent (rollback compris) ; MOCK_MV_SLEEP_AT=N : sommeil avant
+# l'appel N.
+REAL_MV="$(command -v mv)"
+export REAL_MV
+cat > "${BIN}/mv" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [[ "$*" == *.restore-* ]]; then
+    countfile="${MOCK_MV_COUNT:?}"
+    n=0
+    [[ -f "$countfile" ]] && n=$(cat "$countfile" 2>/dev/null || echo 0)
+    n=$(( n + 1 )); echo "$n" > "$countfile"
+    [[ "$n" == "${MOCK_MV_SLEEP_AT:-}" ]] && sleep 4
+    [[ "$n" == "${MOCK_MV_FAIL_AT:-}" ]] && exit 1
+    [[ -n "${MOCK_MV_FAIL_FROM:-}" ]] && (( n >= MOCK_MV_FAIL_FROM )) && exit 1
+fi
+exec "$REAL_MV" "$@"
+MOCKEOF
+chmod +x "${BIN}/mv"
 REAL_DATE="$(command -v date)"
 export REAL_DATE
 cat > "${BIN}/date" <<'MOCKEOF'
@@ -154,38 +164,47 @@ export PATH="${BIN}:$PATH"
 
 # --- Helpers -----------------------------------------------------------------
 # make_world <racine> <marqueur> : monde plausible (Saves/world1/players.db +
-# map, Server/ini, db/sqlite) marqué pour distinguer live d'origine / backup.
+# map, Server/ini, db/sqlite, Lua/Aegis) marqué pour distinguer live d'origine
+# / backup.
 make_world() {
     local root="$1" mark="$2"
-    mkdir -p "$root/Saves/Multiplayer/world1" "$root/Server" "$root/db"
+    mkdir -p "$root/Saves/Multiplayer/world1" "$root/Server" "$root/db" "$root/Lua/Aegis/Roles"
     echo "${mark}-players" > "$root/Saves/Multiplayer/world1/players.db"
     echo "${mark}-map" > "$root/Saves/Multiplayer/world1/map.bin"
     echo "${mark}-ini" > "$root/Server/servertest.ini"
     echo "${mark}-db" > "$root/db/servertest.db"
+    echo "${mark}-roles" > "$root/Lua/Aegis/Roles/roles.txt"
 }
-# fresh_case <nom> : LIVE (marqueur LIVE) + BKP bon (marqueur BKP) vierges,
-# env sandbox exporté, mocks réinitialisés.
-LIVE=""; HOME_DIR=""; BKP=""
+# fresh_case <nom> : LIVE (marqueur LIVE, plus des fichiers non sauvegardés)
+# + BKP bon (marqueur BKP) vierges, env sandbox exporté, mocks réinitialisés.
+# ORIG = copie de référence du live d'origine.
+LIVE=""; HOME_DIR=""; BKP=""; ORIG=""
 fresh_case() {
     local name="$1"
     LIVE="${SANDBOX}/live-${name}"
     HOME_DIR="${SANDBOX}/home-${name}"
     BKP="${SANDBOX}/bkp-${name}"
-    rm -rf "$LIVE" "$HOME_DIR" "$BKP"
+    ORIG="${SANDBOX}/orig-${name}"
+    rm -rf "$LIVE" "$HOME_DIR" "$BKP" "$ORIG"
     mkdir -p "$HOME_DIR"
     make_world "$LIVE" "LIVE"
+    mkdir -p "$LIVE/Logs"
+    echo "live-log" > "$LIVE/Logs/console.txt"
+    echo "live-options" > "$LIVE/options.ini"
     make_world "$BKP" "BKP"
+    cp -a "$LIVE" "$ORIG"
     export PZ_SOURCE_DIR="$LIVE" PZ_HOME="$HOME_DIR"
     export BACKUP_DIR="${SANDBOX}/bdir-${name}"
     export PZ_USER="$(id -un)" PZ_SERVICE_NAME="zomboid.service"
     export MOCK_SYSTEMCTL_MODE=inactive
-    export MOCK_RSYNC_COUNT="${SANDBOX}/rsync-count-${name}"
-    rm -f "$MOCK_RSYNC_COUNT"
-    unset MOCK_RSYNC_FAIL_FIRST MOCK_RSYNC_FAIL_SECOND MOCK_RSYNC_SLEEP_SECOND MOCK_RSYNC_EMPTY MOCK_RSYNC_FAIL_ROLLBACK MOCK_FIXED_DATE
+    export MOCK_MV_COUNT="${SANDBOX}/mv-count-${name}"
+    rm -f "$MOCK_MV_COUNT"
+    unset MOCK_RSYNC_FAIL_FIRST MOCK_RSYNC_EMPTY MOCK_MV_FAIL_AT MOCK_MV_FAIL_FROM MOCK_MV_SLEEP_AT MOCK_FIXED_DATE
 }
 live_marker() { cat "$LIVE/Saves/Multiplayer/world1/players.db" 2>/dev/null || echo "(absent)"; }
-old_count() { find "${HOME_DIR}/OLD" -maxdepth 1 -mindepth 1 -name 'ZomboidBROKEN_*' 2>/dev/null | wc -l | tr -d ' '; }
+previous_count() { find "$HOME_DIR" -maxdepth 1 -name '.restore-previous-*' 2>/dev/null | wc -l | tr -d ' '; }
 staging_left() { find "$HOME_DIR" -maxdepth 1 -name '.restore-staging-*' 2>/dev/null | wc -l | tr -d ' '; }
+live_is_original() { diff -r -- "$ORIG" "$LIVE" >/dev/null; }
 run_restore() { bash "$SCRIPT" "$1" >"${SANDBOX}/out.log" 2>&1; }
 show_out() { sed 's/^/  [out] /' "${SANDBOX}/out.log" 2>/dev/null || true; }
 
@@ -212,26 +231,29 @@ grep -q 'assert_server_stopped_proven' "$SCRIPT" \
 grep -q 'acquire_world_lock.*--required' "$SCRIPT" \
     && ok "verrou monde --required (non-régression C1)" \
     || ko "acquire_world_lock --required absent (régression C1)"
-if grep -q 'rm -rf.*OLD' "$SCRIPT"; then
-    ko "OLD supprimé quelque part (doit être conservé)"
+grep -q '^readonly RESTORED_DIRS=(Saves db Server Lua)' "$SCRIPT" \
+    && ok "répertoires restaurés : Saves db Server Lua" \
+    || ko "liste RESTORED_DIRS inattendue"
+if grep -q 'OLD' "$SCRIPT"; then
+    ko "référence à OLD restante"
 else
-    ok "OLD jamais supprimé (conservé jusqu'à validation finale)"
+    ok "plus de copie persistante dans OLD"
 fi
 if grep -qE 'systemctl.*start|server start' "$SCRIPT"; then
     ko "démarrage auto détecté (comportement : pas de start)"
 else
     ok "pas de démarrage auto (comportement conservé)"
 fi
-# Ordre du processus dans main : copie -> validation -> mv OLD -> swap.
+# Ordre du processus dans main : copie -> validation -> copie temporaire -> swap.
 main_body="$(sed -n '/^main()/,/^}/p' "$SCRIPT")"
 line_of() { grep -n "$1" <<<"$main_body" | head -1 | cut -d: -f1; }
 l_copy="$(line_of 'copy_backup_to_staging')"; l_val="$(line_of 'validate_staging_dir')"
-l_old="$(line_of 'backup_current_zomboid')"; l_swap="$(line_of 'restore_zomboid_data')"
-if [[ -n "$l_copy" && -n "$l_val" && -n "$l_old" && -n "$l_swap" ]] \
-    && (( l_copy < l_val && l_val < l_old && l_old < l_swap )); then
-    ok "ordre main : staging copié+validé AVANT mv OLD puis swap"
+l_prev="$(line_of 'prepare_previous_dir')"; l_swap="$(line_of 'restore_zomboid_data')"
+if [[ -n "$l_copy" && -n "$l_val" && -n "$l_prev" && -n "$l_swap" ]] \
+    && (( l_copy < l_val && l_val < l_prev && l_prev < l_swap )); then
+    ok "ordre main : staging copié+validé AVANT copie temporaire puis swap"
 else
-    ko "ordre main incorrect (copie=$l_copy validation=$l_val mv-OLD=$l_old swap=$l_swap)"
+    ko "ordre main incorrect (copie=$l_copy validation=$l_val copie-temp=$l_prev swap=$l_swap)"
 fi
 
 # --- (1) succès nominal ----------------------------------------------------------
@@ -245,36 +267,59 @@ fi
 [[ "$(live_marker)" == "BKP-players" ]] \
     && ok "live remplacé par le backup" \
     || { ko "live non remplacé (marqueur: $(live_marker))"; show_out; }
-if ! grep -rq "LIVE-players" "$LIVE" 2>/dev/null; then
-    ok "aucune trace du live d'origine dans live"
+if [[ "$(cat "$LIVE/Server/servertest.ini")" == BKP-ini && "$(cat "$LIVE/db/servertest.db")" == BKP-db \
+    && "$(cat "$LIVE/Lua/Aegis/Roles/roles.txt")" == BKP-roles ]]; then
+    ok "Server, db et Lua restaurés comme Saves"
 else
-    ko "live d'origine encore présent dans live"
+    ko "Server/db/Lua non restaurés"
 fi
-if (( $(old_count) == 1 )) && grep -rq "LIVE-players" "${HOME_DIR}/OLD" 2>/dev/null; then
-    ok "OLD conservé avec le live d'origine"
+if ! grep -rq "LIVE-" "$LIVE" 2>/dev/null; then
+    ok "aucune trace du live d'origine dans les répertoires restaurés"
 else
-    ko "OLD absent ou sans le live d'origine (old_count=$(old_count))"; show_out
+    ko "données d'origine encore présentes dans live"
 fi
+[[ "$(cat "$LIVE/Logs/console.txt" 2>/dev/null)" == live-log && "$(cat "$LIVE/options.ini" 2>/dev/null)" == live-options ]] \
+    && ok "fichiers non sauvegardés du live conservés (Logs, options.ini)" \
+    || ko "fichiers non sauvegardés du live perdus"
+(( $(previous_count) == 0 )) && [[ ! -e "$HOME_DIR/OLD" ]] \
+    && ok "copie temporaire supprimée après succès, aucun OLD" \
+    || ko "copie résiduelle après succès"
 (( $(staging_left) == 0 )) && ok "staging nettoyé" || ko "staging résiduel"
 grep -q "1 monde" "${SANDBOX}/out.log" \
     && ok "résumé : 1 monde restauré" \
     || { ko "résumé sans compte monde"; show_out; }
 
+fresh_case nolua
+rm -rf "$BKP/Lua"
+if run_restore "$BKP" && [[ "$(live_marker)" == BKP-players ]] \
+    && [[ "$(cat "$LIVE/Lua/Aegis/Roles/roles.txt")" == LIVE-roles ]]; then
+    ok "backup sans Lua : monde restauré, Lua du live conservé"
+else
+    ko "backup sans Lua : résultat inattendu"; show_out
+fi
+
+fresh_case srvonly
+rm -rf "$BKP/Saves" "$BKP/db" "$BKP/Lua"
+if run_restore "$BKP" && [[ "$(live_marker)" == LIVE-players ]] \
+    && [[ "$(cat "$LIVE/Server/servertest.ini")" == BKP-ini ]]; then
+    ok "backup Server seul : seul Server remplacé, monde conservé"
+else
+    ko "backup Server seul : résultat inattendu"; show_out
+fi
+
 # --- (2) archive corrompue ----------------------------------------------------------
 echo "== (2) corrompu =="
 fresh_case corrupt
-rm -rf "${BKP}/Server" "${BKP}/db" "$BKP/Saves/Multiplayer"
+rm -rf "${BKP}/Server" "${BKP}/db" "${BKP}/Lua" "$BKP/Saves/Multiplayer"
 mkdir -p "$BKP/Saves"  # Saves présent mais vide -> passe validate, échoue staging
 if run_restore "$BKP"; then
     ko "Saves vide : succès à tort"; show_out
 else
     ok "Saves vide : die (exit $?)"
 fi
-[[ "$(live_marker)" == "LIVE-players" ]] \
-    && ok "Saves vide : live intact" \
-    || ko "Saves vide : live altéré (marqueur: $(live_marker))"
-(( $(old_count) == 0 )) && ok "Saves vide : aucun OLD créé (mv jamais atteint)" \
-    || ko "Saves vide : OLD créé à tort"
+live_is_original && ok "Saves vide : live intact" || ko "Saves vide : live altéré"
+(( $(previous_count) == 0 )) && ok "Saves vide : aucune copie laissée" \
+    || ko "Saves vide : copie laissée à tort"
 
 fresh_case corruptdir
 rm -rf "$BKP" && mkdir -p "$BKP"  # dir totalement vide
@@ -283,55 +328,49 @@ if run_restore "$BKP"; then
 else
     ok "dir vide : die (exit $?)"
 fi
-[[ "$(live_marker)" == "LIVE-players" ]] \
-    && ok "dir vide : live intact" \
-    || ko "dir vide : live altéré"
-(( $(old_count) == 0 )) && ok "dir vide : aucun OLD créé" \
-    || ko "dir vide : OLD créé à tort"
+live_is_original && ok "dir vide : live intact" || ko "dir vide : live altéré"
+(( $(previous_count) == 0 )) && ok "dir vide : aucune copie laissée" \
+    || ko "dir vide : copie laissée à tort"
 
-# --- (3) manque d'espace (exit 11 sur swap) -> rollback ---------------------------------
-echo "== (3) disque plein =="
-fresh_case full
-# The failed swap writes entries absent from the original world, including
-# a directory and a symlink. Comparing entire trees catches mixed worlds.
+# --- (3) échec pendant la bascule -> rollback ---------------------------------------
+echo "== (3) échec de bascule =="
+fresh_case swapfail
+# Le backup contient des entrées absentes du live (dossier + lien) : la
+# comparaison d'arbres complets détecte un monde mélangé.
 mkdir -p "$BKP/Saves/Multiplayer/new-world"
 printf 'new only\n' > "$BKP/Saves/Multiplayer/new-world/partial.bin"
 ln -s new-world/partial.bin "$BKP/Saves/Multiplayer/new-link"
-export MOCK_RSYNC_FAIL_SECOND=11
+export MOCK_MV_FAIL_AT=4   # installation de db : Saves déjà basculé
 if run_restore "$BKP"; then
-    ko "exit 11 : succès à tort"; show_out
+    ko "mv en échec : succès à tort"; show_out
 else
-    ok "exit 11 : échec (exit $?)"
+    ok "mv en échec : échec (exit $?)"
 fi
-grep -q "Rollback" "${SANDBOX}/out.log" \
-    && ok "exit 11 : rollback annoncé" \
-    || { ko "exit 11 : aucun rollback visible"; show_out; }
-[[ "$(live_marker)" == "LIVE-players" ]] \
-    && ok "exit 11 : live intact (= origine, rollback effectif)" \
-    || { ko "exit 11 : live altéré (marqueur: $(live_marker))"; show_out; }
-(( $(old_count) == 1 )) && ok "exit 11 : OLD conservé" \
-    || ko "exit 11 : OLD manquant (count=$(old_count))"
-(( $(staging_left) == 0 )) && ok "exit 11 : staging nettoyé" || ko "exit 11 : staging résiduel"
-old_full="$(find "$HOME_DIR/OLD" -mindepth 1 -maxdepth 1 -type d -name 'ZomboidBROKEN_*' -print -quit)"
-if diff -r -- "$old_full" "$LIVE"; then
-    ok "rollback : arbre exact, aucun fichier/dossier/lien du swap échoué"
+grep -q "remise en place" "${SANDBOX}/out.log" \
+    && ok "mv en échec : rollback annoncé" \
+    || { ko "mv en échec : aucun rollback visible"; show_out; }
+if live_is_original; then
+    ok "rollback : arbre exact, aucun fichier/dossier/lien de la bascule échouée"
 else
-    ko "rollback : monde mélangé après échec"
+    ko "rollback : monde mélangé après échec"; diff -r -- "$ORIG" "$LIVE" || true
 fi
+(( $(previous_count) == 0 )) && ok "rollback réussi : copie temporaire supprimée" \
+    || ko "rollback réussi : copie laissée"
+(( $(staging_left) == 0 )) && ok "mv en échec : staging nettoyé" || ko "mv en échec : staging résiduel"
 
 fresh_case rollbackerr
-export MOCK_RSYNC_FAIL_SECOND=11 MOCK_RSYNC_FAIL_ROLLBACK=23
+export MOCK_MV_FAIL_FROM=4
 if run_restore "$BKP"; then
     ko "échec rollback : succès à tort"
 else
     ok "échec rollback : erreur explicite"
 fi
-old_failed="$(find "$HOME_DIR/OLD" -mindepth 1 -maxdepth 1 -type d -name 'ZomboidBROKEN_*' -print -quit)"
-make_world "$SANDBOX/expected-old" "LIVE"
-if diff -r -- "$SANDBOX/expected-old" "$old_failed"; then
-    ok "échec rollback : copie OLD complète récupérable"
+prev="$(find "$HOME_DIR" -maxdepth 1 -name '.restore-previous-*' -print -quit)"
+if [[ -n "$prev" ]] && diff -r -- "$ORIG/Saves" "$prev/Saves" >/dev/null \
+    && diff -r -- "$ORIG/db" "$prev/db" >/dev/null && grep -q "$prev" "${SANDBOX}/out.log"; then
+    ok "échec rollback : copie conservée, complète et signalée"
 else
-    ko "échec rollback : copie OLD altérée"
+    ko "échec rollback : copie absente, altérée ou non signalée"; show_out
 fi
 
 fresh_case collision
@@ -341,20 +380,11 @@ if run_restore "$BKP" && run_restore "$BKP"; then
 else
     ko "deux restaurations : erreur"; show_out
 fi
-if (( $(old_count) == 2 )); then
-    ok "deux restaurations : deux destinations OLD distinctes"
-else
-    ko "deux restaurations : OLD imbriqués ou absents"
-fi
-if [[ "$(find "$HOME_DIR/OLD" -type f -name players.db | wc -l)" -eq 2 ]] \
-    && [[ "$(find "$HOME_DIR/OLD" -mindepth 2 -maxdepth 2 -type d -name 'live-*' | wc -l)" -eq 0 ]] \
-    && grep -rq 'LIVE-players' "$HOME_DIR/OLD" && grep -rq 'BKP-players' "$HOME_DIR/OLD"; then
-    ok "deux restaurations : chaque OLD contient son propre monde"
-else
-    ko "deux restaurations : contenu OLD incorrect ou imbriqué"
-fi
+[[ "$(live_marker)" == BKP-players ]] && (( $(previous_count) == 0 )) \
+    && ok "deux restaurations : live restauré, aucune copie laissée" \
+    || ko "deux restaurations : état inattendu"
 
-# --- (4) erreur extraction/copie (exit 23 sur copie staging) --------------------------------
+# --- (4) erreur de copie (exit 23 sur copie staging) --------------------------------
 echo "== (4) copie staging =="
 fresh_case copyerr
 export MOCK_RSYNC_FAIL_FIRST=23
@@ -363,17 +393,15 @@ if run_restore "$BKP"; then
 else
     ok "copie 23 : die (exit $?)"
 fi
-[[ "$(live_marker)" == "LIVE-players" ]] \
-    && ok "copie 23 : live intact" \
-    || ko "copie 23 : live altéré"
-(( $(old_count) == 0 )) && ok "copie 23 : aucun OLD créé (mv jamais atteint)" \
-    || ko "copie 23 : OLD créé à tort"
+live_is_original && ok "copie 23 : live intact" || ko "copie 23 : live altéré"
+(( $(previous_count) == 0 )) && ok "copie 23 : aucune copie laissée" \
+    || ko "copie 23 : copie laissée à tort"
 (( $(staging_left) == 0 )) && ok "copie 23 : staging nettoyé" || ko "copie 23 : staging résiduel"
 
-# --- (5) SIGTERM pendant le swap --------------------------------------------------------------
+# --- (5) SIGTERM pendant la bascule ---------------------------------------------------
 echo "== (5) SIGTERM =="
 fresh_case term
-export MOCK_RSYNC_SLEEP_SECOND=4
+export MOCK_MV_SLEEP_AT=3   # live/db -> copie, après bascule de Saves
 bash "$SCRIPT" "$BKP" >"${SANDBOX}/out.log" 2>&1 &
 TPID=$!
 sleep 1.5
@@ -383,37 +411,31 @@ if wait "$TPID" 2>/dev/null; then
 else
     ok "SIGTERM : interrompu (non-zéro)"
 fi
-live_n="$(find "$LIVE" -type f 2>/dev/null | wc -l | tr -d ' ')"
-old_n="$(find "${HOME_DIR}/OLD" -type f 2>/dev/null | wc -l | tr -d ' ')"
-if (( live_n > 0 )) || (( old_n > 0 )); then
-    ok "SIGTERM : live ou OLD récupérable, jamais vide (live=${live_n} fichiers, OLD=${old_n} fichiers)"
+if live_is_original; then
+    ok "SIGTERM : live remis dans son état d'origine"
 else
-    ko "SIGTERM : live ET OLD vides/absents"
+    ko "SIGTERM : live altéré"; show_out
 fi
-if (( old_n > 0 )) && grep -rq "LIVE-players" "${HOME_DIR}/OLD" 2>/dev/null; then
-    ok "SIGTERM : OLD contient le live d'origine"
-else
-    ko "SIGTERM : OLD sans le live d'origine (old_n=${old_n})"
-fi
+(( $(previous_count) == 0 )) && ok "SIGTERM : copie temporaire supprimée" \
+    || ko "SIGTERM : copie laissée"
 (( $(staging_left) == 0 )) && ok "SIGTERM : staging nettoyé" || ko "SIGTERM : staging résiduel"
 
 # --- (6) validation finale ------------------------------------------------------------------
 echo "== (6) validation finale =="
-fresh_case srvonly
-rm -rf "$BKP/Saves" "$BKP/db"  # Server seul : refus avant bascule
+fresh_case noworld
+rm -rf "$BKP/Saves/Multiplayer" && echo x > "$BKP/Saves/readme.txt"  # Saves sans monde
 if run_restore "$BKP"; then
-    ko "Server seul : succès à tort (0 monde accepté)"; show_out
+    ko "Saves sans monde : succès à tort (0 monde accepté)"; show_out
 else
-    ok "Server seul : validation finale refuse (exit $?)"
+    ok "Saves sans monde : validation finale refuse (exit $?)"
 fi
 grep -q "Validation finale" "${SANDBOX}/out.log" \
-    && ok "Server seul : échec imputé à la validation finale" \
-    || { ko "Server seul : cause non identifiée"; show_out; }
-[[ "$(live_marker)" == "LIVE-players" ]] \
-    && ok "Server seul : live intact (aucune bascule)" \
-    || ko "Server seul : live altéré"
-(( $(old_count) == 0 )) && ok "Server seul : aucun OLD (refus avant bascule)" \
-    || ko "Server seul : OLD créé malgré le refus préalable"
+    && ok "Saves sans monde : échec imputé à la validation finale" \
+    || { ko "Saves sans monde : cause non identifiée"; show_out; }
+live_is_original && ok "Saves sans monde : live intact (rollback effectif)" \
+    || ko "Saves sans monde : live altéré"
+(( $(previous_count) == 0 )) && ok "Saves sans monde : copie supprimée après rollback" \
+    || ko "Saves sans monde : copie laissée"
 
 fresh_case stagingempty
 export MOCK_RSYNC_EMPTY=1  # copie ne produisant rien -> staging vide
@@ -422,11 +444,9 @@ if run_restore "$BKP"; then
 else
     ok "staging vide : refusé (exit $?)"
 fi
-[[ "$(live_marker)" == "LIVE-players" ]] \
-    && ok "staging vide : live intact" \
-    || ko "staging vide : live altéré"
-(( $(old_count) == 0 )) && ok "staging vide : aucun OLD créé (rien basculé)" \
-    || ko "staging vide : OLD créé à tort"
+live_is_original && ok "staging vide : live intact" || ko "staging vide : live altéré"
+(( $(previous_count) == 0 )) && ok "staging vide : aucune copie laissée" \
+    || ko "staging vide : copie laissée à tort"
 
 # --- Bilan -------------------------------------------------------------------------
 echo ""

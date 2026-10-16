@@ -231,6 +231,17 @@ sys.exit(rc)
 PYEOF
     chmod +x "${BIN}/sqlite3"
 fi
+# C3 exercises real SQL with synthetic blobs; native decoding is a named double.
+REAL_C3_PYTHON="$(command -v python3)"
+export REAL_C3_PYTHON
+cat > "${BIN}/python3" <<'MOCKNATIVE'
+#!/bin/bash
+if [[ "${1:-}" == */lib/character_preflight.py ]]; then
+    exit "${MOCK_CHARACTER_NATIVE_FAILURE:-0}"
+fi
+exec "$REAL_C3_PYTHON" "$@"
+MOCKNATIVE
+chmod +x "${BIN}/python3"
 export PATH="${BIN}:$PATH"
 export PZ_SERVICE_NAME="zomboid.service"
 export MOCK_SYSTEMCTL_MODE="inactive"

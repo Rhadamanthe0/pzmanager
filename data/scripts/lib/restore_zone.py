@@ -252,7 +252,7 @@ def restore_source(args, backup, save, live, source):
     recovery_root = Path(args.recovery_root).absolute()
     plain(recovery_root, Path(recovery_root.anchor), directory=True)
     recovery_root.mkdir(parents=True, exist_ok=True)
-    recovery = Path(tempfile.mkdtemp(prefix='zone-rollback-', dir=recovery_root))
+    recovery = Path(tempfile.mkdtemp(prefix='.zone-rollback-', dir=recovery_root))
     old = recovery / 'before' / 'Saves/Multiplayer' / save
     new = recovery / 'staged'
     old.mkdir(parents=True); new.mkdir()
@@ -269,69 +269,77 @@ def restore_source(args, backup, save, live, source):
             os.fsync(stream.fileno())
         os.replace(pending, manifest_path)
         sync_directory(recovery)
-    record('preparing')
-    # Finish staging AND recovery before the first mutation. Pin copies to
-    # their source bytes, including the explicit list of intended absences.
-    before_hashes, after_hashes = {}, {}
-    for rel in paths:
-        if rel.parts[0] == 'map' and not (source / rel).is_file():
-            raise ValueError(f'Chunk source disparu pendant la préparation : {rel}')
-        after_hashes[rel] = None
-        if rel not in invalidate and (source / rel).is_file():
-            after_hashes[rel] = file_sha256(source / rel)
-            replace_file(source / rel, new / rel, after_hashes[rel])
-        before_hashes[rel] = None
-        if (live / rel).is_file():
-            before_hashes[rel] = file_sha256(live / rel)
-            replace_file(live / rel, old / rel, before_hashes[rel])
-        else:
-            manifest['absent_before'].append(str(rel))
-    if partial:
-        # Native readers see private copies only. No live map is passed to Java.
-        inputs = recovery / 'source'; inputs.mkdir()
-        dictionary = inputs / 'WorldDictionary.bin'
+    world_root = live.parents[2]
+    try:
+        record('preparing')
+        # Finish staging AND recovery before the first mutation. Pin copies to
+        # their source bytes, including the explicit list of intended absences.
+        before_hashes, after_hashes = {}, {}
+        for rel in paths:
+            if rel.parts[0] == 'map' and not (source / rel).is_file():
+                raise ValueError(f'Chunk source disparu pendant la préparation : {rel}')
+            after_hashes[rel] = None
+            if rel not in invalidate and (source / rel).is_file():
+                after_hashes[rel] = file_sha256(source / rel)
+                replace_file(source / rel, new / rel, after_hashes[rel])
+            before_hashes[rel] = None
+            if (live / rel).is_file():
+                before_hashes[rel] = file_sha256(live / rel)
+                replace_file(live / rel, old / rel, before_hashes[rel])
+            else:
+                manifest['absent_before'].append(str(rel))
+        if partial:
+            # Native readers see private copies only. No live map is passed to Java.
+            inputs = recovery / 'source'; inputs.mkdir()
+            dictionary = inputs / 'WorldDictionary.bin'
+            replace_file(live / 'WorldDictionary.bin', dictionary,
+                         context_hashes[live / 'WorldDictionary.bin'])
+            entries = []
+            for rel, selection in partial.items():
+                original = inputs / rel
+                original.parent.mkdir(parents=True, exist_ok=True)
+                replace_file(new / rel, original, after_hashes[rel])
+                entries.append(dict(selection, source=original, current=old / rel, output=new / rel))
+            prepare_partial(recovery, dictionary, entries)
+            for rel in partial:
+                after_hashes[rel] = file_sha256(new / rel)
+        # Interior/whole chunks need the same complete native validation as
+        # spliced edge chunks. A valid CRC cannot establish game readability.
+        dictionary = recovery / 'WorldDictionary.bin'
         replace_file(live / 'WorldDictionary.bin', dictionary,
                      context_hashes[live / 'WorldDictionary.bin'])
-        entries = []
-        for rel, selection in partial.items():
-            original = inputs / rel
-            original.parent.mkdir(parents=True, exist_ok=True)
-            replace_file(new / rel, original, after_hashes[rel])
-            entries.append(dict(selection, source=original, current=old / rel, output=new / rel))
-        prepare_partial(recovery, dictionary, entries)
-        for rel in partial:
-            after_hashes[rel] = file_sha256(new / rel)
-    # Interior/whole chunks need the same complete native validation as
-    # spliced edge chunks. A valid CRC cannot establish game readability.
-    dictionary = recovery / 'WorldDictionary.bin'
-    replace_file(live / 'WorldDictionary.bin', dictionary,
-                 context_hashes[live / 'WorldDictionary.bin'])
-    native = NativeIndexer(recovery / 'native-final', dictionary)
-    terrain = [rel for rel in paths if rel.parts[0] == 'map']
-    inputs = [{'file': str(new / rel), 'x': int(rel.parts[1]), 'y': int(rel.stem)}
-              for rel in terrain]
-    indexes = native.index(inputs)
-    if len(indexes) != len(terrain):
-        raise ValueError('Validation native du terrain incomplète.')
-    for rel, index in zip(terrain, indexes):
-        checked_columns((new / rel).read_bytes(), index)
-    manifest['files'] = [{'path': str(rel), 'before_sha256': before_hashes[rel],
-                          'after_sha256': after_hashes[rel]} for rel in paths]
-    record('ready')
-    # Recheck the entire plan AFTER native readers return, BEFORE the first
-    # live mutation. Keep these hashes for the copy/rename boundary as well.
-    for path, expected in context_hashes.items():
-        require_hash(path, expected)
-    for rel in paths:
-        require_hash(old / rel, before_hashes[rel])
-        require_hash(live / rel, before_hashes[rel])
-        require_hash(new / rel, after_hashes[rel])
-    sync_recovery_plan(recovery, old, new, paths)
-    world_root = live.parents[2]
-    prefix = live.relative_to(world_root)
-    token = transactions.begin(world_root, 'zone', recovery, files=[
-        {'path': str(prefix/rel), 'before': before_hashes[rel], 'after': after_hashes[rel]} for rel in paths])
-    print(f'Copie de récupération : {recovery}', flush=True)
+        native = NativeIndexer(recovery / 'native-final', dictionary)
+        terrain = [rel for rel in paths if rel.parts[0] == 'map']
+        inputs = [{'file': str(new / rel), 'x': int(rel.parts[1]), 'y': int(rel.stem)}
+                  for rel in terrain]
+        indexes = native.index(inputs)
+        if len(indexes) != len(terrain):
+            raise ValueError('Validation native du terrain incomplète.')
+        for rel, index in zip(terrain, indexes):
+            checked_columns((new / rel).read_bytes(), index)
+        manifest['files'] = [{'path': str(rel), 'before_sha256': before_hashes[rel],
+                              'after_sha256': after_hashes[rel]} for rel in paths]
+        record('ready')
+        # Recheck the entire plan AFTER native readers return, BEFORE the first
+        # live mutation. Keep these hashes for the copy/rename boundary as well.
+        for path, expected in context_hashes.items():
+            require_hash(path, expected)
+        for rel in paths:
+            require_hash(old / rel, before_hashes[rel])
+            require_hash(live / rel, before_hashes[rel])
+            require_hash(new / rel, after_hashes[rel])
+        sync_recovery_plan(recovery, old, new, paths)
+        world_root = live.parents[2]
+        prefix = live.relative_to(world_root)
+        token = transactions.begin(world_root, 'zone', recovery, files=[
+            {'path': str(prefix/rel), 'before': before_hashes[rel], 'after': after_hashes[rel]} for rel in paths])
+        print(f'Copie de récupération : {recovery}', flush=True)
+    except BaseException:
+        pending=transactions.pending_for(world_root,recovery)
+        if pending is not None:transactions.finish(world_root,pending,'reverted')
+        record('reverted')
+        discard_recovery(recovery, logs_only=True)
+        raise
     changed = []
     try:
         record('applying')
@@ -385,8 +393,24 @@ def restore_source(args, backup, save, live, source):
         finally:
             for sig, handler in previous.items():
                 signal.signal(sig, handler)
+        shutil.rmtree(recovery)
         raise
+    shutil.rmtree(recovery)
     print('Zone restaurée. Vous pouvez démarrer le serveur.')
+
+
+def discard_recovery(recovery, logs_only=False):
+    if not logs_only:
+        shutil.rmtree(recovery)
+        return
+    # Only preflight diagnostics survive; no world mutation occurred.
+    for path in sorted(recovery.rglob('*'), key=lambda p:len(p.parts), reverse=True):
+        if path.is_symlink() or path.is_file() and path.suffix!='.log':path.unlink()
+        elif path.is_dir():
+            try:path.rmdir()
+            except OSError:pass
+    try:recovery.rmdir()
+    except OSError:pass
 
 
 class PublicParser(argparse.ArgumentParser):

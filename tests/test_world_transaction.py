@@ -79,4 +79,36 @@ class WorldTransaction(unittest.TestCase):
         txn.finish(absent,token,'reverted');txn.check_clean(absent)
         self.assertFalse(absent.exists())
 
+    def test_directory_plan_binds_selected_tree_and_preserves_other_data(self):
+        import shutil
+        (self.world/'Saves').mkdir();(self.world/'Saves/old').write_bytes(b'old')
+        staged=self.root/'staged';(staged/'Saves').mkdir(parents=True);(staged/'Saves/new').write_bytes(b'new')
+        token=txn.begin(self.world,'full',self.recovery,after_tree=staged,trees=['Saves'])
+        with self.assertRaises(ValueError):txn.finish(self.world,token,'complete')
+        (self.world/'Saves').rename(self.recovery/'Saves');(staged/'Saves').rename(self.world/'Saves')
+        txn.finish(self.world,token,'complete');txn.check_clean(self.world)
+        self.assertEqual((self.world/'a').read_bytes(),b'old-a')
+        self.assertEqual((self.recovery/'Saves/old').read_bytes(),b'old')
+
+    def test_directory_plan_refuses_unplanned_paths_and_mixed_record(self):
+        for paths in (['../escape'],['Saves','Saves'],[],['Logs']):
+            with self.subTest(paths=paths):
+                with self.assertRaises(ValueError):txn.begin(self.world,'full',self.recovery,after_tree=self.root,trees=paths)
+        token=self.begin();path=txn.location(self.world)[1]/(token+'.json')
+        record=json.loads(path.read_text());record['trees']={'Saves':{'before':None,'after':None}}
+        path.write_text(json.dumps(record));path.chmod(0o600)
+        with self.assertRaises(ValueError):txn.check_clean(self.world)
+
+    def test_directory_plan_refuses_changed_image_and_sync_failure(self):
+        staged=self.root/'staged';(staged/'Lua').mkdir(parents=True);(staged/'Lua/roles').write_bytes(b'new')
+        token=txn.begin(self.world,'full',self.recovery,after_tree=staged,trees=['Lua'])
+        (staged/'Lua').rename(self.world/'Lua');(self.world/'Lua/roles').write_bytes(b'changed')
+        with self.assertRaises(ValueError):txn.finish(self.world,token,'complete')
+        (self.world/'Lua/roles').write_bytes(b'new')
+        with patch.object(txn.os,'fsync',side_effect=OSError('disk error')):
+            with self.assertRaises(OSError):txn.finish(self.world,token,'complete')
+        with self.assertRaises(ValueError):txn.check_clean(self.world)
+        txn.finish(self.world,token,'complete');txn.check_clean(self.world)
+
+
 if __name__=='__main__':unittest.main()

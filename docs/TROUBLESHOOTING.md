@@ -261,9 +261,9 @@ persistent degraded performance that nothing else fixes.
 pzm admin reset
 ```
 
-> ⚠️ **Deletes all current data, with no confirmation prompt.** A backup is
-> written to `~/OLD/Zomboid_OLD_TIMESTAMP/` first, and `--keep-config` /
-> `--keep-whitelist` preserve configs and player access.
+> ⚠️ **Deletes all current data, with no confirmation prompt.** The current
+> world is only kept until the reset succeeds; use `pzm backup list` backups to
+> go back. `--keep-config` / `--keep-whitelist` preserve configs and player access.
 
 Procedure and options: [ADVANCED.md — Complete Server Reset](ADVANCED.md#complete-server-reset).
 
@@ -343,8 +343,10 @@ If too large, shorten the GFS daily tier (`BACKUP_GFS_DAILY_DAYS`, default 30) o
 ```
 
 **How it works**:
-- Creates safety backup of current Zomboid (`ZomboidBROKEN_TIMESTAMP`)
-- Restores only Zomboid data (Saves, db, Server)
+- Replaces the backed-up directories (Saves, db, Server, Lua) present in the backup;
+  other live files (logs, options) stay in place
+- The replaced directories are kept only until the restore succeeds; a failure
+  puts them back
 - Preserves system configuration and scripts
 
 **Apply**:
@@ -368,8 +370,8 @@ sudo ./data/scripts/install/configurationInitiale.sh restore ~/pzmanager/data/fu
 
 ### Comparison
 
-| Type | Scope | Safety Backup | Usage |
-|------|-------|---------------|-------|
+| Type | Scope | Rollback on failure | Usage |
+|------|-------|---------------------|-------|
 | `restoreZomboidData.sh` | Game data | ✅ Yes | World/save issue |
 | `configurationInitiale.sh restore` | Complete system | ❌ No | System crash, migration |
 

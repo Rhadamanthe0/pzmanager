@@ -99,8 +99,7 @@ mv() { printf 'MV:%s\\n' "$*" >> "$TEST_CALLS"; command mv "$@"; }
         self.assertIn('STOPPED_PROOF:active', self.calls.read_text())
         self.assertEqual(snapshot(self.live), before)
 
-    def test_structure_known_to_fail_final_check_is_refused_before_moving_live(self):
-        self.live_world()
+    def test_config_only_with_absent_world_is_refused_before_moving_live(self):
         before = snapshot(self.live)
         shutil.rmtree(self.backup / 'Saves')
         (self.backup / 'Server').mkdir()
@@ -132,15 +131,17 @@ mv() { printf 'MV:%s\\n' "$*" >> "$TEST_CALLS"; command mv "$@"; }
         self.assertEqual(snapshot(self.live), source)
         self.assertEqual(snapshot(self.backup), source)
 
-    def test_stopped_existing_live_retains_original_recovery(self):
+    def test_stopped_existing_live_checks_then_removes_temporary_recovery(self):
         self.live_world()
         before = snapshot(self.live)
         source = snapshot(self.backup)
         result = self.run_restore()
         self.assertEqual(result.returncode, 0, result.stdout)
-        recovered = list((self.home / 'OLD').glob('ZomboidBROKEN_*'))
-        self.assertEqual(len(recovered), 1)
-        self.assertEqual(snapshot(recovered[0]), before)
+        self.assertEqual(list(self.home.glob('.restore-previous-*')), [])
+        import json
+        records=list((self.home/'.Zomboid.pzm-transactions').glob('*.json'))
+        self.assertEqual(len(records),1)
+        self.assertEqual(json.loads(records[0].read_text())['state'],'complete')
         self.assertEqual(snapshot(self.live), source)
         self.assertEqual(snapshot(self.backup), source)
 
@@ -179,15 +180,36 @@ mv() { printf 'MV:%s\\n' "$*" >> "$TEST_CALLS"; command mv "$@"; }
         self.assertFalse((self.home/'OLD').exists())
         self.assertEqual(snapshot(self.backup),source)
 
-    def test_corrupt_install_copy_detected_and_exactly_reverted(self):
+    def test_corrupt_install_directory_detected_and_exactly_reverted(self):
         self.live_world(); before=snapshot(self.live); source=snapshot(self.backup)
-        self.corrupt_copy('install'); result=self.run_restore()
+        bin_dir=self.root/'bin';bin_dir.mkdir();real=shutil.which('mv')
+        wrapper=bin_dir/'mv'
+        wrapper.write_text('#!/usr/bin/python3\nimport os,subprocess,sys\nfrom pathlib import Path\n'
+            + 'code=subprocess.call('+repr([real])+'+sys.argv[1:])\n'
+            + 'destination=Path(sys.argv[-1])\n'
+            + 'stamp=Path(__file__).with_name("injected")\n'
+            + 'if code==0 and not stamp.exists() and destination==Path(os.environ["PZ_SOURCE_DIR"])/"Saves":\n'
+            + '    stamp.touch()\n'
+            + '    (destination/"Multiplayer/test/sentinel.bin").write_bytes(b"altered after rename")\n'
+            + 'sys.exit(code)\n')
+        wrapper.chmod(0o700);self.env['PATH']=str(bin_dir)+':'+os.environ['PATH']
+        result=self.run_restore()
         self.assertNotEqual(result.returncode,0,result.stdout)
         self.assertEqual(snapshot(self.live),before)
-        recovered=list((self.home/'OLD').glob('ZomboidBROKEN_*'))
-        self.assertEqual(len(recovered),1)
-        self.assertEqual(snapshot(recovered[0]),before)
+        self.assertTrue((bin_dir/'injected').exists())
+        self.assertEqual(list(self.home.glob('.restore-previous-*')),[])
         self.assertEqual(snapshot(self.backup),source)
+        import json
+        [record]=(self.home/'.Zomboid.pzm-transactions').glob('*.json')
+        self.assertEqual(json.loads(record.read_text())['state'],'reverted')
+
+    def test_config_only_keeps_existing_saved_world(self):
+        self.live_world();before=snapshot(self.live)
+        shutil.rmtree(self.backup/'Saves');(self.backup/'Server').mkdir()
+        (self.backup/'Server/test.ini').write_text('new config')
+        result=self.run_restore();self.assertEqual(result.returncode,0,result.stdout)
+        self.assertEqual(snapshot(self.live/'Saves'),{k.removeprefix('Saves/'):v for k,v in before.items()})
+        self.assertEqual((self.live/'Server/test.ini').read_text(),'new config')
 
 
 if __name__ == '__main__':

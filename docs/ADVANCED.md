@@ -177,7 +177,7 @@ To recover constructions from an older directory snapshot or a full-backup ZIP, 
 server is stopped. For one tile, repeat its X/Y as both corners. Other tiles in
 the same chunk are preserved; partial chunks require a compatible JDK.
 Follow [the restore procedure](USAGE.md#restore-a-map-zone-build-42) for the
-options, affected data and recovery copies.
+options, affected data and rollback behaviour.
 
 ## Regenerating a Map Area
 
@@ -246,7 +246,7 @@ Options are combinable. With `--keep-config`, configs are restored **before** wo
 > access to `pzm` / to the bot's admin role — keep that role tight.
 
 Process:
-1. Backup created in `~/OLD/Zomboid_OLD_TIMESTAMP/`
+1. Current Zomboid set aside for rollback (deleted once the new world is in place; hourly backups remain in `data/dataBackups/`)
 2. World generation (automatic, ~2 min)
 3. Admin password displayed (note it!)
 4. Server started

@@ -173,9 +173,17 @@ fi
 LIVE_DB="$(find_players_db_strict "${PZ_SOURCE_DIR}")" || die "players.db live introuvable ou ambigu sous ${PZ_SOURCE_DIR}/Saves/Multiplayer (voir détail ci-dessus). Rien n'a été modifié."
 
 # --- C3 : pré-validations avant toute modification ---------------------------
+[[ -f "$BK_DB" && ! -L "$BK_DB" && -f "$LIVE_DB" && ! -L "$LIVE_DB" ]] \
+    || die "players.db doit être un fichier régulier sans lien symbolique."
+
 if _same_file "$LIVE_DB" "$BK_DB"; then
     die "Source et destination identiques (${LIVE_DB}) : refuse de restaurer un monde sur lui-même. Rien n'a été modifié."
 fi
+# Preview/schema queries must not recover a destination journal or create SHM.
+for suffix in -wal -shm -journal; do
+    [[ ! -e "${LIVE_DB}${suffix}" && ! -L "${LIVE_DB}${suffix}" ]] \
+        || die "Destination SQLite avec fichier auxiliaire ${suffix} : état arrêté cohérent requis."
+done
 # Never let SQLite recover/checkpoint a source journal or create source SHM.
 # A journal needs a separate, explicitly prepared consistent copy first.
 for suffix in -wal -shm -journal; do
@@ -240,13 +248,20 @@ log "Source : $(basename "$BACKUP_PATH")  (${in_backup} ligne(s))"
 show_char "$BK_URI"
 
 if [[ "$DRY_RUN" == true ]]; then
-    in_live=$(sqlite3 "$LIVE_DB" "SELECT COUNT(*) FROM networkPlayers WHERE username='${ESC_USER}';" 2>/dev/null || echo "0")
+    in_live=$(sqlite3 -readonly "$LIVE_DB" "SELECT COUNT(*) FROM networkPlayers WHERE username='${ESC_USER}';" 2>/dev/null || echo "0")
     log "Remplacerait ${in_live} perso(s) live de '${USERNAME}' par celui du backup."
     # Le refus dit déjà « rien n'a été modifié » : ne pas le répéter ici.
     [[ "$REFUSED" == false ]] || die_server_active "Restauration personnage"
     log "[dry-run] Rien n'a été modifié."
     exit 0
 fi
+
+# The native reader sees the frozen SQLite copy and private dictionary/blob
+# copies. Validate the whole selected character before DELETE, under WORLD.
+python3 "${SCRIPT_DIR}/../lib/character_preflight.py" \
+    --source-db "$SOURCE_DB_DIR/players.db" --source-dictionary "$(dirname "$BK_DB")/WorldDictionary.bin" \
+    --world "$(dirname "$LIVE_DB")" --username "$USERNAME" --stage "$SOURCE_DB_DIR/native-check" \
+    || die "Personnage incompatible avec le moteur/mods/dictionnaire courant — destination intacte."
 
 # --- Écriture transactionnelle : écrase le perso live puis ré-insère -------
 # On copie toutes les colonnes SAUF id (PK auto-assignée pour éviter les

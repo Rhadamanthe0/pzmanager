@@ -105,6 +105,9 @@ public final class IndexTerrainColumns {
             require(zombie.gameStates.ChooseGameInfo.getAvailableModDetails(mod) != null,
                     "Installed mod definition unavailable: " + mod);
         ZomboidFileSystem.instance.loadMods(mods);
+        // GameWindow initializes mod registries before script definitions.
+        // This executes only the selected mods' registries.lua, not gameplay.
+        zombie.scripting.objects.ModRegistries.init();
         zombie.scripting.ScriptManager.instance.Load();
         Class<?> type = Class.forName("zombie.world.DictionaryData");
         Constructor<?> ctor = type.getDeclaredConstructor();

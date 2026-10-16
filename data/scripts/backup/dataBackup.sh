@@ -2,7 +2,8 @@
 # ------------------------------------------------------------------------------
 # dataBackup.sh - Incremental Zomboid data backup
 # ------------------------------------------------------------------------------
-# Backs up Saves/, db/, Server/ with hardlinks (rsync --link-dest)
+# Backs up Saves/, db/, Server/, Lua/ with hardlinks (rsync --link-dest)
+# (Lua/ = données des mods côté serveur, ex. rôles et modération Aegis)
 # Triggers in-game save if server is running
 # Rétention GFS (prune_gfs) : horaire récent, puis 6h, puis journalier (voir .env)
 # ------------------------------------------------------------------------------
@@ -254,7 +255,7 @@ cd "${PZ_SOURCE_DIR}"
 
 # Build list of directories to backup (skip missing ones)
 backup_dirs=()
-for dir in Saves db Server; do
+for dir in Saves db Server Lua; do
     [[ -d "$dir" ]] && backup_dirs+=("$dir")
 done
 

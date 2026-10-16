@@ -389,7 +389,7 @@ PYEOF
 
 restore_zomboid_data() {
     # $1 = racine de config du backup ; $2 (optionnel) = dossier des données de jeu
-    # déjà extraites (nouveau format ZIP : zomboid/ = Saves/db/Server). Si $2 est
+    # déjà extraites (nouveau format ZIP : zomboid/ = Saves/db/Server/Lua). Si $2 est
     # vide, on retombe sur l'ancien format (zip interne Zomboid_Latest_Full.zip).
     local cfg_root="$1" game_root="${2:-}"
     local src=""

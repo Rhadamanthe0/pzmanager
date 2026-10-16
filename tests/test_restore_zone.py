@@ -50,7 +50,7 @@ class ZoneTests(unittest.TestCase):
         (self.live / 'isoregiondata').mkdir()
         (self.live / 'isoregiondata/datachunk_1_1.bin').write_bytes(b'stale')
         self.args = Namespace(live_root=str(self.root / 'live'), backup_root=str(self.root),
-                              recovery_root=str(self.root / 'OLD'), backup='backup',
+                              recovery_root=str(self.root / 'recovery'), backup='backup',
                               x1=15, y1=15, x2=8, y2=8, save=None, apply=True)
 
     def tearDown(self):
@@ -69,8 +69,7 @@ class ZoneTests(unittest.TestCase):
         before.pop('map/1/1.bin'); before.pop('isoregiondata/datachunk_1_1.bin')
         self.assertEqual(after, before)
         self.assertEqual(linked.read_bytes(), chunk(b'broken'))
-        recovery = next((self.root / 'OLD').glob('zone-*'))
-        self.assertEqual((recovery / 'before/Saves/Multiplayer/world/map/1/1.bin').read_bytes(), chunk(b'broken'))
+        self.assertEqual(list((self.root / 'recovery').iterdir()), [])  # temporary copy removed
         self.assertEqual((self.source / 'map/1/1.bin').read_bytes(), chunk(b'old'))
 
     def test_current_b42_without_map_ver_and_missing_live_terrain(self):
@@ -93,14 +92,14 @@ class ZoneTests(unittest.TestCase):
             before = self.state()
             with self.assertRaises(ValueError): zone.restore(self.args)
             self.assertEqual(self.state(), before)
-            self.assertFalse((self.root / 'OLD').exists())
+            self.assertFalse((self.root / 'recovery').exists())
 
     def test_preview_does_not_write(self):
         self.args.apply = False
         before = self.state()
         zone.restore(self.args)
         self.assertEqual(self.state(), before)
-        self.assertFalse((self.root / 'OLD').exists())
+        self.assertFalse((self.root / 'recovery').exists())
 
     def dictionary_change(self, old, new):
         (self.source / 'WorldDictionary.bin').write_bytes(struct.pack('>i', 1) + b'old')
@@ -133,7 +132,7 @@ class ZoneTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'WorldDictionary.bin incompatible'):
                     zone.restore(self.args)
                 self.assertEqual(self.state(), before)
-                self.assertFalse((self.root / 'OLD').exists())
+                self.assertFalse((self.root / 'recovery').exists())
 
     def test_partial_terrain_uses_current_dictionary(self):
         from test_terrain_tiles import fixture
@@ -142,11 +141,12 @@ class ZoneTests(unittest.TestCase):
         self.args.x1 = self.args.x2 = self.args.y1 = self.args.y2 = 8
         old = {'items': {'1': 'Base.Wood'}}
         new = {'items': {'1': 'Base.Wood', '2': 'Base.New'}}
-        with self.dictionary_change(old, new), patch.object(zone, 'prepare_partial') as prepare:
+        seen = []  # read during the call: the temporary copy is removed afterwards
+        with self.dictionary_change(old, new), patch.object(
+                zone, 'prepare_partial', side_effect=lambda root, dictionary, entries: seen.append(dictionary.read_bytes())):
             expected = (self.live / 'WorldDictionary.bin').read_bytes()
             zone.restore(self.args)
-            dictionary = prepare.call_args.args[1]
-            self.assertEqual(dictionary.read_bytes(), expected)
+            self.assertEqual(seen, [expected])
 
     def test_failures_before_write(self):
         for kind in ('missing', 'version', 'dictionary', 'link', 'ambiguous', 'huge', 'negative', 'traversal'):
@@ -166,7 +166,7 @@ class ZoneTests(unittest.TestCase):
                 if kind == 'traversal': self.args.save = '../world'
                 with self.assertRaises((ValueError, OSError)): zone.restore(self.args)
                 self.assertEqual(self.state(), before)
-                self.assertFalse((self.root / 'OLD').exists())
+                self.assertFalse((self.root / 'recovery').exists())
                 self.tearDown()
 
     def test_write_error_reverts_already_changed_files(self):
@@ -214,7 +214,7 @@ class ZoneTests(unittest.TestCase):
             before = self.state()
             with self.assertRaises(ValueError): zone.restore(self.args)
             self.assertEqual(self.state(), before)
-            self.assertFalse((self.root / 'OLD').exists())
+            self.assertFalse((self.root / 'recovery').exists())
 
     def test_partial_native_refusal_before_any_world_write(self):
         self.args.x1 = self.args.x2 = self.args.y1 = self.args.y2 = 8
@@ -248,6 +248,25 @@ class ZoneTests(unittest.TestCase):
         with patch.object(zone.shutil, 'copy2', side_effect=OSError('disk full')):
             with self.assertRaises(OSError): zone.restore(self.args)
         self.assertEqual(self.state(), before)
+        self.assertEqual(list((self.root / 'recovery').iterdir()), [])
+
+    def test_failed_revert_keeps_recovery_copy(self):
+        original = zone.replace_file
+        calls = 0
+        def failing(source, destination, expected_sha256=None):
+            nonlocal calls
+            if Path(destination).is_relative_to(self.live):
+                calls += 1
+                if calls == 1:
+                    original(source, destination, expected_sha256)
+                    raise OSError('write failure')
+                raise OSError('revert failure')
+            return original(source, destination, expected_sha256)
+        with patch.object(zone, 'replace_file', side_effect=failing):
+            with self.assertRaisesRegex(ValueError, 'copies conservées'):
+                zone.restore(self.args)
+        [recovery] = (self.root / 'recovery').glob('.zone-rollback-*')
+        self.assertEqual((recovery / 'before/Saves/Multiplayer/world/map/1/1.bin').read_bytes(), chunk(b'broken'))
 
     def test_helper_rejects_abbreviated_apply(self):
         for option in ('--app', '--appl', '--a'):
@@ -258,7 +277,7 @@ class ZoneTests(unittest.TestCase):
                                      'backup', '8', '8', '15', '15', option], capture_output=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(self.state(), before)
-            self.assertFalse((self.root / 'OLD').exists())
+            self.assertFalse((self.root / 'recovery').exists())
 
     def test_repeated_signals_do_not_interrupt_recovery(self):
         before = self.state()
@@ -306,9 +325,7 @@ class ZoneTests(unittest.TestCase):
             child.communicate(timeout=3)
             self.assertNotEqual(child.returncode, 0)
             self.assertEqual(self.state(), before)
-            import json
-            manifest = next((self.root / 'OLD').glob('zone-*/manifest.json'))
-            self.assertEqual(json.loads(manifest.read_text())['status'], 'reverted')
+            self.assertEqual(list((self.root / 'recovery').iterdir()), [])  # reverted: copy removed
         finally:
             if child.poll() is None: child.kill(); child.communicate()
 

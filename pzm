@@ -47,7 +47,7 @@ Commandes disponibles:
       --apply             Appliquer la restauration (serveur arrêté requis)
       --save <monde>       Choisir le monde multijoueur
                        Écrase terrain, constructions et conteneurs sur toute
-                       la hauteur des tuiles ; copie de récupération dans OLD.
+                       la hauteur des tuiles ; annulation auto si échec.
                        Tuiles voisines conservées ; JDK requis si chunk partiel
                        Backup : nom de snapshot ou chemin de dossier (pas de ZIP)
                        Procédure et limites : docs/USAGE.md#restore-a-map-zone-build-42

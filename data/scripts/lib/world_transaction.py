@@ -23,7 +23,7 @@ def validate_record(record):
         raise ValueError('Invalid transaction recovery')
     def checksum(value):
         return value is None or isinstance(value,str) and re.fullmatch('[0-9a-f]{64}',value)
-    if ('files' in record)==('tree' in record):raise ValueError('Invalid transaction plan')
+    if sum(k in record for k in ('files','tree','trees'))!=1:raise ValueError('Invalid transaction plan')
     if 'files' in record:
         if not isinstance(record['files'],list):raise ValueError('Invalid transaction files')
         seen=set()
@@ -35,6 +35,12 @@ def validate_record(record):
             seen.add(str(p))
             if not all(k in entry and checksum(entry[k]) for k in ('before','after')):
                 raise ValueError('Invalid transaction checksum')
+    elif 'trees' in record:
+        if not isinstance(record['trees'],dict) or not record['trees']:raise ValueError('Invalid directory transaction')
+        for name,images in record['trees'].items():
+            if name not in {'Saves','db','Server','Lua'}:raise ValueError('Invalid directory transaction path')
+            if not isinstance(images,dict) or not all(k in images and checksum(images[k]) for k in ('before','after')):
+                raise ValueError('Invalid directory transaction checksum')
     elif not isinstance(record['tree'],dict) or not all(k in record['tree'] and checksum(record['tree'][k]) for k in ('before','after')):
         raise ValueError('Invalid transaction tree')
 
@@ -144,7 +150,7 @@ def tree_digest(root):
     return hashlib.sha256(json.dumps(sorted(entries),separators=(',',':')).encode()).hexdigest()
 
 
-def begin(world,kind,recovery,files=None,after_tree=None):
+def begin(world,kind,recovery,files=None,after_tree=None,trees=None):
     check_clean(world)
     world,fd=directory(world,True)
     try:
@@ -154,6 +160,16 @@ def begin(world,kind,recovery,files=None,after_tree=None):
                 p=Path(entry['path'])
                 if p.is_absolute() or '..' in p.parts or not p.parts: raise ValueError('Invalid transaction path')
             record['files']=files
+        elif trees is not None:
+            if not trees or len(set(trees))!=len(trees) or any(n not in {'Saves','db','Server','Lua'} for n in trees):
+                raise ValueError('Invalid directory selection')
+            record['trees']={}
+            for name in trees:
+                before=world/name;after=Path(after_tree)/name
+                if not after.is_dir() or after.is_symlink() or before.is_symlink():raise ValueError('Invalid directory image')
+                if before.exists():sync_world(before)
+                sync_world(after)
+                record['trees'][name]={'before':tree_digest(before),'after':tree_digest(after)}
         else:
             # Persist both trees before publishing the intent and moving live.
             if world.exists():sync_world(world)
@@ -210,7 +226,11 @@ def finish(world,token,state):
         selected=[r for r in records(fd,world) if r['id']==token]
         if len(selected)!=1:raise ValueError('Unknown world transaction')
         record=selected[0];side='after' if state=='complete' else 'before'
-        if 'tree' in record:
+        if 'trees' in record:
+            for name,images in record['trees'].items():
+                if tree_digest(world/name)!=images[side]:raise ValueError('Directory does not match transaction '+side)
+                sync_world(world/name)
+        elif 'tree' in record:
             if tree_digest(world)!=record['tree'][side]:raise ValueError('World tree does not match transaction '+side)
         else:
             for entry in record['files']:
@@ -220,7 +240,7 @@ def finish(world,token,state):
                     ancestor=ancestor.parent
                 parent,_=open_root(ancestor);os.close(parent)
                 if digest(p)!=entry[side]:raise ValueError('World bytes do not match transaction '+side)
-        sync_world(world,record.get('files'))
+        if 'trees' not in record:sync_world(world,record.get('files'))
         record['state']=state
         atomic_file(fd,token+'.json',json.dumps(record,sort_keys=True).encode(),0o600)
     finally:
@@ -230,14 +250,14 @@ def finish(world,token,state):
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('action',choices=['init','check','begin','finish'])
     p.add_argument('--world',required=True);p.add_argument('--kind');p.add_argument('--recovery');p.add_argument('--after-tree')
-    p.add_argument('--token');p.add_argument('--state',choices=sorted(TERMINAL));a=p.parse_args()
+    p.add_argument('--directory',action='append');p.add_argument('--token');p.add_argument('--state',choices=sorted(TERMINAL));a=p.parse_args()
     try:
         if a.action=='init':
             _,fd=directory(a.world,True);os.close(fd)
         elif a.action=='check':check_clean(a.world,legacy=True)
         elif a.action=='begin':
             if not all((a.kind,a.recovery,a.after_tree)):raise ValueError('Missing transaction plan')
-            print(begin(a.world,a.kind,a.recovery,after_tree=a.after_tree))
+            print(begin(a.world,a.kind,a.recovery,after_tree=a.after_tree,trees=a.directory))
         else:finish(a.world,a.token,a.state)
         return 0
     except (OSError,ValueError,TypeError,KeyError,ConfigurationError) as e:

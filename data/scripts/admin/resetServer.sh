@@ -13,7 +13,8 @@
 # Les deux options sont combinables.
 #
 # ATTENTION: Supprime toutes les données du serveur actuel !
-# Un backup est créé dans $PZ_HOME/OLD/ avant suppression.
+# L'ancien Zomboid est gardé le temps du reset (rollback), puis supprimé une
+# fois le nouveau monde en place. Les vrais backups restent dans dataBackups/.
 # ------------------------------------------------------------------------------
 
 set -euo pipefail
@@ -46,8 +47,9 @@ parse_args() {
     done
 }
 
-readonly TIMESTAMP=$(date +"%Y-%m-%d_%Hh%Mm%Ss")
-readonly OLD_DIR="${PZ_HOME}/OLD/Zomboid_OLD_${TIMESTAMP}"
+# Copie temporaire de l'ancien Zomboid (rollback + source de --keep-*),
+# réservée par backup_current et supprimée après succès.
+PREVIOUS_DIR=""
 
 # Fichiers de config à restaurer avec --keep-config. PZ les nomme tous d'après
 # le nom du monde (PZ_SERVER_NAME).
@@ -126,7 +128,7 @@ kill_generator_exact() {
 }
 
 # C8 : sur sortie/interruption, on ne nettoie que le jetable (générateur +
-# staging). Le live et OLD ne sont jamais supprimés ici.
+# staging). Le live et la copie temporaire ne sont jamais supprimés ici.
 cleanup_reset_staging() {
     kill_generator_exact || true
     if [[ -n "${STAGING_DIR:-}" && "${STAGING_DIR}" == "${PZ_HOME}"/Zomboid.new.* && -d "${STAGING_DIR}" ]]; then
@@ -167,9 +169,12 @@ backup_current() {
     step "Backup des données actuelles"
 
     if [[ -d "${PZ_SOURCE_DIR}" ]]; then
-        mkdir -p "${PZ_HOME}/OLD"
-        mv "${PZ_SOURCE_DIR}" "$OLD_DIR"
-        echo "✓ Backup créé: $OLD_DIR"
+        # Sous PZ_HOME (même FS : renommage). -T remplace le répertoire réservé
+        # vide sans jamais imbriquer le monde dedans.
+        PREVIOUS_DIR="$(mktemp -d "${PZ_HOME}/.reset-previous-XXXXXX")" \
+            || die "Impossible de réserver la copie temporaire — live intact."
+        mv -T -- "${PZ_SOURCE_DIR}" "$PREVIOUS_DIR"
+        echo "✓ Ancien monde mis de côté le temps du reset"
     else
         echo "  (aucune donnée Zomboid à sauvegarder)"
     fi
@@ -179,44 +184,35 @@ restore_configs() {
     step "Restauration configs avant génération"
 
     # C8 : les configs sont restaurées dans le STAGING, jamais dans le live
-    # (le live est déjà déplacé vers OLD, ou absent sur une install neuve).
+    # (le live est déjà mis de côté, ou absent sur une install neuve).
     mkdir -p "${STAGING_DIR}/Server" "${STAGING_DIR}/mods"
 
-    if [[ ! -d "$OLD_DIR/Server" ]]; then
-        die "Pas de répertoire Server dans le backup: $OLD_DIR/Server"
+    if [[ -z "$PREVIOUS_DIR" || ! -d "$PREVIOUS_DIR/Server" ]]; then
+        rollback_live || true
+        die "Pas de répertoire Server dans l'ancien monde — live restauré, rien n'est réinitialisé."
     fi
 
     # Vérifier que les fichiers critiques existent AVANT de copier
     local missing=()
     for f in "${CONFIG_FILES[@]}"; do
-        if [[ ! -f "$OLD_DIR/Server/$f" ]]; then
+        if [[ ! -f "$PREVIOUS_DIR/Server/$f" ]]; then
             missing+=("$f")
         fi
     done
 
     if [[ ${#missing[@]} -gt 0 ]]; then
-        echo "⚠ Fichiers manquants dans le backup $OLD_DIR/Server/ :"
+        echo "⚠ Fichiers manquants dans Server/ :"
         for f in "${missing[@]}"; do
             echo "  ✗ $f"
         done
         echo ""
-        echo "Le backup semble provenir d'un reset intermédiaire incomplet."
-        echo "Backups disponibles avec configs complètes :"
-        for d in "${PZ_HOME}"/OLD/Zomboid_OLD_*/Server; do
-            [[ -d "$d" ]] || continue
-            local count=0
-            for f in "${CONFIG_FILES[@]}"; do
-                [[ -f "$d/$f" ]] && (( count++ ))
-            done
-            if [[ $count -eq ${#CONFIG_FILES[@]} ]]; then
-                echo "  $(dirname "$d")"
-            fi
-        done
-        die "Annulé. Restaurez manuellement les fichiers manquants ou utilisez un backup complet."
+        echo "Copiez-les depuis un backup (${BACKUP_DIR}/latest/Server/) puis relancez."
+        rollback_live || true
+        die "Annulé — live restauré, rien n'est réinitialisé."
     fi
 
     for f in "${CONFIG_FILES[@]}"; do
-        cp "$OLD_DIR/Server/$f" "${STAGING_DIR}/Server/"
+        cp "$PREVIOUS_DIR/Server/$f" "${STAGING_DIR}/Server/"
         echo "  ✓ $f"
     done
     echo "✓ ${#CONFIG_FILES[@]} fichier(s) restauré(s)"
@@ -319,25 +315,24 @@ validate_staging_world() {
         || { echo "ERREUR: staging sans ${PZ_SERVER_NAME}.ini — live intact, rien n'est basculé." >&2; return 1; }
 }
 
-# C8 : rollback — la génération/validation/swap a échoué, on restaure le live
-# depuis OLD (OLD est conservé : copie, pas déplacement inverse).
+# C8 : rollback — la génération/validation/swap a échoué, on remet l'ancien
+# monde en place. La copie temporaire ne reste que si cette remise échoue.
 rollback_live() {
-    local old_backup="${OLD_DIR}"
-    [[ -n "$old_backup" && -d "$old_backup" ]] || return 0
-    echo "Échec — rollback depuis $old_backup ..."
+    local previous="${PREVIOUS_DIR}"
+    [[ -n "$previous" && -d "$previous" ]] || return 0
+    echo "Échec — remise en place de l'ancien monde..."
     rm -rf -- "${PZ_SOURCE_DIR}" 2>/dev/null || true
-    mkdir -p "${PZ_SOURCE_DIR}"
-    cp -a "${old_backup}/." "${PZ_SOURCE_DIR}/" \
-        || die "Échec du rollback — restaure manuellement : $old_backup → ${PZ_SOURCE_DIR}."
-    echo "✓ Rollback terminé: $old_backup → ${PZ_SOURCE_DIR} (OLD conservé)"
+    mv -T -- "$previous" "${PZ_SOURCE_DIR}" \
+        || die "Échec du rollback — restaure manuellement : $previous → ${PZ_SOURCE_DIR}."
+    PREVIOUS_DIR=""
+    echo "✓ Rollback terminé : ancien monde remis dans ${PZ_SOURCE_DIR}"
 }
 
-# C8 : bascule staging → live (le live a été déplacé vers OLD par
-# backup_current). Valide d'abord, ne bascule que si valide, sinon rollback.
-# OLD est conservé jusqu'à finalize OK (jamais supprimé ici).
+# C8 : bascule staging → live (le live a été mis de côté par backup_current).
+# Valide d'abord, ne bascule que si valide, sinon rollback.
 swap_staging_to_live() {
     validate_staging_world "$STAGING_DIR" \
-        || { rollback_live || true; die "Monde invalide — live restauré depuis $OLD_DIR, OLD conservé."; }
+        || { rollback_live || true; die "Monde invalide — ancien monde remis en place."; }
     mkdir -p "$(dirname "${PZ_SOURCE_DIR}")"
     if mv -T "${STAGING_DIR}" "${PZ_SOURCE_DIR}" 2>/dev/null; then
         STAGING_DIR=""
@@ -347,9 +342,9 @@ swap_staging_to_live() {
     # Repli cross-FS : copie puis validation finale.
     mkdir -p "${PZ_SOURCE_DIR}"
     cp -a "${STAGING_DIR}/." "${PZ_SOURCE_DIR}/" \
-        || { rollback_live || true; die "Échec de la bascule — live restauré depuis $OLD_DIR, OLD conservé."; }
+        || { rollback_live || true; die "Échec de la bascule — ancien monde remis en place."; }
     validate_staging_world "${PZ_SOURCE_DIR}" \
-        || { rollback_live || true; die "Bascule incomplète — live restauré depuis $OLD_DIR, OLD conservé."; }
+        || { rollback_live || true; die "Bascule incomplète — ancien monde remis en place."; }
     rm -rf -- "${STAGING_DIR}" 2>/dev/null || true
     STAGING_DIR=""
     STAGING_CACHEDIR=""
@@ -358,7 +353,7 @@ swap_staging_to_live() {
 restore_whitelist() {
     step "Restauration whitelist"
 
-    local old_db="${OLD_DIR}/db/${PZ_SERVER_NAME}.db"
+    local old_db="${PREVIOUS_DIR}/db/${PZ_SERVER_NAME}.db"
     local new_db="${PZ_DB_PATH}"
 
     [[ -f "$old_db" ]] || { echo "⚠ Pas de base backup, skip whitelist"; return 0; }
@@ -400,7 +395,6 @@ finalize() {
 
     echo "✓ Serveur démarré"
     echo ""
-    echo "Backup: $OLD_DIR"
     echo "Status: pzm server status"
 }
 
@@ -421,7 +415,7 @@ Options:
 
 Les options sont combinables.
 
-ATTENTION: Supprime toutes les données ! Backup créé dans \$PZ_HOME/OLD/
+ATTENTION: Supprime toutes les données ! Les backups (pzm backup list) restent disponibles.
 
 Exemples:
   pzm admin reset                                 # Reset complet, serveur vierge
@@ -443,9 +437,9 @@ main() {
     require_server_stopped "Reset du monde"
     backup_current
 
-    # C8 : génération en staging sous PZ_HOME (le live reste déplacé vers OLD,
-    # conservé jusqu'à finalize OK). Traps : toute interruption tue le
-    # générateur (PID exact) et nettoie le staging, jamais le live ni OLD.
+    # C8 : génération en staging sous PZ_HOME (l'ancien monde reste mis de
+    # côté jusqu'au succès). Traps : toute interruption tue le générateur
+    # (PID exact) et nettoie le staging, jamais le live ni la copie temporaire.
     STAGING_DIR="$(mktemp -d "${PZ_HOME}/Zomboid.new.XXXXXX")" \
         || die "Impossible de créer le staging sous ${PZ_HOME}."
     STAGING_CACHEDIR="${STAGING_DIR}"
@@ -459,7 +453,7 @@ main() {
     generate_world
 
     # C8 : validation complète AVANT bascule (DB + admin + .ini/Server), puis
-    # swap staging → live. Échec = die + live restauré depuis OLD (rollback
+    # swap staging → live. Échec = die + ancien monde remis en place (rollback
     # auto), staging nettoyé par le trap EXIT.
     swap_staging_to_live
 
@@ -468,9 +462,16 @@ main() {
     fi
 
     # C8 : staging basculé (mv : le répertoire n'existe plus ; le trap EXIT
-    # devient no-op). OLD conservé jusqu'ici et au-delà (jamais supprimé).
+    # devient no-op).
     trap - INT TERM EXIT
     cleanup_reset_staging || true
+
+    # Nouveau monde en place (et whitelist reprise) : l'ancien n'a plus d'usage.
+    if [[ -n "$PREVIOUS_DIR" ]]; then
+        rm -rf -- "$PREVIOUS_DIR" \
+            || echo "⚠ Copie temporaire non supprimée : $PREVIOUS_DIR"
+        PREVIOUS_DIR=""
+    fi
 
     finalize
     # C1 : fin de section critique.

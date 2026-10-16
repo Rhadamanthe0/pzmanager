@@ -38,6 +38,9 @@ release_world_lock() { :; }
 log() { echo "$*"; }
 sql_escape() { printf '%s' "$1" | sed "s/'/''/g"; }
 """)
+        # This suite tests SQLite boundaries with opaque synthetic blobs.
+        # Real engine admission is covered by the opt-in native fixtures.
+        (lib/'character_preflight.py').write_text('import os,sys\nsys.exit(int(os.environ.get("CHARACTER_NATIVE_DOUBLE_FAILURE","0")))\n')
         self.script = script
         self.live = self.root/'live/Saves/Multiplayer/test/players.db'
         self.source = self.root/'source/players.db'; self.source.parent.mkdir()
@@ -53,6 +56,15 @@ sql_escape() { printf '%s' "$1" | sed "s/'/''/g"; }
 
     def run_restore(self, *args):
         return subprocess.run(['bash',str(self.script),'selected',str(self.source),*args],env=self.env,capture_output=True,text=True,timeout=10)
+
+    def test_native_refusal_precedes_delete_and_leaves_all_rows_intact(self):
+        self.database(self.source);self.database(self.live)
+        self.env['CHARACTER_NATIVE_DOUBLE_FAILURE']='1'
+        before=self.live.read_bytes();source=self.source.read_bytes()
+        result=self.run_restore()
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('destination intacte',result.stderr)
+        self.assertEqual(self.live.read_bytes(),before);self.assertEqual(self.source.read_bytes(),source)
 
     def test_unknown_source_column_refused_without_losing_metadata(self):
         self.database(self.live); self.database(self.source, ', mod_state TEXT DEFAULT \'unknown\'')

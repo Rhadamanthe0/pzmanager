@@ -79,7 +79,14 @@ Le démarrage ne reprend ni ne restaure de données. Après examen des copies,
 avec validation complète, serveur arrêté. Pour les autres récupérations, restaurer
 explicitement l'image choisie, puis `pzm backup verify-recovery <id>
 --restored|--reverted` : cette commande ne réécrit rien et ne clôture que si les
-empreintes attendues correspondent. Les copies et journaux sont conservés.
+empreintes attendues correspondent. Les journaux et copies Writing sont conservés.
+Les restaurations de dossiers et de zones gardent leurs copies temporaires tant
+que l'opération reste inachevée ; après résultat complet ou rollback vérifié et
+journal synchronisé, ces copies temporaires sont supprimées. Les sauvegardes et
+récupérations historiques ne sont pas nettoyées par cette opération.
+La restauration de dossiers conserve les autres données présentes (Logs, options,
+dossiers absents du backup) ; les empreintes du journal portent sur chaque dossier
+sélectionné, y compris Lua quand il est présent.
 
 Le nettoyage exige un verrou WORLD et une preuve que la JVM est arrêtée.
 `activating` n'est accepté que par le propre processus `ExecStartPre` de l'unité,

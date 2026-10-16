@@ -564,7 +564,7 @@ warning countdown).
 │   │   └── latest -> backup_2026-01-12_15h14m00s  (symlink)
 │   │
 │   └── fullBackups/                  # Off-site: one self-contained ZIP per backup
-│       └── 2026-01-12_04-30.zip      # config/ (ssh, systemd, data/scripts, .env, sudoers) + zomboid/ (Saves/db/Server)
+│       └── 2026-01-12_04-30.zip      # config/ (ssh, systemd, data/scripts, .env, sudoers) + zomboid/ (Saves/db/Server/Lua)
 │
 ├── versionning/                      # Mod-list version tracking
 │   ├── sheetVersionning.sh           # Google Sheet sync (key read from .env)
