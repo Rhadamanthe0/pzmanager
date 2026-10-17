@@ -176,8 +176,9 @@ if not (s.get('ok') and s.get('LoadState')=='loaded' and s.get('ActiveState')=='
 PYSTOP
 fi
 
-# Trigger in-game save if server is running (sauté en --snapshot-only : le serveur
-# est arrêté / en cours de boot, il n'y a personne pour lire le pipe).
+# Trigger in-game save if server is running (sauté en --snapshot-only et
+# --consistent : ce dernier exige le serveur arrêté et ne doit jamais écrire au
+# FIFO, même si le socket systemd existe et pourrait activer le service).
 #
 # ⚠ NE PAS SUPPRIMER CE SAVE. Depuis le 2026-08-16, `SaveWorldEveryMinutes=0`
 # dans servertest.ini : le serveur n'écrit plus le monde périodiquement de
@@ -190,7 +191,7 @@ fi
 # -> micro-lag ressenti par tous les joueurs. À 5 min c'était 12 saves/heure ;
 # à 0 il n'en reste qu'un (celui-ci), au prix d'un RPO d'une heure — assouplir
 # le RPO était une décision admin explicite.
-if [[ "$SNAPSHOT_ONLY" != "1" && -p "${PZ_CONTROL_PIPE}" ]]; then
+if [[ "$SNAPSHOT_ONLY" != "1" && "$CONSISTENT" != "1" && -p "${PZ_CONTROL_PIPE}" ]]; then
     # Préavis joueurs : le gel étant inévitable, on l'annonce pour qu'il soit
     # attendu plutôt que subi (0 = pas de préavis ni d'attente). On écrit
     # directement dans le FIFO comme pour le `save` ci-dessous, sans passer par
