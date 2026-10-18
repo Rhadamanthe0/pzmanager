@@ -574,6 +574,46 @@ PYMETA
     fi
 done
 
+# --consistent SEUL : même avec un vrai FIFO présent, aucun préavis/save ne doit
+# être tenté. Un write pourrait réveiller le socket d'activation de Zomboid.
+# Mock timeout : intercepte les commandes SANS ouvrir le FIFO (aucun service
+# actif, aucune attente de 60 secondes dans cette régression).
+cat > "${BIN}/timeout" <<'MOCKEOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${MOCK_FIFO_ATTEMPT_LOG:?}"
+exit 124
+MOCKEOF
+chmod +x "${BIN}/timeout"
+for scenario in consistent-fifo-offline normal-fifo-hot; do
+    fresh_case "$scenario"
+    export MOCK_FIFO_ATTEMPT_LOG="${SANDBOX}/${scenario}-fifo-attempt.log"
+    rm -f "$MOCK_FIFO_ATTEMPT_LOG"
+    mkfifo "$PZ_CONTROL_PIPE"
+    if [[ "$scenario" == consistent-fifo-offline ]]; then
+        export MOCK_CPU_STATE=inactive MOCK_CPU_SUBSTATE=dead MOCK_CPU_MAINPID=0
+        rc=0; run_backup --consistent || rc=$?
+        if (( rc == 0 && $(final_count "$BKP") == 1 )) \
+            && [[ ! -e "$MOCK_FIFO_ATTEMPT_LOG" && -p "$PZ_CONTROL_PIPE" ]]; then
+            ok "--consistent seul : snapshot arrêté, zéro écriture vers FIFO actif"
+        else
+            ko "--consistent seul : tentative FIFO ou snapshot refusé (rc=$rc)"
+            show_out
+        fi
+    else
+        export MOCK_CPU_STATE=active MOCK_CPU_SUBSTATE=running MOCK_CPU_MAINPID=123
+        rc=0; run_backup || rc=$?
+        if (( rc == 0 && $(final_count "$BKP") == 1 )) \
+            && grep -q 'save' "$MOCK_FIFO_ATTEMPT_LOG"; then
+            ok "normal à chaud : tentative save conservée (mock sans écriture)"
+        else
+            ko "normal à chaud : save supprimé ou snapshot refusé (rc=$rc)"
+            show_out
+        fi
+    fi
+done
+rm -f "${BIN}/timeout"
+unset MOCK_FIFO_ATTEMPT_LOG
+
 # --- Bilan -------------------------------------------------------------------------
 echo ""
 if (( FAIL == 0 )); then
