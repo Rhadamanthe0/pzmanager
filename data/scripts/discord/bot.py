@@ -203,19 +203,26 @@ _TERM_GRACE = 5.0
 
 
 async def _kill_tree(proc) -> None:
-    """Tue tout le groupe de `proc` (lancé avec start_new_session) : SIGTERM,
-    délai gracieux, puis SIGKILL si toujours vivant. Récolte (wait) le process."""
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.killpg(os.getpgid(proc.pid), sig)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=_TERM_GRACE)
-            return
-        except asyncio.TimeoutError:
-            pass
-    await proc.wait()
+    """Arrête le groupe de `proc`, y compris ses descendants encore actifs
+    après la sortie du parent (lancé avec start_new_session=True)."""
+    pgid = proc.pid  # start_new_session=True : PGID stable même si le parent sort
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    try:
+        # wait() seul peut réussir dès la mort du parent et laisser un enfant
+        # qui ignore TERM et garde stdout ouvert. Attend aussi la fermeture du pipe.
+        await asyncio.wait_for(proc.communicate(), timeout=_TERM_GRACE)
+    except asyncio.TimeoutError:
+        pass
+    # Toujours sonder le groupe : la sortie du parent ne prouve pas qu'un
+    # descendant s'est arrêté (il peut même avoir fermé stdout).
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    await proc.communicate()
 
 
 async def run_pzm(args: list[str]) -> tuple[int, str]:

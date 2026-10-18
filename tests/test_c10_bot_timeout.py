@@ -12,6 +12,7 @@ POSIX uniquement (killpg/session) : ignoré ailleurs.
 import asyncio
 import importlib.util
 import os
+import signal
 import sys
 import tempfile
 import types
@@ -100,6 +101,23 @@ child.wait()  # l'enfant (sleep) meurt sur TERM ; le parent survit...
 time.sleep(60)  # ... jusqu'au SIGKILL du groupe
 """
 
+ORPHAN_PY = """#!/usr/bin/env python3
+import os, signal, subprocess, sys, time
+from pathlib import Path
+Path(sys.argv[1]).write_text(str(os.getpid()))
+child = subprocess.Popen([
+    sys.executable, "-c",
+    "import signal, sys, time; from pathlib import Path; "
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+    "Path(sys.argv[1]).write_text('ready'); time.sleep(60)",
+    sys.argv[3],
+])
+Path(sys.argv[2]).write_text(str(child.pid))
+while not Path(sys.argv[3]).exists():
+    time.sleep(0.02)
+time.sleep(60)
+"""
+
 BATCH_SH = """#!/bin/sh
 case "$1" in
   ok1) echo "premiere ok"; exit 0 ;;
@@ -164,6 +182,42 @@ class C10BotTests(unittest.TestCase):
         self.assertIn("timeout", out)
         self._assert_dead(int(parent_pid.read_text()))
         self._assert_dead(int(child_pid.read_text()))
+
+    @unittest.skipUnless(os.path.exists("/proc/self/stat"), "Linux /proc requis")
+    def test_timeout_kills_orphan_when_parent_exits_on_term(self):
+        """Le parent peut sortir sur TERM pendant qu'un enfant ignore TERM."""
+        fake = self.root / "pzm-orphan"
+        fake.write_text(ORPHAN_PY)
+        fake.chmod(0o700)
+        parent_pid = self.root / "parent.pid"
+        child_pid = self.root / "child.pid"
+        ready = self.root / "child.ready"
+        bot.PZM = str(fake)
+        bot.CMD_TIMEOUT = 2
+        try:
+            code, out = asyncio.run(bot.run_pzm([
+                str(parent_pid), str(child_pid), str(ready)]))
+            self.assertEqual(code, 124)
+            self.assertIn("timeout", out)
+            self.assertTrue(child_pid.is_file(), "process enfant non démarré")
+            pid = int(child_pid.read_text())
+            for _ in range(30):
+                try:
+                    state = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1][0]
+                except FileNotFoundError:
+                    break
+                if state in ("Z", "X"):  # zombie : plus d'exécution
+                    break
+                asyncio.run(asyncio.sleep(0.1))
+            else:
+                self.fail("descendant encore actif après SIGTERM du parent")
+        finally:
+            # Une régression du test ne doit jamais laisser un enfant de 60 s.
+            if parent_pid.is_file():
+                try:
+                    os.killpg(int(parent_pid.read_text()), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
     def test_cancel_kills_group(self):
         fake = self.root / "pzm-hang"
