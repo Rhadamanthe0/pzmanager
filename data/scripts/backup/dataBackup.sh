@@ -176,6 +176,26 @@ if not (s.get('ok') and s.get('LoadState')=='loaded' and s.get('ActiveState')=='
 PYSTOP
 fi
 
+# Un FIFO peut exister sans JVM : écrire dedans activerait zomboid.socket
+# pendant que ce backup détient WORLD, sans broker de démarrage. Exiger une
+# JVM en cours et revérifier après le préavis, sans utiliser le seul FIFO.
+backup_server_running() {
+    local properties key value loaded="" active="" sub="" main="" control=""
+    properties="$(systemctl --user show "${PZ_SERVICE_NAME}" \
+        -p LoadState -p ActiveState -p SubState -p MainPID -p ControlPID 2>/dev/null)" || return 1
+    while IFS='=' read -r key value; do
+        case "$key" in
+            LoadState) loaded="$value" ;;
+            ActiveState) active="$value" ;;
+            SubState) sub="$value" ;;
+            MainPID) main="$value" ;;
+            ControlPID) control="$value" ;;
+        esac
+    done <<< "$properties"
+    [[ "$loaded" == loaded && "$active" == active && "$sub" == running \
+        && "$main" =~ ^[1-9][0-9]*$ && "$control" == 0 ]]
+}
+
 # Trigger in-game save if server is running (sauté en --snapshot-only et
 # --consistent : ce dernier exige le serveur arrêté et ne doit jamais écrire au
 # FIFO, même si le socket systemd existe et pourrait activer le service).
@@ -191,7 +211,8 @@ fi
 # -> micro-lag ressenti par tous les joueurs. À 5 min c'était 12 saves/heure ;
 # à 0 il n'en reste qu'un (celui-ci), au prix d'un RPO d'une heure — assouplir
 # le RPO était une décision admin explicite.
-if [[ "$SNAPSHOT_ONLY" != "1" && "$CONSISTENT" != "1" && -p "${PZ_CONTROL_PIPE}" ]]; then
+if [[ "$SNAPSHOT_ONLY" != "1" && "$CONSISTENT" != "1" && -p "${PZ_CONTROL_PIPE}" ]] \
+    && backup_server_running; then
     # Préavis joueurs : le gel étant inévitable, on l'annonce pour qu'il soit
     # attendu plutôt que subi (0 = pas de préavis ni d'attente). On écrit
     # directement dans le FIFO comme pour le `save` ci-dessous, sans passer par
@@ -219,7 +240,9 @@ if [[ "$SNAPSHOT_ONLY" != "1" && "$CONSISTENT" != "1" && -p "${PZ_CONTROL_PIPE}"
         sleep "$warn_delay"
     fi
 
-    if timeout 10 bash -c "echo 'save' > '${PZ_CONTROL_PIPE}'" 2>/dev/null; then
+    if ! backup_server_running; then
+        echo "BACKUP_SAVE_SKIPPED — JVM absente ou état indéterminé après le préavis ; aucune écriture FIFO."
+    elif timeout 10 bash -c "echo 'save' > '${PZ_CONTROL_PIPE}'" 2>/dev/null; then
         sleep 60
     else
         echo "Warning: Could not send save command (pipe timeout or server not responding)"
