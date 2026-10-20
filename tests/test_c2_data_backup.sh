@@ -140,6 +140,9 @@ if [[ " $* " == *" show "* ]]; then
     if [[ -n "${MOCK_DRIFT_FILE:-}" && -e "$MOCK_DRIFT_FILE" ]]; then
         MOCK_CPU_STATE=active; MOCK_CPU_MAINPID=123
     fi
+    if [[ -n "${MOCK_FIFO_STOP_FILE:-}" && -e "$MOCK_FIFO_STOP_FILE" ]]; then
+        MOCK_CPU_STATE=inactive; MOCK_CPU_SUBSTATE=dead; MOCK_CPU_MAINPID=0
+    fi
     printf 'LoadState=loaded\nControlPID=0\nInvocationID=fixture\n'
     printf 'ActiveState=%s\nSubState=%s\nMainPID=%s\n' \
         "${MOCK_CPU_STATE:-active}" "${MOCK_CPU_SUBSTATE:-running}" "${MOCK_CPU_MAINPID:-123}"
@@ -180,7 +183,7 @@ fresh_case() {
     unset MOCK_RSYNC_EXIT MOCK_RSYNC_SLEEP MOCK_RSYNC_EMPTY MOCK_LN_FAIL MOCK_MV_FAIL
     unset MOCK_CPU_STATE MOCK_CPU_SUBSTATE MOCK_CPU_MAINPID MOCK_SCOPE_LOG MOCK_SCOPE_FAIL
     unset MOCK_CPU_PIN_FAIL
-    unset MOCK_RSYNC_READY MOCK_COPY_REAL MOCK_DRIFT_FILE
+    unset MOCK_RSYNC_READY MOCK_COPY_REAL MOCK_DRIFT_FILE MOCK_FIFO_STOP_FILE
 }
 final_count() { find "$1" -maxdepth 1 -type d -name 'backup_*' 2>/dev/null | wc -l | tr -d ' '; }
 tmp_left() { find "$1" -maxdepth 1 -name '*.tmp*' 2>/dev/null | wc -l | tr -d ' '; }
@@ -581,6 +584,7 @@ done
 cat > "${BIN}/timeout" <<'MOCKEOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${MOCK_FIFO_ATTEMPT_LOG:?}"
+[[ -z "${MOCK_FIFO_STOP_FILE:-}" ]] || touch "$MOCK_FIFO_STOP_FILE"
 exit 124
 MOCKEOF
 chmod +x "${BIN}/timeout"
@@ -611,6 +615,38 @@ for scenario in consistent-fifo-offline normal-fifo-hot; do
         fi
     fi
 done
+# Timer normal avec socket/FIFO présent : une JVM absente ou un bus en
+# erreur ne doit jamais être réveillé par le préavis ni par save.
+for scenario in inactive failed activating deactivating error missing-pid; do
+    fresh_case "normal-fifo-$scenario"
+    export MOCK_FIFO_ATTEMPT_LOG="${SANDBOX}/${scenario}-fifo-attempt.log"
+    export MOCK_CPU_STATE="$scenario" MOCK_CPU_MAINPID=0 BACKUP_WARN_DELAY=1
+    if [[ "$scenario" == missing-pid ]]; then
+        export MOCK_CPU_STATE=active MOCK_CPU_SUBSTATE=running MOCK_CPU_MAINPID=invalid
+    fi
+    mkfifo "$PZ_CONTROL_PIPE"
+    rc=0; run_backup || rc=$?
+    if (( rc == 0 && $(final_count "$BKP") == 1 )) && [[ ! -e "$MOCK_FIFO_ATTEMPT_LOG" ]]; then
+        ok "normal $scenario : snapshot sans écriture FIFO ni réveil du serveur"
+    else
+        ko "normal $scenario : écriture FIFO ou snapshot refusé (rc=$rc)"; show_out
+    fi
+done
+
+# Arrêt entre le préavis et save : la seconde observation doit supprimer save.
+fresh_case normal-fifo-stop-after-warning
+export MOCK_FIFO_ATTEMPT_LOG="${SANDBOX}/stop-after-warning-fifo.log"
+export MOCK_FIFO_STOP_FILE="${SANDBOX}/stopped-after-warning"
+export BACKUP_WARN_DELAY=1
+mkfifo "$PZ_CONTROL_PIPE"
+rc=0; run_backup || rc=$?
+if (( rc == 0 && $(final_count "$BKP") == 1 )) \
+    && grep -q servermsg "$MOCK_FIFO_ATTEMPT_LOG" \
+    && ! grep -q "echo 'save'" "$MOCK_FIFO_ATTEMPT_LOG"; then
+    ok "arrêt après préavis : save ignoré sans réveil du serveur"
+else
+    ko "arrêt après préavis : save tenté ou snapshot refusé (rc=$rc)"; show_out
+fi
 rm -f "${BIN}/timeout"
 unset MOCK_FIFO_ATTEMPT_LOG
 
