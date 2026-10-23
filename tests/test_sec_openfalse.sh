@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # test_sec_openfalse.sh - Admission verrouillée Open=false (068cd7b).
 #
-# Constat Codex Security (10/2026) : aucun code n'écrivait jamais Open= ;
+# Constat de sécurité (10/2026) : aucun code n'écrivait jamais Open= ;
 # une installation existante restait Open=true, une fraîche dépendait du
 # défaut du jeu — serveur ouvert malgré la doc whitelist.
 # enforceClosedServer.sh (ExecStartPre BLOQUANT de zomboid.service) garantit

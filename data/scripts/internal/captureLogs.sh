@@ -25,8 +25,8 @@ cleanup_old_logs() {
     find "${LOG_ZOMBOID_DIR}" -name "zomboid_*.log" -type f -mtime "+${LOG_RETENTION_DAYS}" -delete
     find "${LOG_ZOMBOID_DIR}" -maxdepth 1 -name 'stop-stall-*.txt' -type f -mtime "+${LOG_RETENTION_DAYS}" -delete
     # Dumps heap OOM (java_pid<PID>.hprof, ~Xmx chacun) : politique du
-    # propriétaire (10/2026) — 3 dumps max, 2 semaines max (constat Codex
-    # Security : rétention illimitée remplissant le disque).
+    # propriétaire (10/2026) — 3 dumps max, 2 semaines max (constat de
+    # sécurité : rétention illimitée remplissant le disque).
     find "${LOG_ZOMBOID_DIR}" -maxdepth 1 -name 'java_pid*.hprof' -type f -mtime +14 -delete
     local kept=0 dump
     while IFS= read -r dump; do

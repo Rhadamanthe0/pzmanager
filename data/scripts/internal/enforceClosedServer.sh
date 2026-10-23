@@ -4,8 +4,8 @@
 # Modèle B42 : l'admission passe par allowedsteamid (whitelist SteamID), et
 # Open=false est LA barrière (cf. manageWhitelist.sh, resetServer.sh). Or aucun
 # code n'écrivait jamais Open= : une installation existante restait Open=true
-# après mise à jour, et une fraîche dépendait du défaut du jeu (constat Codex
-# Security, 10/2026 : serveur ouvert malgré la doc whitelist).
+# après mise à jour, et une fraîche dépendait du défaut du jeu (constat de
+# sécurité, 10/2026 : serveur ouvert malgré la doc whitelist).
 # Appelé en ExecStartPre BLOQUANT de zomboid.service (sans "-" : un serveur qui
 # ne peut pas être fermé ne démarre pas), donc sur TOUS les chemins de
 # démarrage (boot, pzm server start/restart, socket-activation). La whitelist
