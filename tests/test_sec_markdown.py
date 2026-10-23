@@ -1,6 +1,6 @@
 """Sec (markdown) : le nom du client le plus actif est neutralisé dans l'embed.
 
-Constat Codex Security (10/2026, commit:7788583) : le nom, contrôlé par un
+Constat de sécurité (10/2026, commit:7788583) : le nom, contrôlé par un
 joueur whitelisté, était interpolé brut dans du Markdown Discord (`**{nom}**`),
 permettant de casser la mise en forme / tromper la télémétrie affichée.
 

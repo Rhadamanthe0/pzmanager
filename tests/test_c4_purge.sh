@@ -515,7 +515,7 @@ else
 fi
 
 # --- (11) pseudo hostile : pipe + saut de ligne avec injection -------------------
-# Constat Codex Security (10/2026) : un saut de ligne dans un pseudo forgeait des
+# Constat de sécurité (10/2026) : un saut de ligne dans un pseudo forgeait des
 # lignes (VICTIM_IDS="5,0); DELETE FROM whitelist;--"), exécutées dès le plan.
 # Le garde précoce (id entiers + lignes bien cadrées + cardinalité) annule la
 # purge AVANT toute requête : base inchangée, snapshot même pas tenté.

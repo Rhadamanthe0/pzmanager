@@ -194,7 +194,7 @@ fi
 # dans le plan/dry-run (toujours « CONSERVÉ, encore utilisé »).
 VICTIM_IDS="$(printf '%s\n' "${VICTIMS[@]}" | cut -d$'\x1f' -f1 | paste -sd,)"
 
-# Garde-fou précoce (constat Codex Security, 10/2026) : les id alimentent des
+# Garde-fou précoce (constat de sécurité, 10/2026) : les id alimentent des
 # IN (...) SQL dès le plan (steamid_becomes_orphan) puis la transaction. Le
 # garde du plan venait trop tard pour les lignes précédentes, et un saut de
 # ligne ou un 0x1f dans un pseudo forgeait des lignes

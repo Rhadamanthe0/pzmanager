@@ -60,8 +60,8 @@ if [[ "$REQUIRED" == "1" ]]; then
         exit 1
     fi
 elif ! acquire_world_lock --try; then
-    # Le modcheck tient le verrou monde pendant ses sondes (constat Codex
-    # Security, 10/2026 : collision possible avec le backup horaire, qui
+    # Le modcheck tient le verrou monde pendant ses sondes (constat de
+    # sécurité, 10/2026 : collision possible avec le backup horaire, qui
     # skippait sans réessai). Directive du propriétaire (10/2026) : réessayer
     # ~60 fois à 10 s d'intervalle avant de sauter le run. En --required,
     # échec immédiat inchangé (ExecStartPre : pas d'attente au démarrage).
@@ -146,7 +146,7 @@ fi
 # tient déjà le verrou, on skippe proprement ce run (exit 0) au lieu de paralléliser
 # deux rsync/rm sur le même arbre. Le verrou est tenu jusqu'à la fin du script ;
 # libéré automatiquement par le noyau si le process est tué (timeout systemd inclus).
-# Chemin en répertoire privé (constat Codex Security, 10/2026 : le /tmp prévisible
+# Chemin en répertoire privé (constat de sécurité, 10/2026 : le /tmp prévisible
 # laissait un tiers local supprimer les backups par flock adverse ou pré-création
 # hostile). Même motif que le marqueur heapcheck.
 BACKUP_LOCK_FILE="$(private_state_path "backup.lock")" \

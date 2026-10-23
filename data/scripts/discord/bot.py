@@ -1385,7 +1385,7 @@ def _monitoring_embed(s: dict) -> discord.Embed:
         if mc is not None and max_pps:
             name = gnet.get("recv_pps_max_name")
             # Nom joueur = entrée contrôlée par un joueur (whitelist) : échapper le
-            # Markdown et borner la longueur (constat Codex Security, 10/2026 :
+            # Markdown et borner la longueur (constat de sécurité, 10/2026 :
             # injection Markdown dans le champ télémétrie).
             who = f"**{discord.utils.escape_markdown(str(name))[:64]}** " if name else "client "
             net_txt += f" ({who}max **{mc / max_pps * 100:.0f}%** du cap)"
