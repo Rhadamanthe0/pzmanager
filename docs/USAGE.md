@@ -530,7 +530,7 @@ Full index and topic ownership: [README.md](README.md).
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Problem solving
 
 The GitHub workflow **Isolated Linux tests** runs `tests/run-isolated.py` on
-a disposable hosted Ubuntu VM for pull requests and pushes to main. It verifies
+a disposable hosted Ubuntu VM for pull requests. It verifies
 preinstalled dependencies, executes the root boundary scenarios, and retains the
 suite results as an artifact. It does not access the production server or include
 the proprietary game JAR; real-world terrain loading remains a separate offline
