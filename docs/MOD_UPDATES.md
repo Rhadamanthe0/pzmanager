@@ -146,8 +146,9 @@ grep -iE "not found|error|missing" "$(ls -t logs/zomboid/*.log | head -1)"
 
 ### 5. Verify the server
 
-- Wait for the game readiness marker, `LuaNet: Initialization [DONE]`; a running
-  systemd service alone does not prove the world has finished loading.
+- Wait for [game readiness](USAGE.md#never-double-issue-a-stop-or-restart);
+  neither `LuaNet: Initialization [DONE]` alone nor an active systemd service
+  proves the world has finished loading.
 - Run `pzm rcon players` and require the native response `Players connected (N):`
   (including zero players). A successful exit code or a message confirming only
   that the command was sent, without its result, does not prove readiness.

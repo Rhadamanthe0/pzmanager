@@ -22,9 +22,9 @@
 # Preuves réelles : vraies fonctions EXTRAITES du script (awk, aucun duplicata
 # de logique), vrai git, vraie lib common.sh (log/die). Mocks seulement aux
 # frontières inaccessibles : systemd/JVM/réseau (fonctions redéfinies), pz.sh
-# et steamcmd (scripts factices via SCRIPT_DIR/STEAMCMD_PATH). Limite : le
-# parcours complet (main) n'est pas rejoué (effets prod : apt, reboot) —
-# l'ordre est prouvé statiquement (0)+(3) et chaque phase unitairement.
+# et steamcmd (scripts factices via SCRIPT_DIR/STEAMCMD_PATH). La chaîne main,
+# le trap EXIT et les échecs du reboot/start finaux sont exercés séparément par
+# test_maintenance_recovery.py, avec mocks des frontières système et jeu.
 set -euo pipefail
 
 ROOT="${PZ_TEST_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"

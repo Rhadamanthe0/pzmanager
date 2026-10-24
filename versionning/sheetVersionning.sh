@@ -42,16 +42,25 @@ SPREADSHEET_ID="${SHEET_VERSIONNING_ID:-}"
 [[ -n "${GOOGLE_SERVICE_ACCOUNT_JSON_B64:-}" ]] \
     || die "GOOGLE_SERVICE_ACCOUNT_JSON_B64 non renseigné dans $ENV_FILE."
 
-# La clé n'existe sur le disque que le temps du run, en 600, et est effacée à la
-# sortie quel que soit le code de retour (le JSON porte la clé privée du compte).
-KEY_FILE="$(mktemp)"
-chmod 600 "$KEY_FILE"
-KEY_PEM=""
-trap 'rm -f "$KEY_FILE" ${KEY_PEM:+"$KEY_PEM"}' EXIT
+# Allouer dans le parent avant TOKEN=$(...) : ses traps doivent connaître
+# tous les secrets, même si la signature échoue dans la substitution.
+umask 077
+SECRET_DIR=""
+cleanup_secrets() {
+    [[ -z "$SECRET_DIR" ]] || rm -rf -- "$SECRET_DIR"
+}
+trap cleanup_secrets EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+SECRET_DIR="$(mktemp -d)" || die "Répertoire temporaire privé indisponible."
+KEY_FILE="${SECRET_DIR}/account.json"
+KEY_PEM="${SECRET_DIR}/private.pem"
 printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON_B64" | base64 -d > "$KEY_FILE" \
     || die "GOOGLE_SERVICE_ACCOUNT_JSON_B64 n'est pas du base64 valide."
 jq -e '.client_email and .private_key' "$KEY_FILE" >/dev/null 2>&1 \
     || die "La clé décodée n'est pas un JSON de compte de service valide."
+jq -r '.private_key' "$KEY_FILE" > "$KEY_PEM" \
+    || die "Préparation de la clé de signature impossible."
 
 # --- Auth : compte de service -> access token (JWT RS256) --------------------
 b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
@@ -59,18 +68,13 @@ b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
 get_access_token() {
     local email now exp header claim signing_input sig jwt resp tok
     email="$(jq -r '.client_email' "$KEY_FILE")"
-    # Variable GLOBALE (pas `local`) : c'est ce qui permet au trap EXIT de
-    # l'effacer si openssl échoue en route.
-    KEY_PEM="$(mktemp)"; chmod 600 "$KEY_PEM"
-    jq -r '.private_key' "$KEY_FILE" > "$KEY_PEM"
-
     now="$(date +%s)"; exp="$((now + 3600))"
     header='{"alg":"RS256","typ":"JWT"}'
     claim="$(jq -nc --arg iss "$email" --arg scope "$SCOPE" --argjson iat "$now" --argjson exp "$exp" \
         '{iss:$iss,scope:$scope,aud:"https://oauth2.googleapis.com/token",iat:$iat,exp:$exp}')"
     signing_input="$(printf '%s' "$header" | b64url).$(printf '%s' "$claim" | b64url)"
-    sig="$(printf '%s' "$signing_input" | openssl dgst -sha256 -sign "$KEY_PEM" -binary | b64url)"
-    rm -f "$KEY_PEM"; KEY_PEM=""
+    sig="$(printf '%s' "$signing_input" | openssl dgst -sha256 -sign "$KEY_PEM" -binary | b64url)" \
+        || return $?
     jwt="${signing_input}.${sig}"
 
     resp="$(api_request '(.access_token | text) and .token_type == "Bearer" and (.expires_in | type == "number" and . > 0)' \
@@ -108,10 +112,10 @@ api_get() {  # $1 = querystring (ex: ?fields=...)
 api_batch() {  # $1 = JSON {requests:[...]}
     local count
     count="$(jq '.requests | length' <<< "$1")"
-    api_request '.spreadsheetId == $id and (.replies | type == "array" and length == '"$count"')' \
+    printf '%s' "$1" | api_request '.spreadsheetId == $id and (.replies | type == "array" and length == '"$count"')' \
         -X POST -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
         "https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}:batchUpdate" \
-        -d "$1"
+        --data-binary @-
 }
 
 # Lecture de valeurs : une plage vide valide omet le champ values.
@@ -127,22 +131,36 @@ api_values_put() {
         "https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/$(jq -rn --arg v "$1" '$v|@uri')?valueInputOption=RAW" \
         -d "$(jq -nc --arg v "$2" '{values:[[$v]]}')"
 }
-# Écrit une matrice ; le clear doit être confirmé avant le moindre PUT.
+# Effacement et remplacement atomiques : aucune fenêtre avec l'onglet vide.
+# Seules les valeurs sont touchées, sur A1:Z200 borné à la grille puis la matrice entière ; les
+# formats et les cellules hors de cette union sont conservés.
 api_values_matrix() {
-    local anchor="$1" body="$2" tab="${1%%!*}"
-    api_request '.spreadsheetId == $id and (.clearedRange | text)' \
-        -X POST -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
-        "https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/$(jq -rn --arg v "${tab}!A1:Z200" '$v|@uri'):clear" >/dev/null \
-        || return 1
-    api_request '.spreadsheetId == $id and (.updatedRange | text) and (.updatedCells | count)' \
-        -X PUT -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
-        "https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/$(jq -rn --arg v "$anchor" '$v|@uri')?valueInputOption=RAW" \
-        -d "$body"
+    local body="$2" tab="${1%%!*}" meta sheet batch
+    meta="$(fetch_sheets)" || return 1
+    sheet="$(jq -ec --arg tab "$tab" '
+        def dimension: type == "number" and . > 0 and floor == .;
+        [.sheets[].properties | select(.title == $tab)]
+        | if length == 1 then .[0] else error("Onglet absent ou ambigu") end
+        | if (.gridProperties.rowCount | dimension) and
+             (.gridProperties.columnCount | dimension) then .
+          else error("Dimensions de grille invalides") end
+    ' <<< "$meta")" || die "Onglet absent, ambigu ou dimensions invalides : chargement refusé."
+    batch="$(jq -c --argjson sheet "$sheet" '
+        {requests:[
+            {updateCells:{range:{sheetId:$sheet.sheetId,startRowIndex:0,
+                endRowIndex:([200,$sheet.gridProperties.rowCount] | min),startColumnIndex:0,
+                endColumnIndex:([26,$sheet.gridProperties.columnCount] | min)},rows:[],fields:"userEnteredValue"}},
+            {updateCells:{start:{sheetId:$sheet.sheetId,rowIndex:0,columnIndex:0},
+                rows:(.values | map({values:map({userEnteredValue:{stringValue:.}})})),
+                fields:"userEnteredValue"}}
+        ]}
+    ' <<< "$body")" || return 1
+    api_batch "$batch"
 }
 
 # Métadonnées des onglets : sheetId, title, index, hidden
 fetch_sheets() {
-    api_get "?fields=sheets(properties(sheetId,title,index,hidden))"
+    api_get "?fields=sheets(properties(sheetId,title,index,hidden,gridProperties(rowCount,columnCount)))"
 }
 
 # Properties de l'onglet de version le plus récent (ou "null"). $1 = métadonnées.
@@ -232,7 +250,7 @@ cmd_setcell() {
     echo "✓ ${tab}!${cell} mis à jour."
 }
 
-# Peuple un onglet depuis un TSV (efface d'abord l'onglet). $1 = onglet, $2 = fichier TSV.
+# Peuple un onglet depuis un TSV (effacement et écriture atomiques). $1 = onglet, $2 = fichier TSV.
 # Corrige le vice de fond : `new` clone l'onglet precedent, donc sans re-peuplement le
 # contenu reste fige (le Sheet est reste bloque sur V10 pendant que les noms d'onglets
 # avancaient). `load` ecrit le VRAI contenu d'un V[N].txt transforme en TSV.

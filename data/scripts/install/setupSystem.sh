@@ -108,21 +108,26 @@ ensure_split_users() {
     fi
 }
 
-# C17 : resserre les secrets du manager (home 0750, .env 0600, .ssh 0700).
-# Ne fait QUE resserrer : aucun secret n'est donné en lecture au compte jeu.
+# Toute écriture du home s'effectue avec les droits du manager : même un
+# remplacement concurrent par un lien ne donne aucun droit sur une cible root.
+as_manager() {
+    if [[ "$(id -un)" == "$PZ_USER" ]]; then "$@"; else sudo -u "$PZ_USER" "$@"; fi
+}
+
 harden_manager_secrets() {
-    local mgr_home="${PZ_MANAGER_HOME:-$PZ_HOME}"
-    local secrets_file="${ENV_FILE}"
+    local mgr_home="${PZ_MANAGER_HOME:-$PZ_HOME}" secrets_file="$ENV_FILE"
     local ssh_dir="${mgr_home}/.ssh"
-    if [[ -d "$mgr_home" ]]; then
-        chmod 0750 "$mgr_home"
-    fi
-    if [[ -f "$secrets_file" ]]; then
-        chmod 0600 "$secrets_file"
+    [[ ! -L "$secrets_file" && ! -L "$ssh_dir" ]] \
+        || { echo "[ERROR] Secret manager symbolique refusé." >&2; return 1; }
+    [[ ! -d "$mgr_home" ]] || as_manager chmod 0750 "$mgr_home"
+    # Le clone privé de l'installateur contient déjà un .env root 0600 avant
+    # création du home ; on ne le confie pas au compte nouvellement créé.
+    if [[ "$secrets_file" == "$mgr_home/"* || -n "$SETUP_MANAGER_ROOT" ]]; then
+        [[ ! -f "$secrets_file" ]] || as_manager chmod 0600 "$secrets_file"
     fi
     if [[ -d "$ssh_dir" ]]; then
-        chmod 0700 "$ssh_dir"
-        chmod 0600 "$ssh_dir"/* 2>/dev/null || true
+        as_manager chmod 0700 "$ssh_dir"
+        as_manager bash -c 'for file in "$1"/*; do [[ ! -f "$file" ]] || chmod 0600 "$file" || exit; done' _ "$ssh_dir"
     fi
 }
 
@@ -331,18 +336,15 @@ configure_path() {
         return
     fi
 
-    if grep -q "PATH.*pzmanager" "$bashrc"; then
+    if as_manager grep -q "PATH.*pzmanager" "$bashrc"; then
         echo "[INFO] PATH déjà configuré pour pzmanager"
         return
     fi
 
-    cat >> "$bashrc" << PATHEOF
+    [[ ! -L "$bashrc" ]] || { echo "[ERROR] .bashrc symbolique refusé." >&2; return 1; }
+    printf '\n# pzmanager PATH\nexport PATH="%s/pzmanager:${PATH}"\n' "$PZ_HOME" \
+        | as_manager tee -a -- "$bashrc" >/dev/null
 
-# pzmanager PATH
-export PATH="${PZ_HOME}/pzmanager:\${PATH}"
-PATHEOF
-
-    chown "${PZ_USER}:${PZ_USER}" "$bashrc"
     echo "[INFO] PATH configuré pour inclure pzmanager"
 }
 
@@ -406,8 +408,8 @@ main() {
 
     create_user
     ensure_split_users
-    harden_manager_secrets
     install_packages
+    harden_manager_secrets
     configure_firewall
     configure_path
     install_sudoers

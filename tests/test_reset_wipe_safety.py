@@ -18,6 +18,9 @@ import unittest
 
 ROOT = Path(os.environ['PZ_TEST_ROOT'])
 
+# Provider wrapper retained verbatim; only its Java/game executables are fixtures.
+VENDOR_WRAPPER = '#!/bin/bash\n#\n###############################################################################\n#\n# Edit memory option -Xmx in ProjectZomboid64.json for 64bit servers (common)\n#\n############\n\nINSTDIR="`dirname $0`" ; cd "${INSTDIR}" ; INSTDIR="`pwd`"\n\nif "${INSTDIR}/jre64/bin/java" -version > /dev/null 2>&1; then\n\texport PATH="${INSTDIR}/jre64/bin:$PATH"\n\texport LD_LIBRARY_PATH="${INSTDIR}/linux64:${INSTDIR}:${INSTDIR}/jre64/lib/amd64:${LD_LIBRARY_PATH}"\n\tJSIG="libjsig.so"\n\tLD_PRELOAD="${LD_PRELOAD}:${JSIG}" ./ProjectZomboid64 "$@"\nelse\n\techo "Only 64bit is supported"\nfi\nexit 0\n\n#\n# EOF\n#\n###############################################################################\n\n'
+
 SCHEMA = '''CREATE TABLE whitelist(world TEXT,username TEXT UNIQUE,password TEXT,steamid TEXT,role TEXT,displayName TEXT,lastConnection TEXT);
 CREATE TABLE allowedsteamid(steamid TEXT UNIQUE);'''
 
@@ -72,7 +75,128 @@ time.sleep(90)
         self.tile=self.live/'Saves/Multiplayer/world/map/0/0.bin'
         self.tile.parent.mkdir(parents=True);self.tile.write_bytes(b'old-map')
         self.before=self.image(self.live)
-    def tearDown(self): self.tmp.cleanup()
+    def tearDown(self):
+        ready=self.base/'generator-child.json'
+        if ready.exists():
+            identity=json.loads(ready.read_text())
+            if self.child_alive(identity):
+                os.kill(identity['pid'],signal.SIGKILL)
+        self.tmp.cleanup()
+    def child_alive(self,identity):
+        try:
+            fields=Path('/proc/'+str(identity['pid'])+'/stat').read_text().rsplit(')',1)[1].split()
+            return int(fields[19])==identity['birth'] and fields[0]!='Z'
+        except FileNotFoundError:return False
+    def vendor_generator(self,ignore_term=False,wrapper_exits=False):
+        child=self.install/'ProjectZomboid64'
+        child.write_text((self.install/'start-server.sh').read_text())
+        child.chmod(0o700)
+        child.write_text(child.read_text().replace('import os,sys,time','''import os,sys,time,signal,json
+if os.environ.get('FIXTURE_IGNORE_TERM')=='1':signal.signal(signal.SIGTERM,signal.SIG_IGN)
+from pathlib import Path
+fields=Path('/proc/self/stat').read_text().rsplit(')',1)[1].split()
+ready=Path(os.environ['FIXTURE_CHILD_READY'])
+ready.with_suffix('.tmp').write_text(json.dumps(dict(pid=os.getpid(),birth=int(fields[19]),locks={key:os.environ.get(key) for key in ('PZ_WORLD_LOCK_FD','SERVERCTL_LOCK_FD')})))
+ready.with_suffix('.tmp').replace(ready)'''))
+        java=self.install/'jre64/bin/java';java.parent.mkdir(parents=True)
+        self.executable(java,'#!/bin/bash\nexit 0\n')
+        wrapper=VENDOR_WRAPPER
+        if wrapper_exits:
+            wrapper=wrapper.replace('./ProjectZomboid64 "$@"','./ProjectZomboid64 "$@" &')
+        self.executable(self.install/'start-server.sh',wrapper)
+        self.env.update(FIXTURE_CHILD_READY=str(self.base/'generator-child.json'),FIXTURE_IGNORE_TERM='1' if ignore_term else '0')
+    def wait_for_child(self,process):
+        ready=self.base/'generator-child.json';deadline=time.monotonic()+6
+        while not ready.exists() and process.poll() is None and time.monotonic()<deadline:time.sleep(.02)
+        self.assertTrue(ready.exists(),'provider wrapper never launched its child')
+        identity=json.loads(ready.read_text());self.assertTrue(self.child_alive(identity),'generator child not alive at precondition')
+        return identity
+    def assert_child_stopped(self):
+        ready=self.base/'generator-child.json'
+        self.assertTrue(ready.exists(),'provider child launch not proven')
+        self.assertFalse(self.child_alive(json.loads(ready.read_text())),'provider child still writing after reset returned')
+    def test_vendor_child_inherits_world_and_serverctl_locked_fds(self):
+        self.vendor_generator(ignore_term=True);self.env['FIXTURE_GENERATOR']='hang'
+        common=self.repo/'data/scripts/lib/common.sh'
+        script='source "$1"; source_env; acquire_world_lock --required; acquire_serverctl_lock_or_die; exec bash "$2"'
+        p=subprocess.Popen(['bash','-euo','pipefail','-c',script,'bash',str(common),str(self.repo/'data/scripts/admin/resetServer.sh')],env=self.env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+        try:
+            child=self.wait_for_child(p)
+            metadata=next(self.home.glob('Zomboid.new.*/.pzm-generator.json'))
+            supervisor=json.loads(metadata.read_text())
+            for variable,name in [('PZ_WORLD_LOCK_FD','world.lock'),('SERVERCTL_LOCK_FD','serverctl.lock')]:
+                with self.subTest(lock=name):
+                    fd=child['locks'][variable]
+                    self.assertIsNotNone(fd,'wrapper did not receive the lock environment')
+                    lock=self.runtime/'pzmanager'/name
+                    expected=lock.stat()
+                    for pid in (supervisor['pid'],child['pid']):
+                        held=Path('/proc')/str(pid)/'fd'/fd
+                        self.assertTrue(held.exists(),f'{variable} FD closed before process {pid}')
+                        actual=held.stat()
+                        self.assertEqual((actual.st_dev,actual.st_ino),(expected.st_dev,expected.st_ino))
+                        info=(Path('/proc')/str(pid)/'fdinfo'/fd).read_text()
+                        self.assertRegex(info,r'FLOCK\s+ADVISORY\s+WRITE')
+                    with lock.open('rb') as concurrent:
+                        with self.assertRaises(BlockingIOError):fcntl.flock(concurrent,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        finally:
+            if p.poll() is None:p.terminate()
+            out=p.communicate(timeout=15)[0]
+            self.assertNotEqual(p.returncode,0,out)
+            self.assert_child_stopped()
+    def test_vendor_wrapper_success_stops_term_ignoring_child(self):
+        self.vendor_generator(ignore_term=True)
+        p=self.run_admin('resetServer.sh')
+        self.assertEqual(p.returncode,0,p.stdout)
+        self.assert_child_stopped()
+    def test_vendor_wrapper_timeout_stops_child(self):
+        self.vendor_generator(ignore_term=True);self.env['FIXTURE_GENERATOR']='hang'
+        p=self.run_admin('resetServer.sh')
+        self.assertNotEqual(p.returncode,0,p.stdout);self.assertIn('Timeout',p.stdout)
+        self.assert_child_stopped();self.assertEqual(self.image(self.live),self.before)
+    def test_vendor_wrapper_term_stops_child(self):
+        self.vendor_generator(ignore_term=True);self.env['FIXTURE_GENERATOR']='hang'
+        p=subprocess.Popen(self.command('resetServer.sh'),env=self.env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+        try:
+            self.wait_for_child(p)
+            p.terminate();out=p.communicate(timeout=15)[0]
+            self.assertNotEqual(p.returncode,0,out)
+            self.assert_child_stopped();self.assertEqual(self.image(self.live),self.before)
+        finally:
+            if p.poll() is None:p.kill();p.communicate()
+    def test_unprovable_generator_identity_preserves_staging(self):
+        self.assert_unprovable_generator_identity('birth')
+    def test_wrong_generator_cachedir_preserves_staging_and_child(self):
+        self.assert_unprovable_generator_identity('cachedir')
+    def assert_unprovable_generator_identity(self,field):
+        self.vendor_generator(ignore_term=True);self.env['FIXTURE_GENERATOR']='hang'
+        p=subprocess.Popen(self.command('resetServer.sh'),env=self.env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+        original=None;metadata=None
+        try:
+            self.wait_for_child(p)
+            metadata=next(self.home.glob('Zomboid.new.*/.pzm-generator.json'))
+            original=json.loads(metadata.read_text())
+            corrupt=dict(original)
+            corrupt[field]=original[field]+1 if field=='birth' else original[field]+'.suffix'
+            metadata.write_text(json.dumps(corrupt))
+            p.terminate();out=p.communicate(timeout=15)[0]
+            self.assertNotEqual(p.returncode,0,out)
+            self.assertIn('staging et journal conservés',out)
+            self.assertTrue(metadata.exists(),'staging evidence deleted despite unknown identity')
+            self.assertTrue(self.child_alive(json.loads((self.base/'generator-child.json').read_text())))
+            self.assertEqual(self.image(self.live),self.before)
+        finally:
+            if p.poll() is None:p.kill();p.communicate()
+            if metadata is not None and original is not None:
+                metadata.write_text(json.dumps(original))
+                stopped=subprocess.run(['python3',str(self.repo/'data/scripts/lib/reset_generator.py'),'stop','--metadata',str(metadata),'-cachedir='+original['cachedir'],'--pid',str(original['pid'])],env=self.env,capture_output=True,text=True,timeout=10)
+                self.assertEqual(stopped.returncode,0,stopped.stdout+stopped.stderr)
+    def test_exited_wrapper_still_stops_remaining_child(self):
+        self.vendor_generator(ignore_term=True,wrapper_exits=True);self.env['FIXTURE_GENERATOR']='hang'
+        p=self.run_admin('resetServer.sh')
+        self.assertNotEqual(p.returncode,0,p.stdout)
+        self.assert_child_stopped();self.assertEqual(self.image(self.live),self.before)
+
     def executable(self,path,content):path.write_text(content);path.chmod(0o700)
     def image(self,path): return {str(p.relative_to(path)):p.read_bytes() for p in path.rglob('*') if p.is_file()}
     def command(self,script,*args):return ['bash',str(self.repo/'data/scripts/admin'/script),*args]
@@ -147,7 +271,7 @@ time.sleep(90)
         p=subprocess.Popen(self.command('resetServer.sh'),env=self.env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
         try:
             for _ in range(150):
-                if list(self.home.glob('Zomboid.new.*')):break
+                if list(self.home.glob('Zomboid.new.*/.pzm-generator.json')):break
                 if p.poll() is not None:break
                 time.sleep(.05)
             p.terminate();out=p.communicate(timeout=15)[0]

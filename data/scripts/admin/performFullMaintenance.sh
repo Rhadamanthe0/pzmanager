@@ -405,16 +405,15 @@ main() {
         touch "$SILENT_FLAG_FILE"
     fi
 
-    # Passé ce point, la maintenance a réussi : le filet ci-dessus n'a plus lieu
-    # d'être (le reboot machine, notamment, n'est pas un échec).
-    SERVER_STOPPED_BY_MAINTENANCE=false
-
+    # Le filet reste armé jusqu'à l'acceptation du reboot ou la validation du
+    # démarrage du service : un refus final doit encore déclencher la reprise.
     if [[ "$NO_REBOOT" != true && "${REBOOT_ON_MAINTENANCE:-true}" == true ]]; then
         log "Maintenance terminée, redémarrage machine..."
-        maint_set_state "DONE"
-        maint_disarm_recovery
         [[ "$SILENT_MODE" == true ]] || notify "Maintenance terminée - Redémarrage machine" || true
         sudo /sbin/reboot
+        SERVER_STOPPED_BY_MAINTENANCE=false
+        maint_set_state "DONE"
+        maint_disarm_recovery
     else
         log "Maintenance terminée, redémarrage du service..."
         local -a opts=()
@@ -422,6 +421,7 @@ main() {
         [[ "$SILENT_MODE" == true ]] && opts+=(--silent)
         "${SCRIPT_DIR}/../core/pz.sh" start --reason "$MAINTENANCE_REASON" "${opts[@]}"
         if validate_final_start; then
+            SERVER_STOPPED_BY_MAINTENANCE=false
             maint_set_state "DONE"
             maint_disarm_recovery
         else

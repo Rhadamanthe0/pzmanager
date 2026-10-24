@@ -135,14 +135,37 @@ code_lines "$SETUP_SYS" | grep -qiE 'chown.*GAME.*(BACKUP|secret|ssh)|chmod.*pzg
     && fail "setupSystem.sh : lecture donnée au compte jeu"
 pass "setupSystem.sh : secrets en 0600/0700/0750, aucun 644, rien donné à pzgame"
 
-# configurationInitiale.sh : migration appelée avant le téléchargement.
-grep -q 'migrate_single_to_split' "$CONF_INIT" || fail "migrate_single_to_split absent"
-grep -q 'migrate_single_to_split "$PZ_SOURCE_DIR"\|migrate_item_to_split "\$PZ_SOURCE_DIR"' "$CONF_INIT" \
-    || fail "le monde n'est pas migré par migrate_single_to_split"
-awk '/if \[\[ "\$do_server_install" == true \]\]; then/{found=1} found && /migrate_single_to_split/{before_dl=1} found && /install_zomboid_dependencies/{exit !before_dl}' "$CONF_INIT" \
-    || fail "migrate_single_to_split non appelée avant le téléchargement"
-grep -q 'pre-split-bak' "$CONF_INIT" || fail "l'original du monde n'est pas conservé (.pre-split-bak)"
-pass "configurationInitiale.sh : migrate_single_to_split avant download, monde jamais supprimé"
+# Le mode multi-UID est refusé AVANT tout prérequis ou mutation.
+SIM="$(mktemp -d)"
+mkdir "$SIM/world"
+printf 'world-before\n' > "$SIM/world/sentinel"
+printf 'secret-before\n' > "$SIM/secret"
+chmod 0700 "$SIM/world"; chmod 0600 "$SIM/secret"
+before="$(stat -c '%u:%a:%s' "$SIM/world" "$SIM/secret"; sha256sum "$SIM/world/sentinel" "$SIM/secret")"
+set +e
+bash -eu -c '
+    source "$1"
+    PZ_GAME_USER=pzgame
+    PZ_MANAGER_USER=pzmanager
+    PZ_SOURCE_DIR="$2/world"
+    PZ_INSTALL_DIR="$2/install"
+    export C17_PREREQUISITE="$2/prerequisite-called"
+    loginctl() { touch "$C17_PREREQUISITE"; }
+    install_zomboid_dependencies() { touch "$C17_PREREQUISITE"; }
+    ensure_runtime_dir() { touch "$C17_PREREQUISITE"; }
+    as_manager() { touch "$C17_PREREQUISITE"; }
+    install_zomboid
+' _ "$CONF_INIT" "$SIM" > "$SIM/refusal.log" 2>&1
+rc=$?
+set -e
+[[ "$rc" != 0 ]] || fail "installation multi-UID acceptée"
+grep -q 'split multi-UID non pris en charge, aucun fichier modifié' "$SIM/refusal.log" \
+    || fail "refus multi-UID sans preuve causale"
+[[ ! -e "$SIM/prerequisite-called" && ! -e "$SIM/install" ]] || fail "prérequis exécuté malgré split"
+[[ "$(stat -c '%u:%a:%s' "$SIM/world" "$SIM/secret"; sha256sum "$SIM/world/sentinel" "$SIM/secret")" == "$before" ]] \
+    || fail "monde/secret modifié malgré split"
+rm -rf "$SIM"; SIM=""
+pass "configurationInitiale.sh : split refusé avant prérequis, monde/secret owner/mode/contenu intacts"
 
 # --- (d) simulation : secret 0600 illisible pour un autre compte -------------
 SIM="$(mktemp -d)"

@@ -616,8 +616,8 @@ MAINTENANCE_LOCK_FD=""
 # directes dans les bases du monde. Une commande qui exige un serveur arrêté le
 # conserve de sa vérification jusqu'à sa dernière écriture : `pzm server start`
 # ne peut donc pas s'intercaler entre les deux.
-SERVERCTL_LOCK_FILE=""
-SERVERCTL_LOCK_FD=""
+: "${SERVERCTL_LOCK_FILE:=}"
+: "${SERVERCTL_LOCK_FD:=}"
 
 # Le chemin partagé prévisible permettait à un autre utilisateur de tenir
 # un flock adverse. Résoudre seulement à l'acquisition : common.sh sert aussi
@@ -687,7 +687,21 @@ acquire_serverctl_lock_or_die() {
     [[ -n "$message" ]] || message="Une opération serveur ou une écriture dans le monde est déjà en cours. Attends qu'elle se termine."
     SERVERCTL_LOCK_FILE="$(serverctl_lock_path)" \
         || die "Répertoire ou fichier du verrou serverctl non sûr : opération refusée."
+    if [[ -n "$SERVERCTL_LOCK_FD" ]]; then
+        # Une variable héritée ne prouve rien : vérifier l'inode ET l'OFD qui
+        # porte encore un verrou FLOCK exclusif avant toute réentrance.
+        local line held=0
+        local exclusive='^lock:[[:space:]]+[0-9]+:[[:space:]]+FLOCK[[:space:]]+ADVISORY[[:space:]]+WRITE[[:space:]]'
+        if [[ "$SERVERCTL_LOCK_FD" =~ ^[0-9]+$ && "$SERVERCTL_LOCK_FILE" -ef "/proc/self/fd/$SERVERCTL_LOCK_FD" ]]; then
+            while IFS= read -r line; do
+                if [[ "$line" =~ $exclusive ]]; then held=1; break; fi
+            done 2>/dev/null < "/proc/self/fdinfo/$SERVERCTL_LOCK_FD" || held=0
+        fi
+        (( held )) || die "Réentrance serverctl non prouvée."
+        return 0
+    fi
     try_lock "$SERVERCTL_LOCK_FILE" SERVERCTL_LOCK_FD || die "$message"
+    export SERVERCTL_LOCK_FILE SERVERCTL_LOCK_FD
 }
 
 # Verrou de maintenance, partagé par pz.sh / modcheck / performFullMaintenance.

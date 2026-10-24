@@ -78,61 +78,28 @@ step() {
 STAGING_DIR=""
 GENERATOR_PID=""
 STAGING_CACHEDIR=""
+GENERATOR_METADATA=""
 
-# C8 : vrai si /proc/<pid>/cmdline contient le cachedir staging EXACT. Un
-# processus homonyme (même nom, autre cachedir) ne correspond jamais : il
-# n'est jamais tué.
-generator_cmdline_matches() {
-    local pid="$1" cachedir="$2" cmdline
-    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-    [[ -n "$cachedir" ]] || return 1
-    [[ -r "/proc/${pid}/cmdline" ]] || return 1
-    while IFS= read -r -d '' cmdline; do
-        [[ "$cmdline" != "-cachedir=${cachedir}" ]] || return 0
-    done < "/proc/${pid}/cmdline"
-    return 1
-}
-
-# C8 : arrête le générateur par PID exact ($!), puis son groupe. Ne passe
-# jamais par un kill large au nom (pattern) : seul le PID dont la cmdline
-# porte le cachedir staging exact est signalé.
+# L'identité du leader stable et l'absence de tout écrivain sont prouvées par
+# le helper ; aucune suppression du staging si cette preuve échoue.
 kill_generator_exact() {
-    local pid="${GENERATOR_PID:-}"
-    [[ -n "$pid" ]] || return 0
-    if ! kill -0 "$pid" 2>/dev/null; then
-        GENERATOR_PID=""
-        return 0
-    fi
-    local cachedir="${STAGING_CACHEDIR:-${STAGING_DIR:-}}"
-    if ! generator_cmdline_matches "$pid" "$cachedir"; then
-        echo "  (générateur PID ${pid} : cmdline sans cachedir staging exact — aucun kill)" >&2
-        GENERATOR_PID=""
-        return 0
-    fi
-    kill -TERM "$pid" 2>/dev/null || true
-    # Groupe : seulement si le PID est chef de son groupe (évite de signaler
-    # le groupe du testeur quand le générateur partage son PGID, sans
-    # job-control où le bg n'a pas son propre PGID).
-    local pgid=""
-    pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
-    if [[ "$pgid" == "$pid" ]]; then
-        kill -- "-${pid}" 2>/dev/null || true
-    fi
-    sleep 2
-    if kill -0 "$pid" 2>/dev/null; then
-        kill -KILL "$pid" 2>/dev/null || true
-        if [[ "$pgid" == "$pid" ]]; then
-            kill -9 -- "-${pid}" 2>/dev/null || true
-        fi
-    fi
-    wait "$pid" 2>/dev/null || true
+    [[ -n "${GENERATOR_PID:-}" ]] || return 0
+    python3 "${SCRIPT_DIR}/../lib/reset_generator.py" stop \
+        --metadata "$GENERATOR_METADATA" -cachedir="$STAGING_CACHEDIR" --pid "$GENERATOR_PID" \
+        || return 1
+    wait "$GENERATOR_PID" 2>/dev/null || true
     GENERATOR_PID=""
+    rm -f -- "$GENERATOR_METADATA"
+    GENERATOR_METADATA=""
 }
 
 # À la sortie : arrêter le générateur, vérifier le rollback si nécessaire,
 # puis nettoyer le staging jetable.
 cleanup_reset_staging() {
-    kill_generator_exact || true
+    if ! kill_generator_exact; then
+        echo "Générateur non prouvé arrêté — staging et journal conservés : ${STAGING_DIR}" >&2
+        return 0
+    fi
     # A prepared intent always survives an unverified rollback. Preserve both
     # images if verification or restoration fails, so start remains blocked.
     if [[ -n "${TRANSACTION_TOKEN:-}" ]]; then
@@ -246,12 +213,27 @@ generate_world() {
 
     # -servername comme dans zomboid.service : sans lui PZ génèrerait le monde
     # sous son nom par défaut, et les scripts chercheraient PZ_SERVER_NAME.
-    # C8 : PID exact ($!) + kill ciblé, jamais de kill large au nom.
-    "${PZ_INSTALL_DIR}/start-server.sh" \
+    # Aucun job-control ici : le PID $! devient lui-même le leader de session,
+    # sans fork implicite de setsid(1). Le wrapper fournisseur reste son enfant.
+    set +m
+    GENERATOR_METADATA="${STAGING_DIR}/.pzm-generator.json"
+    python3 "${SCRIPT_DIR}/../lib/reset_generator.py" launch \
+        --metadata "$GENERATOR_METADATA" -cachedir="$cachedir" -- \
+        "${PZ_INSTALL_DIR}/start-server.sh" \
         -cachedir="${cachedir}" \
         -servername "${PZ_SERVER_NAME}" \
         -adminpassword "$password" <<< "$password" > /dev/null 2>&1 &
     GENERATOR_PID=$!
+    local handshake
+    for ((handshake=0; handshake<100; handshake++)); do
+        if [[ -s "$GENERATOR_METADATA" ]] && python3 "${SCRIPT_DIR}/../lib/reset_generator.py" ready \
+            --metadata "$GENERATOR_METADATA" -cachedir="$cachedir" --pid "$GENERATOR_PID"; then
+            break
+        fi
+        kill -0 "$GENERATOR_PID" 2>/dev/null || die "Session du générateur impossible — staging conservé."
+        sleep .02
+    done
+    (( handshake < 100 )) || die "Identité du générateur non établie — staging conservé."
 
     local waited=0
 
@@ -260,8 +242,8 @@ generate_world() {
         if [[ -f "${staging_db}" ]]; then
             break
         fi
-        if (( waited > early_grace )) && ! kill -0 "$GENERATOR_PID" 2>/dev/null; then
-            GENERATOR_PID=""
+        if (( waited > early_grace )) && ! python3 "${SCRIPT_DIR}/../lib/reset_generator.py" running \
+            --metadata "$GENERATOR_METADATA" -cachedir="$cachedir" --pid "$GENERATOR_PID"; then
             rollback_live || true
             die "Le serveur s'est arrêté de manière inattendue"
         fi
@@ -290,7 +272,7 @@ generate_world() {
     done
     echo ""
 
-    kill_generator_exact
+    kill_generator_exact || die "Arrêt du générateur non prouvé — live intact, staging conservé."
 
     if [[ $admin_wait -ge $admin_timeout ]]; then
         echo "⚠ Admin non créé en DB (timeout). Le serveur demandera le mot de passe au démarrage."

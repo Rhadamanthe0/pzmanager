@@ -86,11 +86,14 @@ cancelled itself out only because both values were unused.
 ```bash
 export STEAMCMD_PATH="/usr/games/steamcmd"
 export STEAM_APP_ID="380870"
-export STEAM_BETA_BRANCH="unstable"
+export STEAM_BETA_BRANCH=""          # Default: public branch
 ```
 
+**Branch selection**: empty uses Steam's `public` branch. Set an explicit branch
+only when required by the deployment.
+
 **Available branches**:
-- `unstable`: Latest B42
+- `unstable`: Explicit opt-in branch
 - See [SteamDB](https://steamdb.info/app/380870/depots/) for other branches
 
 ### Java Runtime
@@ -184,7 +187,7 @@ failure publishes nothing. Decrypt before using a ZIP restore command.
 ### Logs
 
 ```bash
-export LOG_BASE_DIR="${PZ_SCRIPTS_DIR}/logs"
+export LOG_BASE_DIR="${PZ_MANAGER_DIR}/logs"
 export LOG_ZOMBOID_DIR="${LOG_BASE_DIR}/zomboid"
 export LOG_MAINTENANCE_DIR="${LOG_BASE_DIR}/maintenance"
 export LOG_RETENTION_DAYS=30
@@ -196,9 +199,8 @@ export LOG_RETENTION_DAYS=30
 export WHITELIST_PURGE_DAYS=90
 ```
 
-**WHITELIST_PURGE_DAYS**: Accounts with no activity for this many days have their
-access (whitelist + SteamID) auto-removed during nightly maintenance. The
-character is kept, and the built-in `admin` account is always spared.
+**WHITELIST_PURGE_DAYS** sets the inactivity threshold for the
+[automatic startup access purge](USAGE.md#automatic-access-purge).
 
 ### Maintenance
 
@@ -387,7 +389,7 @@ export DISCORD_WEBHOOK=""
 pzm server status
 
 # Real-time logs
-sudo journalctl -u zomboid.service -f
+journalctl --user -u zomboid.service -f
 
 # Maintenance logs
 ls -lt logs/maintenance/

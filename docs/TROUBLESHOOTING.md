@@ -428,10 +428,9 @@ chmod 600 ~/.ssh/* 2>/dev/null
 ### Invalid Sudoers
 
 ```bash
-# Check file
-# Le sudoers est maintenant installé automatiquement par setupSystem.sh
-# Pour réinstaller manuellement :
-sudo ~/pzmanager/data/scripts/install/setupSystem.sh $USER
+# Reinstall through the trusted root helper; replace UTILISATEUR
+sudo /usr/local/libexec/pzmanager/install/setupSystem.sh \
+  --manager-root /home/UTILISATEUR/pzmanager
 ```
 
 ## Insufficient Disk Space

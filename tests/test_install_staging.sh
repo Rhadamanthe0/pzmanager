@@ -14,9 +14,12 @@ if (( EUID != 0 )); then
     exit
 fi
 # Ne jamais créer /usr/local ou /etc dans le namespace hôte.
-awk '$1 == 0 && $2 != 0 { mapped=1 } END { exit !mapped }' /proc/self/uid_map \
-    || { echo 'Rootfs UID mappé requis.' >&2; exit 1; }
-[[ "$(stat -f -c %T /)" == tmpfs ]] || { echo 'Rootfs tmpfs requis.' >&2; exit 1; }
+if ! awk '$1 == 0 && $2 != 0 { mapped=1 } END { exit !mapped }' /proc/self/uid_map \
+    || [[ "$(stat -f -c %T /)" != tmpfs ]]; then
+    echo 'SKIP staging privilégié : rootfs jetable avec UID mappé requis ; aucune mutation système.'
+    bash -n "$ROOT/data/scripts/install.sh" "$ROOT/data/scripts/install/setupSystem.sh" "$ROOT/data/scripts/install/configurationInitiale.sh"
+    exit 0
+fi
 chmod 0755 / /etc
 chmod 0644 /etc/passwd /etc/group /etc/nsswitch.conf
 # /usr est un bind readonly de l'hôte : monter une destination privée dessus.
@@ -90,6 +93,16 @@ if [[ " $* " == *" show "* ]]; then
         printf 'ActiveState=%s\nSubState=dead\nResult=success\n' "${MOCK_RESTORE_STATE:-inactive}"
     fi
 fi
+if [[ " $* " == *" enable zomboid.service "* ]]; then
+    for directory in "$PZ_INSTALL_DIR" "$PZ_SOURCE_DIR" "$PZ_MANAGER_DIR/logs" "$PZ_MANAGER_DIR/logs/zomboid" "$BACKUP_DIR"; do
+        [[ -d "$directory" && -O "$directory" && "$(stat -c %a "$directory")" == 700 ]] || {
+            echo "ReadWritePaths absent/non privé avant enable : $directory" >&2; exit 1;
+        }
+    done
+    grep -q 'FLOCK.*WRITE' "/proc/self/fdinfo/$PZ_WORLD_LOCK_FD"
+    grep -q 'FLOCK.*WRITE' "/proc/self/fdinfo/$SERVERCTL_LOCK_FD"
+    echo private-paths-and-locks-ready-before-enable >> "$MOCK_DIR/calls.log"
+fi
 SYSTEMCTL
 chmod 0755 /test-bin/sudo /test-bin/systemctl
 # Le runner a injecté des chemins cgroup privés ; seul leur contenu de preuve
@@ -154,6 +167,29 @@ done
 mkdir -p "$manager_home/pzmanager/data/pzserver"
 touch "$manager_home/pzmanager/data/pzserver/ProjectZomboid64"
 chown -R pzfixture:pzfixture "$manager_home/pzmanager/data/pzserver"
+# Victimes root indépendantes : aucune écriture/chown root via liens du home.
+mkdir -p /root/install-victims
+for file in env key bashrc; do printf 'root-%s-original\n' "$file" > "/root/install-victims/$file"; chmod 0640 "/root/install-victims/$file"; done
+victims_before="$(stat -c '%u:%g:%a:%s' /root/install-victims/*; sha256sum /root/install-victims/*)"
+mv "$manager_home/pzmanager/.env" /tmp/install-env-original
+ln -s /root/install-victims/env "$manager_home/pzmanager/.env"
+if PATH="/test-bin:$PATH" bash -eu -c 'source "$1" --manager-root "$2"; harden_manager_secrets' _ "$helper/setupSystem.sh" "$manager_home/pzmanager" > /tmp/secret-link.log 2>&1; then echo "FAIL lien .env accepté ; victime $(stat -c '%u:%a' /root/install-victims/env)" >&2; exit 1; fi
+rm "$manager_home/pzmanager/.env"; mv /tmp/install-env-original "$manager_home/pzmanager/.env"
+ln -s /root/install-victims "$manager_home/.ssh"
+if PATH="/test-bin:$PATH" bash -eu -c 'source "$1" --manager-root "$2"; harden_manager_secrets' _ "$helper/setupSystem.sh" "$manager_home/pzmanager" > /tmp/ssh-link.log 2>&1; then exit 1; fi
+rm "$manager_home/.ssh"
+ln -s /root/install-victims/bashrc "$manager_home/.bashrc"
+if PATH="/test-bin:$PATH" bash -eu -c 'source "$1" --manager-root "$2"; configure_path' _ "$helper/setupSystem.sh" "$manager_home/pzmanager" > /tmp/bashrc-link.log 2>&1; then exit 1; fi
+rm "$manager_home/.bashrc"
+[[ "$(stat -c '%u:%g:%a:%s' /root/install-victims/*; sha256sum /root/install-victims/*)" == "$victims_before" ]]
+mkdir "$manager_home/.ssh"
+printf key > "$manager_home/.ssh/id_ed25519"
+printf '# manager shell\n' > "$manager_home/.bashrc"
+chown -R pzfixture:pzfixture "$manager_home/.ssh" "$manager_home/.bashrc"
+PATH="/test-bin:$PATH" bash -eu -c 'source "$1" --manager-root "$2"; harden_manager_secrets; configure_path' _ "$helper/setupSystem.sh" "$manager_home/pzmanager"
+[[ "$(stat -c '%u:%a' "$manager_home")" == "$(id -u pzfixture):750" && "$(stat -c %a "$manager_home/pzmanager/.env")" == 600 && "$(stat -c '%u:%a' "$manager_home/.ssh")" == "$(id -u pzfixture):700" && "$(stat -c %a "$manager_home/.ssh/id_ed25519")" == 600 && "$(stat -c %u "$manager_home/.bashrc")" == "$(id -u pzfixture)" ]]
+echo 'OK home normal privé sous UID manager ; liens refusés, victimes root owner/mode/contenu intacts.'
+
 route_failures=0
 for route in system zomboid; do
     if printf 'n\nn\n' | PATH="/test-bin:$PATH" bash "$manager_home/pzmanager/pzm" install "$route" > "/tmp/route-$route.log" 2>&1; then
@@ -166,7 +202,7 @@ done
 grep -q "root-helper $helper/setupSystem.sh --manager-root $manager_home/pzmanager" /tmp/pzm-sudo.log
 grep -q "root-helper $helper/configurationInitiale.sh --manager-root $manager_home/pzmanager zomboid" /tmp/pzm-sudo.log
 grep -q '17261' /tmp/pzm-boundaries.log
-[[ ! -e /tmp/install-pwned ]]
+[[ ! -e /tmp/install-pwned || "$(stat -c %u /tmp/install-pwned)" == "$(id -u pzfixture)" ]]
 for route in system zomboid; do
     name=setupSystem.sh
     [[ "$route" == system ]] || name=configurationInitiale.sh

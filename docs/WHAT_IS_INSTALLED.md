@@ -150,15 +150,8 @@ must stay reachable on loopback only and must never be forwarded on the router.
 
 **Installed by**: `configurationInitiale.sh zomboid`
 
-**Version**: Build 42 (branch `unstable`)
-
-**Installation method**:
-```bash
-/usr/games/steamcmd +force_install_dir /home/pzuser/pzmanager/data/pzserver \
-    +login anonymous \
-    +app_update 380870 -beta unstable validate \
-    +quit
-```
+**Version**: Build 42. SteamCMD installs the branch selected by
+[`STEAM_BETA_BRANCH`](CONFIGURATION.md#steamcmd).
 
 **Location**: `/home/pzuser/pzmanager/data/pzserver/`
 
@@ -370,11 +363,13 @@ RestartSec=5
 
 **Function**:
 - Checks Workshop mod updates via RCON `checkModsNeedUpdate`
-- Checks for server updates by comparing installed build ID with latest available on SteamCMD (branch `unstable`)
-- Triggers `performFullMaintenance.sh` (5m delay) if mod or server updates found
+- Compares the installed build ID with SteamCMD for the configured branch
+- Restarts the service for mod updates; build updates run maintenance with
+  `--no-reboot`. See [update orchestration](ARCHITECTURE.md#automation).
 - Sends Discord notifications
 
-**Lock**: Partage `/tmp/pzmanager-maintenance-<user>.lock` avec `pz.sh` et `performFullMaintenance.sh`. Skip silencieux si lock détenu.
+**Locks**: WORLD precedes the shared private maintenance lock; contention skips
+the pass for a later timer retry. See [orchestration](ARCHITECTURE.md#automation).
 
 **Logs**: `logs/mod_checks/mod_checks_YYYY-MM-DD.log` (7-day retention)
 
@@ -432,7 +427,9 @@ warning countdown).
 
 **Schedule**: Daily at 00:00
 
-**Function**: Assigns creation date (yesterday) to whitelist accounts without one. Enables `pzm whitelist purge` to identify truly inactive accounts vs newly added ones.
+**Function**: Records newly seen accounts in the external age ledger used by
+[the access purge](USAGE.md#automatic-access-purge); existing dates remain
+unchanged. See [ledger ownership and initialization](ARCHITECTURE.md#automation).
 
 **View timers**: `systemctl --user list-timers`
 

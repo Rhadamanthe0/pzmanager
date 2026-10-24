@@ -56,7 +56,7 @@ for f in "$SETUP_SYS" "$CONF_INIT"; do
     if grep -vE '^[[:space:]]*#' "$f" | grep -qE '(^|[[:space:];])(source|\.)[[:space:]]+.*env_file'; then
         fail "$f charge encore env_file par execution shell"
     fi
-    if grep -vE '^[[:space:]]*#' "$f" | grep -q 'source_env'; then
+    if grep -vE '^[[:space:]]*#' "$f" | grep -qE '^[[:space:]]*source_env([[:space:];]|$)'; then
         fail "$f appelle encore source_env en code (contexte root)"
     fi
 done
