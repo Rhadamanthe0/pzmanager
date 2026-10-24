@@ -62,6 +62,8 @@ EVAL_FILE="${SANDBOX}/extracted.sh"
     extract_func maint_arm_recovery
     extract_func maint_disarm_recovery
     extract_func maint_detect_interrupted
+    extract_func maint_recovery_allowed
+    extract_func maint_restart_recovery
     extract_func validate_final_start
     extract_func download_workshop_mods
     extract_func update_self
@@ -69,7 +71,7 @@ EVAL_FILE="${SANDBOX}/extracted.sh"
     extract_func restart_server_on_failure
 } > "$EVAL_FILE"
 for fn in maint_set_state maint_arm_recovery maint_disarm_recovery \
-         maint_detect_interrupted validate_final_start download_workshop_mods \
+         maint_detect_interrupted maint_recovery_allowed maint_restart_recovery validate_final_start download_workshop_mods \
          update_self restart_server_on_failure; do
     grep -q "^${fn}() {" "$EVAL_FILE" || { ko "extraction de ${fn} impossible"; exit 1; }
 done
@@ -116,7 +118,7 @@ done
 grep -q 'trap restart_server_on_failure EXIT' "$TARGET" \
     && ok "trap EXIT armé" \
     || ko "trap EXIT absent"
-grep -q '"FAILED" > "${MAINT_STATE_FILE}"' "$TARGET" \
+grep -q 'maint_set_state "FAILED"' "$TARGET" \
     && ok "filet EXIT écrit FAILED" \
     || ko "filet EXIT sans écriture FAILED"
 grep -q 'maintenance.state' "$TARGET" && grep -q '.maintenance.state' "$TARGET" \
@@ -129,7 +131,7 @@ grep -q 'PZ_MAINT_STATE_FILE' "$TARGET" \
 ARM_LINE=$(grep -n 'maint_arm_recovery' "$TARGET" | tail -1 | cut -d: -f1)
 STOP_LINE=$(grep -n '^    stop_server$' "$TARGET" | head -1 | cut -d: -f1)
 STOPPED_LINE=$(grep -n 'maint_set_state "STOPPED"' "$TARGET" | head -1 | cut -d: -f1)
-VALID_LINE=$(grep -n 'if validate_final_start' "$TARGET" | head -1 | cut -d: -f1)
+VALID_LINE=$(grep -n 'if validate_final_start' "$TARGET" | tail -1 | cut -d: -f1)
 FINAL_START_LINE=$(grep -n 'pz.sh" start --reason "\$MAINTENANCE_REASON"' "$TARGET" | head -1 | cut -d: -f1)
 if [[ -n "$ARM_LINE" && -n "$STOP_LINE" ]] && (( ARM_LINE < STOP_LINE )); then
     ok "reprise armée AVANT stop (l.${ARM_LINE} < l.${STOP_LINE})"
@@ -276,6 +278,19 @@ fi
 grep -qi 'PZ_MAINT_SELF_UPDATE=0' "${SANDBOX}/out2b.log" && ok "opt-out journalisé" || ko "opt-out non journalisé"
 unset PZ_MAINT_SELF_UPDATE
 export PZ_MANAGER_DIR="$SANDBOX"
+
+# Reprise : vraie garde d'état/journal, frontières service/JVM/ready simulées.
+rm -rf -- "${SANDBOX}/scripts/lib"
+ln -s "$LIB_DIR" "${SANDBOX}/scripts/lib"
+export PZ_SOURCE_DIR="${SANDBOX}/Zomboid" PZ_HOME="$SANDBOX"
+cat > "${MOCKBIN}/systemctl" <<'MOCKEOF'
+#!/usr/bin/env bash
+printf '%s\n' LoadState=loaded ActiveState=active SubState=running MainPID=1234 ControlPID=0 InvocationID=fixture
+MOCKEOF
+chmod +x "${MOCKBIN}/systemctl"
+export PATH="${MOCKBIN}:$PATH"
+pgrep() { return 0; }
+wait_for_server_ready() { return 0; }
 
 # --- (3) reprise armée avant stop (phase suivante en échec) -------------------------
 echo "== (3) reprise =="

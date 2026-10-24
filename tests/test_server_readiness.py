@@ -29,18 +29,27 @@ root=pathlib.Path(os.environ['FIXTURE_ROOT']); args=sys.argv[1:]
 with (root/'calls').open('a') as f: f.write('systemctl '+repr(args)+'\\n')
 if 'is-active' in args: print('active')
 elif 'ActiveEnterTimestamp' in args:
- print({'bad-timestamp':'unreadable', 'empty-timestamp':''}.get(os.environ['FIXTURE_MODE'], '2026-10-24 05:23:45 UTC'))
+ print({'bad-timestamp':'unreadable', 'empty-timestamp':'', 'previous-frame':'2026-10-24 05:23:45.900 UTC'}.get(os.environ['FIXTURE_MODE'], '2026-10-24 05:23:45 UTC'))
 else:
  p=root/'identity-count'; n=int(p.read_text())+1 if p.exists() else 1; p.write_text(str(n))
  if os.environ['FIXTURE_MODE']=='error': sys.exit(1)
- invocation=('b' if os.environ['FIXTURE_MODE']=='restart' and n>1 else 'a')*32
+ mode=os.environ['FIXTURE_MODE']
+ invocation=('b' if mode=='previous-frame' or (mode=='restart' and n>1) or (root/'boot-changed').exists() else 'a')*32
+ if mode=='invalid-invocation': invocation='invalid'
+ if mode=='identity-error':sys.exit(1)
  print('ActiveState=active\\nMainPID=10\\nInvocationID='+invocation+'\\nControlGroup=/fixture.service')
 ''')
         self.command('journalctl', '''import os,pathlib,sys
 root=pathlib.Path(os.environ['FIXTURE_ROOT']); mode=os.environ['FIXTURE_MODE']; args=sys.argv[1:]
 with (root/'calls').open('a') as f: f.write('journalctl '+repr(args)+'\\n')
 if '-n' in args:
- if mode=='noframe': print('LOG : Lua , 123> LuaNet: Initialization [DONE]')
+ if mode=='previous-frame':
+  if not any(arg.endswith('='+'b'*32) for arg in args):print('LOG : General f:42 st:1> previous invocation')
+  print('LOG : General f:0 st:2> current invocation')
+ elif mode=='replaced-frame':
+  print('LOG : General f:42 st:1> ready');(root/'boot-changed').touch()
+ elif mode in ('invalid-invocation','identity-error'):print('LOG : General f:42 st:1> ready')
+ elif mode=='noframe': print('LOG : Lua , 123> LuaNet: Initialization [DONE]')
  else: print('LOG : General f:'+('42' if mode=='frame' else '0')+' st:123> tick')
 elif '--grep' in args: print('LOG : Lua f:0 st:1> LuaNet: Initialization [DONE]')
 else:
@@ -66,9 +75,27 @@ else:
     def test_positive_frame_needs_no_console_probe(self):
         result = self.run_ready('frame')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(self.count.exists())
         with self.assertRaises(BlockingIOError):
             os.read(self.fd, 100)
+
+    def test_previous_invocation_frame_in_same_second_is_refused(self):
+        result=self.run_ready('previous-frame')
+        self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+        self.assertIn('fin de boot toujours non signalée',result.stderr)
+        calls=self.calls.read_text()
+        self.assertIn('INVOCATION_ID='+'b'*32,calls)
+        self.assertIn('_SYSTEMD_INVOCATION_ID='+'b'*32,calls)
+
+    def test_invocation_replaced_after_positive_frame_is_refused(self):
+        result=self.run_ready('replaced-frame')
+        self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+        self.assertNotIn('poursuite',result.stdout)
+
+    def test_unproven_invocation_is_refused_even_with_frame(self):
+        for mode in ('identity-error','invalid-invocation'):
+            with self.subTest(mode=mode):
+                result=self.run_ready(mode)
+                self.assertEqual(result.returncode,1,result.stdout+result.stderr)
 
     def test_unreadable_boot_timestamp_does_not_prove_readiness(self):
         for mode in ('bad-timestamp', 'empty-timestamp'):
@@ -97,7 +124,8 @@ else:
                 self.count.unlink(missing_ok=True)
                 result = self.run_ready(mode)
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-                self.assertIn('fin de boot toujours non signalée', result.stderr)
+                expected=('invocation' if mode in ('error','restart') else 'fin de boot toujours non signalée')
+                self.assertIn(expected, result.stderr)
         self.assertNotIn('stop', self.calls.read_text())
 
 

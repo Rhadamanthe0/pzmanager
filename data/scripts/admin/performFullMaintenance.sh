@@ -46,22 +46,70 @@ maint_arm_recovery() {
 maint_disarm_recovery() {
     rm -f "${MAINT_RECOVERY_FILE}" 2>/dev/null || true
 }
-# Si crash mid-maintenance : état non terminal + reprise armée. Rollback minimal
-# (redémarre le serveur + message) puis la main() en cours reprend à INIT.
+# Une reprise interrompue doit aboutir avant de recommencer la maintenance.
 maint_detect_interrupted() {
     local prev=""
     [[ -f "${MAINT_STATE_FILE}" ]] && prev="$(cat "${MAINT_STATE_FILE}" 2>/dev/null || true)"
     case "$prev" in
-        INIT|STOPPED|SYSTEM|STEAM|MODS|BACKUP|SELF)
+        INIT|STOPPED|SYSTEM|STEAM|MODS|BACKUP|SELF|FAILED)
             if [[ -f "${MAINT_RECOVERY_FILE}" ]]; then
                 log "Reprise après interruption (état précédent: ${prev}) — redémarrage de sécurité."
-                "${SCRIPT_DIR}/../core/pz.sh" start now --reason "Reprise après interruption de maintenance (${prev})" --automatic 2>&1 || \
-                    log "WARNING: redémarrage de reprise en échec (non bloquant)" || true
-                notify "Maintenance précédente interrompue (${prev}) — serveur redémarré, reprise en cours." || true
+                if maint_restart_recovery "Reprise après interruption de maintenance (${prev})" \
+                    "Maintenance précédente interrompue (${prev})" false; then
+                    return 0
+                fi
+                maint_set_state "FAILED"
+                return 1
             fi
             ;;
     esac
 }
+
+# Réutiliser les observations et le prédicat d'arrêt du backup : un échec de
+# pz stop peut survenir après l'arrêt, pendant son snapshot. Le drapeau mémoire
+# seul ne distingue pas ce cas d'un arrêt refusé pendant le chargement.
+maint_recovery_allowed() {
+    python3 - "${SCRIPT_DIR}/../lib" "$PZ_SERVICE_NAME" "$PZ_SOURCE_DIR" "$1" <<'PYRECOVERY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from snapshot_consistency import probe, stopped
+from world_transaction import check_clean
+try:
+    check_clean(sys.argv[3], legacy=True)
+    state = probe(sys.argv[2])
+    active = (state.get('ok') and state.get('LoadState') == 'loaded'
+              and state.get('ActiveState') == 'active'
+              and str(state.get('MainPID', '')).isdigit()
+              and int(state['MainPID']) > 0 and state.get('ControlPID') == '0')
+    if not stopped(state) and (sys.argv[4] == 'true' or not active):
+        raise ValueError('état serveur non prouvé arrêté ou actif sans transition')
+except (OSError, ValueError) as error:
+    print('Reprise maintenance refusée : ' + str(error), file=sys.stderr)
+    raise SystemExit(1)
+PYRECOVERY
+}
+
+maint_restart_recovery() {
+    local reason="$1" context="$2" require_offline="$3"
+    if ! maint_recovery_allowed "$require_offline"; then
+        log "ERREUR: reprise refusée — état non prouvé ou récupération du monde nécessaire." || true
+        notify "$context — reprise refusée, intervention manuelle requise." || true
+        return 1
+    fi
+    if "${SCRIPT_DIR}/../core/pz.sh" start now --reason "$reason" --automatic; then
+        if validate_final_start; then
+            notify "$context — serveur prêt (disponibilité vérifiée)." || true
+            return 0
+        fi
+        log "ERREUR: démarrage de reprise demandé, disponibilité non vérifiée." || true
+        notify "$context — démarrage demandé, disponibilité non vérifiée ; intervention manuelle requise." || true
+    else
+        log "ERREUR: redémarrage de reprise en échec — intervention manuelle requise." || true
+        notify "$context — redémarrage en échec, intervention manuelle requise." || true
+    fi
+    return 1
+}
+
 validate_final_start() {
     # Différencie 4 niveaux : start DEMANDÉ (pz.sh start a rendu 0, vérifié par
     # l'appelant) vs ACTIF (systemd) vs JVM (processus) vs READY (boucle de jeu).
@@ -349,19 +397,21 @@ update_self() {
 # lendemain. On relance donc systématiquement le serveur avant de propager
 # l'erreur, et on prévient.
 SERVER_STOPPED_BY_MAINTENANCE=false
+MAINT_STOP_ATTEMPTED=false
 restart_server_on_failure() {
-    local rc=$?
+    local rc=$? require_offline=false
     (( rc == 0 )) && return 0
-    [[ "$SERVER_STOPPED_BY_MAINTENANCE" == true ]] || return 0
-    log "ÉCHEC de la maintenance (code ${rc}) — redémarrage du serveur pour ne pas le laisser hors ligne." || true
-    printf '%s\n' "FAILED" > "${MAINT_STATE_FILE}" 2>/dev/null || true
-    "${SCRIPT_DIR}/../core/pz.sh" start now --reason "Reprise après échec de la maintenance" --automatic || \
-        log "ERREUR: le redémarrage de secours a lui aussi échoué — intervention manuelle requise." || true
-    # notify() est déjà non bloquant (sendDiscord.sh ... || true en interne) ;
-    # le `|| true` explicite protège en plus contre `set -e` si le câblage change.
-    notify "Maintenance interrompue par une erreur — le serveur a été redémarré." || true
-    return $rc
+    if [[ "$SERVER_STOPPED_BY_MAINTENANCE" != true && "${MAINT_STOP_ATTEMPTED:-false}" != true ]]; then
+        return "$rc"
+    fi
+    [[ "$SERVER_STOPPED_BY_MAINTENANCE" == true ]] || require_offline=true
+    log "ÉCHEC de la maintenance (code ${rc}) — vérification du redémarrage de secours." || true
+    maint_set_state "FAILED"
+    maint_restart_recovery "Reprise après échec de la maintenance" \
+        "Maintenance interrompue par une erreur" "$require_offline" || true
+    return "$rc"
 }
+
 trap restart_server_on_failure EXIT
 
 main() {
@@ -370,7 +420,7 @@ main() {
 
     # Crash mid-maintenance précédent ? Rollback minimal (restart + message),
     # puis reprise du parcours ci-dessous depuis INIT.
-    maint_detect_interrupted || true
+    maint_detect_interrupted || return 1
     maint_set_state "INIT"
 
     # La purge des accès inactifs n'est plus déclenchée ici : elle est en
@@ -381,6 +431,7 @@ main() {
     # posé depuis le chargement du script.
     maint_arm_recovery
     maint_set_state "STOPPED"
+    MAINT_STOP_ATTEMPTED=true
     stop_server
     SERVER_STOPPED_BY_MAINTENANCE=true
     maint_set_state "SYSTEM"

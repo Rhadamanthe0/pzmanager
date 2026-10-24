@@ -1327,8 +1327,8 @@ def _status(s):
     """(couleur, [alertes]) — évalue les prédicteurs de crash."""
     alerts, warn = [], False
     mem = s["mem"]
-    total, avail = mem.get("MemTotal", 0), mem.get("MemAvailable", 0)
-    avail_mb = avail / 1024
+    total, avail = mem.get("MemTotal"), mem.get("MemAvailable")
+    avail_mb = avail / 1024 if avail is not None else None
     gc = s["gc"]
     live = gc[2] if gc and gc[2] is not None else None      # plancher live-set (majeure)
     crit = False
@@ -1350,10 +1350,10 @@ def _status(s):
     elif live is not None and live >= HEAP_RESTART_PERCENT - 15:
         alerts.append(f"🟠 Heap live-set {live}% — montée vers le seuil ({HEAP_RESTART_PERCENT}%)")
         warn = True
-    if total and avail_mb < 600:
+    if avail_mb is not None and avail_mb < 600:
         alerts.append(f"🔴 RAM système dispo {avail_mb/1024:.1f} Go — risque d'OOM-kill OS")
         crit = True
-    elif total and (1 - avail / total) * 100 >= 90:
+    elif total and avail is not None and (1 - avail / total) * 100 >= 90:
         alerts.append(f"🟠 RAM système util {(1 - avail / total) * 100:.0f}% — marge basse")
         warn = True
     if s["pswap_kb"]:
@@ -1382,9 +1382,9 @@ def _status(s):
 def _monitoring_embed(s: dict) -> discord.Embed:
     color, alerts = _status(s)
     mem = s["mem"]
-    total = mem.get("MemTotal", 0)
-    avail = mem.get("MemAvailable", 0)
-    used_pct = (1 - avail / total) * 100 if total else 0
+    total = mem.get("MemTotal")
+    avail = mem.get("MemAvailable")
+    used_pct = (1 - avail / total) * 100 if total and avail is not None else None
     xmx = _xmx_gb()
     gc = s["gc"]
 
@@ -1415,9 +1415,7 @@ def _monitoring_embed(s: dict) -> discord.Embed:
             who = f"**{discord.utils.escape_markdown(str(name))[:64]}** " if name else "client "
             net_txt += f" ({who}max **{mc / max_pps * 100:.0f}%** du cap)"
     elif net:
-        max_pps = s.get("max_pps")
-        ratio = f" ({net['pps'] / max_pps * 100:.0f}% du max)" if max_pps else ""
-        net_txt = f" · 📡 **{net['pps']:.0f}** paq/s (NIC){ratio}"
+        net_txt = f" · 📡 **{net['pps']:.0f}** paq/s (NIC proxy)"
     else:
         net_txt = ""
     fps = s.get("srv_fps")
@@ -1459,9 +1457,13 @@ def _monitoring_embed(s: dict) -> discord.Embed:
     # « dispo » = MemAvailable (inclut déjà tout le cache réellement récupérable).
     # On n'affiche PAS le « cache » brut : il contient la shmem = le heap ZGC de
     # PZ, qui n'est pas récupérable — l'inclure induisait en erreur.
+    used_txt = f"**{used_pct:.0f}%**" if used_pct is not None else "—"
+    bar_txt = f" `{_bar(used_pct)}`" if used_pct is not None else ""
+    avail_txt = f"**{avail/1048576:.1f} Go**" if avail is not None else "— Go"
+    total_txt = f"{total/1048576:.1f}" if total is not None else "—"
     embed.add_field(
         name="🖥️ RAM de la machine",
-        value=f"**{used_pct:.0f}%** utilisée (cache récupérable exclu) `{_bar(used_pct)}` · **{avail/1048576:.1f} Go** dispo / {total/1048576:.1f}",
+        value=f"{used_txt} utilisée (cache récupérable exclu){bar_txt} · {avail_txt} dispo / {total_txt}",
         inline=False)
 
     # Températures (le mobile initial : chauffe du mini-PC), sur 2 lignes :
@@ -1544,8 +1546,8 @@ def _csv_row(s: dict) -> list:
         return f"{x:.{nd}f}" if isinstance(x, float) else str(x)
 
     mem = s.get("mem") or {}
-    total_kb, avail_kb = mem.get("MemTotal") or 0, mem.get("MemAvailable")
-    ram_used_pct = 100.0 * (1 - avail_kb / total_kb) if (avail_kb and total_kb) else None
+    total_kb, avail_kb = mem.get("MemTotal"), mem.get("MemAvailable")
+    ram_used_pct = 100.0 * (1 - avail_kb / total_kb) if total_kb and avail_kb is not None else None
     gc = s.get("gc")                        # (used, pct, maj_pct, maj_used, pause, cycle)
     net = s.get("net") or {}
     gnet = s.get("game_net") or {}
@@ -1562,13 +1564,13 @@ def _csv_row(s: dict) -> list:
         f(players), f(maxp),
         f(100.0 * players / maxp) if players is not None and maxp else "",
         f(pps, 0), f(maxpps),
-        f(100.0 * pps / maxpps) if pps is not None and maxpps else "",
+        "",  # pps_pct conservée : le débit NIC ne se compare pas au cap entrant par client.
         f(net.get("rx_kbs")), f(net.get("tx_kbs")),
         f(gc[0]) if gc else "", f(gc[1]) if gc and gc[1] is not None else "",
         f(gc[2]) if gc and gc[2] is not None else "",
         f(gc[4], 3) if gc and gc[4] is not None else "",
         f(s["rss_kb"] / 1024, 0) if s.get("rss_kb") else "",
-        f(avail_kb / 1024, 0) if avail_kb else "",
+        f(avail_kb / 1024, 0) if avail_kb is not None else "",
         f(ram_used_pct),
         f(s["pswap_kb"] / 1024, 0) if s.get("pswap_kb") is not None else "",
         f(s.get("cpu_pct")), f(cpu_sys),

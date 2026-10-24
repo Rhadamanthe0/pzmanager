@@ -132,7 +132,7 @@ separate consistent copy.
 - `--dry-run` previews without modifying the character and works while the server
   runs. Without it, an active server produces a preview followed by a refusal.
 - The player's current character is **overwritten** by the one from the backup. No extra
-  snapshot is taken — `pzm server stop` already backs up before stopping.
+  snapshot is taken here — `pzm server stop` stops the server, then creates a backup.
 
 ### Restore a map zone (Build 42)
 
@@ -381,42 +381,14 @@ For reset staging, preservation options and recovery guarantees, see
 - `--silent`: Suppress normal Discord announcements (error alerts may still be sent).
 - `--automatic`: Mark the maintenance as automatic.
 
-**Message formats by action type**:
+**Announcements** carry the action, manual/automatic origin and optional reason.
+The first countdown warning carries origin/reason and the Discord `@here` ping;
+subsequent warnings omit that context. In-game messages do not include Discord
+mentions.
 
-Only the **first** warning carries the `@here` ping and the reason; the
-following ones are bare. The `@here` goes to Discord only, never to the in-game
-chat.
-
-*Manual maintenance* (`pzm admin maintenance 2m --reason "RAM upgrade"`):
-```
-@here ATTENTION : MAINTENANCE DANS 2 MINUTES ! (Lancé manuellement - RAM upgrade)
-ATTENTION : MAINTENANCE DANS 30 SECONDES !
-DÉBUT MAINTENANCE
-```
-
-*Automatic maintenance - mods detected*:
-```
-@here ATTENTION : MAINTENANCE DANS 5 MINUTES ! (Lancé automatiquement - Mods mis à jour)
-ATTENTION : MAINTENANCE DANS 30 SECONDES !
-DÉBUT MAINTENANCE
-```
-
-If the machine reboots afterwards (`REBOOT_ON_MAINTENANCE`), a final
-`Maintenance terminée - Redémarrage machine` is posted to Discord.
-
-*Simple stop* (`pzm server stop 2m`):
-```
-@here ATTENTION : ARRÊT DANS 2 MINUTES !
-ATTENTION : ARRÊT DANS 30 SECONDES !
-ARRÊT
-```
-
-*Simple restart* (`pzm server restart 2m`):
-```
-@here ATTENTION : REDÉMARRAGE DANS 2 MINUTES !
-ATTENTION : REDÉMARRAGE DANS 30 SECONDES !
-REDÉMARRAGE
-```
+Mod updates request an automatic service restart, not maintenance. Build updates
+use maintenance with `--no-reboot`; scheduled maintenance follows
+`REBOOT_ON_MAINTENANCE`. See [update orchestration](ARCHITECTURE.md#automation).
 
 ## Configuration
 

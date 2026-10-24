@@ -7,9 +7,9 @@
 # Modèle B42 (>= 42.13.2) : le serveur tourne en Open=false et autorise les
 # joueurs via une LISTE BLANCHE DE STEAMID (table `allowedsteamid`). Le joueur
 # se connecte ensuite avec son pseudo et CHOISIT lui-même son mot de passe
-# (hashé en bcrypt par le serveur). On ne touche donc plus au mot de passe en
-# base : add/remove pilotent la console du serveur (addsteamid/removesteamid/
-# banid) via sendCommand.sh. Le serveur DOIT être démarré pour add/remove.
+# (hashé en bcrypt par le serveur). add/remove pilotent la console
+# du serveur (addsteamid/removesteamid/banid) via sendCommand.sh.
+# Le serveur DOIT être démarré pour add/remove.
 #
 # Deux niveaux distincts, à ne pas confondre — d'où le suffixe -account :
 #   - remove          agit sur le STEAMID : retire l'autorisation, donc TOUS les
@@ -32,9 +32,9 @@
 #   resetpassword <username>      - Reset le mot de passe d'un joueur
 #   purge [delay] [--delete]      - Lister/supprimer les comptes inactifs
 #
-# add/remove/resetpassword passent par la console -> SERVEUR DÉMARRÉ.
-# remove-account/rename-account/purge --delete écrivent en base -> SERVEUR
-# ARRÊTÉ (refus explicite sinon). Pas de snapshot dédié : le serveur est déjà
+# add/remove passent par la console -> SERVEUR DÉMARRÉ.
+# remove-account/rename-account/resetpassword/purge --delete écrivent en base
+# -> SERVEUR ARRÊTÉ (refus explicite sinon). Pas de snapshot dédié : le serveur est déjà
 # arrêté (donc le backup fait à l'arrêt couvre l'état) et les backups horaires
 # GFS (pzm backup list) sont là -> restauration via pzm backup restore.
 #

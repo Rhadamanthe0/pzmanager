@@ -29,6 +29,8 @@ ProtectSystem=strict
 ReadWritePaths=%h/pzmanager/data/pzserver %h/pzmanager/Zomboid %h/pzmanager/logs %h/pzmanager/data/dataBackups %t/pzmanager
 # Persistent intent survives a rename of Zomboid; installer creates it privately.
 ReadWritePaths=-%h/pzmanager/.Zomboid.pzm-transactions
+# Consume the bootstrap secret by truncating its leaf; the manager root stays RO.
+ReadWritePaths=-%h/pzmanager/.admin_password
 # Purge tout octet résiduel (ex: "quit" bufferisé d'un stop précédent) resté dans
 # le FIFO de contrôle. Sinon la socket-activation relance le service qui relit ce
 # "quit" et remeurt à f:0 en boucle (flap). Lecture non-bloquante (iflag=nonblock):
@@ -63,7 +65,7 @@ ExecStartPre=-%h/pzmanager/data/scripts/admin/purgeInactivePlayers.sh
 # retombe sur son défaut "servertest", et le nom du monde pourrait diverger des
 # chemins (db/<nom>.db, Server/<nom>.ini) que lisent les scripts. Le :- garantit
 # un nom non vide même si .env est absent ou la variable non définie.
-ExecStart=/bin/sh -c "ENV_FILE='%h/pzmanager/.env'; if [ -r \"$ENV_FILE\" ]; then . \"$ENV_FILE\"; fi; ADMIN_ARGS=''; PW_FILE='%h/pzmanager/.admin_password'; if [ -f \"$PW_FILE\" ]; then ADMIN_ARGS=\"-adminpassword $(cat $PW_FILE)\"; rm -f \"$PW_FILE\"; fi; exec %h/pzmanager/data/pzserver/start-server.sh -cachedir=%h/pzmanager/Zomboid -servername \"${PZ_SERVER_NAME:-servertest}\" $ADMIN_ARGS <> %h/pzmanager/data/pzserver/zomboid.control"
+ExecStart=/bin/sh -c "ENV_FILE='%h/pzmanager/.env'; if [ -r \"$ENV_FILE\" ]; then . \"$ENV_FILE\"; fi; ADMIN_ARGS=''; PW_FILE='%h/pzmanager/.admin_password'; if [ -s \"$PW_FILE\" ]; then ADMIN_PASSWORD=\"$(cat \"$PW_FILE\")\" || exit 1; : > \"$PW_FILE\" || exit 1; ADMIN_ARGS=\"-adminpassword $ADMIN_PASSWORD\"; fi; exec %h/pzmanager/data/pzserver/start-server.sh -cachedir=%h/pzmanager/Zomboid -servername \"${PZ_SERVER_NAME:-servertest}\" $ADMIN_ARGS <> %h/pzmanager/data/pzserver/zomboid.control"
 ExecStartPost=-/bin/sh -c "%h/pzmanager/data/scripts/internal/notifyServerReady.sh &"
 ExecStop=%h/pzmanager/data/scripts/internal/stopServer.sh
 KillSignal=SIGCONT

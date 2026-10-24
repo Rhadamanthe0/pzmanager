@@ -79,53 +79,54 @@ export MOCK_DIR
 # ufw.log (toutes les invocations). `reset` est piégé : il log RESET_CALLED et
 # vide les règles — le test échoue si le code l'appelle un jour.
 cat > "$BIN/ufw" <<'MOCKEOF'
-#!/usr/bin/env bash
-RULES="${MOCK_DIR}/ufw.rules"
-ACTIVE="${MOCK_DIR}/ufw.active"
-[[ -f "$RULES" ]] || : > "$RULES"
-[[ -f "$ACTIVE" ]] || echo "no" > "$ACTIVE"
-printf 'ufw %s\n' "$*" >> "${MOCK_DIR}/ufw.log"
-case "${1:-}" in
-    status)
-        if [[ "$(cat "$ACTIVE")" == "yes" ]]; then echo "Status: active"; else echo "Status: inactive"; fi
-        [[ "${2:-}" == "verbose" ]] && exit 0
-        echo ""
-        echo "     To                         Action      From"
-        echo "     --                         ------      ----"
-        i=0
-        while IFS= read -r line; do
-            [[ -n "$line" ]] || continue
-            i=$(( i + 1 )); printf '[ %d] %s\n' "$i" "$line"
-        done < "$RULES"
-        exit 0
-        ;;
-    allow|deny)
-        verb="$1"; rule="${2:-}"
-        if ! grep -qF "$rule" "$RULES" 2>/dev/null; then
-            if [[ "$verb" == "allow" ]]; then echo "$rule ALLOW IN Anywhere" >> "$RULES"
-            else echo "$rule DENY IN Anywhere" >> "$RULES"; fi
-        fi
-        echo "Rule added"
-        exit 0
-        ;;
-    default|--force)
-        if [[ "$1" == "--force" && "${2:-}" == "reset" ]]; then
-            echo "RESET_CALLED" >> "${MOCK_DIR}/ufw.log"
-            : > "$RULES"
-            echo "Reset done"
-            exit 0
-        fi
-        if [[ "$1" == "--force" && "${2:-}" == "enable" ]]; then
-            echo "yes" > "$ACTIVE"
-        fi
-        echo "OK ($*)"
-        exit 0
-        ;;
-    *)
-        echo "mock-ufw: args inattendus: $*" >&2
-        exit 99
-        ;;
-esac
+#!/usr/bin/python3
+import os,re,sys
+from pathlib import Path
+root=Path(os.environ['MOCK_DIR']); args=sys.argv[1:]
+rulesfile=root/'ufw.rules'; activefile=root/'ufw.active'
+if not rulesfile.exists(): rulesfile.write_text('')
+if not activefile.exists(): activefile.write_text('no')
+with (root/'ufw.log').open('a') as log: log.write('ufw '+' '.join(args)+'\n')
+rules=rulesfile.read_text().splitlines(); active=activefile.read_text().strip()=='yes'
+if os.environ.get('MOCK_UFW_FAIL')==(args[1] if args[0]=='--force' else args[0]): sys.exit(23)
+family=lambda row: 6 if '(v6)' in row or '2001:' in row else 4
+rules.sort(key=family)
+def save(): rulesfile.write_text(''.join(row+'\n' for row in rules))
+def key(row):
+    row=row.split('#',1)[0].strip()
+    row=re.sub(r' \(log(?:-all)?\)$','',row)
+    return re.sub(r' (ALLOW|DENY|REJECT|LIMIT) (IN|OUT|FWD) ',r' \2 ',row)
+if args[0]=='status':
+    french=os.environ.get('MOCK_UFW_FRENCH')=='1' and (os.environ.get('LC_ALL')!='C' or os.environ.get('LANGUAGE')!='C')
+    print(('État : actif' if french else 'Status: active') if active else ('État : inactif' if french else 'Status: inactive'))
+    if active:
+        for index,row in enumerate(rules,1): print('[ %d] %s' % (index,row))
+elif args[:2]==['--force','delete']:
+    del rules[int(args[2])-1]; save()
+elif args[:2]==['--force','enable']:
+    activefile.write_text('yes')
+elif args[:2]==['--force','reset']:
+    raise RuntimeError('RESET_CALLED')
+elif args[0]=='default': pass
+elif args[0] in ('allow','deny','prepend'):
+    prepend=args[0]=='prepend'
+    action='DENY' if prepend else args[0].upper()
+    target=args[-1]+'/tcp' if prepend else args[1]
+    ipv6=(root/'ufw.ipv6').exists()
+    for version in ([4,6] if ipv6 else [4]):
+        row=target+(' (v6)' if version==6 else '')+' '+action+' IN Anywhere'+(' (v6)' if version==6 else '')
+        # Le vrai backend UFW ignore action/log/comment dans les doublons
+        # d'une insertion, donc prepend ne déplace pas une key existante.
+        matches=[i for i,old in enumerate(rules) if key(old)==key(row)]
+        if prepend and matches: continue
+        if matches:
+            rules[matches[0]]=row
+        elif prepend:
+            index=next((i for i,old in enumerate(rules) if family(old)==version),len(rules))
+            rules.insert(index,row)
+        else: rules.append(row)
+    rules.sort(key=family); save()
+else: raise RuntimeError('unexpected ufw '+repr(args))
 MOCKEOF
 # Mock ss : rejoue le contenu canned de $MOCK_DIR/ss_output (ignore les args).
 cat > "$BIN/ss" <<'MOCKEOF'
@@ -150,7 +151,8 @@ reset_case() {
     echo "no" > "$MOCK_DIR/ufw.active"
     : > "$MOCK_DIR/ufw.log"
     : > "$MOCK_DIR/ss_output"
-    unset PZ_SSHD_CONFIG 2>/dev/null || true
+    unset PZ_SSHD_CONFIG MOCK_UFW_FAIL MOCK_UFW_FRENCH PZ_PROMETHEUS_PORT 2>/dev/null || true
+    rm -f "$MOCK_DIR/ufw.ipv6"
 }
 rules_count() { grep -cF "$1" "$MOCK_DIR/ufw.rules" || true; }
 
@@ -301,6 +303,74 @@ E2="$(detect_ssh_port)"
 [[ "$E2" == "22" ]] \
     && ok "E2 : défaut 22 sans indice" \
     || ko "E2 : inattendu (got: $E2)"
+
+# Priorité vraie avec règles persistées masquées quand UFW est inactif.
+for initial in yes no; do
+    reset_case
+    echo "$initial" > "$MOCK_DIR/ufw.active"
+    touch "$MOCK_DIR/ufw.ipv6"
+    export MOCK_UFW_FRENCH=1 LANGUAGE=fr
+    cat > "$MOCK_DIR/ufw.rules" <<'RULES'
+9000:9200/tcp ALLOW IN Anywhere
+9110/tcp ALLOW IN Anywhere # old global allow
+9110/tcp DENY IN 10.0.0.0/8
+9110/tcp on eth1 DENY IN Anywhere
+9110/udp ALLOW IN Anywhere
+9110/tcp ALLOW OUT Anywhere
+9110/tcp DENY IN Anywhere (log-all) # duplicate global
+9000:9200/tcp (v6) ALLOW IN Anywhere (v6)
+9110/tcp (v6) REJECT IN Anywhere (v6) (log) # old exact
+9110/tcp (v6) DENY IN 2001:db8::/32
+RULES
+    configure_firewall > "$S/priority.log" 2>&1 || { ko "priority $initial : refus"; cat "$S/priority.log"; continue; }
+    python3 - "$MOCK_DIR/ufw.rules" <<'PRIORITY'
+from pathlib import Path
+import sys
+rows=Path(sys.argv[1]).read_text().splitlines()
+assert next(r for r in rows if '(v6)' not in r)=='9110/tcp DENY IN Anywhere', 'Refus Prometheus absent en première position IPv4'
+assert next(r for r in rows if '(v6)' in r)=='9110/tcp (v6) DENY IN Anywhere (v6)', 'Refus Prometheus absent en première position IPv6'
+for keep in ['9000:9200/tcp ALLOW IN Anywhere','9110/tcp DENY IN 10.0.0.0/8','9110/tcp on eth1 DENY IN Anywhere','9110/udp ALLOW IN Anywhere','9110/tcp ALLOW OUT Anywhere','9110/tcp (v6) DENY IN 2001:db8::/32']:
+    assert keep in rows,keep
+PRIORITY
+    before="$(cat "$MOCK_DIR/ufw.rules")"
+    configure_firewall > "$S/idempotent.log" 2>&1 || ko "priority $initial : second run refusé"
+    [[ "$(cat "$MOCK_DIR/ufw.rules")" == "$before" ]] \
+        && ok "priority $initial : IPv4/IPv6, règles partielles/ranges/iface/UDP conservées et idempotence" || ko 'idempotence perdue'
+done
+for ssh in 22 2222 02222 00002222; do
+    reset_case
+    export PZ_PROMETHEUS_PORT="$((10#$ssh))"
+    printf 'Port %s\n' "$ssh" > "$S/sshd_config"
+    export PZ_SSHD_CONFIG="$S/sshd_config"
+    if (configure_firewall) > "$S/collision.log" 2>&1; then ko 'collision SSH acceptée'; fi
+    ! grep -qE '^ufw (allow|default|prepend|--force)' "$MOCK_DIR/ufw.log" \
+        && ok "collision SSH $ssh : refus avant mutation" || ko 'mutation malgré collision SSH'
+done
+reset_case
+printf 'Port 00002222\n' > "$S/sshd_config"
+export PZ_SSHD_CONFIG="$S/sshd_config"
+configure_firewall > "$S/canonical-ssh.log" 2>&1 || ko 'SSH décimal canonique refusé'
+grep -q '^ufw allow 2222/tcp$' "$MOCK_DIR/ufw.log" \
+    && ! grep -q '^ufw allow 0' "$MOCK_DIR/ufw.log" \
+    && ok 'SSH zéros initiaux non conflictuel : ALLOW2222 canonique' || ko 'ALLOW SSH non canonique'
+for port in 0 65536; do
+    reset_case
+    printf 'Port %s\n' "$port" > "$S/sshd_config"
+    export PZ_SSHD_CONFIG="$S/sshd_config"
+    if (configure_firewall) > "$S/invalid-ssh.log" 2>&1; then ko "SSH invalide $port accepté"; fi
+    ! grep -qE '^ufw (allow|default|prepend|--force)' "$MOCK_DIR/ufw.log" \
+        && ok "SSH hors plage $port refusé avant mutation" || ko 'mutation malgré SSH invalide'
+done
+for failure in status prepend delete enable; do
+    reset_case
+    echo yes > "$MOCK_DIR/ufw.active"
+    echo '9110/tcp ALLOW IN Anywhere' > "$MOCK_DIR/ufw.rules"
+    [[ "$failure" != enable ]] || echo no > "$MOCK_DIR/ufw.active"
+    export MOCK_UFW_FAIL="$failure"
+    if (configure_firewall) > "$S/command-failure.log" 2>&1; then ko "erreur $failure ignorée"; else ok "erreur $failure bloquante"; fi
+    ! grep -q 'restreint à localhost' "$S/command-failure.log" || ko "faux succès après $failure"
+done
+unset MOCK_UFW_FAIL MOCK_UFW_FRENCH PZ_PROMETHEUS_PORT
 
 # --- bash -n -------------------------------------------------------------------------
 for f in "$SETUP_SYS" "$0"; do

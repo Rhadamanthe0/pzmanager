@@ -12,7 +12,7 @@
 #
 # Comportement : ÉCRASE toujours le perso live existant du joueur par celui du
 # backup. Pas de sauvegarde de sécurité ici : `pzm server stop` fait déjà une
-# sauvegarde complète juste avant l'arrêt (et le serveur doit être arrêté).
+# sauvegarde après arrêt du serveur (qui doit être prouvé arrêté).
 #
 # Usage: ./restoreCharacter.sh <pseudo> <backup> [--dry-run]
 #   <pseudo>   Username du joueur (table networkPlayers)

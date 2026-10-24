@@ -241,6 +241,45 @@ os.execv('/usr/bin/sqlite3',['/usr/bin/sqlite3',*args])
         self.assertTrue(ledger.read_text().startswith(existing),'pre-existing ledger entries changed')
         self.assertIn('unknown-age;;2030-06-30 12:00:00',ledger.read_text())
         self.assertEqual(self.rows(self.players,'networkPlayers'),chars)
+    def test_purge_keeps_invalid_dates_and_accepts_native_calendar_dates(self):
+        self.check_purge_calendar_dates()
+    def test_interactive_purge_keeps_invalid_calendar_dates(self):
+        self.check_purge_calendar_dates(manual=True)
+    def check_purge_calendar_dates(self,manual=False):
+        self.freeze_purge_date()
+        invalid=['0','1900-99-99','1900-02-29','2000-02-30','2001-04-31',
+                 '2000-00-01','2000-01-00','2000-13-01','2000-01-32',
+                 '2000-01-01 24:00:00','2000-01-01 12:60:00',
+                 '2000-01-01 12:00:60','2000-1-01','2000-01-01 trailing',
+                 '2000-01-01T12:00:00','2000-01-01 1:00:00']
+        old=['1900-01-01','2000-02-29','2028-02-29 23:59:59','2000-01-01 00:00:00']
+        kept=['2032-02-29','2032-02-29 23:59:59','2030-05-31','2030-05-31 12:00:00',None,'']
+        fixtures=[('admin','1900-01-01')]
+        ledger=['# username;steamid;created_at']
+        for i,value in enumerate(invalid+old+kept):
+            fixtures.append((f'connection-{i}',value))
+            fixtures.append((f'ledger-{i}',None))
+            ledger_value='2030-05-31 12:00:00' if value=='2030-05-31' else value
+            ledger.append(f'ledger-{i};;{ledger_value or ""}')
+        expected=[name for name,last in fixtures if name=='admin' or int(name.split('-')[1]) not in range(len(invalid),len(invalid)+len(old))]
+        with closing(sqlite3.connect(self.db)) as db:
+            db.execute('DELETE FROM whitelist');db.execute('DELETE FROM allowedsteamid')
+            for identity,(name,last) in enumerate(fixtures,1):
+                db.execute('INSERT INTO whitelist VALUES(?,?,?,?,?,?,?)',(identity,name,'secret',None,last,'user',name))
+            db.commit()
+        ledger_path=self.base/'ledger.csv';existing='\n'.join(ledger)+'\n';ledger_path.write_text(existing)
+        before=self.rows(self.db,'whitelist')
+        preview=self.invoke('purgeInactivePlayers.sh','--dry-run','--days','30')
+        self.assertEqual(preview.returncode,0,preview.stdout+preview.stderr)
+        self.assertIn(f'{2*len(old)} compte(s) inactif(s)',preview.stdout)
+        self.assertEqual(self.rows(self.db,'whitelist'),before)
+        self.assertEqual(ledger_path.read_text(),existing)
+        result=(self.invoke('manageWhitelist.sh','purge','30j','--delete',input='oui\n')
+                if manual else self.invoke('purgeInactivePlayers.sh','--days','30'))
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual([r[1] for r in self.rows(self.db,'whitelist')],expected)
+        self.assertTrue(ledger_path.read_text().startswith(existing))
+
     def test_purge_invalid_days_and_benign_bad_record_refused(self):
         before=self.rows(self.db,'whitelist')
         invalid=self.invoke('purgeInactivePlayers.sh','--days','not-a-number')

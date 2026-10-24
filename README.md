@@ -21,7 +21,8 @@
 
 ## Installation
 
-**Requirements**: Debian 12 / Ubuntu 22.04+, 4GB+ RAM, root access
+**Requirements**: Debian 12 / Ubuntu 22.04+, 4GB+ RAM, root access,
+[SteamCMD APT components enabled](docs/QUICKSTART.md#prerequisites)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Rhadamanthe0/pzmanager/main/data/scripts/install.sh | sudo bash

@@ -264,17 +264,38 @@ is_steamid64() { [[ "$1" =~ ^7656119[0-9]{10}$ ]]; }
 # jamais supprimée, y compris après une purge — si le joueur revient, il retrouve
 # son ancienneté réelle.
 
-# Pseudos des comptes JAMAIS CONNECTÉS dont le registre dit qu'ils datent de plus
-# de <days> jours. Comparaison lexicographique : le format ISO se trie comme une
-# date, donc pas d'arithmétique d'époques.
+# Expression SQLite commune au registre et à lastConnection. Formats natifs
+# date ou datetime seulement ; +0 days normalise aussi les jours impossibles
+# (SQLite accepte sinon le 30 février). Aucune date invalide ne prouve un âge.
+account_date_valid_sql() {
+    local value="$1" digits='[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+    echo "((${value} GLOB '${digits}' OR
+        (${value} GLOB '${digits} [0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
+         AND substr(${value},12,2) < '24'
+         AND substr(${value},15,2) < '60'
+         AND substr(${value},18,2) < '60'))
+        AND date(substr(${value},1,10), '+0 days') = substr(${value},1,10))"
+}
+
+# Pseudos des comptes JAMAIS CONNECTÉS dont le registre porte une vraie date
+# antérieure au seuil. Les valeurs sont des littéraux SQL échappés ; le même
+# validateur protège les deux sources, sans modifier le CSV ni la base.
 ledger_stale_usernames() {
-    local days="$1" cutoff
-    cutoff="$(date -d "-${days} days" '+%F %T')"
+    local days="$1" cutoff rows valid
+    cutoff="$(date -d "-${days} days" '+%F %T')" || return 1
     [[ -f "${WHITELIST_LEDGER}" ]] || return 0
-    awk -F';' -v cutoff="$cutoff" '
+    rows="$(awk -F';' '
+        BEGIN { print "(NULL, NULL)" }
         /^#/ { next }
-        NF >= 3 && $3 != "" && $3 < cutoff { print $1 }
-    ' "${WHITELIST_LEDGER}"
+        NF == 3 {
+            gsub(/\047/, "\047\047", $1)
+            gsub(/\047/, "\047\047", $3)
+            printf ", (\047%s\047, \047%s\047)\n", $1, $3
+        }
+    ' "${WHITELIST_LEDGER}")" || return 1
+    valid="$(account_date_valid_sql created_at)"
+    printf '%s\n' "WITH ledger(username, created_at) AS (VALUES ${rows})
+        SELECT username FROM ledger WHERE ${valid} AND created_at < '${cutoff}';" | sqlite3 ':memory:'
 }
 
 # Clause SQL WHERE identifiant les comptes `whitelist` inactifs depuis >= <days>
@@ -291,7 +312,8 @@ ledger_stale_usernames() {
 # un joueur inscrit le jour même perdait son accès au démarrage suivant.
 inactive_where_clause() {
     local days="$1"
-    local clause="(lastConnection < date('now', '-${days} days') AND lastConnection IS NOT NULL AND lastConnection <> '')"
+    local valid; valid="$(account_date_valid_sql lastConnection)"
+    local clause="(${valid} AND lastConnection < date('now', '-${days} days'))"
 
     local -a stale=()
     local u
@@ -395,15 +417,20 @@ die_server_active() {
 Arrête-le puis relance la commande :  pzm server stop 2m --reason \"${context}\""
 }
 
-# Marqueur journald de fin d'initialisation Lua, antérieur à la boucle de jeu.
-#
-# ⚠️ Il est émis à `f:0`, donc AVANT le premier tour de boucle : il ne prouve pas
-# à lui seul qu'un `quit` est sûr. Il était présent dès 13:32:13 le 02/09/2026
-# dans la session de 13:31 dont la boucle n'a jamais démarré, 3 joueurs connectés
-# et 0 frame en 15 min — c'est exactement la fenêtre où le `quit` fait planter
-# B42. Ne pas s'en servir seul : utiliser game_loop_started() ci-dessous.
-#
-readonly SERVER_READY_MARKER="LuaNet: Initialization [DONE]"
+# Identité active utilisée pour attribuer puis revérifier une preuve de boot.
+server_readiness_invocation() {
+    local properties key value state="" invocation=""
+    properties="$(systemctl --user show "${PZ_SERVICE_NAME}" \
+        -p ActiveState -p InvocationID --no-pager 2>/dev/null)" || return 1
+    while IFS='=' read -r key value; do
+        case "$key" in
+            ActiveState) state="$value" ;;
+            InvocationID) invocation="$value" ;;
+        esac
+    done <<< "$properties"
+    [[ "$state" == active && "$invocation" =~ ^[[:xdigit:]]{32}$ ]] || return 1
+    printf '%s\n' "$invocation"
+}
 
 # Une frame positive du boot courant prouve que la simulation a démarré.
 # L'inverse est faux : le log utilise IsoWorld.getFrameNo(), distinct du compteur
@@ -411,24 +438,13 @@ readonly SERVER_READY_MARKER="LuaNet: Initialization [DONE]"
 # Retour : 0 = frame positive, 1 = f:0 seulement, 2 = aucune frame exploitable.
 # Dans les deux derniers cas, wait_for_server_ready sonde la vraie console.
 game_loop_started() {
-    local since_epoch="$1" lines
-    lines="$(journalctl --user -u "${PZ_SERVICE_NAME}" --since "@${since_epoch}" \
-        -n 400 --no-pager 2>/dev/null | grep -oE 'f:[0-9]+ st:' || true)"
+    local since_epoch="$1" invocation="$2" lines
+    [[ "$invocation" =~ ^[[:xdigit:]]{32}$ ]] || return 2
+    lines="$(journalctl --user --since "@${since_epoch}" -n 400 --no-pager \
+        "INVOCATION_ID=${invocation}" + "_SYSTEMD_INVOCATION_ID=${invocation}" \
+        2>/dev/null | grep -oE 'f:[0-9]+ st:' || true)"
     [[ -n "$lines" ]] || return 2
     grep -qE 'f:[1-9][0-9]* st:' <<< "$lines"
-}
-
-# Le marqueur de fin d'init Lua est-il présent depuis l'instant donné (epoch) ?
-# Filtrage par journald (--grep), pas par un `-n N | grep` : le marqueur tombe au
-# DÉBUT du boot et sortait donc du tampon des N dernières lignes dès que le
-# serveur avait un peu écrit. `--grep` est une regex -> on cherche la partie sans
-# crochets ([DONE] serait une classe de caractères) puis on confirme en littéral.
-marker_seen_since() {
-    local since_epoch="$1" hits
-    hits="$(journalctl --user -u "${PZ_SERVICE_NAME}" --since "@${since_epoch}" \
-        --grep 'LuaNet: Initialization' -n 1 --no-pager 2>/dev/null \
-        | grep -cF "$SERVER_READY_MARKER" || true)"
-    (( hits > 0 ))
 }
 
 # `players` est exécuté dans la boucle principale, après refreshAnimSets.
@@ -454,14 +470,14 @@ console_players_responded() {
 # Retour 0 dès que le boot courant est terminé (ou si le serveur n'est pas actif :
 # rien à attendre). Retour 1 sur timeout (actif mais fin de boot jamais signalée)
 # -> pz.sh refuse l'arrêt : un timeout ne prouve pas qu'un SIGKILL est sûr.
-# On ne scanne QUE le boot courant (depuis
-# ActiveEnterTimestamp) pour ne pas confondre avec le marqueur d'un boot antérieur.
+# Les preuves sont filtrées par InvocationID puis l'identité est revérifiée :
+# deux boots dans la même seconde ne doivent jamais partager une preuve.
 # Usage: wait_for_server_ready [timeout_seconds]
 wait_for_server_ready() {
     local timeout="${1:-300}"
     server_is_active || return 0
 
-    local since_ts since_epoch
+    local since_ts since_epoch invocation current_invocation
     since_ts="$(systemctl --user show "${PZ_SERVICE_NAME}" -p ActiveEnterTimestamp --value 2>/dev/null)"
     since_epoch="$(date -d "$since_ts" +%s 2>/dev/null || echo 0)"
     # Sans horodatage exploitable, aucune ligne du journal ne prouve le boot
@@ -470,6 +486,11 @@ wait_for_server_ready() {
         echo "AVERTISSEMENT : horodatage du boot illisible ; disponibilité non prouvée." >&2
         return 1
     fi
+
+    invocation="$(server_readiness_invocation)" || {
+        echo "AVERTISSEMENT : invocation active illisible ; disponibilité non prouvée." >&2
+        return 1
+    }
 
     # Feedback : le chemin rapide (marqueur déjà présent) reste MUET. On n'affiche
     # quelque chose que si on doit réellement patienter, pour qu'un stop/restart
@@ -489,8 +510,12 @@ wait_for_server_ready() {
         # l'uptime, donc utilisable aussi bien sur un serveur qui vient de démarrer
         # que sur un qui tourne depuis des jours.
         local probe=0
-        game_loop_started "$since_epoch" || probe=$?
+        game_loop_started "$since_epoch" "$invocation" || probe=$?
         if (( probe == 0 )); then
+            current_invocation="$(server_readiness_invocation)" && [[ "$current_invocation" == "$invocation" ]] || {
+                echo "AVERTISSEMENT : invocation remplacée ou illisible ; disponibilité non prouvée." >&2
+                return 1
+            }
             $announced && echo "Boucle de jeu démarrée — poursuite de l'opération."
             return 0
         fi
@@ -504,6 +529,10 @@ wait_for_server_ready() {
         budget=$remaining
         (( budget <= 8 )) || budget=8
         if console_players_responded "$budget"; then
+            current_invocation="$(server_readiness_invocation)" && [[ "$current_invocation" == "$invocation" ]] || {
+                echo "AVERTISSEMENT : invocation remplacée ou illisible ; disponibilité non prouvée." >&2
+                return 1
+            }
             $announced && echo "La boucle de jeu répond — poursuite de l'opération."
             return 0
         fi

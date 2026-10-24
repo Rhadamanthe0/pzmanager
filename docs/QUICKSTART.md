@@ -8,6 +8,9 @@ Get your Project Zomboid server running in 10 minutes.
 - **RAM**: 4GB minimum (8GB recommended)
 - **Disk**: 20GB+ free
 - **Access**: Root/sudo
+- **APT**: SteamCMD must be available: enable Debian `non-free` or Ubuntu
+  `multiverse` through your OS package configuration before installation. The
+  installer does not add those components or a new repository for you.
 
 ## Installation
 
@@ -23,7 +26,7 @@ The installer will:
 3. Install SteamCMD, Java 25, dependencies
 4. Download Project Zomboid server
 5. Set up systemd services and timers
-6. Create `admin` user with random password (save it!)
+6. Prepare [initial administrator credentials](SERVER_CONFIG.md#administrator-credentials)
 
 For multiple servers, use a custom username:
 ```bash
@@ -43,13 +46,16 @@ Use the installer above for the complete setup.
 
 ## First Start
 
+Save the password displayed by installation before starting; see
+[administrator credentials](SERVER_CONFIG.md#administrator-credentials).
+
 ```bash
 su - pzuser
 pzm server start
 pzm server status
 ```
 
-First startup takes 2-5 minutes (world generation).
+First startup generates the world.
 
 ## Basic Commands
 
@@ -68,9 +74,8 @@ pzm admin maintenance 2m --reason "Augmentation de la RAM"
 `server stop/restart`: 5m if 2+ players are connected, 2m if 1, now if none)
 
 **`--reason TEXT`** adds context to the Discord and in-game messages, on
-`server stop/start/restart` as well as `admin maintenance`:
-- `--reason "RAM upgrade"` → `ATTENTION : MAINTENANCE DANS 2 MINUTES ! (Lancé manuellement - RAM upgrade)`
-- Details: [USAGE.md — Administration](USAGE.md#administration)
+`server stop/start/restart` as well as `admin maintenance`; see
+[USAGE.md — Administration](USAGE.md#administration) for announcements.
 
 ## Server Configuration
 
@@ -81,8 +86,7 @@ nano ~/pzmanager/Zomboid/Server/servertest.ini
 Key settings:
 ```ini
 PublicName=My Server       # Server name
-Password=                  # Empty = public
-AdminPassword=CHANGEME     # Change this!
+Password=                  # Empty = no shared join password
 MaxPlayers=32
 ```
 
@@ -124,17 +128,43 @@ For full-backup ZIPs and privileged restoration, follow
 
 ## Uninstallation
 
-```bash
-# Replace "pzuser" with your username if different
-su - pzuser
-pzm server stop now
-systemctl --user disable zomboid.service pz-backup.timer pz-modcheck.timer pz-heapcheck.timer pz-maintenance.timer pz-creation-date-init.timer
-exit
+Keep a verified backup before removing data. As root, select the manager account
+and its real home. Run user-manager commands with that account's runtime directory.
+Omit optional units that were never installed. Resolve stop failures before
+removing files; close other operator sessions that could restart PZ.
 
-sudo rm /etc/sudoers.d/pzuser
-sudo rm -rf /home/pzuser/pzmanager
-# (Optional) sudo userdel -r pzuser
+```bash
+PZ_REMOVE_USER=pzuser
+PZ_REMOVE_HOME="$(getent passwd "$PZ_REMOVE_USER" | cut -d: -f6)"
+PZ_REMOVE_UID="$(id -u "$PZ_REMOVE_USER")"
+as_manager() {
+    sudo -u "$PZ_REMOVE_USER" env XDG_RUNTIME_DIR="/run/user/$PZ_REMOVE_UID" "$@"
+}
+
+# Stop new periodic/bot requests before the guarded game shutdown.
+as_manager systemctl --user disable --now pz-backup.timer pz-modcheck.timer \
+    pz-heapcheck.timer pz-maintenance.timer pz-creation-date-init.timer \
+    pz-stallwatch.timer pz-discord-bot.service
+as_manager "$PZ_REMOVE_HOME/pzmanager/pzm" server stop now
+
+# Remove socket activation and stop remaining units before deleting their files.
+as_manager systemctl --user disable --now zomboid.socket zomboid.service \
+    zomboid_logger.service pz-backup.service pz-modcheck.service \
+    pz-heapcheck.service pz-maintenance.service pz-creation-date-init.service \
+    pz-stallwatch.service
 ```
+
+Stopping and disabling preserves the account and its data. If you choose to
+remove the installation, delete its user-unit files and reload the user manager,
+then remove `/etc/sudoers.d/<manager>` and the manager's `pzmanager` directory.
+After any chosen cleanup and user-manager reload, disable lingering:
+
+```bash
+loginctl disable-linger "$PZ_REMOVE_USER"
+```
+
+Deleting the account/home is a separate optional choice. Packages and firewall
+rules remain; review their other users before changing them.
 
 ## Troubleshooting
 

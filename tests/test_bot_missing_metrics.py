@@ -1,4 +1,5 @@
 """Missing observations remain unknown through collection, embed and CSV."""
+from contextlib import ExitStack
 import io
 from pathlib import Path
 import tempfile
@@ -56,19 +57,98 @@ class MissingMetrics(unittest.TestCase):
             user.write_text('')
             self.assertEqual(bot._online_players(state), 0)
 
-    def collect(self, state, snapshot):
-        with patch.object(bot, 'jvm_status', return_value={'pid': None, 'invocation':None, 'service_state':'unknown'}), \
-             patch.object(bot, '_meminfo', return_value={}), \
-             patch.object(bot, '_service_memory', return_value={}), \
-             patch.object(bot, '_percpu_stat', return_value=None), \
-             patch.object(bot, '_temps', return_value={}), \
-             patch.object(bot, '_gc_heap', return_value=None), \
-             patch.object(bot, '_recent_heapdump', return_value=None), \
-             patch.object(bot, '_online_players', return_value=None), \
-             patch.object(bot, '_default_iface', return_value=None), \
-             patch.object(bot, '_server_ini_path', return_value=''), \
-             patch.object(bot, '_prom_snapshot', return_value=snapshot):
+    def collect(self, state, snapshot=None, *, meminfo=None, netdev=None,
+                now=None, prom_text=None):
+        def fixture_open(path, *args, **kwargs):
+            fixtures = {
+                '/proc/meminfo': meminfo,
+                '/proc/net/route': 'Iface Destination\nfixture0 00000000\n' if netdev else None,
+                '/proc/net/dev': netdev,
+                '/fixture.ini': 'MaxPacketsPerSecond=100\n',
+            }
+            if str(path) not in fixtures or fixtures[str(path)] is None:
+                raise OSError('unavailable fixture: ' + str(path))
+            return io.StringIO(fixtures[str(path)])
+
+        with ExitStack() as stack:
+            stack.enter_context(patch('builtins.open', side_effect=fixture_open))
+            for name, value in {
+                'jvm_status': {'pid': None, 'invocation': None, 'service_state': 'unknown'},
+                '_service_memory': {}, '_percpu_stat': None, '_temps': {},
+                '_gc_heap': None, '_recent_heapdump': None, '_online_players': None,
+                '_server_ini_path': '/fixture.ini',
+            }.items():
+                stack.enter_context(patch.object(bot, name, return_value=value))
+            if now is not None:
+                stack.enter_context(patch.object(bot.time, 'monotonic', return_value=now))
+            if prom_text is None:
+                stack.enter_context(patch.object(bot, '_prom_snapshot', return_value=snapshot))
+            else:
+                stack.enter_context(patch.object(bot, 'PROMETHEUS_URL', 'http://fixture.invalid'))
+                stack.enter_context(patch.object(bot.urllib.request, 'urlopen',
+                                                return_value=io.BytesIO(prom_text.encode())))
             return bot.collect_stats(state)
+
+    def test_machine_memory_missing_partial_zero_and_nominal(self):
+        cases = (
+            (None, '—', '— Go', '', '', False),
+            ('MemTotal: 8388608 kB\n', '—', '— Go', '', '', False),
+            ('MemAvailable: 4194304 kB\n', '—', '4.0 Go', '4096', '', False),
+            ('MemAvailable: 0 kB\n', '—', '0.0 Go', '0', '', True),
+            ('MemTotal: 8388608 kB\nMemAvailable: 0 kB\n', '**100%**', '0.0 Go', '0', '100.0', True),
+            ('MemTotal: 8388608 kB\nMemAvailable: 8388608 kB\n', '**0%**', '8.0 Go', '8192', '0.0', False),
+            ('MemTotal: 8388608 kB\nMemAvailable: 4194304 kB\n', '**50%**', '4.0 Go', '4096', '50.0', False),
+        )
+        for meminfo, used, available, csv_available, csv_used, warning in cases:
+            with self.subTest(meminfo=meminfo):
+                observed = self.collect({}, meminfo=meminfo)
+                memory_alerts = [a for a in bot._status(observed)[1] if 'RAM système' in a]
+                self.assertEqual(bool(memory_alerts), warning)
+                field = next(f['value'] for f in bot._monitoring_embed(observed).fields
+                             if f['name'] == '🖥️ RAM de la machine')
+                self.assertIn(used + ' utilisée', field)
+                self.assertIn(available, field)
+                if not meminfo or 'MemTotal' not in meminfo:
+                    self.assertTrue(field.endswith('/ —'), field)
+                else:
+                    self.assertTrue(field.endswith('/ 8.0'), field)
+                row = dict(zip(bot._CSV_HEADER, bot._csv_row(observed)))
+                self.assertEqual(row['ram_avail_mb'], csv_available)
+                self.assertEqual(row['ram_used_pct'], csv_used)
+
+    def test_nic_proxy_has_no_ratio_to_client_cap_and_prometheus_keeps_its_ratio(self):
+        def dev(packets):
+            return f'fixture0: 0 {packets} 0 0 0 0 0 0 0 {packets} 0 0 0 0 0 0\n'
+
+        state = {}
+        self.collect(state, netdev=dev(0), now=1)
+        observed = self.collect(state, netdev=dev(100), now=2)
+        self.assertEqual(observed['net']['pps'], 200)
+        text = _champ_serveur(bot._monitoring_embed(observed))
+        self.assertIn('**200** paq/s (NIC proxy)', text)
+        self.assertNotIn('%', text)
+        row = dict(zip(bot._CSV_HEADER, bot._csv_row(observed)))
+        self.assertEqual(len(bot._csv_row(observed)), len(bot._CSV_HEADER))
+        self.assertEqual(row['net_pps'], '200')
+        self.assertEqual(row['max_pps'], '100')
+        self.assertEqual(row['pps_pct'], '')
+        self.assertEqual(row['recv_cap_pct'], '')
+
+        for sent, received, percentage in ((0, 0, '0.0'), (10, 50, '50.0')):
+            with self.subTest(sent=sent, received=received):
+                state = {}
+                self.collect(state, netdev=dev(0), now=1, prom_text=(
+                    'packet_send_bytes_count 0\npacket_receive_bytes_count{client="alice"} 0\n'))
+                observed = self.collect(state, netdev=dev(100), now=2, prom_text=(
+                    f'packet_send_bytes_count {sent}\n'
+                    f'packet_receive_bytes_count{{client="alice"}} {received}\n'))
+                text = _champ_serveur(bot._monitoring_embed(observed))
+                self.assertIn(f'**{sent}**↑/**{received}**↓ paq/s', text)
+                self.assertIn(f'max **{float(percentage):.0f}%** du cap', text)
+                self.assertNotIn('NIC', text)
+                row = dict(zip(bot._CSV_HEADER, bot._csv_row(observed)))
+                self.assertEqual(row['recv_cap_pct'], percentage)
+                self.assertEqual(row['pps_pct'], '')
 
     def test_missing_counters_never_become_rates_in_embed_or_csv(self):
         state = {}

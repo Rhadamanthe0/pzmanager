@@ -650,6 +650,11 @@ install_zomboid_dependencies() {
     fi
     dpkg --add-architecture i386
     apt-get update -qq
+    # steamcmd n'est pas dans les dépôts de base : ne pas modifier les sources
+    # APT automatiquement, expliquer le prérequis avant toute installation.
+    if ! LC_ALL=C apt-cache policy steamcmd | awk '$1 == "Candidate:" && $2 != "(none)" { found=1 } END { exit !found }'; then
+        die "Paquet steamcmd indisponible : activer manuellement non-free sur Debian ou multiverse sur Ubuntu, puis actualiser APT."
+    fi
 
     # Accept Steam license automatically
     echo steam steam/question select "I AGREE" | debconf-set-selections

@@ -115,13 +115,7 @@ grep -q 'SocketMode=0660' "$SOCKET" || fail "zomboid.socket : SocketMode 0660 pe
 grep -q 'SocketGroup' "$SOCKET" || fail "zomboid.socket : SocketGroup non documenté"
 pass "zomboid.socket : SocketMode 0660 conservé, SocketGroup documenté"
 
-# --- (c) setupSystem.sh : deux comptes, groupe, secrets jamais exposés -------
-grep -q 'target_user="${1:-$PZ_USER}"' "$SETUP_SYS" || fail "create_user non paramétrique"
-grep -q 'create_user "$PZ_MANAGER_USER"' "$SETUP_SYS" || fail "compte manager non créé en split"
-grep -q 'create_user "$PZ_GAME_USER"' "$SETUP_SYS" || fail "compte jeu non créé en split"
-grep -qE 'groupadd( |$).*pzgame|groupadd pzgame' "$SETUP_SYS" || fail "groupe pzgame non créé"
-grep -q 'usermod -aG pzgame' "$SETUP_SYS" || fail "manager non ajouté au groupe pzgame"
-pass "setupSystem.sh : deux comptes + groupe pzgame (création idempotente)"
+# --- (c) secrets manager jamais exposés ; split refusé dynamiquement en (e) ---
 grep -n 'chmod 0600' "$SETUP_SYS" | grep -qiE 'secret|ssh' \
     || fail "setupSystem.sh : .env/.ssh non resserrés à 0600"
 grep -n 'chmod 0700' "$SETUP_SYS" | grep -qiE 'ssh' \
@@ -155,7 +149,7 @@ bash -eu -c '
     ensure_runtime_dir() { touch "$C17_PREREQUISITE"; }
     as_manager() { touch "$C17_PREREQUISITE"; }
     install_zomboid
-' _ "$CONF_INIT" "$SIM" > "$SIM/refusal.log" 2>&1
+' "$SETUP_SYS" "$CONF_INIT" "$SIM" > "$SIM/refusal.log" 2>&1
 rc=$?
 set -e
 [[ "$rc" != 0 ]] || fail "installation multi-UID acceptée"

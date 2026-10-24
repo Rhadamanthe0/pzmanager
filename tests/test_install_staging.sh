@@ -159,7 +159,7 @@ for cmd in dpkg apt-get ufw loginctl; do
 #!/bin/bash
 printf 'boundary %s %s\n' "${0##*/}" "$*" >> /tmp/pzm-boundaries.log
 [[ "${0##*/}" != apt-get ]] || { echo 'Installation paquet interdite.' >&2; exit 99; }
-[[ "${0##*/}" != ufw || "${1:-}" != status ]] || printf 'Status: inactive\n'
+[[ "${0##*/}" != ufw || "${1:-}" != status ]] || printf 'Status: active\n[ 1] 9110/tcp DENY IN Anywhere\n'
 exit 0
 BOUNDARY
     chmod 0755 "/test-bin/$cmd"

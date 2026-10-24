@@ -282,8 +282,9 @@ truth; installation writes `~/.config/systemd/user/zomboid.service`.
 
 The service uses the control FIFO and a dedicated logger. Blocking pre-start
 checks enforce the memory budget, closed admission and offline Writing cleanup;
-the inactivity purge is non-blocking. The one-shot admin password is read and
-deleted at startup. Shutdown uses the guarded stop helper to save cleanly.
+the inactivity purge is non-blocking. Initial access follows the
+[admin credential handoff](SERVER_CONFIG.md#administrator-credentials).
+Shutdown uses the guarded stop helper to save cleanly.
 Systemd hardening limits writable paths; `pz.slice` shares the PZ memory budget
 and swap is forbidden. Use `pzm server` for lifecycle operations so its locking
 and readiness checks apply.
@@ -600,8 +601,7 @@ Every variable is documented — with its default and its trade-offs — in
 # General
 ServerName=servertest
 PublicName=My PZ Server
-Password=                    # Empty = public server
-AdminPassword=changeme       # ⚠️ MUST CHANGE!
+Password=                    # Empty = no shared join password
 MaxPlayers=32
 
 # Gameplay
@@ -623,7 +623,8 @@ SteamAuthenticationRequired=true
 ResetID=0
 ```
 
-**Complete documentation**: [docs/SERVER_CONFIG.md](SERVER_CONFIG.md)
+**Complete documentation**: [server settings](SERVER_CONFIG.md), including
+[administrator credentials](SERVER_CONFIG.md#administrator-credentials).
 
 ---
 
@@ -634,7 +635,6 @@ ResetID=0
 **Global system**:
 - `/etc/sudoers.d/pzuser` (sudo permissions)
 - `/var/lib/systemd/linger/pzuser` (systemd lingering)
-- `/etc/apt/sources.list.d/steam.list` (SteamCMD repository)
 
 **pzuser user**:
 - `~/.config/systemd/user/zomboid.service` (server)
@@ -661,32 +661,9 @@ ResetID=0
 
 ## Uninstallation
 
-To completely remove pzmanager:
-
-```bash
-# As root
-
-# 1. Stop and disable services
-sudo -u pzuser systemctl --user stop zomboid.service pz-backup.timer pz-modcheck.timer pz-heapcheck.timer pz-maintenance.timer pz-creation-date-init.timer pz-discord-bot.service
-sudo -u pzuser systemctl --user disable zomboid.service pz-backup.timer pz-modcheck.timer pz-heapcheck.timer pz-maintenance.timer pz-creation-date-init.timer pz-discord-bot.service
-loginctl disable-linger pzuser
-
-# 2. Remove files
-rm -rf /home/pzuser/pzmanager
-
-# 3. Remove user
-userdel -r pzuser
-
-# 4. Remove system configuration
-rm /etc/sudoers.d/pzuser
-rm /var/lib/systemd/linger/pzuser
-
-# 5. (Optional) Remove packages
-apt remove --purge steamcmd openjdk-25-jre-headless
-apt autoremove
-```
-
-**Note**: UFW firewall rules remain active (manually remove if desired)
+Follow the [canonical uninstall procedure](QUICKSTART.md#uninstallation), which
+stops timers, bot, services and socket activation before file removal. Account
+and data removal remain explicit choices.
 
 ---
 

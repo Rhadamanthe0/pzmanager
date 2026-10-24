@@ -57,11 +57,16 @@ def main():
         for name, value in {'memory.max': str(20 * 2**30), 'memory.swap.max': '0', 'memory.current': '0'}.items():
             (parent / name).write_text(value)
         fixture = original.replace('Path("/proc/self/cgroup")', 'Path(' + repr(str(proc)) + ')').replace('Path("/sys/fs/cgroup")', 'Path(' + repr(str(cg)) + ')')
+        test_home, test_runtime = base / 'home', base / 'runtime'
+        test_home.mkdir(mode=0o700)
+        test_runtime.mkdir(mode=0o700)
         env = dict(os.environ)
+        # Isoler aussi les fichiers de démarrage et les verrous des enfants.
         # Héritage d'un vrai verrou/répertoire d'état interdit dans le banc.
         for key in list(env):
-            if key.startswith(('PZ_', 'DISCORD_', 'BACKUP_', 'LOG_', 'STEAM_')) or key in {'BASH_ENV', 'ENV', 'XDG_RUNTIME_DIR'}: env.pop(key)
-        env.update(PZ_TEST_ROOT=str(root), TMPDIR=str(base))
+            if key.startswith(('PZ_', 'DISCORD_', 'BACKUP_', 'LOG_', 'STEAM_')) or key in {'BASH_ENV', 'ENV', 'XDG_RUNTIME_DIR', 'SSH_CLIENT', 'SSH_CONNECTION', 'SSH2_CLIENT'}: env.pop(key)
+        env.update(PZ_TEST_ROOT=str(root), TMPDIR=str(base),
+                   HOME=str(test_home), XDG_RUNTIME_DIR=str(test_runtime))
         results = []
         for test in sorted((root / 'tests').glob('test_*')):
             if test.suffix not in {'.py', '.sh'} or (args.only and test.name not in args.only): continue

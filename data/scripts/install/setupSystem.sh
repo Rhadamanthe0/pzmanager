@@ -87,27 +87,6 @@ create_user() {
     echo "[INFO] Utilisateur $target_user créé"
 }
 
-# C17 (split-users) : crée le compte jeu (JVM seule) quand il diffère du
-# compte admin, plus le groupe "pzgame" dont le manager est membre pour une
-# FIFO/socket de contrôle restreinte. No-op en mono-user (compat totale).
-# Idempotent : chaque étape vérifie avant d'agir.
-ensure_split_users() {
-    if [[ "${PZ_GAME_USER:-$PZ_USER}" == "${PZ_MANAGER_USER:-$PZ_USER}" ]]; then
-        echo "[INFO] Mode mono-user (${PZ_MANAGER_USER:-$PZ_USER}) : pas de séparation des comptes"
-        return 0
-    fi
-    create_user "$PZ_MANAGER_USER"
-    create_user "$PZ_GAME_USER"
-    if ! getent group pzgame >/dev/null 2>&1; then
-        groupadd pzgame
-        echo "[INFO] Groupe pzgame créé"
-    fi
-    if ! id -nG "$PZ_MANAGER_USER" 2>/dev/null | tr ' ' '\n' | grep -qx pzgame; then
-        usermod -aG pzgame "$PZ_MANAGER_USER"
-        echo "[INFO] $PZ_MANAGER_USER ajouté au groupe pzgame"
-    fi
-}
-
 # Toute écriture du home s'effectue avec les droits du manager : même un
 # remplacement concurrent par un lien ne donne aucun droit sur une cible root.
 as_manager() {
@@ -197,7 +176,9 @@ load_ports_from_env() {
 # Règle ufw déjà présente ? Motif fixe (ex. "16261/udp", "OpenSSH").
 # Lecture seule (sonde) : sûre en contexte `if`, jamais de modification.
 ufw_has_rule() {
-    ufw status numbered 2>/dev/null | grep -qF "$1"
+    local status
+    status="$(LC_ALL=C LANGUAGE=C ufw status numbered)" || { echo "[ERROR] Lecture UFW impossible." >&2; exit 1; }
+    grep -qF "$1" <<< "$status"
 }
 
 # Exécute ufw, sauf en DRY-RUN (PZ_UFW_DRY_RUN=1, tests) où la commande est
@@ -226,6 +207,12 @@ detect_ssh_port() {
         # Sonde lecture seule : idem ci-dessus.
         ports="$(grep -iE '^[[:space:]]*Port[[:space:]]+[0-9]+' "$sshd_config" | grep -oE '[0-9]+' | sort -nu || true)"
     fi
+    if [[ -n "$ports" ]]; then
+        # sshd accepte les zéros initiaux en décimal : comparer et autoriser
+        # toujours le port canonique, sans débordement arithmétique Bash.
+        ports="$(awk '/^[0-9]+$/ && $0+0 >= 1 && $0+0 <= 65535 { printf "%d\n", $0+0; next } { exit 1 }' <<< "$ports" | sort -nu)" \
+            || { echo "[ERROR] Port SSH invalide : aucune règle modifiée." >&2; return 1; }
+    fi
     [[ -n "$ports" ]] || ports="22"
     if ! grep -qx '22' <<< "$ports"; then
         ports="$(printf '%s\n%s' "22" "$ports" | sort -nu)"
@@ -233,8 +220,48 @@ detect_ssh_port() {
     printf '%s\n' "$ports"
 }
 
+# UFW compare les doublons sans tenir compte d'action/log/comment : prepend
+# peut sinon ignorer un DENY s'il reste un ALLOW exact au même endpoint.
+# Parser la sortie numérotée C, jamais les ACL partielles/interfaces/ranges.
+prometheus_rules() {
+    python3 -c '
+import ipaddress,re,sys
+port,mode=sys.argv[1:]
+exact=re.compile(re.escape(port)+r"/tcp(?: \(v6\))? (ALLOW|DENY|REJECT|LIMIT) IN Anywhere(?: \(v6\))?(?: \(log(?:-all)?\))?$")
+rows=[]
+for line in sys.stdin:
+    match=re.match(r"^\s*\[\s*(\d+)\]\s*(.*)$",line)
+    if not match: continue
+    number,body=int(match[1])," ".join(match[2].split("#",1)[0].split())
+    family=6 if "(v6)" in body else 4
+    for token in body.split():
+        try: family=max(family,ipaddress.ip_network(token,strict=False).version)
+        except ValueError: pass
+    parsed=re.match(r"^.*? (ALLOW|DENY|REJECT|LIMIT) (IN|OUT|FWD) .*",body)
+    if not parsed: raise ValueError("État UFW non reconnu : "+body)
+    rows.append((number,body,family,parsed[2]))
+if mode=="indices":
+    print("\n".join(str(n) for n,b,f,d in reversed(rows) if exact.fullmatch(b)))
+else:
+    first={}
+    for n,b,f,d in rows:
+        if d=="IN": first.setdefault(f,b)
+    if 4 not in first or any(not exact.fullmatch(b) or exact.fullmatch(b)[1]!="DENY" for b in first.values()):
+        raise ValueError("Refus Prometheus prioritaire non prouvé")
+' "$1" "$2"
+}
+
 configure_firewall() {
     require_command ufw
+    local prom_port="${PZ_PROMETHEUS_PORT:-9110}" ssh_ports
+    [[ "$prom_port" =~ ^[0-9]{1,5}$ ]] && (( 10#$prom_port >= 1 && 10#$prom_port <= 65535 )) \
+        || { echo "[ERROR] Port métriques invalide." >&2; return 1; }
+    prom_port="$((10#$prom_port))"
+    ssh_ports="$(detect_ssh_port)" || return 1
+    if grep -qx "$prom_port" <<< "$ssh_ports"; then
+        echo "[ERROR] Port métriques $prom_port en conflit avec SSH : aucune règle modifiée." >&2
+        return 1
+    fi
 
     # Charger les ports depuis .env si disponible, sinon utiliser les défauts
     local port_game="${PZ_PORT_GAME:-16261}"
@@ -253,10 +280,9 @@ configure_firewall() {
     # noms, ce qui compensait l'erreur, et tout .env correct la révélait.
     local -a rules=("${port_game}/udp" "${port_game2}/udp")
 
-    # Delta avant/après (C12) : photographie avant toute modification.
-    # Sonde lecture seule : le `|| true` absorbe un status en échec.
+    # Delta avant/après (C12) : photographie stricte avant toute modification.
     local ufw_before
-    ufw_before="$(ufw status numbered 2>/dev/null || true)"
+    ufw_before="$(LC_ALL=C LANGUAGE=C ufw status numbered)" || { echo "[ERROR] Lecture UFW impossible." >&2; return 1; }
     echo "[INFO] UFW avant :"
     echo "$ufw_before"
 
@@ -272,54 +298,57 @@ configure_firewall() {
     local -a added=()
     local p r
     if [[ "$ufw_active" != true ]]; then
-        ufw_run default deny incoming
-        ufw_run default allow outgoing
+        ufw_run default deny incoming || return 1
+        ufw_run default allow outgoing || return 1
     fi
     # Accès admin conservé : OpenSSH + chaque port sshd détecté.
     if ! ufw_has_rule "OpenSSH"; then
-        ufw_run allow OpenSSH
+        ufw_run allow OpenSSH || return 1
         added+=("OpenSSH")
     fi
     while IFS= read -r p; do
         [[ -n "$p" ]] || continue
         if ! ufw_has_rule "${p}/tcp"; then
-            ufw_run allow "${p}/tcp"
+            ufw_run allow "${p}/tcp" || return 1
             added+=("${p}/tcp")
         fi
-    done < <(detect_ssh_port)
+    done <<< "$ssh_ports"
     # Jeu : uniquement les règles manquantes (jamais de doublon).
     for r in "${rules[@]}"; do
         if ! ufw_has_rule "$r"; then
-            ufw_run allow "$r"
+            ufw_run allow "$r" || return 1
             added+=("$r")
         fi
     done
     echo "[INFO] Ports ouverts: ${rules[*]}"
 
-    # Exporteur de métriques interne de PZ (Prometheus, cf. PZ_PROMETHEUS_PORT) :
-    # le serveur le binde sur 0.0.0.0 et il expose des données sensibles (positions
-    # joueurs) ; le bot le scrape en localhost. On refuse explicitement l'accès
-    # externe — redondant avec le « deny incoming » par défaut mais explicite et
-    # maintenu ; UFW laisse toujours passer la loopback, donc le bot n'est pas gêné.
-    local prom_port="${PZ_PROMETHEUS_PORT:-9110}"
-    if ufw status numbered 2>/dev/null | grep -F "$prom_port" | grep -qi deny; then
-        : # refus déjà en place, on le conserve tel quel
-    else
-        ufw_run deny "${prom_port}/tcp"
-        added+=("deny ${prom_port}/tcp")
-    fi
-    echo "[INFO] Port métriques ${prom_port}/tcp restreint à localhost"
-
+    # Inactif : les anciennes règles restent enregistrées mais status ne les
+    # affiche pas. Activer seulement après préparation de tous les accès SSH.
+    # L'état initial inactif exposait déjà le port ; ne jamais annoncer le
+    # refus tant que sa priorité n'est pas prouvée après correction.
     if [[ "$ufw_active" != true ]]; then
-        ufw_run --force enable
+        ufw_run --force enable || return 1
         echo "[INFO] UFW activé avec règles par défaut"
     else
-        echo "[INFO] UFW déjà actif : règles existantes préservées, seuls les manquants ajoutés"
+        echo "[INFO] UFW déjà actif : règles existantes préservées"
     fi
-
-    # Sonde lecture seule : le `|| true` absorbe un status en échec.
-    local ufw_after
-    ufw_after="$(ufw status numbered 2>/dev/null || true)"
+    local snapshot indices index ufw_after
+    snapshot="$(LC_ALL=C LANGUAGE=C ufw status numbered)" || return 1
+    if [[ "${PZ_UFW_DRY_RUN:-0}" == 1 ]] || ! prometheus_rules "$prom_port" verify <<< "$snapshot" 2>/dev/null; then
+        indices="$(prometheus_rules "$prom_port" indices <<< "$snapshot")" || return 1
+        while IFS= read -r index; do
+            [[ -z "$index" ]] || ufw_run --force delete "$index" || return 1
+        done <<< "$indices"
+        ufw_run prepend deny in proto tcp from any to any port "$prom_port" || return 1
+        added+=("deny ${prom_port}/tcp prioritaire")
+    fi
+    ufw_after="$(LC_ALL=C LANGUAGE=C ufw status numbered)" || return 1
+    if [[ "${PZ_UFW_DRY_RUN:-0}" == 1 ]]; then
+        echo "[DRY-RUN] Restriction métriques planifiée, non vérifiée."
+    else
+        prometheus_rules "$prom_port" verify <<< "$ufw_after" || return 1
+        echo "[INFO] Port métriques ${prom_port}/tcp restreint à localhost"
+    fi
     echo "[INFO] UFW après :"
     echo "$ufw_after"
     if (( ${#added[@]} > 0 )); then
@@ -407,7 +436,6 @@ main() {
         || { echo "[FATAL] Budget PZ partagé incompatible avec split multi-UID ; aucun compte modifié." >&2; exit 1; }
 
     create_user
-    ensure_split_users
     install_packages
     harden_manager_secrets
     configure_firewall

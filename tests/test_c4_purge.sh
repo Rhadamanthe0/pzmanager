@@ -14,6 +14,8 @@ exec python3 "$ROOT/tests/test_accounts_safety.py" \
  Accounts.test_purge_term_before_delete_preserves_rows \
  Accounts.test_purge_nominal_without_sid_third_authorization_and_counts \
  Accounts.test_purge_days_boundary_and_existing_ledger \
+ Accounts.test_purge_keeps_invalid_dates_and_accepts_native_calendar_dates \
+ Accounts.test_interactive_purge_keeps_invalid_calendar_dates \
  Accounts.test_purge_invalid_days_and_benign_bad_record_refused \
  Accounts.test_purge_wal_backup_includes_committed_pages \
  Accounts.test_purge_pending_transaction_refused \

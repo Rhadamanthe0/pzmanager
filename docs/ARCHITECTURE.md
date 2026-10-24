@@ -43,7 +43,7 @@ This is the central, non-obvious design:
 - Sending a server command = writing a line to the FIFO. `sendCommand.sh` does this, then scrapes the **command output back out of journald** (matching `command entered via server console`). `pzm rcon` is a thin wrapper over `sendCommand.sh`.
 - `ExecStop` writes `quit` to the pipe for a clean shutdown.
 - `zomboid_logger.service` (`captureLogs.sh`) runs alongside and persists logs.
-- The admin password is passed once via a `.admin_password` file that `ExecStart` reads and immediately deletes.
+- Initial admin access follows the [credential handoff](SERVER_CONFIG.md#administrator-credentials).
 
 ## Automation
 

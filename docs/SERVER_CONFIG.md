@@ -67,14 +67,29 @@ vanilla var of its `VERSION` (6).
 # servertest.ini
 ServerName=MyServer           # Internal name
 PublicName=My Public Name     # Browser display name
-Password=                     # Password (empty = public)
-AdminPassword=CHANGEME        # RCON password (⚠️ CHANGE IT!)
+Password=                     # Shared join password (empty = no password)
 MaxPlayers=32                # Maximum players
 PauseEmpty=true              # Pause if empty (saves CPU)
 SaveWorldEveryMinutes=30     # Auto-save frequency
 ```
 
-⚠️ **Security**: Always change `AdminPassword`!
+### Administrator credentials
+
+The installer generates and displays the initial `admin` password. Save it
+before the first start. It writes the same secret to the manager-owned
+`.admin_password` file with mode `0600`. The service supplies it through
+`-adminpassword`, which sets the game's admin account password, and truncates
+the file before launching the JVM. Consumption failure blocks startup; the empty
+`0600` file remains, so later starts do not reapply the password.
+
+There is no `AdminPassword` INI setting. `Password` controls the shared server
+join password; it does not grant admin rights or replace SteamID admission.
+`RCONPassword` belongs to the separate TCP RCON interface. PZManager's
+`pzm rcon` uses the local control FIFO and does not use that password.
+
+For an existing account, `pzm whitelist resetpassword <name>` clears its stored
+password while the server is stopped; the account chooses a new password on
+its next connection. See [account operations](USAGE.md#steamid-vs-account).
 
 ### Whitelist Management
 
