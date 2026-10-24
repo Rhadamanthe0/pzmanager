@@ -1,30 +1,11 @@
 #!/usr/bin/env bash
 # test_c5_whitelist.sh - rename/remove whitelist cohérents (C5).
 #
-# Couvre (manageWhitelist.sh : rename-account + remove-account uniquement) :
-#   (0) câblage statique : transactions uniques BEGIN IMMEDIATE/COMMIT via
-#       sqlite3 -bail + fichier SQL mktemp, verrou monde (acquire_world_lock,
-#       ordre WORLD -> SERVERCTL) + arrêt prouvé (assert_server_stopped_proven),
-#       prévalidation fail-closed (wl_sql_or_die, sans `|| echo 0`), garde
-#       orphelin NOT EXISTS intra-transaction, compensation documentée (2PC
-#       impossible en sqlite), aucun WARNING+continue ni DELETE unitaire en boucle.
-#   (1) rename vers login existant (whitelist) -> die, rien modifié (2 bases).
-#   (2) perso absent (whitelist seule, aucun networkPlayers pour old) -> OK,
-#       whitelist seule renommée, players.db inchangé.
-#   (3) whitelist absente (old inconnu) -> die, rien modifié.
-#   (4) plusieurs persos même user (2 lignes networkPlayers) -> tous renommés.
-#   (5) panne milieu (trigger ABORT sur players.db) -> die + COMPENSATION :
-#       whitelist restaurée vers old, aucun état partiel.
-#   (6) remove-account nominal + atomique : SteamID partagé conservé tant qu'un
-#       compte le porte, sid orphelin désautorisé, sid étranger intact ;
-#       trigger ABORT sur whitelist -> die, ROLLBACK, aucun partiel.
-#
-# Preuves réelles : vrai script manageWhitelist.sh, vraies bases SQLite
-# (fichiers), vrai flock via lib C1, vraies transactions. Seules parties
-# simulées (explicites) : systemctl via mock PATH (état inactive prouvé —
-# le chemin d'arrêt prouvé est celui de production) et .env stubé
-# (sauvegardé + restauré via trap). Isolé : XDG_RUNTIME_DIR + TMPDIR sandbox,
-# PZ_DB_PATH / PZ_SOURCE_DIR sandbox. Sans sqlite3/flock -> SKIP.
+# Vraies bases SQLite et verrous ; systemd simulé arrêté.
+# Vérifie collisions, personnage absent, personnages multiples, erreur de la
+# seconde mise à jour (rollback commun), suppressions atomiques, SID partagés,
+# refus de concurrence et de bus indisponible. Les tests crash/WAL/encodage
+# complémentaires vivent dans test_accounts_safety.py.
 set -euo pipefail
 
 ROOT="${PZ_TEST_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -80,7 +61,7 @@ chmod 0700 "${SANDBOX}/rt"
 export XDG_RUNTIME_DIR="${SANDBOX}/rt"
 export TMPDIR="${SANDBOX}/tmp"
 if ! [[ "${PZ_WORLD_LOCK_DEPTH:-0}" =~ ^[1-9][0-9]*$ ]] || [[ -z "${PZ_WORLD_LOCK_FD:-}" ]] \
-    || ! { : >&"${PZ_WORLD_LOCK_FD}" 2>/dev/null; }; then
+    || ! { : 1>&"${PZ_WORLD_LOCK_FD}" 2>/dev/null; }; then
     PZ_WORLD_LOCK_DEPTH=0; PZ_WORLD_LOCK_FD=""
     export PZ_WORLD_LOCK_DEPTH PZ_WORLD_LOCK_FD
 fi
@@ -194,51 +175,9 @@ no_tmp_left() {
 }
 
 # --- (0) câblage statique ------------------------------------------------------
-echo "== (0) câblage =="
-grep -q 'wl_sql_or_die' "$SCRIPT" \
-    && ok "lectures fail-closed via wl_sql_or_die" \
-    || ko "wl_sql_or_die absent"
-grep -q 'BEGIN IMMEDIATE' "$SCRIPT" && grep -q 'COMMIT' "$SCRIPT" \
-    && ok "transaction unique BEGIN IMMEDIATE ... COMMIT" \
-    || ko "transaction unique absente"
-grep -q 'sqlite3 -bail' "$SCRIPT" \
-    && ok "sqlite3 -bail (stop au 1er échec, pas de COMMIT partiel)" \
-    || ko "sqlite3 -bail absent"
-grep -q 'mktemp' "$SCRIPT" \
-    && ok "fichier SQL via mktemp" \
-    || ko "mktemp absent"
-grep -q 'acquire_world_lock' "$SCRIPT" \
-    && ok "verrou monde acquis (acquire_world_lock, ordre WORLD -> SERVERCTL)" \
-    || ko "acquire_world_lock absent"
-grep -q 'acquire_serverctl_lock_or_die' "$SCRIPT" \
-    && ok "verrou serverctl conservé" \
-    || ko "acquire_serverctl_lock_or_die absent"
-grep -q 'assert_server_stopped_proven' "$SCRIPT" \
-    && ok "arrêt prouvé (assert_server_stopped_proven, garde)" \
-    || ko "assert_server_stopped_proven absent"
-grep -qi 'compens' "$SCRIPT" && grep -q '2PC' "$SCRIPT" \
-    && ok "compensation documentée (2PC impossible en sqlite)" \
-    || ko "compensation / mention 2PC absente"
-grep -q 'NOT EXISTS' "$SCRIPT" \
-    && ok "garde orphelin NOT EXISTS intra-transaction (remove)" \
-    || ko "garde NOT EXISTS absente"
-if grep -q 'WARNING: échec' "$SCRIPT"; then
-    ko "WARNING+continue encore présent (non fail-closed)"
-else
-    ok "aucun WARNING+continue (fail-closed)"
-fi
-if grep -q 'DELETE FROM whitelist WHERE id = ' "$SCRIPT"; then
-    ko "ancienne boucle de DELETE unitaires encore présente"
-else
-    ok "plus de DELETE unitaire en boucle (transaction IN unique)"
-fi
-if grep -q 'UPDATE whitelist SET' "$SCRIPT" && grep -q 'UPDATE networkPlayers SET' "$SCRIPT"; then
-    ok "rename couvre whitelist + networkPlayers"
-else
-    ko "UPDATE rename incomplets"
-fi
+echo "== (0) transaction commune =="
+grep -q 'account_safety.py' "$SCRIPT" && ok "helper transaction commune câblé" || ko "helper absent"
 
-# --- (1) rename vers existant -> die sans modif ---------------------------------
 echo "== (1) rename vers existant =="
 fresh_case clash
 mk_world "1:alice:sid-alice" "2:bob:sid-bob"
@@ -327,7 +266,7 @@ P:2|alice2|char-2"
     || { ko "deux persos : players inattendu"; players_state | sed 's/^/  [db] /'; }
 no_tmp_left "deux-persos"
 
-# --- (5) panne milieu (trigger players) -> compensation -------------------------------
+# --- (5) panne milieu (trigger players) -> rollback commun -------------------------------
 echo "== (5) panne milieu =="
 fresh_case midfail
 mk_world "1:alice:sid-alice"
@@ -341,15 +280,15 @@ else
     ok "panne milieu : échec (exit $?)"
 fi
 [[ "$(world_state)" == "$before_w" ]] \
-    && ok "panne milieu : whitelist restaurée (compensation, aucun partiel)" \
+    && ok "panne milieu : whitelist restaurée (transaction commune, aucun partiel)" \
     || { ko "panne milieu : whitelist partielle !"; world_state | sed 's/^/  [db] /'; show_out; }
 [[ "$(players_state)" == "$before_p" ]] \
     && ok "panne milieu : players.db inchangé" \
     || { ko "panne milieu : players.db modifié"; show_out; }
-if grep -qi 'compensation\|restaurée' "${SANDBOX}/out.log"; then
-    ok "panne milieu : compensation annoncée"
+if grep -qi 'ROLLBACK\|transaction commune' "${SANDBOX}/out.log"; then
+    ok "panne milieu : rollback commun annoncé"
 else
-    ko "panne milieu : compensation non annoncée"; show_out
+    ko "panne milieu : rollback commun non annoncé"; show_out
 fi
 no_tmp_left "panne-milieu"
 

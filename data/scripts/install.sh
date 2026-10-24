@@ -14,7 +14,7 @@ readonly REPO_URL="https://github.com/Rhadamanthe0/pzmanager.git"
 readonly PZ_USER="${PZ_USER:-pzuser}"
 readonly PZ_HOME="/home/${PZ_USER}"
 readonly INSTALL_DIR="${PZ_HOME}/pzmanager"
-readonly TMP_DIR="/tmp/pzmanager-install"
+TMP_DIR=""
 # C15 : helpers root exécutés depuis un arbre root-owned (plus depuis
 # INSTALL_DIR chown PZ_USER). Renseigné par stage_root_helpers.
 readonly LIBEXEC_DIR="/usr/local/libexec/pzmanager"
@@ -52,34 +52,37 @@ check_dependencies() {
 
 clone_repo() {
     log "Cloning pzmanager..."
-    rm -rf "${TMP_DIR}"
+    TMP_DIR="$(mktemp -d /tmp/pzmanager-install-XXXXXXXX)"
+    trap '[[ -z "$TMP_DIR" || ! -d "$TMP_DIR" ]] || rm -rf -- "$TMP_DIR"' EXIT
     git clone --depth 1 "${REPO_URL}" "${TMP_DIR}"
 }
 
-# C15 : copie les helpers root (scripts install + libs) depuis une source
-# pristine (clone root, avant tout chown PZ_USER) vers LIBEXEC_DIR root-owned,
-# puis exécution depuis là. Les copies stagées sont root:root 0755/0644 :
-# PZ_USER ne peut plus les réécrire entre l'install et leur exécution en root.
-# Les libs stagées (common/env_parse/jdk_matrix) sont la copie pristine
-# root-owned du clone, pas l'arbre PZ_USER : le relatif install/../lib reste
-# valide et sûr. Échec (pas de droit, test) -> warning + fallback historique ;
-# configurationInitiale.sh refuse alors lui-même tout helper non root-owned
-# quand EUID==0 (fail-closed).
+# Le code privilégié conserve sa structure relative, indépendamment du home.
+# Aucun repli vers un arbre manager-owned n'est autorisé après le chown.
 stage_root_helpers() {
-    local src_root="$1"
-    local dst_install="${LIBEXEC_DIR}/install" dst_lib="${LIBEXEC_DIR}/lib"
-    if ! mkdir -p "$dst_install" "$dst_lib" 2>/dev/null; then
-        warn "libexec indisponible (${LIBEXEC_DIR}) : exécution depuis l'arbre d'installation (fallback)."
-        return 1
+    local src_root="$1" path="${LIBEXEC_DIR}"
+    while [[ "$path" != / ]]; do
+        if [[ -e "$path" || -L "$path" ]]; then
+            [[ ! -L "$path" && "$(stat -c %u "$path")" == 0 ]] \
+                || error "Chemin libexec non fiable : $path"
+            [[ $(( 8#$(stat -c %a "$path") & 0022 )) == 0 ]] \
+                || error "Chemin libexec modifiable par un tiers : $path"
+        fi
+        path="$(dirname "$path")"
+    done
+    if [[ -e "${LIBEXEC_DIR}/data" || -L "${LIBEXEC_DIR}/data" ]]; then
+        [[ -z "$(find "${LIBEXEC_DIR}/data" \( -type l -o ! -uid 0 -o -perm /0022 \) -print -quit)" ]] \
+            || error "Arbre libexec préexistant non fiable."
     fi
-    cp -p "${src_root}/data/scripts/install/setupSystem.sh" "${src_root}/data/scripts/install/configurationInitiale.sh" "$dst_install/" 2>/dev/null \
-        || { warn "stage helpers install impossible : fallback sur l'arbre d'installation."; return 1; }
-    cp -p "${src_root}/data/scripts/lib/common.sh" "${src_root}/data/scripts/lib/env_parse.sh" "${src_root}/data/scripts/lib/jdk_matrix.sh" "$dst_lib/" 2>/dev/null \
-        || { warn "stage libs impossible : fallback sur l'arbre d'installation."; return 1; }
-    chown -R root:root "${LIBEXEC_DIR}" 2>/dev/null || warn "chown root ${LIBEXEC_DIR} impossible (poursuite en fallback partiel)."
-    chmod 0755 "${LIBEXEC_DIR}" "$dst_install" "$dst_lib" 2>/dev/null || true
-    chmod 0755 "$dst_install/setupSystem.sh" "$dst_install/configurationInitiale.sh" 2>/dev/null || true
-    chmod 0644 "$dst_lib/common.sh" "$dst_lib/env_parse.sh" "$dst_lib/jdk_matrix.sh" 2>/dev/null || true
+    install -d -m 0755 "${LIBEXEC_DIR}/data"
+    # Les anciennes copies partielles ne sont plus exécutées.
+    cp -a "${src_root}/data/scripts" "${src_root}/data/setupTemplates" "${LIBEXEC_DIR}/data/"
+    chown -R root:root "${LIBEXEC_DIR}/data"
+    chmod -R u+rwX,go+rX,go-w "${LIBEXEC_DIR}/data"
+    if [[ -d "${LIBEXEC_DIR}/install" && ! -L "${LIBEXEC_DIR}/install" ]]; then
+        rm -rf -- "${LIBEXEC_DIR}/install"
+    fi
+    ln -sfn data/scripts/install "${LIBEXEC_DIR}/install"
     STAGED_ROOT_HELPERS=1
 }
 
@@ -89,11 +92,8 @@ run_setup() {
     # on le passe explicitement, sinon setupSystem.sh cherche dans un home pas
     # encore peuplé, ne trouve rien, et pose les règles UFW sur les ports codés en
     # dur en ignorant silencieusement PZ_PORT_* / PZ_PROMETHEUS_PORT.
-    if [[ -n "${STAGED_ROOT_HELPERS}" && -f "${LIBEXEC_DIR}/install/setupSystem.sh" ]]; then
-        bash "${LIBEXEC_DIR}/install/setupSystem.sh" "${PZ_USER}" "${TMP_DIR}/.env"
-    else
-        bash "${TMP_DIR}/data/scripts/install/setupSystem.sh" "${PZ_USER}" "${TMP_DIR}/.env"
-    fi
+    [[ -n "$STAGED_ROOT_HELPERS" ]] || error "Helpers root non stagés."
+    bash "${LIBEXEC_DIR}/install/setupSystem.sh" "${PZ_USER}" "${TMP_DIR}/.env"
 }
 
 configure_env() {
@@ -127,14 +127,8 @@ move_to_home() {
 
 run_initial_config() {
     log "Running initial configuration (this may take a while)..."
-    # C15 : jamais depuis INSTALL_DIR (chown PZ_USER par move_to_home) si le
-    # stage a réussi : exécute la copie root-owned de LIBEXEC_DIR.
-    if [[ -n "${STAGED_ROOT_HELPERS}" && -f "${LIBEXEC_DIR}/install/configurationInitiale.sh" ]]; then
-        bash "${LIBEXEC_DIR}/install/configurationInitiale.sh" zomboid --force
-    else
-        warn "helpers root non stagés : exécution depuis l'arbre PZ_USER (fallback)."
-        bash "${INSTALL_DIR}/data/scripts/install/configurationInitiale.sh" zomboid --force
-    fi
+    [[ -n "$STAGED_ROOT_HELPERS" ]] || error "Helpers root non stagés."
+    bash "${LIBEXEC_DIR}/install/configurationInitiale.sh" --manager-root "${INSTALL_DIR}" zomboid --force
 }
 
 print_success() {
@@ -172,13 +166,14 @@ main() {
     # avant move_to_home (dont le chown a besoin de l'utilisateur créé par
     # create_user).
     configure_env
-    # Stage AVANT run_setup depuis TMP_DIR pristine (avant tout chown) ; échec
-    # -> warning + fallback historique (voir stage_root_helpers).
-    stage_root_helpers "${TMP_DIR}" || true
+    # Stage obligatoire depuis le clone root privé, avant tout chown.
+    stage_root_helpers "${TMP_DIR}"
     run_setup
     move_to_home
     run_initial_config
     print_success
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

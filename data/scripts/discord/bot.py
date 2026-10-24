@@ -202,7 +202,7 @@ async def deliver(send, header: str, output: str, *, filename: str = "pzm-output
 _TERM_GRACE = 5.0
 
 
-async def _kill_tree(proc) -> None:
+async def _kill_tree(proc, communication):
     """Arrête le groupe de `proc`, y compris ses descendants encore actifs
     après la sortie du parent (lancé avec start_new_session=True)."""
     pgid = proc.pid  # start_new_session=True : PGID stable même si le parent sort
@@ -213,7 +213,7 @@ async def _kill_tree(proc) -> None:
     try:
         # wait() seul peut réussir dès la mort du parent et laisser un enfant
         # qui ignore TERM et garde stdout ouvert. Attend aussi la fermeture du pipe.
-        await asyncio.wait_for(proc.communicate(), timeout=_TERM_GRACE)
+        await asyncio.wait_for(asyncio.shield(communication), timeout=_TERM_GRACE)
     except asyncio.TimeoutError:
         pass
     # Toujours sonder le groupe : la sortie du parent ne prouve pas qu'un
@@ -222,7 +222,7 @@ async def _kill_tree(proc) -> None:
         os.killpg(pgid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):
         pass
-    await proc.communicate()
+    return await communication
 
 
 async def run_pzm(args: list[str]) -> tuple[int, str]:
@@ -239,13 +239,18 @@ async def run_pzm(args: list[str]) -> tuple[int, str]:
         cwd=PZ_MANAGER_DIR or None,
         start_new_session=True,
     )
+    # Une seule lecture du pipe, protégée de l'annulation de wait_for : une
+    # seconde communicate() perdrait les octets déjà consommés avant le délai.
+    communication = asyncio.create_task(proc.communicate())
     try:
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=CMD_TIMEOUT)
+        stdout, _ = await asyncio.wait_for(asyncio.shield(communication), timeout=CMD_TIMEOUT)
     except asyncio.TimeoutError:
-        await _kill_tree(proc)
-        return 124, f"⏱️ Commande interrompue après {CMD_TIMEOUT}s (timeout)."
+        stdout, _ = await _kill_tree(proc, communication)
+        partial = stdout.decode("utf-8", errors="replace")
+        return 124, (f"⏱️ Commande interrompue après {CMD_TIMEOUT}s (timeout). "
+                     "Sortie partielle ; les opérations déjà effectuées peuvent subsister.\n" + partial)
     except asyncio.CancelledError:
-        await _kill_tree(proc)
+        await _kill_tree(proc, communication)
         raise
     return proc.returncode, stdout.decode("utf-8", errors="replace")
 
@@ -701,6 +706,7 @@ class _Tail:
         self._path: Optional[str] = None
         self._offset = 0
         self._buffer = b""
+        self.available = False
 
     @property
     def path(self) -> Optional[str]:
@@ -719,8 +725,10 @@ class _Tail:
         return [ln.decode("utf-8", "replace") for ln in lines]
 
     def read(self) -> list[str]:
+        self.available = False
         newest = self._newest()
         if newest is None:
+            self._path = None
             return []
         if newest != self._path:               # boot ou rotation -> relire tout
             self._path, self._buffer = newest, b""
@@ -728,23 +736,26 @@ class _Tail:
                 with open(newest, "rb") as f:
                     data = f.read()
             except OSError:
-                data = b""
+                self._path = None
+                return []
+            self.available = True
             self._offset = len(data)
             return self._decode(data)
         try:
             fsize = os.path.getsize(self._path)
         except OSError:
+            self._path = None
             return []
         if fsize < self._offset:               # tronqué/remplacé en place
             self._offset, self._buffer = 0, b""
-        if fsize <= self._offset:
-            return []
         try:
             with open(self._path, "rb") as f:
                 f.seek(self._offset)
                 data = f.read()
         except OSError:
+            self._path = None
             return []
+        self.available = True
         self._offset += len(data)
         return self._decode(data)
 
@@ -1095,9 +1106,10 @@ def _ini_ints(path, keys):
 def _prom_val(line: str):
     """Dernier champ (valeur) d'une ligne exposition Prometheus, en float."""
     try:
-        return float(line.rsplit(" ", 1)[1])
+        value = float(line.rsplit(" ", 1)[1])
+        return value if 0 <= value < float("inf") else None
     except (ValueError, IndexError):
-        return 0.0
+        return None
 
 
 def _prom_snapshot():
@@ -1112,7 +1124,7 @@ def _prom_snapshot():
             text = r.read().decode("utf-8", "replace")
     except Exception:
         return None
-    out = {"send_c": 0.0, "recv_c": 0.0, "send_b": 0.0, "recv_b": 0.0,
+    out = {"send_c": None, "recv_c": None, "send_b": None, "recv_b": None,
            "fps": None, "ploss": None, "voip_s": None, "voip_r": None,
            # compteur reçu CUMULÉ par client : MaxPacketsPerSecond est un anti-flood
            # PAR CLIENT sur l'ENTRANT (PacketsCache.isLimitExceeded) -> on suit chaque
@@ -1121,18 +1133,21 @@ def _prom_snapshot():
     for line in text.splitlines():
         if not line or line[0] == "#":
             continue
+        value = _prom_val(line)
+        if value is None:
+            continue
         if line.startswith("packet_send_bytes_count"):
-            out["send_c"] += _prom_val(line)
+            out["send_c"] = (out["send_c"] or 0.0) + value
         elif line.startswith("packet_send_bytes_sum"):
-            out["send_b"] += _prom_val(line)
+            out["send_b"] = (out["send_b"] or 0.0) + value
         elif line.startswith("packet_receive_bytes_count"):
-            v = _prom_val(line)
-            out["recv_c"] += v
+            v = value
+            out["recv_c"] = (out["recv_c"] or 0.0) + v
             m = re.search(r'client="([^"]*)"', line)
             cl = m.group(1) if m else ""
             out["recv_by_client"][cl] = out["recv_by_client"].get(cl, 0.0) + v
         elif line.startswith("packet_receive_bytes_sum"):
-            out["recv_b"] += _prom_val(line)
+            out["recv_b"] = (out["recv_b"] or 0.0) + value
         elif line.startswith('performance{parameter="fps"}'):
             # B42 : ce compteur au nom historique fps expose la période du tick
             # en ms (PerformanceStatistic), pas sa fréquence.
@@ -1225,24 +1240,28 @@ def collect_stats(prev: dict) -> dict:
         pp, ppts = prev.get("prom_ctr"), prev.get("prom_ts")
         if pp and ppts is not None and now - ppts > 0:
             dt = now - ppts
-            s["game_net"] = {
-                "pps_sent": max(0.0, ps["send_c"] - pp[0]) / dt,
-                "pps_recv": max(0.0, ps["recv_c"] - pp[1]) / dt,
-                "kbs_sent": max(0.0, ps["send_b"] - pp[2]) / dt / 1024,
-                "kbs_recv": max(0.0, ps["recv_b"] - pp[3]) / dt / 1024,
-            }
-            # paquets/s ENTRANTS du client le plus actif (+ son nom) -> à comparer à
-            # MaxPacketsPerSecond (cap anti-flood par client). Un client absent du
-            # relevé précédent -> delta 0 (pas de faux pic à la connexion).
-            prc = prev.get("prom_rbc") or {}
-            best_cl, best_rate = None, 0.0
-            for cl, c in ps["recv_by_client"].items():
-                r = (c - prc.get(cl, c)) / dt
-                if r > best_rate:
-                    best_rate, best_cl = r, cl
-            s["game_net"]["recv_pps_max_client"] = best_rate
-            # client="" = trafic pré-auth/serveur, pas un joueur -> pas de nom affiché
-            s["game_net"]["recv_pps_max_name"] = best_cl or None
+            # Un delta exige deux observations du même compteur. L'absence
+            # d'une série ne vaut jamais zéro, même si les autres sont présentes.
+            rates = {}
+            for key, index, scale in (("pps_sent", 0, 1), ("pps_recv", 1, 1),
+                                      ("kbs_sent", 2, 1024), ("kbs_recv", 3, 1024)):
+                current = ps[("send_c", "recv_c", "send_b", "recv_b")[index]]
+                rates[key] = (max(0.0, current - pp[index]) / dt / scale
+                              if current is not None and pp[index] is not None else None)
+            if any(value is not None for value in rates.values()):
+                s["game_net"] = rates
+                # Un nouveau client n'a pas encore de référence ; attendre sa
+                # deuxième observation plutôt que publier un faux débit nul.
+                prc = prev.get("prom_rbc") or {}
+                best_cl, best_rate = None, None
+                for cl, count in ps["recv_by_client"].items():
+                    if cl not in prc:
+                        continue
+                    rate = max(0.0, count - prc[cl]) / dt
+                    if best_rate is None or rate > best_rate:
+                        best_rate, best_cl = rate, cl
+                rates["recv_pps_max_client"] = best_rate
+                rates["recv_pps_max_name"] = best_cl or None
         prev["prom_ctr"] = (ps["send_c"], ps["recv_c"], ps["send_b"], ps["recv_b"])
         prev["prom_rbc"] = ps["recv_by_client"]
         prev["prom_ts"] = now
@@ -1270,6 +1289,10 @@ def _online_players(prev: dict):
     # glob + max(getmtime) : les deux devaient rester d'accord, sans quoi le set
     # des connectés était vidé au mauvais cycle.
     lines = tail.read()
+    if not tail.available:
+        online.clear()
+        prev["user_path"] = None
+        return None
     if tail.path != prev["user_path"]:
         online.clear()
         prev["user_path"] = tail.path
@@ -1379,7 +1402,9 @@ def _monitoring_embed(s: dict) -> discord.Embed:
     # émis↑ / reçus↓, tous clients) ; repli sur la mesure NIC (proxy) sinon.
     gnet, net = s.get("game_net"), s.get("net")
     if gnet:
-        net_txt = f" · 📡 **{gnet['pps_sent']:.0f}**↑/**{gnet['pps_recv']:.0f}**↓ paq/s"
+        sent = f"{gnet['pps_sent']:.0f}" if gnet.get("pps_sent") is not None else "—"
+        received = f"{gnet['pps_recv']:.0f}" if gnet.get("pps_recv") is not None else "—"
+        net_txt = f" · 📡 **{sent}**↑/**{received}**↓ paq/s"
         # % du cap = client entrant le plus actif vs MaxPacketsPerSecond (par client).
         mc, max_pps = gnet.get("recv_pps_max_client"), s.get("max_pps")
         if mc is not None and max_pps:

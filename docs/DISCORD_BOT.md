@@ -89,8 +89,9 @@ export DISCORD_BOT_MONITORING_INTERVAL=60           # monitoring cadence (second
 pzm install discord
 ```
 
-This creates the Python venv (`data/scripts/discord/.venv`), installs `discord.py`,
-and enables/starts `pz-discord-bot.service`. It requires the `python3-venv`
+This creates the Python venv (`data/scripts/discord/.venv`), upgrades pip inside
+it, installs the dependencies declared in `requirements.txt`, and enables/starts
+`pz-discord-bot.service`. It requires the `python3-venv`
 package (already part of `pzm install system`; if missing, run
 `sudo apt install python3-venv` as root).
 
@@ -141,8 +142,9 @@ and wait until it is stopped, then repeat with `appliquer` true. Use `monde`
 when several multiplayer worlds exist. Restart with `/pzm server start` after
 success. Only the selected tiles, including all basement and upper levels,
 constructions and container contents, return to the snapshot. Neighbouring tiles
-in the same chunk are preserved. Partial chunks require a compatible JDK on the
-server; if native validation fails, the operation refuses before changing the world.
+in the same chunk are preserved. Every application requires a compatible JDK on
+the server; preview also needs it when dictionaries differ. Native validation
+failure refuses the operation before changing the world.
 
 See [the full restore procedure and limits](USAGE.md#restore-a-map-zone-build-42),
 including rollback and compatibility checks.

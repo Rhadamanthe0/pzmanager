@@ -35,12 +35,17 @@ class ReadyNotificationTests(unittest.TestCase):
         for name in ("writing_start_admission.py", "configureWritingTextOnly.py"):
             shutil.copy2(ROOT / "data/scripts/internal" / name, self.internal / name)
         shutil.copy2(ROOT / "data/scripts/lib/shared_memory_budget.py", self.lib / "shared_memory_budget.py")
+        for name in ('console_command.py', 'service_process.py'):
+            shutil.copy2(ROOT / 'data/scripts/lib' / name, self.lib / name)
         self.script.chmod(0o755)
         self.discord.chmod(0o755)
         common_source = (ROOT / "data/scripts/lib/common.sh").read_text()
         helper_start = common_source.index("private_state_path() {")
         helper_end = common_source.index("\n}\n", helper_start) + 2
         private_state_helper = common_source[helper_start:helper_end]
+        console_start = common_source.index('console_players_responded() {')
+        console_end = common_source.index('\n}\n', console_start) + 2
+        console_helper = common_source[console_start:console_end]
         (self.lib / "common.sh").write_text(
             'source_env() {\n'
             '  PZ_MANAGER_DIR="$MOCK_MANAGER_DIR"\n'
@@ -48,7 +53,7 @@ class ReadyNotificationTests(unittest.TestCase):
             '  DISCORD_WEBHOOK="$MOCK_DISCORD_WEBHOOK"\n'
             '  export PZ_MANAGER_DIR PZ_SERVICE_NAME DISCORD_WEBHOOK\n'
             '}\n'
-            + private_state_helper + "\n"
+            + private_state_helper + "\n" + console_helper + "\n"
         )
         (self.mockbin / "systemctl").write_text(
             '#!/usr/bin/env python3\n'
@@ -57,6 +62,8 @@ class ReadyNotificationTests(unittest.TestCase):
             'args = sys.argv[1:]\n'
             'if "-p" in args and "ExecMainStartTimestamp" in args:\n'
             '    print("Wed 2026-10-14 20:03:44 CEST")\n'
+            'elif "ActiveState,MainPID,InvocationID,ControlGroup" in args:\n'
+            '    print("ActiveState=active\\nMainPID=10\\nControlGroup=/fixture/zomboid.service\\nInvocationID=" + (base / "invocation").read_text().strip())\n'
             'elif "-p" in args and "InvocationID" in args and "--value" in args:\n'
             '    print((base / "invocation").read_text().strip())\n'
             'else:\n'
@@ -69,6 +76,14 @@ class ReadyNotificationTests(unittest.TestCase):
             'base = pathlib.Path(os.environ["MOCK_BASE"])\n'
             '(base / "journal.args").write_text(" ".join(sys.argv[1:]))\n'
             'mode = os.environ.get("MOCK_JOURNAL_MODE", "instant")\n'
+            'if "--follow" not in sys.argv and os.environ.get("MOCK_CONSOLE_MODE"):\n'
+            '    console = os.environ["MOCK_CONSOLE_MODE"]\n'
+            '    print(\'LOG : General f:0 st:123> command entered via server console (System.in): "players"\')\n'
+            '    if console in ("zero", "restart"): print("LOG : General f:0 st:124> Players connected (0):")\n'
+            '    if console == "players": print("Players connected (2):\\n-alice\\n-bob")\n'
+            '    if console == "lua": print("LOG : Lua f:0 st:124> Players connected (0):")\n'
+            '    if console == "restart": (base / "invocation").write_text("b"*32)\n'
+            '    sys.exit(0)\n'
             'if mode == "invocation_only":\n'
             '    boot = (base / "invocation").read_text().strip()\n'
             '    if "INVOCATION_ID=" + boot not in sys.argv[1:]: sys.exit(0)\n'
@@ -95,6 +110,7 @@ class ReadyNotificationTests(unittest.TestCase):
         self.env.update({
             "PATH": f'{self.mockbin}:{os.environ.get("PATH", "")}',
             "MOCK_BASE": str(self.root),
+            "PZ_MANAGER_ROOT": str(self.manager),
             "MOCK_MANAGER_DIR": str(self.manager),
             "MOCK_DISCORD_WEBHOOK": "https://discord.invalid/SECRET",
             "MOCK_SENT": str(self.sent),
@@ -113,6 +129,45 @@ class ReadyNotificationTests(unittest.TestCase):
 
     def sent_count(self):
         return len(self.sent.read_text().splitlines()) if self.sent.exists() else 0
+
+    def console_fixture(self, mode):
+        pipe = self.root / 'control'
+        os.mkfifo(pipe)
+        fd = os.open(pipe, os.O_RDWR | os.O_NONBLOCK)
+        self.addCleanup(os.close, fd)
+        env = dict(self.env, MOCK_JOURNAL_MODE='never', MOCK_CONSOLE_MODE=mode,
+                   PZ_CONTROL_PIPE=str(pipe), PZ_NOTIFY_READY_TIMEOUT='3')
+        return fd, env
+
+    def test_idle_zero_players_is_announced(self):
+        fd, env = self.console_fixture('zero')
+        result = self.run_ready(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.sent_count(), 1)
+        self.assertEqual(os.read(fd, 100), b'players\n')
+
+    def test_native_players_response_is_announced(self):
+        fd, env = self.console_fixture('players')
+        result = self.run_ready(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.sent_count(), 1)
+        self.assertEqual(os.read(fd, 100), b'players\n')
+
+    def test_console_echo_is_not_announced(self):
+        _, env = self.console_fixture('echo')
+        self.assertNotEqual(self.run_ready(env=env).returncode, 0)
+        self.assertEqual(self.sent_count(), 0)
+
+    def test_console_lua_lookalike_is_not_announced(self):
+        _, env = self.console_fixture('lua')
+        self.assertNotEqual(self.run_ready(env=env).returncode, 0)
+        self.assertEqual(self.sent_count(), 0)
+
+    def test_console_replaced_invocation_is_not_announced(self):
+        _, env = self.console_fixture('restart')
+        result = self.run_ready(env=env)
+        self.assertEqual(self.sent_count(), 0, result.stdout + result.stderr)
+        self.assertEqual((self.root / 'invocation').read_text(), BOOT_B)
 
     def test_ready_frame_announced_once(self):
         result = self.run_ready()

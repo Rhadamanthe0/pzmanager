@@ -135,6 +135,7 @@ def digest(path):
 
 def tree_digest(root):
     root=Path(root)
+    if root.is_symlink(): raise ValueError('Transaction tree root symlink refused')
     if not root.exists(): return None
     fd,_=open_root(root);os.close(fd)
     entries=[]
@@ -248,13 +249,18 @@ def finish(world,token,state):
 
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('action',choices=['init','check','begin','finish'])
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('action',choices=['init','check','begin','finish','sync'])
     p.add_argument('--world',required=True);p.add_argument('--kind');p.add_argument('--recovery');p.add_argument('--after-tree')
-    p.add_argument('--directory',action='append');p.add_argument('--token');p.add_argument('--state',choices=sorted(TERMINAL));a=p.parse_args()
+    p.add_argument('--directory',action='append');p.add_argument('--directory-only',action='store_true');p.add_argument('--token');p.add_argument('--state',choices=sorted(TERMINAL));a=p.parse_args()
     try:
         if a.action=='init':
             _,fd=directory(a.world,True);os.close(fd)
         elif a.action=='check':check_clean(a.world,legacy=True)
+        elif a.action=='sync':
+            # Internal backup boundary: recursive contents before publication,
+            # directory entries only after rename, without rescanning old backups.
+            root=Path(os.path.abspath(a.world));fd,_=open_root(root);os.close(fd)
+            sync_world(root,[] if a.directory_only else None)
         elif a.action=='begin':
             if not all((a.kind,a.recovery,a.after_tree)):raise ValueError('Missing transaction plan')
             print(begin(a.world,a.kind,a.recovery,after_tree=a.after_tree,trees=a.directory))

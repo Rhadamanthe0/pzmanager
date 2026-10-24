@@ -464,10 +464,12 @@ wait_for_server_ready() {
     local since_ts since_epoch
     since_ts="$(systemctl --user show "${PZ_SERVICE_NAME}" -p ActiveEnterTimestamp --value 2>/dev/null)"
     since_epoch="$(date -d "$since_ts" +%s 2>/dev/null || echo 0)"
-    # Si l'horodatage de boot est illisible, on ne peut pas cibler le boot courant
-    # sans risquer de matcher un marqueur ancien -> on dégrade au comportement
-    # historique (pas d'attente) plutôt que de bloquer ou de fausser la détection.
-    (( since_epoch > 0 )) || return 0
+    # Sans horodatage exploitable, aucune ligne du journal ne prouve le boot
+    # courant. Une absence de preuve ne doit jamais autoriser un arrêt.
+    if [[ -z "$since_ts" ]] || (( since_epoch <= 0 )); then
+        echo "AVERTISSEMENT : horodatage du boot illisible ; disponibilité non prouvée." >&2
+        return 1
+    fi
 
     # Feedback : le chemin rapide (marqueur déjà présent) reste MUET. On n'affiche
     # quelque chose que si on doit réellement patienter, pour qu'un stop/restart
@@ -607,7 +609,7 @@ private_state_path() {
 # les numéros 200/201 étaient écrits en clair dans trois fichiers, et un appelant
 # qui devinait « 200 » se retrouvait à déverrouiller dans le vide le jour où il
 # changeait (la maintenance suivante se croyait alors déjà en cours et s'auto-ignorait).
-readonly MAINTENANCE_LOCK_FILE="/tmp/pzmanager-maintenance-$(id -un).lock"
+MAINTENANCE_LOCK_FILE=""
 MAINTENANCE_LOCK_FD=""
 
 # Verrou de cycle de vie partagé par les commandes `pzm server` et les écritures
@@ -692,7 +694,12 @@ acquire_serverctl_lock_or_die() {
 # Usage: try_acquire_maintenance_lock [lock_file]
 # Returns: 0 si acquis, 1 s'il est déjà tenu.
 try_acquire_maintenance_lock() {
-    try_lock "${1:-$MAINTENANCE_LOCK_FILE}" MAINTENANCE_LOCK_FD
+    if [[ -n "${1:-}" ]]; then
+        MAINTENANCE_LOCK_FILE="$1"
+    else
+        MAINTENANCE_LOCK_FILE="$(private_state_path maintenance.lock)" || return 1
+    fi
+    try_lock "$MAINTENANCE_LOCK_FILE" MAINTENANCE_LOCK_FD
 }
 
 # Libère le verrou pris par try_acquire_maintenance_lock. Passe par ici plutôt que

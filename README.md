@@ -10,7 +10,7 @@
 
 - **Simple CLI** - `pzm server start`, `pzm server stop`, `pzm backup create`...
 - **Auto-updates** - Detects mod and server updates every 5 min, triggers maintenance automatically
-- **Auto-backups** - Hourly incremental snapshots with GFS retention (hourly for 24h, then 6-hourly for 7d, then daily for 30d) + off-site ZIPs
+- **Auto-backups** - Hourly incremental snapshots with [GFS retention](docs/CONFIGURATION.md#backups) + off-site ZIPs
 - **Local map recovery** - Restore constructions in a rectangle from a snapshot, with preview and automatic rollback on failure (`pzm backup restore-zone`)
 - **Auto-maintenance** - Daily system/server updates at 4:30 AM
 - **Adaptive memory restart** - Requests a restart at 18 GiB resident service RAM or near-full heap; heap capped at 16 GiB within a 20 GiB service budget

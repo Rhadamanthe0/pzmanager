@@ -28,7 +28,8 @@ class ServerReadiness(unittest.TestCase):
 root=pathlib.Path(os.environ['FIXTURE_ROOT']); args=sys.argv[1:]
 with (root/'calls').open('a') as f: f.write('systemctl '+repr(args)+'\\n')
 if 'is-active' in args: print('active')
-elif 'ActiveEnterTimestamp' in args: print('2026-10-24 05:23:45 UTC')
+elif 'ActiveEnterTimestamp' in args:
+ print({'bad-timestamp':'unreadable', 'empty-timestamp':''}.get(os.environ['FIXTURE_MODE'], '2026-10-24 05:23:45 UTC'))
 else:
  p=root/'identity-count'; n=int(p.read_text())+1 if p.exists() else 1; p.write_text(str(n))
  if os.environ['FIXTURE_MODE']=='error': sys.exit(1)
@@ -69,13 +70,24 @@ else:
         with self.assertRaises(BlockingIOError):
             os.read(self.fd, 100)
 
+    def test_unreadable_boot_timestamp_does_not_prove_readiness(self):
+        for mode in ('bad-timestamp', 'empty-timestamp'):
+            with self.subTest(mode=mode):
+                result = self.run_ready(mode)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn('horodatage', result.stderr)
+        self.assertFalse(self.count.exists())
+        self.assertNotIn('journalctl', self.calls.read_text())
+
     def test_idle_zero_players_is_ready(self):
-        result = self.run_ready('zero')
+        # Les sous-processus console et date +%s partagent le budget : trois
+        # secondes évitent qu'une frontière de seconde épuise le cas positif.
+        result = self.run_ready('zero', timeout=3)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(os.read(self.fd, 100), b'players\n')
 
     def test_native_positive_players_is_ready(self):
-        result = self.run_ready('players')
+        result = self.run_ready('players', timeout=3)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(os.read(self.fd, 100), b'players\n')
 

@@ -161,6 +161,17 @@ class C10BotTests(unittest.TestCase):
             asyncio.run(asyncio.sleep(0.1))
         self.fail(f"process {pid} toujours vivant (fuite du groupe)")
 
+    def test_timeout_preserves_output_already_read_from_real_child(self):
+        fake = self.root / 'pzm-partial'
+        fake.write_text('#!/usr/bin/env python3\nimport time\nprint("partial-sentinel", flush=True)\ntime.sleep(60)\n')
+        fake.chmod(0o700)
+        bot.PZM = str(fake)
+        bot.CMD_TIMEOUT = 1
+        code, output = asyncio.run(bot.run_pzm([]))
+        self.assertEqual(code, 124)
+        self.assertIn('partial-sentinel', output)
+        self.assertIn('partielle', output)
+
     def test_timeout_kills_group(self):
         fake = self.root / "pzm-hang"
         fake.write_text(HANG_PY)

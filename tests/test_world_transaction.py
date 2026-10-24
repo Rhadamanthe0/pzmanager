@@ -90,6 +90,23 @@ class WorldTransaction(unittest.TestCase):
         self.assertEqual((self.world/'a').read_bytes(),b'old-a')
         self.assertEqual((self.recovery/'Saves/old').read_bytes(),b'old')
 
+    def test_dangling_selected_root_cannot_complete_absent_reversion(self):
+        staged=self.root/'staged';(staged/'Lua').mkdir(parents=True)
+        token=txn.begin(self.world,'full',self.recovery,after_tree=staged,trees=['Lua'])
+        (self.world/'Lua').symlink_to(self.root/'absent-target',target_is_directory=True)
+        with self.assertRaisesRegex(ValueError,'symlink'):
+            txn.finish(self.world,token,'reverted')
+        record=json.loads((txn.location(self.world)[1]/(token+'.json')).read_text())
+        self.assertEqual(record['state'],'prepared')
+        with self.assertRaisesRegex(ValueError,'unfinished'):txn.check_clean(self.world)
+
+    def test_internal_symlinks_remain_part_of_tree_fingerprint(self):
+        directory=self.world/'Lua';directory.mkdir()
+        link=directory/'cache';link.symlink_to(self.root/'absent-target')
+        before=txn.tree_digest(directory)
+        link.unlink();link.symlink_to(self.root/'another-target')
+        self.assertNotEqual(txn.tree_digest(directory),before)
+
     def test_directory_plan_refuses_unplanned_paths_and_mixed_record(self):
         for paths in (['../escape'],['Saves','Saves'],[],['Logs']):
             with self.subTest(paths=paths):

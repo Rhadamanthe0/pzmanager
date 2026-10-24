@@ -113,18 +113,34 @@ acquire_world_lock() {
     local mode="--required" lock_file fd
     if [[ "${1:-}" == "--try" || "${1:-}" == "--required" ]]; then mode="$1"; shift; fi
 
-    # Participation (même arbre, verrou déjà détenu, fd hérité encore ouvert).
-    if [[ "${PZ_WORLD_LOCK_DEPTH:-0}" =~ ^[1-9][0-9]*$ ]] && [[ -n "${PZ_WORLD_LOCK_FD:-}" ]] \
-        && { : >&"${PZ_WORLD_LOCK_FD}" 2>/dev/null; }; then
-        PZ_WORLD_LOCK_DEPTH=$(( PZ_WORLD_LOCK_DEPTH + 1 ))
-        export PZ_WORLD_LOCK_DEPTH
-        return 0
-    fi
-
     if ! lock_file="$(world_lock_path)"; then
         [[ "$mode" == "--try" ]] || echo "ERREUR: chemin du verrou monde non sûr ou inaccessible." >&2
         return 1
     fi
+
+    # L'environnement annonce une participation, mais ne prouve ni l'inode ni
+    # l'OFD verrouillé. fdinfo décrit le verrou porté par CE descripteur, même
+    # après la mort du processus flock(1) qui l'a acquis. Ne jamais retenter
+    # flock ici : cela transformerait un FD ouvert sans verrou en preuve.
+    if [[ "${PZ_WORLD_LOCK_DEPTH:-0}" != 0 || -n "${PZ_WORLD_LOCK_FD:-}" ]]; then
+        local line held=0
+        local exclusive='^lock:[[:space:]]+[0-9]+:[[:space:]]+FLOCK[[:space:]]+ADVISORY[[:space:]]+WRITE[[:space:]]'
+        if [[ "${PZ_WORLD_LOCK_DEPTH:-}" =~ ^[1-9][0-9]*$ &&
+              "${PZ_WORLD_LOCK_FD:-}" =~ ^[0-9]+$ &&
+              "$lock_file" -ef "/proc/self/fd/${PZ_WORLD_LOCK_FD}" ]]; then
+            while IFS= read -r line; do
+                if [[ "$line" =~ $exclusive ]]; then held=1; break; fi
+            done 2>/dev/null < "/proc/self/fdinfo/${PZ_WORLD_LOCK_FD}" || held=0
+        fi
+        if (( held )); then
+            PZ_WORLD_LOCK_DEPTH=$(( PZ_WORLD_LOCK_DEPTH + 1 ))
+            export PZ_WORLD_LOCK_DEPTH
+            return 0
+        fi
+        [[ "$mode" == "--try" ]] || echo "ERREUR: réentrance du verrou monde non prouvée." >&2
+        return 1
+    fi
+
     if ! exec {fd}>"$lock_file"; then
         [[ "$mode" == "--try" ]] || echo "ERREUR: impossible d'ouvrir le verrou monde (${lock_file})" >&2
         return 1
