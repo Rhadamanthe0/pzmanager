@@ -395,8 +395,7 @@ die_server_active() {
 Arrête-le puis relance la commande :  pzm server stop 2m --reason \"${context}\""
 }
 
-# Marqueur journald de fin d'initialisation Lua. B42 n'imprime plus
-# "*** SERVER STARTED ****" (disparu vers la 42.x de juin 2026).
+# Marqueur journald de fin d'initialisation Lua, antérieur à la boucle de jeu.
 #
 # ⚠️ Il est émis à `f:0`, donc AVANT le premier tour de boucle : il ne prouve pas
 # à lui seul qu'un `quit` est sûr. Il était présent dès 13:32:13 le 02/09/2026
@@ -406,22 +405,11 @@ Arrête-le puis relance la commande :  pzm server stop 2m --reason \"${context}\
 #
 readonly SERVER_READY_MARKER="LuaNet: Initialization [DONE]"
 
-# Preuve que la boucle de jeu du boot COURANT tourne : le compteur de frames que
-# le jeu préfixe à chaque ligne de log. Il reste à `f:0` pendant tout le
-# chargement et ne passe à `f:1` qu'au premier tour de boucle. C'est le seul
-# signal qui distingue « chargé » de « en train de charger ».
-#
-# `-n` lit le journal à l'envers : le coût ne dépend pas de l'uptime, ce qui
-# permet de supprimer l'ancien raccourci « actif depuis > 240 s donc forcément
-# booté ». Cette inférence était fausse — le 02/09 l'arrêt est parti après 829 s
-# sur un serveur qui n'avait jamais démarré sa boucle — et elle l'est d'autant
-# plus que les boots sains vont ici de 79 s à 44 min (les longs suivent une mise
-# à jour SteamCMD).
-#
-# Retour : 0 = boucle démarrée, 1 = encore en boot, 2 = indéterminé (aucune ligne
-# horodatée `f:` dans la fenêtre — l'appelant retombe sur le marqueur Lua).
-# grep -c plutôt que grep -q : -q sort à la 1re occurrence et peut SIGPIPE
-# journalctl, ce qui sous `set -o pipefail` fausserait le test.
+# Une frame positive du boot courant prouve que la simulation a démarré.
+# L'inverse est faux : le log utilise IsoWorld.getFrameNo(), distinct du compteur
+# de la boucle serveur. Un serveur vide sain peut rester à f:0 (24/10/2026).
+# Retour : 0 = frame positive, 1 = f:0 seulement, 2 = aucune frame exploitable.
+# Dans les deux derniers cas, wait_for_server_ready sonde la vraie console.
 game_loop_started() {
     local since_epoch="$1" lines
     lines="$(journalctl --user -u "${PZ_SERVICE_NAME}" --since "@${since_epoch}" \
@@ -441,6 +429,21 @@ marker_seen_since() {
         --grep 'LuaNet: Initialization' -n 1 --no-pager 2>/dev/null \
         | grep -cF "$SERVER_READY_MARKER" || true)"
     (( hits > 0 ))
+}
+
+# `players` est exécuté dans la boucle principale, après refreshAnimSets.
+# Son résultat natif (même zéro joueur), contrairement à l'écho du thread console,
+# prouve donc la fin du chargement. Le transport lie réponse et invocation et
+# refuse un changement d'identité. Ne jamais réutiliser une réponse ancienne.
+console_players_responded() {
+    local budget="$1" output header
+    [[ -n "${PZ_CONTROL_PIPE:-}" ]] || return 1
+    output="$(timeout --kill-after=1 "${budget}s" python3 \
+        "${PZ_MANAGER_ROOT}/data/scripts/lib/console_command.py" \
+        --unit "${PZ_SERVICE_NAME}" --pipe "${PZ_CONTROL_PIPE}" \
+        --write-timeout "$budget" --output-timeout "$budget" -- players 2>/dev/null)" || return 1
+    header="${output%%$'\n'*}"
+    [[ "$header" =~ ^Players\ connected\ \([0-9]+\):$ ]]
 }
 
 # Attend que le serveur ait FINI de booter (map chargée) avant de rendre la main.
@@ -490,22 +493,21 @@ wait_for_server_ready() {
             return 0
         fi
 
-        # probe == 2 : aucune ligne `f:` dans la fenêtre (log inhabituellement
-        # muet). On retombe alors sur le marqueur Lua, prématuré mais meilleur que
-        # rien. Sur probe == 1 (f:0 vu), le marqueur ne prouve pas que la boucle a
-        # démarré. Le nombre instantané de joueurs ne change pas cette conclusion :
-        # un boot bloqué peut être vide ou le devenir après une déconnexion.
-        if (( probe == 2 )); then
-            # marker_seen_since : filtrage par journald. L'ancienne forme
-            # `--since @boot -n 2000 | grep` ne trouvait plus rien dès que le
-            # serveur avait écrit plus de 2000 lignes depuis le marqueur — celui-ci
-            # tombe au DÉBUT du boot et `-n` garde les DERNIÈRES lignes (constaté
-            # ici après 4 h à f:0 et 8 819 lignes : le repli ne s'armait jamais).
-            if marker_seen_since "$since_epoch"; then
-                $announced && echo "Boot du serveur terminé — poursuite de l'opération."
-                return 0
-            fi
+        # Ni f:0, ni LuaNet/SERVER STARTED, ni un écho FIFO ne prouvent que
+        # l'initialisation est finie. Une commande inoffensive exécutée par la
+        # boucle lève cette ambiguïté, sans arrêter ni sauvegarder le monde.
+        elapsed=$(( $(date +%s) - start ))
+        local remaining=$(( timeout - elapsed )) budget
+        (( remaining > 0 )) || break
+        budget=$remaining
+        (( budget <= 8 )) || budget=8
+        if console_players_responded "$budget"; then
+            $announced && echo "La boucle de jeu répond — poursuite de l'opération."
+            return 0
         fi
+        elapsed=$(( $(date +%s) - start ))
+        remaining=$(( timeout - elapsed ))
+        (( remaining > 0 )) || break
         if ! $announced; then
             echo "Le serveur est encore en train de booter (chargement de la map) ;"
             echo "attente de la fin du boot avant d'agir (évite le crash-loop B42, max ${timeout}s)..."
@@ -515,7 +517,7 @@ wait_for_server_ready() {
             echo "  ... toujours en attente de la fin du boot (${elapsed}s / ${timeout}s)"
             last_notice=$elapsed
         fi
-        sleep 3
+        if (( remaining < 3 )); then sleep "$remaining"; else sleep 3; fi
         elapsed=$(( $(date +%s) - start ))
     done
     echo "AVERTISSEMENT : fin de boot toujours non signalée après ${timeout}s." >&2

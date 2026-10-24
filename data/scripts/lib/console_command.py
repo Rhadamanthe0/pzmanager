@@ -49,12 +49,14 @@ def response(text, command):
         # Un message Lua ressemblant au statut Workshop n'est pas son résultat.
         if command == "checkModsNeedUpdate" and channel is not None and (level != 'LOG' or channel != 'Mod'):
             continue
+        if command == "players" and channel is not None and (level != 'LOG' or channel != 'General'):
+            continue
         if body.strip():
             lines.append(body)
     if command == "players":
         # Une ligne de jeu intercalée ne constitue pas une réponse au comptage.
         start = next((i for i, line in enumerate(lines)
-                      if re.search(r"Players connected \([0-9]+\):", line)), None)
+                      if re.fullmatch(r"Players connected \([0-9]+\):", line)), None)
         if start is None:
             return ""
         lines = lines[start:]

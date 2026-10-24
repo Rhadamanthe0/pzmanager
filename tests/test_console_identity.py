@@ -27,6 +27,17 @@ class Console(unittest.TestCase):
         self.assertEqual(console.response(ECHO.replace('"players"', '"servermsg players"') + 'Message sent.\n', 'players'), '')
         self.assertEqual(console.response(ECHO + 'unrelated game tick\n', 'players'), '')
 
+    def test_players_result_must_be_a_native_exact_header(self):
+        for false in ['LOG : Lua f:0 st:123> Players connected (0):',
+                      'WARN : General f:0 st:123> Players connected (0):',
+                      'Lua unrelated: Players connected (0):',
+                      'Players connected (0): unrelated suffix',
+                      'not Players connected (0):']:
+            with self.subTest(false=false):
+                self.assertEqual(console.response(ECHO + false + '\n', 'players'), '')
+        self.assertEqual(console.response(ECHO + 'Players connected (0):\n', 'players'),
+                         'Players connected (0):')
+
     def test_next_command_does_not_supply_a_response(self):
         text = ECHO + ECHO.replace('"players"', '"save"') + 'Players connected (9):\n'
         self.assertEqual(console.response(text, 'players'), '')
