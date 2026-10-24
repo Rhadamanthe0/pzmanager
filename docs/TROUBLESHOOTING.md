@@ -137,45 +137,37 @@ and logs; a dead console shows an idle process writing nothing.
 
 ### Third case: the server never finished booting
 
-Before concluding "the console died", check the **frame counter** `f:` that
-prefixes every game log line. It stays at `f:0` for the whole startup and only
-reaches `f:1` when the game loop actually begins:
+A positive log frame `f:` proves that the simulation has started. Its absence
+is inconclusive: a healthy empty server can remain at `f:0` for hours. On
+2026-10-24 this made `pz-modcheck.service` fail every five minutes: the mod
+update was detected, but the restart guard kept waiting for a positive frame.
+
+The log counter comes from `IsoWorld.getFrameNo()`, while the dedicated server
+has a separate main-loop counter. A Lua initialization marker, the native
+`*** SERVER STARTED ****` message, or a console command echo is also insufficient:
+they can appear before initialization finishes. Zero players alone cannot
+separate an idle server from a stuck boot.
+
+Use a harmless console request through the normal transport:
 
 ```bash
-# Did this session ever reach its first frame?
-journalctl --user -u zomboid.service --since "<Started>" | grep -m1 'f:1 st:'
+./pzm rcon players
 ```
 
-No `f:1` means the game loop never started — the server was still loading, and a
-`quit` sent then cannot be executed no matter how long you wait. The startup
-phase that immediately precedes `f:1` is a burst of
-`SpriteConfig.initObjectInfo` lines; if the session has none, it never got that
-far. This is what actually happened on 2026-09-02
-(see [INCIDENTS.md](INCIDENTS.md#2026-09-02--a-stop-that-could-not-be-executed)).
+A native `Players connected (0):` response is valid evidence too. The server
+executes `players` in its main loop, after animation-set initialization. The
+transport associates the exact command echo and its response with the current
+systemd invocation, and rejects an invocation change. An echo without the native
+result, a Lua/chat message resembling the result, or a failed request proves
+nothing. `wait_for_server_ready` therefore accepts either a positive frame or
+this fresh native response; otherwise it continues waiting and refuses the stop
+at its deadline.
 
-**Check the player count before concluding.** The frame counter only moves while
-someone is connected: an empty server sits at `f:0` for as long as it stays empty
-(measured 2026-09-04: 4 h, 8 819 lines, all `f:0`, on a perfectly healthy
-server). So `f:0` alone proves nothing —
-
-```bash
-curl -s "http://127.0.0.1:${PZ_PROMETHEUS_PORT}/metrics" | grep '^game{parameter="players"}'
-```
-
-`f:0` **with players connected** is strong evidence of a stuck boot. With zero
-players it is ambiguous: the server may be idle, but it may also be stuck before
-anyone connects or after players disconnect. The Lua marker does not resolve
-that ambiguity because it is emitted before the first frame, including on a
-known stuck boot.
-
-**Do not add a boot-duration timer for this.** Healthy boots on this machine
-range from **79 s to 44 min** — the long ones follow a SteamCMD update, and they
-are indistinguishable from a hung one by duration alone. What *does* separate
-them is the console: across a healthy 44-minute boot the game acknowledged
-**every one** of `pz-modcheck`'s nine probes, while the hung boot answered once
-and then went silent. Console silence, not elapsed time, is the signal — and it
-is already covered by the alert described below, which is not gated on the
-server being ready.
+**Do not infer readiness from boot duration.** Healthy boots on this machine
+range from **79 s to 44 min**. Preserve the refusal to stop when the main loop
+has not been demonstrated; a longer wait does not make a forced stop safe.
+The historical stuck boot of 2026-09-02 is described in
+[INCIDENTS.md](INCIDENTS.md#2026-09-02--a-stop-that-could-not-be-executed).
 
 ### A mute console and a frozen game loop are not the same failure
 
