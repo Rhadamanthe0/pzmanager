@@ -75,6 +75,8 @@ fi
 # La suite exige la fonction réelle.
 # shellcheck disable=SC1090
 source "${ROOT}/data/scripts/lib/common.sh"
+[[ ! -e "${SANDBOX_RUN}/pzmanager" ]] &&
+    ok "sourçage : aucun répertoire ni verrou acquis" || ko "sourçage : état privé créé"
 
 # --- (2) runtime privé ----------------------------------------------------------
 export XDG_RUNTIME_DIR="$SANDBOX_RUN"
@@ -89,6 +91,48 @@ if [[ "$(stat -c %a "${XDG_RUNTIME_DIR}/pzmanager" 2>/dev/null)" == "700" ]]; th
     ok "runtime : dossier en 0700"
 else
     ko "runtime : dossier absent ou non-0700"
+fi
+
+# --- Maintenance : acquisition privée tardive et prépositions adverses ---------
+MAINT_EXPECTED="${XDG_RUNTIME_DIR}/pzmanager/maintenance.lock"
+if try_acquire_maintenance_lock; then
+    if [[ "$MAINTENANCE_LOCK_FILE" == "$MAINT_EXPECTED" ]] &&
+       ! flock -n "$MAINT_EXPECTED" true; then
+        ok "maintenance : exclusion sur le verrou privé"
+    else
+        ko "maintenance : verrou absent du répertoire privé"
+    fi
+    release_maintenance_lock
+    if [[ -f "$MAINT_EXPECTED" ]] && flock -n "$MAINT_EXPECTED" true; then
+        ok "maintenance : inode conservé et déverrouillé"
+    else
+        ko "maintenance : inode supprimé ou encore verrouillé"
+    fi
+else
+    ko "maintenance : acquisition nominale refusée"
+fi
+# Retirer seulement l'ancien verrou unique de cette fixture après sa libération.
+legacy="/tmp/pzmanager-maintenance-${PRIVATE_STATE_TEST_USER}.lock"
+[[ ! -f "$legacy" || -L "$legacy" || ! -O "$legacy" ]] || rm -f -- "$legacy"
+rm -f -- "$MAINT_EXPECTED"
+printf 'intact\n' > "${SANDBOX}/maintenance-target"
+ln -s "${SANDBOX}/maintenance-target" "$MAINT_EXPECTED"
+if try_acquire_maintenance_lock; then
+    ko "maintenance : verrou symbolique accepté"
+    release_maintenance_lock
+else
+    ok "maintenance : verrou symbolique refusé"
+fi
+[[ "$(cat "${SANDBOX}/maintenance-target")" == intact ]] &&
+    ok "maintenance : cible adverse intacte" || ko "maintenance : cible adverse altérée"
+rm -f -- "$MAINT_EXPECTED"
+[[ ! -f "$legacy" || -L "$legacy" || ! -O "$legacy" ]] || rm -f -- "$legacy"
+if try_acquire_maintenance_lock "${SANDBOX}/explicit.lock"; then
+    ! flock -n "${SANDBOX}/explicit.lock" true &&
+        ok "maintenance : argument explicite conservé" || ko "maintenance : argument explicite ignoré"
+    release_maintenance_lock
+else
+    ko "maintenance : chemin explicite refusé"
 fi
 
 # --- (3) repli /tmp 0700 réservé exclusivement au test ---------------------------

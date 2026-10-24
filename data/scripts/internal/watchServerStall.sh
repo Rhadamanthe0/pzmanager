@@ -268,6 +268,20 @@ if (( strikes > STALL_SAMPLES )); then
     exit 0
 fi
 
+# Une opération monde en cours diffère le diagnostic et le restart. Réarmer
+# le seuil pour le prochain relevé : sinon strikes > STALL_SAMPLES empêchait
+# toute nouvelle tentative après la libération. Ne pas capturer inutilement
+# avant ce refus ; le mode diagnostic seul reste utilisable sans WORLD.
+if [[ "${STALL_AUTO_RESTART:-1}" == 1 ]] && declare -F acquire_world_lock >/dev/null 2>&1; then
+    if ! acquire_world_lock --try; then
+        log "stallwatch: verrou monde occupé — diagnostic et SIGKILL différés."
+        write_state "$pid" "$frame" "$stamp" 0
+        exit 0
+    fi
+fi
+# Le FD reste hérité par le restart enfant ; l'identité sera revérifiée après
+# les captures et juste avant SIGKILL pour ne jamais tuer un nouveau boot.
+
 ts="$(date +%Y-%m-%d_%Hh%Mm%Ss)"
 out="${LOG_ZOMBOID_DIR}/stall_${ts}.txt"
 log "stallwatch: GEL DÉTECTÉ (pid ${pid}, ${clients} client(s), frame figée à f:${frame}) — capture -> ${out}"
@@ -396,17 +410,7 @@ fi
 # supplémentaire : la boucle empêche déjà toute sauvegarde.
 log "stallwatch: SIGKILL immédiat (le quit ne peut pas aboutir sur un thread bloqué)."
 
-# C13 : revérifier l'invocation diagnostiquée juste avant de tuer.
-# --try (jamais bloquant) : si le monde est déjà opéré (backup, maintenance,
-# restart...), on abandonne plutôt que d'attendre ou de doubler l'opération.
-# Le verrou est conservé jusqu'à la fin (relâché par le noyau à la sortie) :
-# le `pzm server restart` enfant y participe par héritage (PZ_WORLD_LOCK_DEPTH).
-if declare -F acquire_world_lock >/dev/null 2>&1; then
-    if ! acquire_world_lock --try; then
-        log "stallwatch: verrou monde occupé — abandon du SIGKILL (une opération monde est déjà en cours)."
-        exit 0
-    fi
-fi
+# C13 : revérifier sous WORLD l'identité diagnostiquée juste avant de tuer.
 read_service_identity
 if [[ -n "$DIAG_INV" && -n "$REQ_INVOCATION" ]]; then
     if [[ "$DIAG_INV" != "$REQ_INVOCATION" ]]; then

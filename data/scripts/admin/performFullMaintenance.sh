@@ -190,6 +190,13 @@ update_system() {
 update_game_server() {
     log "Mise à jour SteamCMD..."
 
+    # Refuser avant SteamCMD : validate ne doit jamais écrire à travers le
+    # lien jre64 vers une JVM externe, même si le helper manque ou échoue.
+    "${SCRIPT_DIR}/../internal/linkJvm.sh" --stock \
+        || die "Restauration du JRE stock impossible : mise à jour SteamCMD refusée."
+    [[ ! -L "${PZ_INSTALL_DIR}/jre64" ]] \
+        || die "jre64 est encore un lien symbolique : mise à jour SteamCMD refusée."
+
     # Nettoyer un éventuel état SteamCMD corrompu (manifest, staging)
     local steamapps="${PZ_INSTALL_DIR}/steamapps"
     rm -rf "${steamapps}/downloading" "${steamapps}/temp"
@@ -202,12 +209,6 @@ update_game_server() {
             rm -f "$manifest"
         fi
     fi
-
-    # Rétablir le vrai jre64 bundlé AVANT le validate : si jre64 est un lien vers
-    # GraalVM (cf. linkJvm.sh), steamcmd écrirait à travers le lien et corromprait
-    # l'install GraalVM externe. Le lien est ré-appliqué au prochain démarrage
-    # (ExecStartPre linkJvm.sh --auto). No-op si on n'utilise pas GraalVM.
-    "${SCRIPT_DIR}/../internal/linkJvm.sh" --stock || true
 
     # STEAM_BETA_BRANCH vide = branche publique (stable). Il FAUT passer -beta
     # public EXPLICITEMENT : ne rien passer n'efface PAS une beta déjà gravée dans

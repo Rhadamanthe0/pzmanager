@@ -21,13 +21,22 @@ source_env
 : "${PZ_INI_PATH:=${PZ_SOURCE_DIR}/Server/${PZ_SERVER_NAME}.ini}"
 ini_dir="$(dirname "$PZ_INI_PATH")"
 mkdir -p "$ini_dir" || die "Dossier ini inaccessible (${ini_dir}) : serveur non démarré (fail-closed)."
+# Le jeu applique les doublons dans l'ordre : une seule occurrence false ne
+# suffit pas. Exiger que chaque clé active soit normalisée, sans toucher aux
+# commentaires ni aux autres options (dont les secrets).
+ini_is_closed() {
+    awk '/^[[:space:]]*Open[[:space:]]*=/ {
+             seen=1; if ($0 != "Open=false") bad=1
+         }
+         END { exit (!seen || bad) }' "$PZ_INI_PATH"
+}
 if [[ ! -f "$PZ_INI_PATH" ]]; then
     # Primo-démarrage : le jeu complète les clés manquantes, il ne touche pas
     # celles déjà posées — pré-ensemencer Open=false est sûr.
     printf 'Open=false\n' > "$PZ_INI_PATH" \
         || die "ini inaccessible (${PZ_INI_PATH}) : serveur non démarré (fail-closed)."
     log "Open=false pré-ensemencé (${PZ_INI_PATH})."
-elif grep -q '^Open=false$' "$PZ_INI_PATH"; then
+elif ini_is_closed; then
     : # déjà fermé
 elif grep -qE '^[[:space:]]*Open[[:space:]]*=' "$PZ_INI_PATH"; then
     sed -i -E 's/^[[:space:]]*Open[[:space:]]*=.*/Open=false/' "$PZ_INI_PATH" \
@@ -38,5 +47,5 @@ else
         || die "ini non réinscriptible (${PZ_INI_PATH}) : serveur non démarré (fail-closed)."
     log "Open=false ajouté (${PZ_INI_PATH})."
 fi
-grep -q '^Open=false$' "$PZ_INI_PATH" \
+ini_is_closed \
     || die "Vérification Open=false impossible (${PZ_INI_PATH}) : serveur non démarré (fail-closed)."

@@ -21,3 +21,7 @@ suite des répertoires privés dans une copie Linux jetable.
 Après fusion : fetch prune, pull fast-forward sur main propre, suppression
 locale par `git branch -d` seulement. Signaler les refus et les branches ou
 modifications non intégrées avant de les reprendre sans autorisation.
+
+Lire [le référentiel validé](docs/REFERENTIEL_PROJET.md) avant toute
+modification. Toute évolution de ce référentiel exige l’accord explicite
+du directeur sur les changements précis proposés.

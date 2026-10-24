@@ -73,58 +73,76 @@ get_access_token() {
     rm -f "$KEY_PEM"; KEY_PEM=""
     jwt="${signing_input}.${sig}"
 
-    resp="$(curl -s -X POST https://oauth2.googleapis.com/token \
+    resp="$(api_request '(.access_token | text) and .token_type == "Bearer" and (.expires_in | type == "number" and . > 0)' \
+        -X POST https://oauth2.googleapis.com/token \
         --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer" \
-        --data-urlencode "assertion=${jwt}")"
-    tok="$(printf '%s' "$resp" | jq -r '.access_token // empty')"
-    [[ -n "$tok" ]] || die "Échec auth Google : $(printf '%s' "$resp" | jq -r '.error_description // .error // .')"
+        --data-urlencode "assertion=${jwt}")" || die "Échec auth Google."
+    tok="$(printf '%s' "$resp" | jq -r '.access_token')"
     printf '%s' "$tok"
 }
 
 # --- Helpers API ------------------------------------------------------------
+# Chaque frontière exige HTTP réussi et un unique objet JSON conforme. Ne pas
+# imprimer les corps d'erreur : l'authentification peut y exposer des secrets.
+check_err() {  # $1 = réponse, $2 = contrat jq interne (défaut : objet sans erreur)
+    local schema="${2:-true}"
+    jq -se --arg id "$SPREADSHEET_ID" '
+        def text: type == "string" and length > 0;
+        def count: type == "number" and . >= 0 and floor == .;
+        length == 1 and (.[0] | type == "object" and (has("error") | not) and ('"$schema"'))
+    ' <<< "$1" >/dev/null 2>&1 || die "Réponse Google vide, en erreur ou non conforme."
+}
+api_request() {  # $1 = contrat jq, suite = arguments curl
+    local schema="$1" response
+    shift
+    response="$(curl --fail --silent --show-error "$@")" \
+        || die "Requête Google refusée (HTTP ou transport)."
+    check_err "$response" "$schema"
+    printf '%s' "$response"
+}
 api_get() {  # $1 = querystring (ex: ?fields=...)
-    curl -s -H "Authorization: Bearer ${TOKEN}" \
+    api_request '(.sheets | type == "array") and all(.sheets[]; .properties | (.sheetId | count) and (.title | text) and (.index | count) and ((has("hidden") | not) or (.hidden | type == "boolean")))' \
+        -H "Authorization: Bearer ${TOKEN}" \
         "https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}${1:-}"
 }
 api_batch() {  # $1 = JSON {requests:[...]}
-    curl -s -X POST -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+    local count
+    count="$(jq '.requests | length' <<< "$1")"
+    api_request '.spreadsheetId == $id and (.replies | type == "array" and length == '"$count"')' \
+        -X POST -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
         "https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}:batchUpdate" \
         -d "$1"
 }
-check_err() {  # $1 = réponse API
-    local msg; msg="$(printf '%s' "$1" | jq -r '.error.message // empty')"
-    [[ -z "$msg" ]] || die "API Sheets : $msg"
-}
 
-# Lecture de valeurs : $1 = range A1 (ex: "V28!A1:A5")
+# Lecture de valeurs : une plage vide valide omet le champ values.
 api_values_get() {
-    local r; r="$(curl -s -H "Authorization: Bearer ${TOKEN}" \
-        "https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/$(jq -rn --arg v "$1" '$v|@uri')")"
-    check_err "$r"; printf '%s' "$r"
+    api_request '(.range | text) and ((has("values") | not) or (.values | type == "array" and all(.[]; type == "array")))' \
+        -H "Authorization: Bearer ${TOKEN}" \
+        "https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/$(jq -rn --arg v "$1" '$v|@uri')"
 }
 # Écriture d'une valeur brute : $1 = range A1 (une cellule), $2 = texte
 api_values_put() {
-    local r; r="$(curl -s -X PUT -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+    api_request '.spreadsheetId == $id and (.updatedRange | text) and (.updatedCells | count)' \
+        -X PUT -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
         "https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/$(jq -rn --arg v "$1" '$v|@uri')?valueInputOption=RAW" \
-        -d "$(jq -nc --arg v "$2" '{values:[[$v]]}')")"
-    check_err "$r"; printf '%s' "$r"
+        -d "$(jq -nc --arg v "$2" '{values:[[$v]]}')"
 }
-# Écrit une matrice de valeurs. $1 = range A1 d'ancrage (ex: "V29!A1"),
-# $2 = JSON {values:[[...],...]}. Efface d'abord la plage large de l'onglet.
+# Écrit une matrice ; le clear doit être confirmé avant le moindre PUT.
 api_values_matrix() {
     local anchor="$1" body="$2" tab="${1%%!*}"
-    curl -s -X POST -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
-        "https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/$(jq -rn --arg v "${tab}!A1:Z200" '$v|@uri'):clear" >/dev/null
-    local r; r="$(curl -s -X PUT -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+    api_request '.spreadsheetId == $id and (.clearedRange | text)' \
+        -X POST -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+        "https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/$(jq -rn --arg v "${tab}!A1:Z200" '$v|@uri'):clear" >/dev/null \
+        || return 1
+    api_request '.spreadsheetId == $id and (.updatedRange | text) and (.updatedCells | count)' \
+        -X PUT -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
         "https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/$(jq -rn --arg v "$anchor" '$v|@uri')?valueInputOption=RAW" \
-        -d "$body")"
-    check_err "$r"; printf '%s' "$r"
+        -d "$body"
 }
 
 # Métadonnées des onglets : sheetId, title, index, hidden
 fetch_sheets() {
-    local r; r="$(api_get "?fields=sheets(properties(sheetId,title,index,hidden))")"
-    check_err "$r"; printf '%s' "$r"
+    api_get "?fields=sheets(properties(sheetId,title,index,hidden))"
 }
 
 # Properties de l'onglet de version le plus récent (ou "null"). $1 = métadonnées.

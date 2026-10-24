@@ -75,7 +75,7 @@ rm -rf "$SANDBOX"
 mkdir -p "${SANDBOX}/rt" "$BIN"
 export XDG_RUNTIME_DIR="${SANDBOX}/rt"
 if ! [[ "${PZ_WORLD_LOCK_DEPTH:-0}" =~ ^[1-9][0-9]*$ ]] || [[ -z "${PZ_WORLD_LOCK_FD:-}" ]] \
-    || ! { : >&"${PZ_WORLD_LOCK_FD}" 2>/dev/null; }; then
+    || ! { : 1>&"${PZ_WORLD_LOCK_FD}" 2>/dev/null; }; then
     PZ_WORLD_LOCK_DEPTH=0; PZ_WORLD_LOCK_FD=""
     export PZ_WORLD_LOCK_DEPTH PZ_WORLD_LOCK_FD
 fi

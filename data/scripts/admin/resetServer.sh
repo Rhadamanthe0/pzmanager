@@ -47,9 +47,10 @@ parse_args() {
     done
 }
 
-# Copie temporaire de l'ancien Zomboid (rollback + source de --keep-*),
-# réservée par backup_current et supprimée après succès.
+# Copie temporaire du live, réservée à côté du monde avant la transaction
+# et supprimée seulement après vérification de la nouvelle image.
 PREVIOUS_DIR=""
+TRANSACTION_TOKEN=""
 
 # Fichiers de config à restaurer avec --keep-config. PZ les nomme tous d'après
 # le nom du monde (PZ_SERVER_NAME).
@@ -86,9 +87,10 @@ generator_cmdline_matches() {
     [[ "$pid" =~ ^[0-9]+$ ]] || return 1
     [[ -n "$cachedir" ]] || return 1
     [[ -r "/proc/${pid}/cmdline" ]] || return 1
-    cmdline="$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true)"
-    [[ -n "$cmdline" ]] || return 1
-    grep -F -q -- "-cachedir=${cachedir}" <<< "$cmdline"
+    while IFS= read -r -d '' cmdline; do
+        [[ "$cmdline" != "-cachedir=${cachedir}" ]] || return 0
+    done < "/proc/${pid}/cmdline"
+    return 1
 }
 
 # C8 : arrête le générateur par PID exact ($!), puis son groupe. Ne passe
@@ -127,13 +129,22 @@ kill_generator_exact() {
     GENERATOR_PID=""
 }
 
-# C8 : sur sortie/interruption, on ne nettoie que le jetable (générateur +
-# staging). Le live et la copie temporaire ne sont jamais supprimés ici.
+# À la sortie : arrêter le générateur, vérifier le rollback si nécessaire,
+# puis nettoyer le staging jetable.
 cleanup_reset_staging() {
     kill_generator_exact || true
+    # A prepared intent always survives an unverified rollback. Preserve both
+    # images if verification or restoration fails, so start remains blocked.
+    if [[ -n "${TRANSACTION_TOKEN:-}" ]]; then
+        rollback_live || return 0
+    fi
     if [[ -n "${STAGING_DIR:-}" && "${STAGING_DIR}" == "${PZ_HOME}"/Zomboid.new.* && -d "${STAGING_DIR}" ]]; then
         rm -rf -- "${STAGING_DIR}" 2>/dev/null || true
     fi
+}
+
+transaction() {
+    python3 "${SCRIPT_DIR}/../lib/world_transaction.py" "$@" --world "${PZ_SOURCE_DIR}"
 }
 
 # Bannière d'annonce. PAS de confirmation interactive : le reset est exécutable
@@ -167,14 +178,10 @@ stop_server() {
 
 backup_current() {
     step "Backup des données actuelles"
-
     if [[ -d "${PZ_SOURCE_DIR}" ]]; then
-        # Sous PZ_HOME (même FS : renommage). -T remplace le répertoire réservé
-        # vide sans jamais imbriquer le monde dedans.
-        PREVIOUS_DIR="$(mktemp -d "${PZ_HOME}/.reset-previous-XXXXXX")" \
-            || die "Impossible de réserver la copie temporaire — live intact."
-        mv -T -- "${PZ_SOURCE_DIR}" "$PREVIOUS_DIR"
-        echo "✓ Ancien monde mis de côté le temps du reset"
+        "${SCRIPT_DIR}/../backup/dataBackup.sh" --snapshot-only --required --consistent \
+            || die "Snapshot de sécurité échoué — reset annulé, live intact."
+        echo "✓ Sauvegarde durable publiée ; ancien monde conservé pendant la génération"
     else
         echo "  (aucune donnée Zomboid à sauvegarder)"
     fi
@@ -183,11 +190,10 @@ backup_current() {
 restore_configs() {
     step "Restauration configs avant génération"
 
-    # C8 : les configs sont restaurées dans le STAGING, jamais dans le live
-    # (le live est déjà mis de côté, ou absent sur une install neuve).
+    # Les configs sont copiées dans le staging depuis le live conservé intact.
     mkdir -p "${STAGING_DIR}/Server" "${STAGING_DIR}/mods"
 
-    if [[ -z "$PREVIOUS_DIR" || ! -d "$PREVIOUS_DIR/Server" ]]; then
+    if [[ ! -d "${PZ_SOURCE_DIR}/Server" ]]; then
         rollback_live || true
         die "Pas de répertoire Server dans l'ancien monde — live restauré, rien n'est réinitialisé."
     fi
@@ -195,7 +201,7 @@ restore_configs() {
     # Vérifier que les fichiers critiques existent AVANT de copier
     local missing=()
     for f in "${CONFIG_FILES[@]}"; do
-        if [[ ! -f "$PREVIOUS_DIR/Server/$f" ]]; then
+        if [[ ! -f "${PZ_SOURCE_DIR}/Server/$f" ]]; then
             missing+=("$f")
         fi
     done
@@ -212,7 +218,7 @@ restore_configs() {
     fi
 
     for f in "${CONFIG_FILES[@]}"; do
-        cp "$PREVIOUS_DIR/Server/$f" "${STAGING_DIR}/Server/"
+        cp "${PZ_SOURCE_DIR}/Server/$f" "${STAGING_DIR}/Server/"
         echo "  ✓ $f"
     done
     echo "✓ ${#CONFIG_FILES[@]} fichier(s) restauré(s)"
@@ -315,37 +321,44 @@ validate_staging_world() {
         || { echo "ERREUR: staging sans ${PZ_SERVER_NAME}.ini — live intact, rien n'est basculé." >&2; return 1; }
 }
 
-# C8 : rollback — la génération/validation/swap a échoué, on remet l'ancien
-# monde en place. La copie temporaire ne reste que si cette remise échoue.
+# Restauration puis vérification des octets par le journal avant de lever
+# le refus de démarrage. Un échec conserve le journal et les images restantes.
 rollback_live() {
-    local previous="${PREVIOUS_DIR}"
-    [[ -n "$previous" && -d "$previous" ]] || return 0
-    echo "Échec — remise en place de l'ancien monde..."
-    rm -rf -- "${PZ_SOURCE_DIR}" 2>/dev/null || true
-    mv -T -- "$previous" "${PZ_SOURCE_DIR}" \
-        || die "Échec du rollback — restaure manuellement : $previous → ${PZ_SOURCE_DIR}."
+    [[ -n "${TRANSACTION_TOKEN:-}" ]] || return 0
+    if [[ -n "${PREVIOUS_DIR:-}" && -d "$PREVIOUS_DIR" ]]; then
+        # The reserved empty directory is removed before begin; its existence
+        # now proves that live was moved, even if the shell died after mv.
+        rm -rf -- "${PZ_SOURCE_DIR}" || return 1
+        mv -T -- "$PREVIOUS_DIR" "${PZ_SOURCE_DIR}" || return 1
+    elif [[ "$BEFORE_PRESENT" == false ]]; then
+        rm -rf -- "${PZ_SOURCE_DIR}" || return 1
+    fi
+    transaction finish --token "$TRANSACTION_TOKEN" --state reverted || return 1
+    TRANSACTION_TOKEN=""
     PREVIOUS_DIR=""
-    echo "✓ Rollback terminé : ancien monde remis dans ${PZ_SOURCE_DIR}"
+    echo "✓ Rollback vérifié : ancien monde restauré"
 }
 
-# C8 : bascule staging → live (le live a été mis de côté par backup_current).
-# Valide d'abord, ne bascule que si valide, sinon rollback.
 swap_staging_to_live() {
-    validate_staging_world "$STAGING_DIR" \
-        || { rollback_live || true; die "Monde invalide — ancien monde remis en place."; }
-    mkdir -p "$(dirname "${PZ_SOURCE_DIR}")"
-    if mv -T "${STAGING_DIR}" "${PZ_SOURCE_DIR}" 2>/dev/null; then
-        STAGING_DIR=""
-        STAGING_CACHEDIR=""
-        return 0
+    validate_staging_world "$STAGING_DIR" || die "Monde invalide — live intact."
+    require_server_stopped "Bascule du monde après reset"
+    local parent
+    parent="$(dirname -- "${PZ_SOURCE_DIR}")"
+    mkdir -p -- "$parent"
+    PREVIOUS_DIR="$(mktemp -d "${parent}/.reset-previous-XXXXXX")" \
+        || die "Impossible de réserver la copie temporaire — live intact."
+    rmdir -- "$PREVIOUS_DIR"
+    BEFORE_PRESENT=false
+    [[ ! -e "${PZ_SOURCE_DIR}" ]] || BEFORE_PRESENT=true
+    TRANSACTION_TOKEN="$(transaction begin --kind reset --recovery "$PREVIOUS_DIR" --after-tree "$STAGING_DIR")" \
+        || die "Journal de reset refusé — live intact."
+    if [[ "$BEFORE_PRESENT" == true ]]; then
+        mv -T -- "${PZ_SOURCE_DIR}" "$PREVIOUS_DIR"
     fi
-    # Repli cross-FS : copie puis validation finale.
-    mkdir -p "${PZ_SOURCE_DIR}"
-    cp -a "${STAGING_DIR}/." "${PZ_SOURCE_DIR}/" \
-        || { rollback_live || true; die "Échec de la bascule — ancien monde remis en place."; }
-    validate_staging_world "${PZ_SOURCE_DIR}" \
-        || { rollback_live || true; die "Bascule incomplète — ancien monde remis en place."; }
-    rm -rf -- "${STAGING_DIR}" 2>/dev/null || true
+    # mv may copy across filesystems; the prepared intent guards that window.
+    mv -T -- "${STAGING_DIR}" "${PZ_SOURCE_DIR}"
+    transaction finish --token "$TRANSACTION_TOKEN" --state complete
+    TRANSACTION_TOKEN=""
     STAGING_DIR=""
     STAGING_CACHEDIR=""
 }
@@ -353,34 +366,24 @@ swap_staging_to_live() {
 restore_whitelist() {
     step "Restauration whitelist"
 
-    local old_db="${PREVIOUS_DIR}/db/${PZ_SERVER_NAME}.db"
-    local new_db="${PZ_DB_PATH}"
+    local old_db="${PZ_SOURCE_DIR}/db/${PZ_SERVER_NAME}.db"
+    local new_db="${STAGING_DIR}/db/${PZ_SERVER_NAME}.db"
 
-    [[ -f "$old_db" ]] || { echo "⚠ Pas de base backup, skip whitelist"; return 0; }
-    [[ -f "$new_db" ]] || { echo "⚠ Pas de base nouveau serveur, skip whitelist"; return 0; }
+    [[ -f "$old_db" ]] || die "Base source absente — conservation whitelist impossible, live intact."
+    [[ -f "$new_db" ]] || die "Base staging absente — conservation whitelist impossible, live intact."
 
-    # Restaurer TOUS les utilisateurs y compris admin (pour garder le même mot de passe)
-    # On supprime d'abord l'admin généré pour éviter les doublons
-    sqlite3 "$new_db" "DELETE FROM whitelist WHERE username = 'admin';"
-
-    # On restaure AUSSI lastConnection : sinon les comptes reviennent "jamais
-    # connectés" et la purge d'inactifs (purgeInactivePlayers.sh) les retire dès
-    # la maintenance suivante, avant même que les joueurs se reconnectent.
-    sqlite3 "$new_db" \
-        "ATTACH '$old_db' AS old_db;
-         INSERT OR IGNORE INTO main.whitelist (world, username, password, steamid, role, displayName, lastConnection)
-         SELECT world, username, password, steamid, role, displayName, lastConnection
-         FROM old_db.whitelist;"
-
-    # Autorisations d'accès (allowedsteamid) : EN B42 Open=false, c'est LA barrière
-    # d'accès. Sans ça, tous les joueurs sont bloqués malgré les comptes restaurés.
-    # On NE restaure PAS bannedid : on préfère retirer via `pzm whitelist remove`.
-    if ! sqlite3 "$new_db" \
-        "ATTACH '$old_db' AS old_db;
+    # Keep the transfer atomic in staging. Escape the attached filename as an
+    # SQL string literal; --bail prevents publishing a partial transfer.
+    local quoted_old_db="${old_db//\'/\'\'}"
+    sqlite3 -bail "$new_db" \
+        "ATTACH '$quoted_old_db' AS old_db;
+         BEGIN;
+         DELETE FROM main.whitelist;
+         INSERT INTO main.whitelist (world, username, password, steamid, role, displayName, lastConnection)
+         SELECT world, username, password, steamid, role, displayName, lastConnection FROM old_db.whitelist;
          INSERT OR IGNORE INTO main.allowedsteamid SELECT * FROM old_db.allowedsteamid;
-         DETACH old_db;" 2>/dev/null; then
-        echo "⚠ Échec restauration allowedsteamid — ré-autorise les SteamID à la main (pzm whitelist add)."
-    fi
+         COMMIT;
+         DETACH old_db;"
 
     local count allowed
     count=$(sqlite3 "$new_db" "SELECT COUNT(*) FROM whitelist")
@@ -437,9 +440,8 @@ main() {
     require_server_stopped "Reset du monde"
     backup_current
 
-    # C8 : génération en staging sous PZ_HOME (l'ancien monde reste mis de
-    # côté jusqu'au succès). Traps : toute interruption tue le générateur
-    # (PID exact) et nettoie le staging, jamais le live ni la copie temporaire.
+    # La génération conserve le live. Après préparation du journal, les traps
+    # restaurent et vérifient le live ou laissent le démarrage bloqué.
     STAGING_DIR="$(mktemp -d "${PZ_HOME}/Zomboid.new.XXXXXX")" \
         || die "Impossible de créer le staging sous ${PZ_HOME}."
     STAGING_CACHEDIR="${STAGING_DIR}"
@@ -452,14 +454,12 @@ main() {
 
     generate_world
 
-    # C8 : validation complète AVANT bascule (DB + admin + .ini/Server), puis
-    # swap staging → live. Échec = die + ancien monde remis en place (rollback
-    # auto), staging nettoyé par le trap EXIT.
-    swap_staging_to_live
-
+    # Les options sont finalisées avant de figer les images du journal.
+    # La bascule valide le staging, publie l’intention puis vérifie le live.
     if $OPT_KEEP_WHITELIST; then
         restore_whitelist
     fi
+    swap_staging_to_live
 
     # C8 : staging basculé (mv : le répertoire n'existe plus ; le trap EXIT
     # devient no-op).

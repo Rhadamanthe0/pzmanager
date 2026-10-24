@@ -48,8 +48,9 @@ Commandes disponibles:
       --save <monde>       Choisir le monde multijoueur
                        Écrase terrain, constructions et conteneurs sur toute
                        la hauteur des tuiles ; annulation auto si échec.
-                       Tuiles voisines conservées ; JDK requis si chunk partiel
-                       Backup : nom de snapshot ou chemin de dossier (pas de ZIP)
+                       Tuiles voisines conservées ; JDK compatible requis pour appliquer
+                       Aperçu : JDK requis si les dictionnaires diffèrent
+                       Backup : nom de snapshot, dossier ou ZIP
                        Procédure et limites : docs/USAGE.md#restore-a-map-zone-build-42
     list               Lister backups disponibles
     resume-writing <copie>  Reprise explicite d'un nettoyage interrompu
@@ -230,11 +231,17 @@ cmd_install() {
         budget)
             exec "${SCRIPT_DIR}/data/scripts/install/setupSharedBudget.sh"
             ;;
-        system)
-            exec sudo "${SCRIPT_DIR}/data/scripts/install/setupSystem.sh"
-            ;;
-        zomboid)
-            exec sudo "${SCRIPT_DIR}/data/scripts/install/configurationInitiale.sh" zomboid
+        system|zomboid)
+            local helper="/usr/local/libexec/pzmanager/install/setupSystem.sh"
+            [[ "$action" == system ]] || helper="/usr/local/libexec/pzmanager/install/configurationInitiale.sh"
+            [[ -f "$helper" && -x "$helper" ]] || {
+                echo "Helper privilégié absent : $helper ; réinstaller les helpers root de PZManager." >&2
+                return 1
+            }
+            if [[ "$action" == system ]]; then
+                exec sudo "$helper" --manager-root "$SCRIPT_DIR"
+            fi
+            exec sudo "$helper" --manager-root "$SCRIPT_DIR" zomboid "$@"
             ;;
         discord)
             exec "${SCRIPT_DIR}/data/scripts/install/setupDiscordBot.sh"

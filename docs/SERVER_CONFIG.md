@@ -94,10 +94,13 @@ pzm whitelist list
 pzm whitelist add "76561198012345678" "PlayerName"
 ```
 
-**Remove player**:
+**Remove SteamID access** (keeps the character):
 ```bash
-pzm whitelist remove "PlayerName"
+pzm whitelist remove "76561198012345678"
 ```
+
+To remove an account instead, stop the server and use
+`pzm whitelist remove-account "PlayerName"`; this also keeps the character.
 
 **Purge inactive accounts**:
 ```bash

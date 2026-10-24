@@ -346,9 +346,16 @@ consistency="$(python3 "${SCRIPT_DIR}/../lib/snapshot_consistency.py" write --un
 echo "BACKUP_CONSISTENCY $consistency"
 [[ "$consistency" == stopped ]] || echo "Sauvegarde à chaud : cohérence applicative non garantie."
 
+# Un snapshot complet n'est pas encore durable : forcer les contenus et les
+# répertoires avant de l'annoncer aux opérations destructrices.
+python3 "${SCRIPT_DIR}/../lib/world_transaction.py" sync --world "$STAGING_PATH" \
+    || die "Synchronisation durable du staging impossible : rien n'est publié."
+
 # Publication atomique : le final n'apparaît que complet. Si la destination
 # existe déjà (collision de timestamp), mv échoue et on refuse (fail-closed).
 mv -T "${STAGING_PATH}" "${BACKUP_PATH}" || die "Impossible de publier ${STAGING_PATH} vers ${BACKUP_PATH}."
+python3 "${SCRIPT_DIR}/../lib/world_transaction.py" sync --directory-only --world "$BACKUP_DIR" \
+    || die "Publication du snapshot non durable : snapshot exigé refusé."
 
 # latest atomique : lien tmp puis rename (jamais de rm -rf sur latest).
 # Un répertoire RÉEL nommé latest = anomalie : on refuse sans rien supprimer.
@@ -357,6 +364,8 @@ if [[ -d "${BACKUP_LATEST_LINK}" && ! -L "${BACKUP_LATEST_LINK}" ]]; then
 fi
 ln -sfnT "${BACKUP_PATH}" "${LATEST_TMP}" || die "Impossible de préparer le lien latest (${LATEST_TMP})."
 mv -Tf "${LATEST_TMP}" "${BACKUP_LATEST_LINK}" || { rm -f -- "${LATEST_TMP}" 2>/dev/null || true; die "Impossible de basculer latest vers ${BACKUP_PATH}."; }
+python3 "${SCRIPT_DIR}/../lib/world_transaction.py" sync --directory-only --world "$(dirname -- "$BACKUP_LATEST_LINK")" \
+    || die "Publication de latest non durable : snapshot exigé refusé."
 
 # Rétention grand-père/père/fils (GFS). Remplace l'ancienne rotation plate à N
 # jours. Chaque snapshot étant complet et indépendant (hardlinks --link-dest),

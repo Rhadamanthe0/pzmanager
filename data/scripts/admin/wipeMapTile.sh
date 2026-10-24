@@ -82,8 +82,17 @@ case "${#COORDS[@]}" in
     *) echo "Erreur: coordonnees attendues : <x> <y>  ou  <x1> <y1> <x2> <y2>" >&2; usage 1 ;;
 esac
 
-for v in "$X1" "$Y1" "$X2" "$Y2"; do
+# Project Zomboid coordinates are non-negative Java int values. Normalize
+# decimal text before Bash arithmetic (leading zero would otherwise mean octal).
+for coordinate in X1 Y1 X2 Y2; do
+    v="${!coordinate}"
     [[ "$v" =~ ^[0-9]+$ ]] || die "Coordonnee invalide (entier positif attendu): $v"
+    v="${v#"${v%%[!0]*}"}"
+    v="${v:-0}"
+    if (( ${#v} > 10 )) || { (( ${#v} == 10 )) && (( 10#$v > 2147483647 )); }; then
+        die "Coordonnee hors limites Java int (0..2147483647): ${!coordinate}"
+    fi
+    printf -v "$coordinate" '%s' "$v"
 done
 
 # Ordonne le rectangle
@@ -176,7 +185,7 @@ fi
 # --snapshot-only => pas de save in-game (serveur arrêté) ni de prune GFS.
 echo
 log "Snapshot de sécurité (normal) avant wipe..."
-"${SCRIPT_DIR}/../backup/dataBackup.sh" --snapshot-only \
+"${SCRIPT_DIR}/../backup/dataBackup.sh" --snapshot-only --required --consistent \
     || die "Snapshot de sécurité échoué — wipe annulé (rien supprimé)."
 
 # Un seul rm pour tout le lot : un wipe de 2x2 cellules atteint ~4 000 fichiers,
