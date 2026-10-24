@@ -49,8 +49,8 @@ operation, warnings included. Two reasons this matters:
   server in a crash-loop. That is the 2026-07-20 incident: a second restart issued
   during the first one's boot.
 - Before acting, the shutdown path waits until the **game loop is actually
-  running**, which it reads from the frame counter `f:` that prefixes every game
-  log line: `f:0` for the whole startup, `f:1` at the first tick.
+  running**, proved by an advancing frame counter `f:` in the current boot
+  or an attributed native `players` response from the game console.
 
 Two earlier versions of that wait were wrong, both discovered on 2026-09-02:
 
@@ -65,20 +65,15 @@ Two earlier versions of that wait were wrong, both discovered on 2026-09-02:
   costs the same on a four-hour uptime as on a fresh boot (measured: 60 ms), so
   the shortcut is gone rather than retuned.
 
-**The frame counter only advances while players are connected.** On an empty
-server it can stay at `f:0` indefinitely. This makes readiness conservative: the
-wait may time out on a healthy empty server, and the online announcement is not
-sent until a frame advances. The instantaneous player count cannot safely
-resolve that ambiguity because a stuck boot can also have zero players, or can
-become empty after players disconnect. The premature Lua marker is therefore
-never combined with the player count as proof that the loop started.
+**The frame counter only advances while players are connected.** An empty
+server may stay at `f:0`; an attributed native `players` response can then prove
+that the game loop handles commands, even with zero players. Neither systemd
+activity, a FIFO echo, the early Lua marker nor a player count alone proves readiness.
 
-While it genuinely waits, it prints progress, so a stop issued during a boot does
-not look frozen. If the game loop still has not started after 300 s, the stop or restart is
-refused. A healthy empty server and a stuck boot cannot be distinguished by
-`f:0` alone; timing out must not turn that uncertainty into an automatic kill.
-Inspect the journal before deciding whether a direct systemd stop is appropriate
-(it may end in SIGKILL without a final save).
+The wait prints progress. Without either proof after 300 s, stop/restart is
+refused; a timeout never authorizes an automatic kill. Inspect the journal before
+deciding whether a direct systemd stop is appropriate (it may end in SIGKILL
+without a final save).
 
 ## Backups
 
@@ -183,9 +178,9 @@ The first command previews without modifying the map, even while the server runs
 `--dry-run` also explicitly selects preview. `--apply` requires a proven stopped
 server and takes the same world lock as start, backup, wipe and full restore.
 Use `--save <world>` if there are several multiplayer worlds. The source must
-contain `Saves/Multiplayer/<world>/map/`; ZIP archives and Build 41 are unsupported.
-A snapshot name under `BACKUP_DIR`, its `latest` alias, or a full directory path
-is accepted. Prefer a dated snapshot from before the disappearance.
+contain `Saves/Multiplayer/<world>/map/`; Build 41 is unsupported.
+A snapshot name under `BACKUP_DIR`, its `latest` alias, a directory path or a
+full-backup ZIP is accepted. Prefer a dated snapshot from before the disappearance.
 
 The preview prints the **exact inclusive tile rectangle**, with no expansion to
 chunk boundaries. All floors, terrain, constructions and container contents on
@@ -230,13 +225,15 @@ any world write. A record that cannot be read causes refusal; there is no fallba
 to restoring a larger area. The offline reader does not initialize a complete
 Workshop script environment, so some modded records may be refused.
 
-This requires a compatible **JDK** for partial chunks (including one-tile restores).
+Every application requires a compatible **JDK**, including whole chunks, because
+all selected terrain undergoes native validation.
 The default JVM is `PZ_INSTALL_DIR/jre64/bin/java`; its sibling `javac` is used
 when available, otherwise `javac` on PATH. Set `PZ_RESTORE_JAVA` and/or
 `PZ_RESTORE_JAVAC` in `.env` to override these tools. An explicitly configured
 compiler is authoritative; incompatible or missing tools stop before changing
-the world. Compilation uses `--release` for the selected JVM. Preview and whole
-chunk copies do not need a JDK. A refused native validation keeps only its diagnostic log, at the printed path.
+the world. Compilation uses `--release` for the selected JVM. Preview also requires
+a JDK when the source and current dictionaries differ. A refused native validation
+keeps only its diagnostic log, at the printed path.
 
 Before writing, the command stages the selected source files and copies the
 current selected files into a private, unique, temporary
@@ -316,11 +313,15 @@ only touched by `rename-account` (re-attach) and `backup restore-character`. A
 player whose access is removed and later re-authorized gets their character back.
 
 `remove-account`, `rename-account`, `resetpassword` and `purge --delete` require
-a stopped server for database writes. They do **not** create a dedicated snapshot;
-choose an existing backup or create one before the operation. `remove-account`
+a stopped server for database writes. Choose a recovery point before manual
+account changes; the automatic purge additionally creates its own database
+safety copy as described below. `remove-account`
 and `rename-account` accept `--dry-run` for a preview; `purge` without `--delete`
 only lists candidates. The deletion asks for `oui` in an interactive terminal.
-`resetpassword` has no preview option.
+`resetpassword` has no preview option. Renaming attaches the character database
+and updates both databases in one SQLite transaction. Crash-safe commit requires
+durable rollback journals (`DELETE`, `TRUNCATE` or `PERSIST`) and synchronous
+writes; `WAL`, `OFF` and `MEMORY` modes are refused before mutation.
 
 **Player onboarding**: see [PROCEDURE_JOUEURS](PROCEDURE_JOUEURS.md) (French) — the
 player sends their SteamID64, you authorize it, they connect and set their own password.
@@ -338,10 +339,11 @@ Accounts inactive ≥ `WHITELIST_PURGE_DAYS` (default 90) have their access remo
 **only if no remaining account still uses it**. The **character is always kept**,
 and the built-in `admin` account is always spared.
 
-It runs from `zomboid.service`'s `ExecStartPre`, just before the game launches:
-that is the only moment guaranteed world-closed on *every* start path (boot,
-`pzm server start/restart`, socket-activation), and the purge writes straight to
-the world database. A failed purge never blocks the server from starting.
+It runs from `zomboid.service`'s `ExecStartPre`, before the JVM. Admission
+verifies the inherited WORLD descriptor and the actual start-pre identity;
+`activating` state or a caller-supplied flag alone is not authorization. Other
+mutating invocations require a proven stopped server. A failed purge remains
+non-blocking for startup.
 
 Inspect it at any time — this touches nothing, even with the server up:
 
@@ -352,11 +354,11 @@ data/scripts/admin/purgeInactivePlayers.sh --force --dry-run --days 60
 It prints, per account, whether the SteamID would be released or kept because
 another account shares it.
 
-Safety net: when the pre-start snapshot is skipped (ExecStartPre running under
-the starter's world lock), the purge copies the world DB to
-`<db>.pre-purge-<timestamp>` (verified `integrity_check=ok`) instead — and that
-filet is **kept** after a successful purge (only the 3 most recent are retained,
-older ones are pruned), so a bad purge can still be rolled back by hand.
+The raw helper accepts `--days N` (overrides `.env`), `--dry-run` and `--force`.
+`--force` permits only `--dry-run` while active; it never authorizes live deletion.
+Before any DELETE, the SQLite backup API creates a private safety copy including
+committed WAL pages, checks integrity and fsyncs the copy and its parent. Failure
+refuses deletion. The printed recovery path remains available after success.
 
 ## Administration
 
@@ -368,6 +370,9 @@ pzm admin reset --keep-config --keep-whitelist     # Reset, keep everything
 pzm admin maintenance [delay]                      # Manual maintenance (default: 30m)
 pzm admin maintenance 2m --reason "RAM upgrade"    # Maintenance with reason
 ```
+
+For reset staging, preservation options and recovery guarantees, see
+[complete server reset](ADVANCED.md#complete-server-reset).
 
 **Maintenance options**:
 - `[delay]`: `30m`, `15m`, `5m`, `2m`, `30s`, `now`, `auto` (default: 30m)

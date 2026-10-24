@@ -92,7 +92,7 @@ mkdir -p "${SANDBOX}/rt" "$BIN"
 export XDG_RUNTIME_DIR="${SANDBOX}/rt"
 # État verrou assaini pour ce shell de test (ou participation si né sous verrou).
 if ! [[ "${PZ_WORLD_LOCK_DEPTH:-0}" =~ ^[1-9][0-9]*$ ]] || [[ -z "${PZ_WORLD_LOCK_FD:-}" ]] \
-    || ! { : >&"${PZ_WORLD_LOCK_FD}" 2>/dev/null; }; then
+    || ! { : 1>&"${PZ_WORLD_LOCK_FD}" 2>/dev/null; }; then
     PZ_WORLD_LOCK_DEPTH=0; PZ_WORLD_LOCK_FD=""
     export PZ_WORLD_LOCK_DEPTH PZ_WORLD_LOCK_FD
 fi
@@ -131,13 +131,30 @@ export PATH="${BIN}:$PATH"
 # --- (0) Câblage statique -------------------------------------------------------
 echo "== (0) câblage =="
 for f in core/pz.sh backup/dataBackup.sh backup/restoreZomboidData.sh admin/wipeMapTile.sh \
-         admin/purgeInactivePlayers.sh admin/resetServer.sh admin/performFullMaintenance.sh; do
+         admin/resetServer.sh admin/performFullMaintenance.sh; do
     if grep -q 'acquire_world_lock' "${ROOT}/data/scripts/${f}"; then
         ok "${f} acquiert le verrou monde"
     else
         ko "${f} n'acquiert PAS le verrou monde"
     fi
 done
+# La purge acquiert WORLD par le courtier et valide le FD dans le worker.
+# Son parcours réel et la contention sont exercés par test_accounts_safety.py.
+purge="${ROOT}/data/scripts/admin/purgeInactivePlayers.sh"
+verified_before_write="$(awk '/sqlite3 -bail/ { print n+0; exit }
+    /^[[:space:]]*python3 .*verify-worker.*\|\| exit 1/ { n++ }' "$purge")"
+if grep -qF 'readonly ADMISSION_HELPER="${SCRIPT_DIR}/../internal/writing_start_admission.py"' "$purge" &&
+   grep -qF 'readonly ACCOUNT_HELPER="${SCRIPT_DIR}/../lib/account_safety.py"' "$purge" &&
+   grep -qF 'if [[ "$DRY_RUN" != true && "$ADMITTED_WORKER" != true ]]; then' "$purge" &&
+   grep -qF 'exec python3 "$ADMISSION_HELPER" run --lock-path "$_purge_lock" --unit "$PZ_SERVICE_NAME" --' "$purge" &&
+   grep -qF 'bash "$0" --admitted-worker "${ORIGINAL_ARGS[@]}"' "$purge" &&
+   grep -qF 'if [[ "$ADMITTED_WORKER" == true ]]; then' "$purge" &&
+   grep -qF 'python3 "$ACCOUNT_HELPER" verify-worker || exit 1' "$purge" &&
+   [[ "$verified_before_write" =~ ^[0-9]+$ ]] && (( verified_before_write >= 2 )); then
+    ok "purgeInactivePlayers.sh : courtier WORLD et validation worker avant écriture"
+else
+    ko "purgeInactivePlayers.sh : courtier WORLD ou validation worker absent avant écriture"
+fi
 grep -q 'BACKUP_SKIPPED_LOCK' "${ROOT}/data/scripts/backup/dataBackup.sh" \
     && ok "dataBackup.sh émet BACKUP_SKIPPED_LOCK" \
     || ko "dataBackup.sh : BACKUP_SKIPPED_LOCK absent"
@@ -434,6 +451,45 @@ else
     ko "kill -9 : verrou toujours tenu (fantôme)"
 fi
 
+# --- (6b) l'environnement seul ne prouve pas la réentrance -----------------------
+echo "== (6b) fausse réentrance =="
+cat > "${SANDBOX}/forged-child.sh" <<'FORGEDEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "${1}/world_lock.sh"
+case "$2" in
+    stdout) PZ_WORLD_LOCK_DEPTH=1; PZ_WORLD_LOCK_FD=1 ;;
+    other) exec {PZ_WORLD_LOCK_FD}>"$3"; flock -n "$PZ_WORLD_LOCK_FD"; PZ_WORLD_LOCK_DEPTH=1 ;;
+    unlocked) exec {PZ_WORLD_LOCK_FD}>"$(world_lock_path)"; PZ_WORLD_LOCK_DEPTH=1 ;;
+    missing-fd) PZ_WORLD_LOCK_DEPTH=1; PZ_WORLD_LOCK_FD= ;;
+    missing-depth) exec {PZ_WORLD_LOCK_FD}>"$(world_lock_path)"; PZ_WORLD_LOCK_DEPTH=0 ;;
+    malformed-depth) PZ_WORLD_LOCK_DEPTH=invalid; PZ_WORLD_LOCK_FD=1 ;;
+esac
+if acquire_world_lock --try; then exit 10; fi
+# Un refus ne ferme ni ne déverrouille le descripteur reçu.
+if [[ "$2" == other ]]; then
+    [[ -e "/proc/self/fd/$PZ_WORLD_LOCK_FD" ]]
+    if flock -n "$3" true; then exit 11; fi
+fi
+FORGEDEOF
+acquire_world_lock --required
+for forged in stdout other unlocked missing-fd missing-depth malformed-depth; do
+    if bash "${SANDBOX}/forged-child.sh" "$LIB_DIR" "$forged" "${SANDBOX}/other.lock"; then
+        ok "réentrance falsifiée refusée : $forged"
+    else
+        ko "réentrance falsifiée acceptée ou FD reçu altéré : $forged (rc=$?)"
+    fi
+done
+release_world_lock
+# Même libre, un état annoncé invalide ne devient pas une acquisition normale.
+for forged in stdout other unlocked missing-fd missing-depth malformed-depth; do
+    if bash "${SANDBOX}/forged-child.sh" "$LIB_DIR" "$forged" "${SANDBOX}/other.lock"; then
+        ok "état invalide refusé sans détenteur : $forged"
+    else
+        ko "état invalide accepté sans détenteur : $forged (rc=$?)"
+    fi
+done
+
 # --- (7) réentrance parent/enfant ----------------------------------------------------------
 echo "== (7) réentrance =="
 acquire_world_lock --required || { ko "acquisition initiale impossible"; }
@@ -450,6 +506,8 @@ source "${1}/world_lock.sh"
 export XDG_RUNTIME_DIR="${2}"
 acquire_world_lock --required || exit 3
 echo "enfant participant (profondeur ${PZ_WORLD_LOCK_DEPTH})"
+# Le petit-enfant doit vérifier le même OFD hérité, même après la fin de flock(1).
+bash -c 'source "$1/world_lock.sh"; acquire_world_lock --required && release_world_lock' _ "$1"
 release_world_lock
 CHILDEOF
 if timeout 10 bash "${SANDBOX}/child.sh" "$LIB_DIR" "${SANDBOX}/rt"; then
@@ -465,6 +523,47 @@ release_world_lock
 release_world_lock \
     && ok "release surnuméraire sans effet (no-op)" \
     || ko "release surnuméraire en erreur"
+
+# --- (8) l'enfant conserve le verrou après la mort du parent --------------------
+echo "== (8) héritage après kill du parent =="
+cat > "${SANDBOX}/inheriting-parent.sh" <<'PARENTEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$1/world_lock.sh"
+acquire_world_lock --required
+bash -c 'source "$1/world_lock.sh"; acquire_world_lock --required; echo "$BASHPID" > "$2/child.pid"; exec sleep 30' _ "$1" "$2" &
+wait
+PARENTEOF
+bash "${SANDBOX}/inheriting-parent.sh" "$LIB_DIR" "$SANDBOX" &
+PARENT_PID=$!
+for ((attempt=0; attempt<100; attempt++)); do
+    [[ -s "${SANDBOX}/child.pid" ]] && break
+    sleep 0.05
+done
+if [[ -s "${SANDBOX}/child.pid" ]]; then
+    CHILD_PID="$(cat "${SANDBOX}/child.pid")"
+    kill -9 "$PARENT_PID"
+    wait "$PARENT_PID" 2>/dev/null || true
+    if acquire_world_lock --try; then
+        ko "mort du parent : verrou perdu malgré l'enfant vivant"
+        release_world_lock
+    else
+        ok "mort du parent : l'enfant conserve le verrou"
+    fi
+    kill "$CHILD_PID" 2>/dev/null || true
+    for ((attempt=0; attempt<100; attempt++)); do
+        if acquire_world_lock --try; then break; fi
+        sleep 0.05
+    done
+    if [[ "$PZ_WORLD_LOCK_DEPTH" == 1 ]]; then
+        ok "verrou libéré après la fin du dernier enfant"
+        release_world_lock
+    else
+        ko "verrou encore tenu après la fin du dernier enfant"
+    fi
+else
+    ko "enfant héritier non démarré"
+fi
 
 # --- Bilan -------------------------------------------------------------------------
 echo ""

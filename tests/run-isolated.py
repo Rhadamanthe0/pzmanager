@@ -19,6 +19,9 @@ import time
 
 
 def main():
+    # Le protocole WORLD refuse tout ancêtre inscriptible par le groupe.
+    # Garder les copies et fixtures privées même avec un umask appelant à 002.
+    os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--results', type=Path, required=True)
     parser.add_argument('--only', action='append', help='Run a named suite (repeatable)')
@@ -26,7 +29,10 @@ def main():
     source = Path(__file__).resolve().parents[1]
     names = subprocess.check_output(['git', '-C', str(source), 'ls-files', '-z', '--cached', '--others', '--exclude-standard']).decode().split('\0')
     args.results.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with tempfile.TemporaryDirectory(prefix='pz-tests-isolated-', dir='/var/tmp') as temporary:
+    # Les helpers privilégiés exigent aussi des ancêtres root non modifiables.
+    # /var/tmp convient au manager, mais son mode sticky reste refusé en root.
+    temporary_parent = '/run' if os.geteuid() == 0 else '/var/tmp'
+    with tempfile.TemporaryDirectory(prefix='pz-tests-isolated-', dir=temporary_parent) as temporary:
         base = Path(temporary); root = base / 'repository'; root.mkdir()
         for name in names:
             if not name: continue
@@ -36,6 +42,10 @@ def main():
             if src.is_file() and "__pycache__" not in relative.parts:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
+                if os.geteuid() == 0:
+                    # Reproduire les droits du staging root, sans dépendre de
+                    # l'umask du checkout source et sans changer son contenu.
+                    dst.chmod(dst.stat().st_mode & ~0o022)
         # Même interprétation et mêmes contrôles, seuls les fichiers de preuve
         # du banc legacy sont substitués dans CETTE copie jetable.
         helper = root / 'data/scripts/lib/shared_memory_budget.py'

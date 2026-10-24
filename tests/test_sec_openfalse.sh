@@ -94,6 +94,27 @@ else
     ko "Open=false : exit non-zéro à tort"
 fi
 
+# Des doublons sont appliqués dans l'ordre par le jeu : toutes les clés actives
+# doivent être fermées, sans modifier les commentaires ni les secrets.
+printf '# Open=true\nPassword=secret-preserved\nOpen=false\n  Open = true  \r\nOpen=true\n' > "$INI"
+chmod 600 "$INI"
+if run_enforce; then
+    if [[ "$(grep -c '^Open=false$' "$INI")" == 3 ]] &&
+       ! grep -qE '^[[:space:]]*Open[[:space:]]*=[[:space:]]*true' "$INI"; then
+        ok "doublons contradictoires : toutes les occurrences actives fermées"
+    else
+        ko "doublons contradictoires : Open=true reste effectif"
+    fi
+    if grep -qx '# Open=true' "$INI" && grep -qx 'Password=secret-preserved' "$INI" &&
+       [[ "$(stat -c %a "$INI")" == 600 ]]; then
+        ok "commentaire, secret et permissions conservés"
+    else
+        ko "commentaire, secret ou permissions altérés"
+    fi
+else
+    ko "doublons contradictoires : réparation refusée"
+fi
+
 # --- (4) clé absente -> ajoutée ---------------------------------------------------
 echo "== (4) sans clé Open =="
 printf 'ServerName=servertest\nMaxPlayers=32\n' > "$INI"

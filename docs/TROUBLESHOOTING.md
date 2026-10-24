@@ -315,7 +315,8 @@ ls -la ~/pzmanager/data/dataBackups/
 du -sh ~/pzmanager/data/dataBackups/*
 ```
 
-If too large, shorten the GFS daily tier (`BACKUP_GFS_DAILY_DAYS`, default 30) or the off-site ZIP count (`OFFSITE_BACKUP_COUNT`, default 7) in `.env`.
+If too large, adjust the GFS daily tier or off-site ZIP count in `.env`; see
+[retention settings and defaults](CONFIGURATION.md#backups).
 
 ## Restore Zomboid Data
 
@@ -327,11 +328,14 @@ If too large, shorten the GFS daily tier (`BACKUP_GFS_DAILY_DAYS`, default 30) o
 # List available backups
 ./data/scripts/backup/restoreZomboidData.sh
 
-# Restore specific backup
-./data/scripts/backup/restoreZomboidData.sh data/dataBackups/backup_2026-01-11_14h15m00s
+# Stop and wait for a proven stopped server before applying
+pzm server stop 2m --reason "World restoration"
 
-# Restore latest backup
-./data/scripts/backup/restoreZomboidData.sh data/dataBackups/latest
+# Restore specific backup
+pzm backup restore data/dataBackups/backup_2026-01-11_14h15m00s
+
+# Or restore latest backup (server must also be stopped)
+pzm backup restore data/dataBackups/latest
 ```
 
 **How it works**:
@@ -341,9 +345,9 @@ If too large, shorten the GFS daily tier (`BACKUP_GFS_DAILY_DAYS`, default 30) o
   puts them back
 - Preserves system configuration and scripts
 
-**Apply**:
+**After a successful restore**:
 ```bash
-pzm server restart 2m
+pzm server start
 ```
 
 ### Complete Restoration (system + data)
@@ -353,12 +357,25 @@ pzm server restart 2m
 ```bash
 # List complete backups (one ZIP per backup)
 ls -lt ~/pzmanager/data/fullBackups/
-
-# Restore everything (pass the .zip; older dir-format backups still work too)
-sudo ./data/scripts/install/configurationInitiale.sh restore ~/pzmanager/data/fullBackups/2026-01-11_04-30.zip
 ```
 
-**Restores**: Sudoers, SSH, systemd services/timers, scripts, .env, Zomboid data.
+Complete system restoration requires the root installation helper from a
+root-owned, non-replaceable checkout, never a `sudo` script under the manager's
+writable home. Pass the full-backup ZIP (legacy directory backups are also
+accepted). SSH restoration requires explicit `--restore-ssh`; it is off by default.
+
+After installing the trusted helpers, replace `UTILISATEUR` with the manager account:
+
+```bash
+sudo /usr/local/libexec/pzmanager/install/configurationInitiale.sh \
+  --manager-root /home/UTILISATEUR/pzmanager restore /chemin/backup.zip
+```
+
+Optional flags are `--force` and `--restore-ssh`. Start the server only after
+restoration succeeds.
+
+**Restores**: Sudoers, systemd services/timers, scripts, .env and Zomboid data;
+SSH only with `--restore-ssh`.
 
 ### Comparison
 

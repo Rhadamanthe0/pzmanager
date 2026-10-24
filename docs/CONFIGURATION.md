@@ -126,12 +126,12 @@ export BACKUP_PRUNE_MAX_SECONDS=600
 
 Tier thresholds are absolute snapshot ages: 12 hours, then another 60 hours at 6-hour granularity, then another 11 days daily (14 days total).
 
-Local hourly snapshots use **GFS retention** (`prune_gfs` in `dataBackup.sh`), not a flat N-day rotation:
+Local hourly snapshots use **GFS retention** (`prune_gfs` in `dataBackup.sh`), not a flat N-day rotation. Rsync code 23 is always refused; code 24 (vanished files) is accepted only outside strict consistency mode. Consistency requirements are described in [backup usage](USAGE.md#backups):
 
 - **BACKUP_GFS_HOURLY_HOURS**: keep every hourly snapshot for this many hours (default 12)
 - **BACKUP_GFS_SIXHOURLY_DAYS**: then keep 1 per 6h up to this many days (default 3)
 - **BACKUP_GFS_DAILY_DAYS**: then keep 1 per day up to this many days (default 14); older is deleted
-- **BACKUP_CPU_LIST**: optional CPU list used by the backup scope while the game runs (empty by default; e.g. `4,12` on this host). Ignored when the JVM is proven absent.
+- **BACKUP_CPU_LIST**: optional CPU list used by the backup scope while the game runs (empty by default; host policy in [HOST_ENVIRONMENT](HOST_ENVIRONMENT.md)). Ignored when the JVM is proven absent.
 - **BACKUP_PRUNE_MAX_DELETE**: max snapshots deleted per run (default 15; 0 = unlimited). Deleting a hardlinked snapshot is hundreds of thousands of `unlink()`, costly even with hardlink deduplication — bounding it per run lets a large backlog drain over several hourly runs without exceeding `TimeoutStartSec` (2400s). The run is also single-instance (`flock`), so a long prune never overlaps the next hourly trigger.
 
 `BACKUP_PRUNE_DRY_RUN=1 data/scripts/backup/dataBackup.sh` previews what would be pruned without deleting. `BACKUP_RETENTION_DAYS` no longer exists: it was read by nothing once GFS retention landed, and has been dropped from `.env.example`.
@@ -145,9 +145,9 @@ Dry-run plans ignore time.
 
 ### Exact tile restoration
 
-`pzm backup restore-zone` uses a native terrain reader for partially selected
-chunks. It defaults to the game's `jre64/bin/java` and its sibling `javac`, then
-`javac` on PATH. A compatible JDK is required to apply a partial chunk.
+`pzm backup restore-zone` requires a compatible JDK for every application,
+including whole chunks, and for preview when dictionaries differ. It defaults to
+the game's `jre64/bin/java` and its sibling `javac`, then `javac` on PATH.
 
 ```bash
 # Optional overrides; an explicit compiler never silently falls back.
@@ -165,7 +165,21 @@ export SYNC_BACKUPS_DIR="${PZ_DATA_DIR}/fullBackups"
 export OFFSITE_BACKUP_COUNT=7
 ```
 
-Each off-site backup is a **single timestamped ZIP** (`YYYY-MM-DD_HH-MM.zip`) created by `fullBackup.sh`, mirrored off-site by a root **Syncthing** send-only folder. The ZIP holds only the **valuable, non-reconstructible** data — `config/` (`.ssh`, systemd `--user` units, `setupTemplates`, `data/scripts/`, the root `.env`, `sudoers.d/<user>`) and `zomboid/` (the latest `Saves`/`db`/`Server`/`Lua` snapshot) — and **excludes** anything re-downloadable (the SteamCMD install + Workshop mods under `data/pzserver`, the local backups themselves, logs, the Discord venv). **OFFSITE_BACKUP_COUNT** keeps the N most recent ZIPs (retention by count, not days; default 7).
+Each off-site backup is a **single timestamped ZIP** created by `fullBackup.sh`, mirrored off-site by a root **Syncthing** send-only folder. The ZIP holds only the **valuable, non-reconstructible** data — `config/` (`.ssh`, systemd `--user` units, `setupTemplates`, `data/scripts/`, the root `.env`, `sudoers.d/<user>`) and `zomboid/` (the latest `Saves`/`db`/`Server`/`Lua` snapshot) — and **excludes** anything re-downloadable (the SteamCMD install + Workshop mods under `data/pzserver`, the local backups themselves, logs, the Discord venv). **OFFSITE_BACKUP_COUNT** keeps the N most recent ZIPs (retention by count, not days; default 7).
+
+**Default: plaintext, synchronized backups.** Without an AGE recipient, the
+ZIP is staged in `SYNC_BACKUPS_DIR`, validated, then published by same-filesystem
+rename. The warning about absent encryption does not disable synchronization:
+configuration secrets and SSH keys remain readable in both temporary and final
+archives. Atomic final publication does not guarantee that a sync client ignores
+temporary files.
+
+If explicitly configured, `AGE_RECIPIENTS` (comma-separated, preferred over
+`AGE_RECIPIENT`) enables the existing encryption option and requires `age`.
+The plaintext ZIP is then built in private work storage outside the synchronized
+tree; only encrypted staging enters the publication directory, created with
+mode `0600`, before same-filesystem rename publishes `.zip.age`. Encryption
+failure publishes nothing. Decrypt before using a ZIP restore command.
 
 ### Logs
 
@@ -263,15 +277,15 @@ Full guide: [DISCORD_BOT.md](DISCORD_BOT.md).
 
 **Script**: `data/scripts/backup/fullBackup.sh`
 **Schedule**: Daily at 4:30 AM (during maintenance)
-**Method**: A single self-contained ZIP of the valuable, non-reconstructible data
+**Method**: A self-contained archive; see [publication and encryption settings](#external-synchronization).
 **Retention**: `OFFSITE_BACKUP_COUNT` most recent (by count, default 7)
 
-**Contents** (one `YYYY-MM-DD_HH-MM.zip`):
+**Contents**:
 - `config/` — sudoers (`etc/sudoers.d/<user>`), SSH keys, systemd `--user` units, `setupTemplates`, all `data/scripts/` (excludes `.venv/`, `__pycache__/`), and the root `.env` (logs live outside `data/scripts/` and are not backed up)
 - `zomboid/` — the latest game snapshot (`Saves`/`db`/`Server`/`Lua` = world, players, server config, server-side mod data such as Aegis roles and moderation)
 - **Excluded** (re-downloadable/rebuildable): SteamCMD install + Workshop mods (`data/pzserver`), the local backups themselves, logs, Discord venv
 
-**Location**: `~/pzmanager/data/fullBackups/YYYY-MM-DD_HH-MM.zip`
+**Location**: `SYNC_BACKUPS_DIR` (timestamped archives).
 **Off-site**: mirrored by a root Syncthing send-only folder → PC fixe → Google Drive (the ZIP is the transport format; Syncthing has no hardlink awareness, so the hardlinked game snapshot is flattened into the archive).
 
 ### Manual Backup
@@ -281,14 +295,13 @@ Full guide: [DISCORD_BOT.md](DISCORD_BOT.md).
 pzm backup create
 
 # Complete backup
-sudo ./data/scripts/backup/fullBackup.sh
+pzm backup full
 ```
 
 ### Restore from Backup
 
-```bash
-sudo ./data/scripts/install/configurationInitiale.sh restore ~/pzmanager/data/fullBackups/2026-01-10_04-30.zip
-```
+For full-backup ZIPs and privileged restoration, follow
+[complete restoration](TROUBLESHOOTING.md#complete-restoration-system--data).
 
 ### Adjust Retention
 

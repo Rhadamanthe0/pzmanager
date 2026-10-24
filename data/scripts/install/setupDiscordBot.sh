@@ -44,8 +44,10 @@ python3 -c "import ensurepip" >/dev/null 2>&1 || die \
 
 log "Création du venv Python (${VENV_DIR})..."
 python3 -m venv "${VENV_DIR}"
-log "Installation de discord.py..."
-"${VENV_DIR}/bin/pip" install --quiet -r "${DISCORD_DIR}/requirements.txt"
+log "Mise à jour de pip dans le venv..."
+"${VENV_DIR}/bin/python" -m pip install --quiet --upgrade "pip>=26.2"
+log "Installation des dépendances Discord..."
+"${VENV_DIR}/bin/python" -m pip install --quiet -r "${DISCORD_DIR}/requirements.txt"
 
 log "Installation de l'unité systemd..."
 ensure_directory "${SYSTEMD_DIR}"

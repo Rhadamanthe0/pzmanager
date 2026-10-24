@@ -63,12 +63,12 @@ link_stock() {
     # Ne retirer le lien QUE si on a un vrai dossier à remettre (jamais laisser
     # jre64 absent : le serveur ne démarrerait pas).
     if [[ -L "$JRE" ]]; then
-        if [[ -d "$STOCK" ]]; then
+        if [[ -d "$STOCK" && ! -L "$STOCK" ]]; then
             rm -f "$JRE"
             mv "$STOCK" "$JRE"
             log "linkJvm: jre64 rétabli (Zulu bundlé)."
         else
-            log "linkJvm: lien jre64 présent mais pas de jre64.stock — on ne touche pas (validate le restaurera)."
+            die "linkJvm: restauration stock impossible (jre64.stock absent ou symbolique) ; validate interdit tant que jre64 est un lien."
         fi
     fi
 }

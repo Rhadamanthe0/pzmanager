@@ -85,7 +85,8 @@ chmod 600 "$1"
 flock -n 201
 "$2" "$3" prepare --lock-path "$1" --pid "$$" --fd 201 --unit probe.service > "$4"
 touch "$5"
-while [[ ! -f "$6" ]]; do sleep .02; done
+# Seul le worker admis doit conserver WORLD après la mort du propriétaire.
+while [[ ! -f "$6" ]]; do sleep .02 201>&-; done
 "$2" "$3" clear --lock-path "$1" --token "$(cat "$4")"
 '''
         with open(self.root/'owner.stderr','w') as error_stream:
@@ -202,6 +203,28 @@ while [[ ! -f "$6" ]]; do sleep .02; done
         self.assertIn('world operation',result.stderr)
         release.touch();self.assertEqual(owner.wait(timeout=5),0,(self.root/'owner.stderr').read_text())
         self.assertFalse(self.busy())
+
+    def test_owner_polling_sleep_does_not_keep_world_fd_alive(self):
+        owner,release=self.prepare_owner()
+        deadline=time.monotonic()+3
+        while time.monotonic()<deadline:
+            children=Path(f'/proc/{owner.pid}/task/{owner.pid}/children').read_text().split()
+            for child in children:
+                process=Path('/proc')/child
+                try:
+                    before=(process/'stat').read_text().rsplit(')',1)[1].split()
+                    if (process/'comm').read_text().strip()!='sleep':continue
+                    inherited=(process/'fd/201').exists()
+                    after=(process/'stat').read_text().rsplit(')',1)[1].split()
+                except OSError:continue
+                # Both observations must cover the same live child. A vanished
+                # /proc entry is not evidence that a living sleep closed WORLD.
+                if before[19]!=after[19] or after[0] in ('Z','X'):continue
+                release.touch();self.assertEqual(owner.wait(timeout=5),0)
+                self.assertFalse(inherited,f'polling sleep pid={child} inherited WORLD fd201 from owner pid={owner.pid}')
+                return
+            time.sleep(.001)
+        self.fail('No stable live polling sleep observed within 3 seconds')
 
     def test_scm_rights_handoff_survives_owner_sigkill_until_worker_exit(self):
         owner,_=self.prepare_owner()

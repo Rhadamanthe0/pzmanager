@@ -33,28 +33,11 @@ curl -fsSL ... | sudo PZ_USER=pzuser42 bash
 <details>
 <summary>Manual installation (advanced)</summary>
 
-```bash
-# As root
-apt update && apt upgrade -y
-apt install -y git
-
-# Clone
-git clone https://github.com/Rhadamanthe0/pzmanager.git /opt/pzmanager
-cd /opt/pzmanager
-
-# System setup (username as argument, default: pzuser)
-./data/scripts/install/setupSystem.sh
-
-# Move to home
-mv /opt/pzmanager /home/pzuser/
-chown -R pzuser:pzuser /home/pzuser/pzmanager
-
-# Configure .env (edit PZ_USER, ports, STEAM_BETA_BRANCH as needed)
-nano /home/pzuser/pzmanager/.env
-
-# Install server (reads PZ_USER and paths from .env)
-/home/pzuser/pzmanager/data/scripts/install/configurationInitiale.sh zomboid
-```
+Root installation helpers must run from a root-owned checkout whose ancestors
+cannot be replaced by another user. Do not run a helper as root after moving it
+into the manager's writable home. The installer prepares privileged system
+configuration; routine `pzm` operations run as the manager account.
+Use the installer above for the complete setup.
 
 </details>
 
@@ -134,10 +117,10 @@ View timers: `systemctl --user list-timers`
 # Data only (world, saves), using an existing snapshot directory
 pzm server stop 2m --reason "Restauration du monde"
 pzm backup restore data/dataBackups/backup_YYYY-MM-DD_HHhMMmSSs
-
-# Complete system restore
-sudo ./data/scripts/install/configurationInitiale.sh restore /path/to/fullBackup
 ```
+
+For full-backup ZIPs and privileged restoration, follow
+[complete restoration](TROUBLESHOOTING.md#complete-restoration-system--data).
 
 ## Uninstallation
 

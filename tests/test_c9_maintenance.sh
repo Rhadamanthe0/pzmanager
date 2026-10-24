@@ -65,6 +65,7 @@ EVAL_FILE="${SANDBOX}/extracted.sh"
     extract_func validate_final_start
     extract_func download_workshop_mods
     extract_func update_self
+    extract_func update_game_server
     extract_func restart_server_on_failure
 } > "$EVAL_FILE"
 for fn in maint_set_state maint_arm_recovery maint_disarm_recovery \
@@ -193,6 +194,56 @@ fi
 [[ ! -s "$PZ_MOCK_STEAM_LOG" ]] \
     && ok "steamcmd jamais appelé (rien à pré-télécharger)" \
     || ko "steamcmd appelé à tort"
+
+# --- (1b) validate ne doit jamais traverser un jre64 symbolique -----------------
+echo "== (1b) protection JVM externe pendant validate =="
+mkdir -p "${SANDBOX}/scripts/internal" "${SANDBOX}/scripts/lib" "${SANDBOX}/game" "${SANDBOX}/external-jvm"
+cp "${ROOT}/data/scripts/internal/linkJvm.sh" "${SANDBOX}/scripts/internal/linkJvm.sh"
+# Vrai script JVM ; seules configuration et journalisation sont aux frontières.
+printf 'source_env() { :; }\nlog() { echo "$*"; }\ndie() { echo "$*" >&2; exit 1; }\n' > "${SANDBOX}/scripts/lib/common.sh"
+printf '#!/bin/sh\nexit 0\n' > "${SANDBOX}/scripts/internal/configureJvm.sh"
+chmod +x "${SANDBOX}/scripts/internal/"*.sh
+export PZ_INSTALL_DIR="${SANDBOX}/game"
+export STEAM_APP_ID=380870
+printf 'external-intact\n' > "${SANDBOX}/external-jvm/proof"
+ln -s "${SANDBOX}/external-jvm" "${PZ_INSTALL_DIR}/jre64"
+steam_beta_branch() { echo public; }
+steamcmd_runscript() {
+    echo validate >> "$PZ_MOCK_STEAM_LOG"
+    echo corrupted > "${PZ_INSTALL_DIR}/jre64/proof"
+}
+if ( update_game_server ) > "${SANDBOX}/stock-missing.log" 2>&1; then
+    ko "stock absent : validate autorisé à travers le lien JVM"
+else
+    ok "stock absent : maintenance refusée avant validate"
+fi
+[[ ! -s "$PZ_MOCK_STEAM_LOG" ]] &&
+    ok "stock absent : SteamCMD jamais appelé" || ko "stock absent : SteamCMD appelé"
+[[ "$(cat "${SANDBOX}/external-jvm/proof")" == external-intact ]] &&
+    ok "stock absent : JVM externe intacte" || ko "stock absent : JVM externe corrompue"
+# Stock prépositionné comme lien : aucune restauration à travers une seconde JVM.
+ln -s "${SANDBOX}/external-jvm" "${PZ_INSTALL_DIR}/jre64.stock"
+: > "$PZ_MOCK_STEAM_LOG"
+if ( update_game_server ) > "${SANDBOX}/stock-symlink.log" 2>&1; then
+    ko "stock symbolique : validate autorisé"
+else
+    ok "stock symbolique : maintenance refusée"
+fi
+[[ ! -s "$PZ_MOCK_STEAM_LOG" ]] &&
+    ok "stock symbolique : SteamCMD jamais appelé" || ko "stock symbolique : SteamCMD appelé"
+rm -f "${PZ_INSTALL_DIR}/jre64.stock"
+mkdir "${PZ_INSTALL_DIR}/jre64.stock"
+: > "$PZ_MOCK_STEAM_LOG"
+if ( update_game_server ) > "${SANDBOX}/stock-ok.log" 2>&1 &&
+   [[ ! -L "${PZ_INSTALL_DIR}/jre64" ]] && [[ -d "${PZ_INSTALL_DIR}/jre64" ]]; then
+    ok "vrai stock restauré avant validate"
+else
+    ko "vrai stock : maintenance refusée ou lien toujours présent"
+fi
+[[ -s "$PZ_MOCK_STEAM_LOG" ]] &&
+    ok "vrai stock : validate exécuté" || ko "vrai stock : validate absent"
+unset -f steam_beta_branch steamcmd_runscript
+export PZ_INSTALL_DIR="$SANDBOX"
 
 # --- (2) git pull dirty -> refus sans écraser --------------------------------------
 echo "== (2) git dirty =="

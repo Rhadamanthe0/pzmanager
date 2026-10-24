@@ -175,7 +175,8 @@ To recover constructions from an older directory snapshot or a full-backup ZIP, 
 `pzm backup restore-zone <backup> <x1> <y1> <x2> <y2>`. It previews by default;
 `--apply` restores the exact inclusive tile rectangle, on every floor, while the
 server is stopped. For one tile, repeat its X/Y as both corners. Other tiles in
-the same chunk are preserved; partial chunks require a compatible JDK.
+the same chunk are preserved. Every application requires a compatible JDK;
+preview also needs it when dictionaries differ.
 Follow [the restore procedure](USAGE.md#restore-a-map-zone-build-42) for the
 options, affected data and rollback behaviour.
 
@@ -190,8 +191,8 @@ pzm map wipe <x> <y>                 # One tile (regenerates its 8×8 chunk)
 pzm map wipe <x1> <y1> <x2> <y2>     # A rectangle of tiles
 ```
 
-Coordinates are in-game tile coordinates. `pzm map wipe --help` documents the
-Build 42 save layout it relies on.
+Coordinates are decimal in-game tile coordinates in `0..2147483647`; leading
+zeros are accepted. `pzm map wipe --help` documents the Build 42 save layout.
 
 > ⚠️ **Build 42 grid: a chunk is 8 tiles and a cell is 256 tiles** — *not* the
 > 10 / 300 of Build 41. `wipeMapTile.sh` was hard-coded to the B41 values until
@@ -208,9 +209,9 @@ not just the tiles you asked for. This is unconditional: the old `--cell` /
 whenever a mod changes buildings or rooms — which is the normal case.
 
 > ⚠️ **Deletion is immediate — there is no dry-run.** The server must be stopped
-> (the command refuses to run otherwise). A **normal snapshot** of the world
-> (`backup_<ts>`, via `dataBackup.sh --snapshot-only`) is taken first — it shows up
-> in `pzm backup list`, so your way back is `pzm backup restore data/dataBackups/<backup>`.
+> (the command refuses to run otherwise). A required, consistent stopped-world
+> snapshot must succeed before deletion; it appears in `pzm backup list`.
+> Recover with `pzm backup restore data/dataBackups/<backup>` while stopped.
 
 Anything built by players in the wiped area is lost — it is part of the save
 data being regenerated.
@@ -241,15 +242,18 @@ pzm admin reset --keep-config --keep-whitelist
 
 Options are combinable. With `--keep-config`, configs are restored **before** world generation so Workshop mods are downloaded on first launch.
 
-> ⚠️ **There is no confirmation prompt.** `pzm admin reset` wipes the world
-> immediately, and it is runnable from the Discord bot too. The only barrier is
-> access to `pzm` / to the bot's admin role — keep that role tight.
+> ⚠️ **There is no confirmation prompt.** Reset is also available through
+> Discord; restrict access to `pzm` and the bot's admin role.
 
-Process:
-1. Current Zomboid set aside for rollback (deleted once the new world is in place; hourly backups remain in `data/dataBackups/`)
-2. World generation (automatic, ~2 min)
-3. Admin password displayed (note it!)
-4. Server started
+The server stops and a required, consistent snapshot must succeed. The live
+world remains in place while a replacement is generated in staging and the
+selected preservation options are finalized. Before moving live data, reset
+records a durable prepared transaction and reserves the recovery tree. Success
+verifies the replacement before cleanup and starts the server; failure restores
+and verifies the old world, or leaves a journal that blocks startup if rollback
+cannot be verified. Keep the displayed admin password.
+See [transaction recovery](WRITING_TEXT_ONLY.md) before recovering an interrupted
+reset; the temporary recovery tree does not replace retained snapshots.
 
 ## Maintenance Scheduling
 

@@ -18,7 +18,7 @@
 #       top-level inconnu -> refuses AVANT extraction (die, aucun artefact).
 #   (5) age : RECIPIENT defini + age present -> .age 0600 cree, ZIP clair
 #       supprime (non publie hors-site) ; age absent + RECIPIENT -> die, rien
-#       publie ; RECIPIENT vide -> WARNING + ZIP clair seul, pas de .age ;
+#       publie ; RECIPIENT vide -> WARNING + ZIP clair synchronisé, pas de .age ;
 #       AGE_RECIPIENTS multiples (virgule) -> un -r par destinataire.
 #   (6) cle privee age (PZ_AGE_IDENTITY) jamais dans l'archive (noms+contenu).
 #
@@ -92,7 +92,7 @@ rm -f "$probe"
 export XDG_RUNTIME_DIR="${SANDBOX}/rt"
 export TMPDIR="${SANDBOX}/tmp"
 if ! [[ "${PZ_WORLD_LOCK_DEPTH:-0}" =~ ^[1-9][0-9]*$ ]] || [[ -z "${PZ_WORLD_LOCK_FD:-}" ]] \
-    || ! { : >&"${PZ_WORLD_LOCK_FD}" 2>/dev/null; }; then
+    || ! { : 1>&"${PZ_WORLD_LOCK_FD}" 2>/dev/null; }; then
     PZ_WORLD_LOCK_DEPTH=0; PZ_WORLD_LOCK_FD=""
     export PZ_WORLD_LOCK_DEPTH PZ_WORLD_LOCK_FD
 fi
@@ -109,7 +109,7 @@ cat > "${BIN}/sudo" <<'MOCKEOF'
 while (( $# > 0 )); do
     case "$1" in
         -u) shift 2 ;;
-        *=*) shift ;;
+        *=*) export "$1"; shift ;;
         *) break ;;
     esac
 done
@@ -273,6 +273,28 @@ MOCKEOF
 cat > "${BIN}/systemctl" <<'MOCKEOF'
 #!/usr/bin/env bash
 printf 'systemctl %s\n' "$*" >> "${MOCK_DIR}/calls.log"
+if [[ " $* " == *" show "* ]]; then
+    [[ "${MOCK_RESTORE_STATE:-inactive}" != error ]] || exit 1
+    if [[ " $* " == *" -p Version "* ]]; then printf 'Version=fixture\n'; exit; fi
+    load=loaded
+    if [[ "${MOCK_FRESH_RESTORE:-0}" == 1 ]]; then
+        file=zomboid.service
+        [[ " $* " != *" pz.slice "* ]] || file=pz.slice
+        [[ -f "$PZ_HOME/.config/systemd/user/$file" ]] || load=not-found
+    fi
+    if [[ " $* " == *" pz.slice "* && " $* " == *" --value "* ]]; then
+        printf '%s\n' "$load"; exit
+    fi
+    if [[ "${MOCK_FRESH_RESTORE:-0}" == 1 && " $* " == *" -p ActiveState,SubState,Result "* ]]; then
+        [[ -f "$PZ_HOME/.config/systemd/user/zomboid.service" && -f "$PZ_HOME/.config/systemd/user/pz.slice" ]] || exit 1
+        printf 'metadata-ready-before-world\n' >> "$MOCK_DIR/calls.log"
+    fi
+    if [[ " $* " == *LoadState* ]]; then
+        printf 'LoadState=%s\nActiveState=%s\nSubState=dead\nMainPID=%s\nControlPID=%s\n' "$load" "${MOCK_RESTORE_STATE:-inactive}" "${MOCK_MAIN_PID:-0}" "${MOCK_CONTROL_PID:-0}"
+    else
+        printf 'ActiveState=%s\nSubState=dead\nResult=success\n' "${MOCK_RESTORE_STATE:-inactive}"
+    fi
+fi
 exit 0
 MOCKEOF
 chmod +x "${BIN}/"* "${AGE_BIN}/"*
@@ -299,14 +321,14 @@ fresh_backup_case() {
     rm -rf "$home" "$mgr" "$datadir" "$scripts" "$bkp" "$BK_SYNC"
     mkdir -p "$home/.ssh" "$home/.config/systemd/user" "$datadir/setupTemplates" \
         "$scripts" "$mgr/versionning" "$bkp" "$BK_SYNC"
-    mkdir -p "$bkp/snap1/Saves" "$bkp/snap1/db" "$bkp/snap1/Server"
+    mkdir -p "$bkp/snap1/Saves/Multiplayer/world" "$bkp/snap1/db" "$bkp/snap1/Server"
     echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHRlc3QgdGVzdA== u@h" > "$home/.ssh/id_ed25519.pub"
     echo unit > "$home/.config/systemd/user/svc.service"
     echo tpl > "$datadir/setupTemplates/tpl.txt"
     echo dummy > "$scripts/dummy.sh"
     printf 'export FOO=bar\n' > "$mgr/.env"
     echo v1 > "$mgr/versionning/V1.txt"
-    echo "world" > "$bkp/snap1/Saves/player.bin"
+    echo "world" > "$bkp/snap1/Saves/Multiplayer/world/player.bin"
     echo "db" > "$bkp/snap1/db/servertest.db"
     echo "ini" > "$bkp/snap1/Server/servertest.ini"
     ln -sfnT "$bkp/snap1" "$bkp/latest"
@@ -335,7 +357,7 @@ grep -q '\.age' "$FULLBACKUP" \
     && ok "fullBackup : artefact .age produit" \
     || ko "fullBackup : artefact .age absent"
 grep -qiE 'WARNING.*AGE_RECIPIENT|AGE_RECIPIENT.*WARNING|RECIPIENT.*vide' "$FULLBACKUP" \
-    && ok "fullBackup : WARNING si RECIPIENT vide (ZIP clair local seul)" \
+    && ok "fullBackup : WARNING si RECIPIENT vide (ZIP clair synchronisé)" \
     || ko "fullBackup : WARNING RECIPIENT vide absent"
 grep -q 'restore-ssh' "$CONF_INIT" \
     && ok "restore : flag --restore-ssh" \
@@ -392,7 +414,10 @@ reset_restore_env() {
     export PZ_MANAGER_HOME="$R_HOME" PZ_GAME_HOME="$R_HOME"
     export PZ_SOURCE_DIR="$R_WORLD" PZ_SUDOERS_DEST="${R_SUDOERS}/pzuser"
     export BACKUP_DIR="${SANDBOX}/r-bkp" SYNC_BACKUPS_DIR="${SANDBOX}/r-sync"
-    export RESTORE_SSH=false FORCE_MODE=true PZ_RESTORE_PRIVATE_KEYS=0
+    export RESTORE_SSH=false FORCE_MODE=true PZ_RESTORE_PRIVATE_KEYS=0 MOCK_RESTORE_STATE=inactive
+    export PZ_DATA_DIR="$R_MGR/data"
+    export PZ_SERVER_NAME=servertest
+    unset PZ_GAME_USER PZ_MANAGER_USER
     echo "SYSTEM-SENTINEL" > "$PZ_SUDOERS_DEST"
     : > "${MOCK_DIR}/calls.log"
     : > "${MOCK_DIR}/age.log"
@@ -427,8 +452,13 @@ w("config/" + phome + "/.ssh/authorized_keys", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5
 w("config/" + phome + "/.config/systemd/user/svc.service", "unit\n")
 w("config/" + phome + "/pzmanager/dummy.sh", "#!/bin/bash\n")
 w("config/etc/sudoers.d/pzuser", "pzuser ALL=(ALL) NOPASSWD: ALL\n")
-w("zomboid/Saves/player.bin", "world\n")
-w("zomboid/db/servertest.db", "db\n")
+w("zomboid/Saves/Multiplayer/world/player.bin", "world\n")
+import sqlite3
+connection = sqlite3.connect(":memory:")
+connection.execute("CREATE TABLE whitelist (username TEXT)")
+connection.execute("INSERT INTO whitelist VALUES (?)", ("test",))
+w("zomboid/db/servertest.db", connection.serialize())
+connection.close()
 w("zomboid/Server/servertest.ini", "ini\n")
 '
 run_restore() { ( restore_backup "$@" >"${SANDBOX}/r-out.log" 2>&1 ); }
@@ -481,7 +511,7 @@ if declare -F restore_backup >/dev/null 2>&1; then
     grep -qi 'ssh non restaur' "${SANDBOX}/r-out.log" \
         && ok "ssh sans flag : skip journalise" \
         || ko "ssh sans flag : skip non journalise"
-    [[ -f "$R_WORLD/Saves/player.bin" ]] \
+    [[ -f "$R_WORLD/Saves/Multiplayer/world/player.bin" ]] \
         && ok "ssh sans flag : reste (monde) restaure quand meme" \
         || ko "ssh sans flag : monde non restaure"
 
@@ -516,7 +546,7 @@ if declare -F validate_ssh_tree >/dev/null 2>&1 || declare -F restore_backup >/d
     A_CMD="${SANDBOX}/a-cmd.zip"
     make_zip "$A_CMD" '
 w("config/" + phome + "/.ssh/authorized_keys", "command=\"rm -rf /\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHRlc3QgdGVzdA== evil@h\n")
-w("zomboid/Saves/player.bin", "world\n")
+w("zomboid/Saves/Multiplayer/world/player.bin", "world\n")
 '
     if run_restore "$A_CMD" --restore-ssh; then
         ko "authorized_keys command= : restaure a tort"
@@ -531,7 +561,7 @@ w("zomboid/Saves/player.bin", "world\n")
     A_PO="${SANDBOX}/a-permitopen.zip"
     make_zip "$A_PO" '
 w("config/" + phome + "/.ssh/authorized_keys", "permitopen=\"host:22\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHRlc3QgdGVzdA== evil@h\n")
-w("zomboid/Saves/player.bin", "world\n")
+w("zomboid/Saves/Multiplayer/world/player.bin", "world\n")
 '
     if run_restore "$A_PO" --restore-ssh; then
         ko "authorized_keys permitopen : restaure a tort"
@@ -544,7 +574,7 @@ w("zomboid/Saves/player.bin", "world\n")
     make_zip "$A_PX" '
 w("config/" + phome + "/.ssh/authorized_keys", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHRlc3QgdGVzdA== u@h\n")
 w("config/" + phome + "/.ssh/config", "Host *\n    ProxyCommand /bin/sh\n")
-w("zomboid/Saves/player.bin", "world\n")
+w("zomboid/Saves/Multiplayer/world/player.bin", "world\n")
 '
     if run_restore "$A_PX" --restore-ssh; then
         ko "ssh config ProxyCommand : restaure a tort"
@@ -560,7 +590,7 @@ w("zomboid/Saves/player.bin", "world\n")
     make_zip "$A_PRIV" '
 w("config/" + phome + "/.ssh/authorized_keys", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHRlc3QgdGVzdA== u@h\n")
 w("config/" + phome + "/.ssh/id_ed25519", "PRIVATE-KEY-SENTINEL\n")
-w("zomboid/Saves/player.bin", "world\n")
+w("zomboid/Saves/Multiplayer/world/player.bin", "world\n")
 '
     if run_restore "$A_PRIV" --restore-ssh; then
         ko "cle privee (defaut) : restauree a tort"
@@ -575,7 +605,7 @@ w("zomboid/Saves/player.bin", "world\n")
     make_zip "$A_PRIV" '
 w("config/" + phome + "/.ssh/authorized_keys", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHRlc3QgdGVzdA== u@h\n")
 w("config/" + phome + "/.ssh/id_ed25519", "PRIVATE-KEY-SENTINEL\n")
-w("zomboid/Saves/player.bin", "world\n")
+w("zomboid/Saves/Multiplayer/world/player.bin", "world\n")
 '
     if run_restore "$A_PRIV" --restore-ssh; then
         ok "cle privee (PZ_RESTORE_PRIVATE_KEYS=1) : acceptee"
@@ -594,7 +624,7 @@ if declare -F validate_restore_archive >/dev/null 2>&1; then
     A_TRAV="${SANDBOX}/a-trav.zip"
     make_zip "$A_TRAV" '
 w("../../etc/cron.d/pwn", "* * * * * root pwn\n")
-w("zomboid/Saves/player.bin", "world\n")
+w("zomboid/Saves/Multiplayer/world/player.bin", "world\n")
 '
     if run_restore "$A_TRAV" --restore-ssh; then
         ko "traversal ../../etc/cron.d/pwn : restaure a tort"
@@ -614,7 +644,7 @@ w("zomboid/Saves/player.bin", "world\n")
     A_ABS="${SANDBOX}/a-abs.zip"
     make_zip "$A_ABS" '
 w("/etc/cron.d/pwn", "* * * * * root pwn\n")
-w("zomboid/Saves/player.bin", "world\n")
+w("zomboid/Saves/Multiplayer/world/player.bin", "world\n")
 '
     if run_restore "$A_ABS"; then
         ko "chemin absolu : restaure a tort"
@@ -627,7 +657,7 @@ w("zomboid/Saves/player.bin", "world\n")
     make_zip "$A_SYM" '
 w("config/" + phome + "/.ssh/authorized_keys", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHRlc3QgdGVzdA== u@h\n")
 sym("config/" + phome + "/.ssh/link", "/etc/passwd")
-w("zomboid/Saves/player.bin", "world\n")
+w("zomboid/Saves/Multiplayer/world/player.bin", "world\n")
 '
     if run_restore "$A_SYM" --restore-ssh; then
         ko "symlink /etc/passwd : restaure a tort"
@@ -642,7 +672,7 @@ w("zomboid/Saves/player.bin", "world\n")
     A_EVIL="${SANDBOX}/a-evil.zip"
     make_zip "$A_EVIL" '
 w("evil.sh", "#!/bin/sh\nevil\n")
-w("zomboid/Saves/player.bin", "world\n")
+w("zomboid/Saves/Multiplayer/world/player.bin", "world\n")
 '
     if run_restore "$A_EVIL"; then
         ko "top-level inconnu : restaure a tort"
@@ -652,6 +682,138 @@ w("zomboid/Saves/player.bin", "world\n")
 else
     ko "traversal : validate_restore_archive absente"
 fi
+
+# Le refus doit venir de l'état demandé, avec un monde témoin intact.
+for state in active activating error; do
+    reset_restore_env
+    mkdir -p "$R_WORLD/Saves/Multiplayer/original"
+    echo sentinel > "$R_WORLD/Saves/Multiplayer/original/player.bin"
+    make_zip "$A1" "$GOOD_SPEC"
+    export MOCK_RESTORE_STATE="$state"
+    if run_restore "$A1"; then
+        ko "restore $state : accepté à tort"
+    elif grep -qE "serveur est actif|non prouvé arrêté" "${SANDBOX}/r-out.log"; then
+        ok "restore $state : refus par preuve état serveur"
+    else
+        ko "restore $state : refus sans preuve causale"; cat "${SANDBOX}/r-out.log"
+    fi
+    [[ "$(cat "$R_WORLD/Saves/Multiplayer/original/player.bin")" == sentinel && ! -e "$R_WORLD/Saves/Multiplayer/world" && ! -e "$R_HOME/pzmanager/dummy.sh" ]] \
+        && ok "restore $state : monde et scripts intacts" || ko "restore $state : mutation"
+done
+unset MOCK_RESTORE_STATE
+
+# Un service inactif avec un PID de contrôle n'est pas un arrêt prouvé.
+reset_restore_env
+make_zip "$A1" "$GOOD_SPEC"
+export MOCK_CONTROL_PID=42
+if run_restore "$A1"; then
+    ko "PID contrôle actif : accepté"
+elif grep -q 'non prouvé arrêté' "${SANDBOX}/r-out.log" && [[ ! -e "$R_WORLD" ]]; then
+    ok "PID contrôle actif : refus avant mutation"
+else
+    ko "PID contrôle actif : refus non prouvé"
+fi
+unset MOCK_CONTROL_PID
+
+# Bootstrap frais : les métadonnées de confiance précèdent le métier, sans start.
+reset_restore_env
+make_zip "$A1" "$GOOD_SPEC"
+export MOCK_FRESH_RESTORE=1
+if run_restore "$A1"; then
+    grep -q 'metadata-ready-before-world' "$MOCK_DIR/calls.log" \
+        && [[ -f "$R_HOME/.config/systemd/user/pz.slice" && -f "$R_WORLD/Saves/Multiplayer/world/player.bin" ]] \
+        && ok "bootstrap frais : unités/slice prouvées avant métier" || ko "bootstrap frais : ordre non prouvé"
+    if grep -qE 'systemctl --user (start|restart) zomboid' "$MOCK_DIR/calls.log"; then
+        ko "bootstrap frais : serveur/socket lancé"
+    else
+        ok "bootstrap frais : aucun lancement serveur/socket"
+    fi
+else
+    ko "bootstrap frais : refus"; cat "${SANDBOX}/r-out.log"
+fi
+unset MOCK_FRESH_RESTORE
+
+# Une unité existante ne doit être remplacée qu'après succès du monde.
+reset_restore_env
+mkdir -p "$R_HOME/.config/systemd/user"
+printf 'custom-existing-unit\n' > "$R_HOME/.config/systemd/user/zomboid.service"
+make_zip "$A1" 'w("zomboid/Saves/file-without-world", "invalid-world")'
+export MOCK_FRESH_RESTORE=1
+if run_restore "$A1"; then
+    ko "unité existante + monde invalide : accepté"
+elif [[ "$(cat "$R_HOME/.config/systemd/user/zomboid.service")" == custom-existing-unit && ! -e "$R_WORLD" ]]; then
+    ok "unité existante préservée jusqu'au succès métier"
+else
+    ko "unité existante remplacée avant succès métier"
+fi
+unset MOCK_FRESH_RESTORE
+
+# Ancien dossier et son ZIP interne : le même métier transactionnel s'applique.
+reset_restore_env
+legacy="${SANDBOX}/legacy"
+mkdir -p "$legacy$PZ_HOME"
+LEGACY="$legacy" PHOME="$PZ_HOME" python3 - <<'PYLEGACY'
+import os, zipfile
+from pathlib import Path
+root=Path(os.environ['LEGACY'] + os.environ['PHOME'])
+with zipfile.ZipFile(root/'Zomboid_Latest_Full.zip', 'w') as z:
+    z.writestr('latest/Saves/Multiplayer/old/player.bin', 'old-format')
+    z.writestr('latest/Server/servertest.ini', 'ini')
+PYLEGACY
+if run_restore "$legacy"; then
+    [[ "$(cat "$R_WORLD/Saves/Multiplayer/old/player.bin")" == old-format ]] \
+        && ok "ancien dossier+ZIP : monde restauré" || ko "ancien dossier+ZIP : monde absent"
+else
+    ko "ancien dossier+ZIP : restauration refusée"; cat "${SANDBOX}/r-out.log"
+fi
+LEGACY="$legacy" PHOME="$PZ_HOME" python3 - <<'PYLEGACY'
+import os, zipfile
+from pathlib import Path
+root=Path(os.environ['LEGACY'] + os.environ['PHOME'])
+with zipfile.ZipFile(root/'Zomboid_Latest_Full.zip', 'w') as z:
+    z.writestr('latest/../../escape', 'refused')
+PYLEGACY
+calls_before="$(wc -l < "$MOCK_DIR/calls.log")"
+if run_restore "$legacy"; then
+    ko "ancien ZIP : traversal accepté"
+elif grep -q 'Chemin ancien ZIP refusé' "${SANDBOX}/r-out.log" \
+    && [[ "$(cat "$R_WORLD/Saves/Multiplayer/old/player.bin")" == old-format \
+        && "$(wc -l < "$MOCK_DIR/calls.log")" == "$calls_before" ]]; then
+    ok "ancien ZIP : traversal refusé avant mutation/préparation unités"
+else
+    ko "ancien ZIP : refus non prouvé"; cat "${SANDBOX}/r-out.log"
+fi
+rm -rf "$legacy"
+
+# Une panne de renommage après le premier swap doit remettre les fichiers.
+reset_restore_env
+mkdir -p "$R_WORLD/Saves/Multiplayer/original" "$R_WORLD/db"
+echo sentinel > "$R_WORLD/Saves/Multiplayer/original/player.bin"
+echo old-db > "$R_WORLD/db/servertest.db"
+make_zip "$A1" "$GOOD_SPEC"
+cat > "$BIN/mv" <<'MOCKMV'
+#!/bin/bash
+for arg in "$@"; do
+    if [[ "$arg" == */.restore-staging-*/db && ! -e "$MOCK_DIR/mv-failed" ]]; then
+        touch "$MOCK_DIR/mv-failed"
+        exit 1
+    fi
+done
+exec /bin/mv "$@"
+MOCKMV
+chmod +x "$BIN/mv"
+if run_restore "$A1"; then
+    ko "rollback : panne non remontée"
+elif grep -q "live remis dans son état d'origine" "${SANDBOX}/r-out.log" \
+    && [[ "$(cat "$R_WORLD/Saves/Multiplayer/original/player.bin")" == sentinel \
+        && "$(cat "$R_WORLD/db/servertest.db")" == old-db ]]; then
+    ok "rollback : monde et DB remis après panne de swap"
+else
+    ko "rollback : récupération non prouvée"; cat "${SANDBOX}/r-out.log"
+fi
+rm -f "$BIN/mv" "$MOCK_DIR/mv-failed"
+python3 "$ROOT/data/scripts/lib/world_transaction.py" check --world "$R_WORLD" \
+    && ok "rollback : journal résolu" || ko "rollback : journal non résolu"
 
 # --- (5) chiffrement age (fullBackup end-to-end) ------------------------------------
 echo "== (5) age =="
@@ -728,14 +890,17 @@ else
     ko "sans RECIPIENT : run en echec a tort"; show_out
 fi
 (( $(count_ext "$BK_SYNC" '*.zip') == 1 )) \
-    && ok "sans RECIPIENT : ZIP clair local seul" \
+    && ok "sans RECIPIENT : ZIP clair dans le dossier synchronisé" \
     || ko "sans RECIPIENT : zip_count=$(count_ext "$BK_SYNC" '*.zip') (attendu 1)"
 (( $(count_ext "$BK_SYNC" '*.age') == 0 )) \
     && ok "sans RECIPIENT : pas de .age" \
     || ko "sans RECIPIENT : .age present a tort"
-grep -qi 'WARNING' "${SANDBOX}/out.log" \
-    && ok "sans RECIPIENT : WARNING journalise" \
-    || ko "sans RECIPIENT : WARNING absent"
+if grep -qi 'WARNING.*répertoire synchronisé' "${SANDBOX}/out.log" &&
+   ! grep -qi 'local seul' "${SANDBOX}/out.log"; then
+    ok "sans RECIPIENT : WARNING exact, aucune promesse de stockage local seul"
+else
+    ko "sans RECIPIENT : WARNING absent ou promesse locale inexacte"
+fi
 
 fresh_backup_case age-fail
 export AGE_RECIPIENT="age1ql5ksft0rjx2vtest"

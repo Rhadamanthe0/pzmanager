@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # setupSystem.sh - Configuration système initiale
 # Installation attendue : /usr/local/libexec/pzmanager/ root:root 0755.
-# (Lance depuis le clone par install.sh en dev : l'avertissement ci-dessous est
-# donc non bloquant.) Helper root : ne jamais charger le .env (modifiable par
+# Helpers et ancêtres doivent appartenir à root, sans écriture pour un tiers.
+# Helper root : ne jamais charger le .env (modifiable par
 # PZ_USER) par execution shell ; parsing declaratif via lib/env_parse.sh.
 # Crée l'utilisateur, installe les paquets requis et configure le pare-feu.
 # Usage: sudo ./setupSystem.sh [nom_utilisateur] [chemin_du_.env]
@@ -13,13 +13,43 @@
 set -euo pipefail
 trap 'on_error $LINENO' ERR
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-readonly PZ_USER="${1:-pzuser}"
-# PZ_USER alimente useradd et un sed/sudoers sans échappement (cf. install_sudoers)
-# : refuse toute valeur hors regex avant usage, comme install.sh.
-[[ "$PZ_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || { echo "[ERROR] Invalid PZ_USER '${PZ_USER}' (attendu ^[a-z_][a-z0-9_-]{0,31}$)" >&2; exit 1; }
-readonly PZ_HOME="/home/${PZ_USER}"
-readonly ENV_FILE="${2:-${PZ_HOME}/pzmanager/.env}"
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
+# Même frontière que configurationInitiale : aucun code manager-owned en root.
+if [[ "${EUID:-0}" -eq 0 ]]; then
+    _trusted="$(realpath -e "$SCRIPT_DIR")"
+    while [[ "$_trusted" != / ]]; do
+        [[ "$(stat -c %u "$_trusted")" == 0 && $(( 8#$(stat -c %a "$_trusted") & 0022 )) == 0 ]] \
+            || { echo "[ERROR] Chemin helper root non fiable : $_trusted" >&2; exit 1; }
+        _trusted="$(dirname "$_trusted")"
+    done
+    [[ -z "$(find "$SCRIPT_DIR" "${SCRIPT_DIR}/../lib" "${SCRIPT_DIR}/../../setupTemplates" \( -type l -o ! -uid 0 -o -perm /0022 \) -print -quit)" ]] \
+        || { echo "[ERROR] Helpers root modifiables par un tiers." >&2; exit 1; }
+    unset _trusted
+fi
+SETUP_MANAGER_ROOT=""
+if [[ "${1:-}" == --manager-root ]]; then
+    [[ "${2:-}" == /* && "${2:-}" != *..* && "${2:-}" != *$'\n'* ]] \
+        || { echo "[ERROR] Racine manager absolue requise." >&2; exit 1; }
+    SETUP_MANAGER_ROOT="$2"
+    shift 2
+    _manager_uid="$(stat -c %u "$SETUP_MANAGER_ROOT")"
+    [[ "$_manager_uid" != 0 ]] || { echo "[ERROR] Installation manager non root requise." >&2; exit 1; }
+    _manager_user="$(getent passwd "$_manager_uid" | cut -d: -f1)"
+    _manager_home="$(getent passwd "$_manager_uid" | cut -d: -f6)"
+else
+    _manager_user="${1:-pzuser}"
+    _manager_home="/home/${_manager_user}"
+fi
+readonly PZ_USER="$_manager_user"
+[[ "$PZ_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ && "$_manager_home" == /* ]] \
+    || { echo "[ERROR] Invalid PZ_USER '${PZ_USER}'" >&2; exit 1; }
+readonly PZ_HOME="$_manager_home"
+if [[ -n "$SETUP_MANAGER_ROOT" ]]; then
+    readonly ENV_FILE="${SETUP_MANAGER_ROOT}/.env"
+else
+    readonly ENV_FILE="${2:-${PZ_HOME}/pzmanager/.env}"
+fi
+unset _manager_uid _manager_user _manager_home
 
 on_error() {
     local lineno=${1:-?}
@@ -142,16 +172,18 @@ read_ports_from_env() {
 load_ports_from_env() {
     local env_file="$1"
     local lib1="${SCRIPT_DIR}/../lib/env_parse.sh"
-    local lib2="/usr/local/libexec/pzmanager/env_parse.sh"
-    if [[ -f "$lib1" ]]; then
-        # shellcheck disable=SC1090
-        . "$lib1"
-    elif [[ -f "$lib2" ]]; then
-        # shellcheck disable=SC1090
-        . "$lib2"
+    # shellcheck disable=SC1090
+    . "$lib1"
+    if [[ -n "$SETUP_MANAGER_ROOT" ]]; then
+        local declared_user
+        declared_user="$(bash -c 'source "$1"; unset PZ_USER; parse_env_declarative "$2"; printf "%s" "${PZ_USER:-}"' _ "$lib1" "$env_file")"
+        [[ -z "$declared_user" || "$declared_user" == "$PZ_USER" ]] \
+            || { echo "[ERROR] Identité .env incompatible avec le propriétaire manager." >&2; exit 1; }
     fi
     if declare -F parse_env_declarative >/dev/null 2>&1; then
-        parse_env_declarative "$env_file" || true
+        # L'identité et le home sont les arguments administrateur readonly,
+        # jamais des affectations venant du fichier manager.
+        parse_env_declarative <(grep -E '^[[:space:]]*(export[[:space:]]+)?(PZ_PORT_GAME|PZ_PORT_GAME2|PZ_PROMETHEUS_PORT|PZ_GAME_USER|PZ_MANAGER_USER)=' "$env_file")
     else
         read_ports_from_env "$env_file"
     fi

@@ -58,7 +58,7 @@ OS repositories. `install_zomboid_dependencies` calls `resolve_java_package()`
 `apt-cache policy` and installs the first one that has a candidate, logging
 any downgrade. Order is always <requested> → 21 → 17 (deduplicated).
 
-| OS | `openjdk-25-jre-headless` probe | JDK actually installed |
+| OS | `openjdk-25-jre-headless` probe | Runtime selected |
 |---|---|---|
 | Debian 12 (bookworm) | no candidate in the default archive (bookworm carries 17) | 21 when backports/Adoptium expose it, else 17 |
 | Ubuntu 22.04 and newer | installed when the archive offers a candidate | 25 when available, else 21, else 17 |
@@ -66,8 +66,10 @@ any downgrade. Order is always <requested> → 21 → 17 (deduplicated).
 
 After `apt-get install`, `verify_java_version()` parses the major out of
 `<JAVA_PATH>/bin/java -version` (falling back to `java` on `PATH`) and aborts
-the install on mismatch, so the binary the `zomboid.service` JVM ends up on is
-the one that was proven. Overrides in `.env`: `JAVA_VERSION` (17–25) and
+the install on mismatch. This checks the OS package runtime, not necessarily the
+server JVM: the game launches `PZ_INSTALL_DIR/jre64/bin/java`, bundled or linked
+by `linkJvm.sh`. Offline Writing cleanup chooses a separate compatible JDK; see
+[Writing requirements](WRITING_TEXT_ONLY.md). Overrides in `.env`: `JAVA_VERSION` (17–25) and
 `PZ_JDK_SOURCE` (`debian`|`temurin`); the sudoers template already permits the
 three `apt-get install … openjdk-{25,21,17}-jre-headless` lines the fallback
 can pick. Temurin is pinned to `temurin-25-jre` only (no wildcard: a wildcard
@@ -282,54 +284,16 @@ built-in `admin` account is created at install and excluded from the purge.
 
 **Type**: User service (systemd user)
 
-**Template file**: `~/pzmanager/data/setupTemplates/zomboid.service`
-**Installed file**: `~/.config/systemd/user/zomboid.service`
+The [service template](../data/setupTemplates/zomboid.service) is the source of
+truth; installation writes `~/.config/systemd/user/zomboid.service`.
 
-**Configuration**:
-```ini
-[Unit]
-Description=Project Zomboid Server
-After=network.target zomboid.socket
-Requires=zomboid.socket
-Wants=zomboid_logger.service
-
-[Service]
-Type=simple
-PrivateTmp=true
-WorkingDirectory=%h/pzmanager/data/pzserver/
-# Drains any stray "quit" left in the control FIFO (avoids a socket-activation flap)
-ExecStartPre=/bin/sh -c "dd if=%h/pzmanager/data/pzserver/zomboid.control iflag=nonblock of=/dev/null 2>/dev/null; exit 0"
-# Reads the one-shot admin password from ~/pzmanager/.admin_password and deletes it
-ExecStart=/bin/sh -c "... exec .../start-server.sh -cachedir=%h/pzmanager/Zomboid $ADMIN_ARGS <> .../zomboid.control"
-ExecStartPost=-/bin/sh -c "%h/pzmanager/data/scripts/internal/notifyServerReady.sh &"
-ExecStop=/bin/sh -c "echo 'quit' > %h/pzmanager/data/pzserver/zomboid.control"
-KillSignal=SIGCONT
-TimeoutStartSec=900           # allows the pre-start purge safety snapshot to finish
-TimeoutStopSec=120            # a large modded B42 save can take >30s to shut down cleanly
-MemorySwapMax=0              # swap forbidden to the process (prevents micro-freezes/desync)
-
-[Install]
-WantedBy=default.target
-```
-
-**Features**:
-- Automatic startup at boot
-- Pre-start purge and its safety snapshot have up to 15 minutes to complete
-- Uses systemd socket for control pipe
-- Admin password passed once via `.admin_password` (read then deleted by ExecStart)
-- Discord notification at startup (via notifyServerReady.sh)
-- Dedicated logger (zomboid_logger.service)
-- Clean shutdown via 'quit' command (up to 120s)
-- `MemoryAccounting=yes`, `MemoryMax=20G`, `OOMPolicy=kill`, `MemorySwapMax=0`;
-  preventive restart at 18 GiB; no `MemoryHigh` throttling threshold
-
-**Commands**:
-```bash
-systemctl --user status zomboid.service
-systemctl --user start zomboid.service
-systemctl --user stop zomboid.service
-systemctl --user restart zomboid.service
-```
+The service uses the control FIFO and a dedicated logger. Blocking pre-start
+checks enforce the memory budget, closed admission and offline Writing cleanup;
+the inactivity purge is non-blocking. The one-shot admin password is read and
+deleted at startup. Shutdown uses the guarded stop helper to save cleanly.
+Systemd hardening limits writable paths; `pz.slice` shares the PZ memory budget
+and swap is forbidden. Use `pzm server` for lifecycle operations so its locking
+and readiness checks apply.
 
 ### zomboid.socket Socket
 
