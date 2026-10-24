@@ -25,3 +25,7 @@ sans fusion ou si le directeur a explicitement confirmé leur abandon.
 Vérifier la pointe locale et la PR avant suppression : tout commit ajouté
 après la PR et toute modification locale de worktree doivent être préservés
 ou explicitement abandonnés. Conserver et signaler les cas non établis.
+
+Lire [le référentiel validé](docs/REFERENTIEL_PROJET.md) avant toute
+modification. Toute évolution de ce référentiel exige l’accord explicite
+du directeur sur les changements précis proposés.
