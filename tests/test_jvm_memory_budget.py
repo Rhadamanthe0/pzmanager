@@ -122,7 +122,7 @@ class StartupBudget(unittest.TestCase):
 
     def test_service_preflight_is_blocking_before_purge_and_launch(self):
         unit = (ROOT / "data/setupTemplates/zomboid.service").read_text()
-        preflight = "ExecStartPre=/usr/bin/python3 %h/pzmanager/data/scripts/lib/jvm_memory_budget.py check %h/pzmanager/data/pzserver/ProjectZomboid64.json"
+        preflight = "ExecStartPre=%h/pzmanager/data/scripts/internal/startServer.sh --check"
         self.assertIn(preflight, unit)
         self.assertLess(unit.index(preflight), unit.index("ExecStartPre=%h/pzmanager/data/scripts/internal/prepareWorldStart.sh"))
         self.assertLess(unit.index(preflight), unit.index("ExecStart="))

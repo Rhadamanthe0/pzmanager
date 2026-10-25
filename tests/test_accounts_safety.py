@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from startup_bus_fixture import write_busctl
 
 ROOT=Path(os.environ['PZ_TEST_ROOT'])
 
@@ -22,7 +23,7 @@ class Accounts(unittest.TestCase):
         self.base=Path(self.tmp.name); self.repo=self.base/'repository'
         shutil.copytree(ROOT/'data/scripts',self.repo/'data/scripts')
         self.world=self.base/"world'世界";self.world.mkdir()
-        self.db=self.base/"accounts'外.db";self.players=self.world/'Saves/Multiplayer/save/players.db';self.players.parent.mkdir(parents=True)
+        self.db=self.world/"db/accounts'外.db";self.db.parent.mkdir();self.players=self.world/'Saves/Multiplayer/save/players.db';self.players.parent.mkdir(parents=True)
         with closing(sqlite3.connect(self.db)) as db:
             db.executescript("CREATE TABLE whitelist(id INTEGER PRIMARY KEY, username TEXT UNIQUE,password TEXT,steamid TEXT,lastConnection TEXT,role TEXT,displayName TEXT); CREATE TABLE allowedsteamid(steamid TEXT UNIQUE); INSERT INTO whitelist VALUES(1,'admin','a','76561198000000001','2000-01-01','admin','Admin'); INSERT INTO whitelist VALUES(2,'old','secret','76561198000000002','2000-01-01','user','Old'); INSERT INTO whitelist VALUES(3,'kept','x','76561198000000003',date('now'),'user','Kept'); INSERT INTO allowedsteamid VALUES('76561198000000002');")
             db.commit()
@@ -30,6 +31,7 @@ class Accounts(unittest.TestCase):
             db.executescript("CREATE TABLE networkPlayers(id INTEGER PRIMARY KEY,username TEXT); INSERT INTO networkPlayers VALUES(1,'old');");db.commit()
         self.runtime=self.base/'runtime';self.runtime.mkdir(mode=0o700)
         self.bin=self.base/'bin';self.bin.mkdir();self.state=self.base/'state.json'
+        write_busctl(self.bin,self.repo/'data/scripts/internal/startServer.sh','zomboid.service')
         self.set_state('inactive','dead',0,0)
         self.executable(self.bin/'systemctl', '''#!/usr/bin/env python3
 import json,os,sys
@@ -40,7 +42,7 @@ keys=['ActiveState','SubState','MainPID','ControlPID'] if any(a.startswith('--pr
 for k in keys:print(k+'='+str(s.get(k,{'LoadState':'loaded','InvocationID':'fixture'}.get(k,''))))
 ''')
         self.executable(self.bin/'backup', '#!/bin/bash\nexit 0\n')
-        vals=dict(PZ_DB_PATH=str(self.db),PZ_SOURCE_DIR=str(self.world),PZ_HOME=str(self.base),WHITELIST_LEDGER=str(self.base/'ledger.csv'),BACKUP_DIR=str(self.base/'backups'))
+        vals=dict(PZ_SERVER_NAME="accounts'外",PZ_SOURCE_DIR=str(self.world),PZ_HOME=str(self.base),WHITELIST_LEDGER=str(self.base/'ledger.csv'),BACKUP_DIR=str(self.base/'backups'))
         (self.repo/'.env').write_text('\n'.join(k+'='+shlex.quote(v) for k,v in vals.items())+'\n')
         self.env=dict(os.environ,PATH=str(self.bin)+':'+os.environ['PATH'],ACCOUNT_TEST_STATE=str(self.state),XDG_RUNTIME_DIR=str(self.runtime),PZ_DATABACKUP_BIN=str(self.bin/'backup'))
     def tearDown(self):self.tmp.cleanup()
@@ -110,7 +112,7 @@ account_safety.rename(sys.argv[2],sys.argv[3],'old','new')
         p=self.invoke('purgeInactivePlayers.sh')
         self.assertNotEqual(p.returncode,0,p.stdout+p.stderr)
         self.assertIn('Lecture SQLite impossible',p.stderr)
-        self.assertFalse(list(self.base.glob(self.db.name+'.pre-purge-*')))
+        self.assertFalse(list(self.db.parent.glob(self.db.name+'.pre-purge-*')))
     def test_purge_read_and_write_lock_fail_closed(self):
         for transaction in ('BEGIN EXCLUSIVE','BEGIN IMMEDIATE'):
             with closing(sqlite3.connect(self.db)) as lock:
@@ -120,10 +122,10 @@ account_safety.rename(sys.argv[2],sys.argv[3],'old','new')
                 self.assertNotEqual(p.returncode,0,p.stdout+p.stderr)
                 if transaction=='BEGIN EXCLUSIVE':
                     self.assertIn('Lecture SQLite impossible',p.stderr)
-                    self.assertFalse(list(self.base.glob(self.db.name+'.pre-purge-*')))
+                    self.assertFalse(list(self.db.parent.glob(self.db.name+'.pre-purge-*')))
                 else:
                     self.assertIn('Écriture SQLite impossible',p.stderr)
-                    files=list(self.base.glob(self.db.name+'.pre-purge-*'))
+                    files=list(self.db.parent.glob(self.db.name+'.pre-purge-*'))
                     self.assertEqual(len(files),1,p.stdout+p.stderr)
                     self.assertEqual(self.rows(files[0],'whitelist'),before)
                 self.assertEqual(lock.execute('SELECT * FROM whitelist ORDER BY 1').fetchall(),before)
@@ -145,10 +147,10 @@ account_safety.rename(sys.argv[2],sys.argv[3],'old','new')
         self.assertEqual(p.returncode,0,p.stdout+p.stderr)
         self.assertEqual([r[1] for r in self.rows(self.db,'whitelist')],['admin','kept','shared','unknown'])
         self.assertEqual(self.rows(self.db,'allowedsteamid'),[('76561198000000002',)])
-        backups=list(self.base.glob(self.db.name+'.pre-purge-*'))
+        backups=list(self.db.parent.glob(self.db.name+'.pre-purge-*'))
         p=self.invoke('purgeInactivePlayers.sh')
         self.assertEqual(p.returncode,0,p.stdout+p.stderr)
-        self.assertEqual(list(self.base.glob(self.db.name+'.pre-purge-*')),backups)
+        self.assertEqual(list(self.db.parent.glob(self.db.name+'.pre-purge-*')),backups)
     def test_purge_backup_error_prevents_delete(self):
         helper=self.repo/'data/scripts/lib/account_safety.py'
         helper.write_text(helper.read_text().replace('def backup(db_path):','def backup(db_path):\n    raise OSError("fixture disk unavailable")'))
@@ -235,7 +237,7 @@ account_safety.rename(sys.argv[2],sys.argv[3],'old','new')
         self.assertEqual([r[1] for r in self.rows(self.db,'whitelist')],['admin','kept','unknown'])
         self.assertEqual(self.rows(self.db,'allowedsteamid'),[('76561198000000003',),('76561198000000099',)])
         self.assertEqual(self.rows(self.players,'networkPlayers'),chars)
-        files=list(self.base.glob(self.db.name+'.pre-purge-*'))
+        files=list(self.db.parent.glob(self.db.name+'.pre-purge-*'))
         self.assertEqual(len(files),1,p.stdout+p.stderr)
         self.assertEqual(self.rows(files[0],'whitelist'),before)
     def freeze_purge_date(self):
@@ -338,7 +340,7 @@ os.execv('/usr/bin/sqlite3',['/usr/bin/sqlite3',*args])
         self.assertNotEqual(malformed.returncode,0,malformed.stdout+malformed.stderr)
         self.assertRegex(malformed.stderr,'Registre incohérent|Ligne inattendue')
         self.assertEqual(self.rows(self.db,'whitelist'),before)
-        self.assertFalse(list(self.base.glob(self.db.name+'.pre-purge-*')))
+        self.assertFalse(list(self.db.parent.glob(self.db.name+'.pre-purge-*')))
     def test_purge_wal_backup_includes_committed_pages(self):
         with closing(sqlite3.connect(self.db)) as writer:
             writer.execute('PRAGMA journal_mode=WAL')
@@ -346,7 +348,7 @@ os.execv('/usr/bin/sqlite3',['/usr/bin/sqlite3',*args])
             before=self.rows(self.db,'whitelist')
             p=self.invoke('purgeInactivePlayers.sh')
             self.assertEqual(p.returncode,0,p.stdout+p.stderr)
-            files=list(self.base.glob(self.db.name+'.pre-purge-*'))
+            files=list(self.db.parent.glob(self.db.name+'.pre-purge-*'))
             self.assertEqual(len(files),1,p.stdout+p.stderr)
             self.assertEqual(self.rows(files[0],'whitelist'),before)
     def test_purge_pending_transaction_refused(self):
@@ -372,6 +374,8 @@ os.execv('/usr/bin/sqlite3',['/usr/bin/sqlite3',*args])
         lock=private/'world.lock';ready=self.base/'ready';release=self.base/'release';token=self.base/'token'
         helper=self.repo/'data/scripts/internal/writing_start_admission.py'
         script='''set -euo pipefail
+source "$(dirname "$2")/../lib/common.sh"
+source_env
 exec 201>"$1"
 chmod 600 "$1"
 flock -n 201
@@ -393,11 +397,11 @@ python3 "$2" clear --lock-path "$1" --token "$(cat "$3")"
                 self.assertNotEqual(p.returncode,0,p.stdout+p.stderr)
                 self.assertIn('Sauvegarde SQLite impossible',p.stderr)
                 self.assertEqual(self.rows(self.db,'whitelist'),before)
-                self.assertFalse(list(self.base.glob(self.db.name+'.pre-purge-*')))
+                self.assertFalse(list(self.db.parent.glob(self.db.name+'.pre-purge-*')))
             else:
                 self.assertEqual(p.returncode,0,p.stdout+p.stderr)
                 self.assertEqual([r[1] for r in self.rows(self.db,'whitelist')],['admin','kept'])
-                backups=list(self.base.glob(self.db.name+'.pre-purge-*'))
+                backups=list(self.db.parent.glob(self.db.name+'.pre-purge-*'))
                 self.assertEqual(len(backups),1,p.stdout+p.stderr)
                 self.assertEqual(self.rows(backups[0],'whitelist'),before)
             with lock.open('rb') as probe:
@@ -433,7 +437,7 @@ python3 "$2" clear --lock-path "$1" --token "$(cat "$3")"
         self.assertEqual(self.rows(self.db,'whitelist'),before);self.assertEqual(self.rows(self.players,'networkPlayers'),chars)
     def test_rename_selects_configured_world_among_multiple(self):
         # The foreign save is created first, as it was for the legacy find|head.
-        configured=self.world/'Saves/Multiplayer/servertest/players.db'
+        configured=self.world/'Saves/Multiplayer'/self.db.stem/'players.db'
         configured.parent.mkdir()
         with closing(sqlite3.connect(configured)) as db:
             db.executescript("CREATE TABLE networkPlayers(id INTEGER PRIMARY KEY,username TEXT); INSERT INTO networkPlayers VALUES(1,'old'); INSERT INTO networkPlayers VALUES(2,'configured-sentinel');");db.commit()
@@ -478,7 +482,7 @@ python3 "$2" clear --lock-path "$1" --token "$(cat "$3")"
         self.assertEqual(p.returncode,0,p.stdout+p.stderr)
         self.assertEqual(self.rows(self.db,'whitelist'),before)
         self.assertFalse((self.base/'ledger.csv').exists())
-        self.assertFalse(list(self.base.glob(self.db.name+'.pre-purge-*')))
+        self.assertFalse(list(self.db.parent.glob(self.db.name+'.pre-purge-*')))
     def test_force_active_cannot_mutate(self):
         self.set_state('active','running',1234,0)
         before=self.rows(self.db,'whitelist')
@@ -510,7 +514,7 @@ python3 "$2" clear --lock-path "$1" --token "$(cat "$3")"
         self.assertNotEqual(occupied.returncode,0,occupied.stdout+occupied.stderr)
         self.assertIn('world operation is already running',occupied.stderr)
         self.assertEqual(self.rows(self.db,'whitelist'),before)
-        self.assertFalse(list(self.base.glob(self.db.name+'.pre-purge-*')))
+        self.assertFalse(list(self.db.parent.glob(self.db.name+'.pre-purge-*')))
         self.env.update(PZ_WORLD_LOCK_FD='9999',PZ_WORLD_LOCK_DEPTH='1',PZ_WORLD_LOCK_FILE=str(private/'world.lock'))
         p=self.invoke('purgeInactivePlayers.sh','--admitted-worker')
         self.assertNotEqual(p.returncode,0,p.stdout+p.stderr)

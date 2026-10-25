@@ -15,6 +15,7 @@ import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
+from startup_bus_fixture import write_busctl
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / 'data/scripts/internal/writing_start_admission.py'
@@ -36,10 +37,12 @@ class StartAdmission(unittest.TestCase):
                         'd=json.load(open(os.environ["WRITING_TEST_STATE"]))\n'
                         'for k,v in d.items(): print(k+"="+str(v))\n')
         mock.chmod(0o700)
+        write_busctl(self.bin,HELPER.with_name('startServer.sh'))
         self.env = dict(os.environ, PATH=str(self.bin)+os.pathsep+os.environ['PATH'],
                         WRITING_TEST_STATE=str(self.state))
         self.processes = []
         self.original_marker = None
+        self.helper=HELPER
         self.set_state('inactive', 'dead', 0, 0)
 
     def tearDown(self):
@@ -61,7 +64,7 @@ class StartAdmission(unittest.TestCase):
                                              MainPID=main, ControlPID=control)))
 
     def invoke(self, *args):
-        return subprocess.run([sys.executable, str(HELPER), *map(str,args)],
+        return subprocess.run([sys.executable, str(self.helper), *map(str,args)],
                               env=self.env, capture_output=True, text=True, timeout=8)
 
     def wait_file(self, path, process=None):
@@ -79,6 +82,15 @@ class StartAdmission(unittest.TestCase):
             return False
 
     def prepare_owner(self):
+        if not self.env.get('PZ_SOURCE_DIR'):
+            world=self.root/'world';world.mkdir(exist_ok=True)
+            self.env['PZ_SOURCE_DIR']=str(world)
+        resolved=subprocess.run(['bash','-c',
+            'set -euo pipefail; source "$1"; apply_env_defaults; env -0','fixture',
+            str(self.helper.parent.parent/'lib/common.sh')],env=self.env,
+            capture_output=True,check=True)
+        values=dict(item.split(b'=',1) for item in resolved.stdout.split(b'\0') if b'=' in item)
+        for key in admission.LAUNCH_KEYS:self.env[key]=values[key.encode()].decode()
         ready=self.root/'owner-ready'; release=self.root/'owner-release'
         script='''set -euo pipefail
 exec 201>"$1"
@@ -92,7 +104,7 @@ while [[ ! -f "$6" ]]; do sleep .02 201>&-; done
 '''
         with open(self.root/'owner.stderr','w') as error_stream:
             process=subprocess.Popen(['/bin/bash','-c',script,'bash',str(self.lock),sys.executable,
-                 str(HELPER),str(self.root/'token'),str(ready),str(release)],env=self.env,
+                 str(self.helper),str(self.root/'token'),str(ready),str(release)],env=self.env,
                  stdout=subprocess.DEVNULL,stderr=error_stream)
         self.processes.append(process);self.wait_file(ready,process)
         self.original_marker=json.loads((self.private/admission.MARKER).read_text())
@@ -104,6 +116,8 @@ while [[ ! -f "$6" ]]; do sleep .02 201>&-; done
         self.lock=self.private/'world.lock'
         self.env['XDG_RUNTIME_DIR']=str(self.root)
         repo=self.root/'repository';shutil.copytree(ROOT/'data/scripts',repo/'data/scripts')
+        self.helper=repo/'data/scripts/internal/writing_start_admission.py'
+        write_busctl(self.bin,repo/'data/scripts/internal/startServer.sh')
         world=self.root/'world';(world/'Server').mkdir(parents=True)
         ini=world/'Server/servertest.ini';ini.write_text('Open=true\nMods=\n')
         import shlex,sqlite3

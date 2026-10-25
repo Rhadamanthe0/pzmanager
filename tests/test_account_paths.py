@@ -39,10 +39,9 @@ class AccountPaths(unittest.TestCase):
                 self.unchanged(before)
     def test_linked_parent_refused(self):
         self.external.rename(self.case.db)
-        alias=self.case.base/'alias';alias.symlink_to(self.case.base,target_is_directory=True)
-        with (self.case.repo/'.env').open('a') as stream:
-            stream.write('PZ_DB_PATH='+shlex.quote(str(alias/self.case.db.name))+'\n')
-        before=self.case.db.read_bytes()
+        directory=self.case.base/'physical-db';self.case.db.parent.rename(directory)
+        self.case.db.parent.symlink_to(directory,target_is_directory=True)
+        before=(directory/self.case.db.name).read_bytes()
         result=self.invoke('manageWhitelist.sh','resetpassword','old')
         self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
         self.assertEqual(self.case.db.read_bytes(),before)
@@ -98,13 +97,15 @@ class AccountPaths(unittest.TestCase):
         alias=Path(str(self.case.db)+'-journal');alias.symlink_to(self.external)
         result=self.invoke('purgeInactivePlayers.sh')
         self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
-    def test_explicit_regular_database_outside_world_still_mutates(self):
-        self.external.rename(self.case.db)
-        self.assertNotIn(self.case.world,self.case.db.parents)
+    def test_old_independent_database_setting_refuses_before_external_mutation(self):
+        with (self.case.repo/'.env').open('a') as stream:
+            stream.write('PZ_DB_PATH='+shlex.quote(str(self.external))+'\n')
+        before=self.external.read_bytes()
         result=self.invoke('manageWhitelist.sh','resetpassword','old')
-        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-        with closing(sqlite3.connect(self.case.db)) as database:
-            self.assertEqual(database.execute("SELECT password FROM whitelist WHERE username='old'").fetchone(),('',))
+        self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('PZ_DB_PATH',result.stderr)
+        self.assertEqual(self.external.read_bytes(),before)
+        self.assertFalse(self.case.db.exists())
     def test_linked_character_database_refused_before_any_rename(self):
         self.external.rename(self.case.db)
         character=self.case.base/'external-players.db';self.case.players.rename(character)

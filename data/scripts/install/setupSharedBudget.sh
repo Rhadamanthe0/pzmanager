@@ -15,6 +15,18 @@ python3 "${SCRIPT_DIR}/../lib/install_shared_budget.py" \
     "${PZ_DATA_DIR}/setupTemplates" "${HOME}/.config/systemd/user" \
     "${HOME}/.local/state/pzmanager"
 systemctl --user daemon-reload
+# Le jeu et son préflight effectifs doivent partager le lanceur/configuration,
+# y compris quand des drop-ins locaux remplacent ExecStart/ExecStartPre.
+python3 - "${SCRIPT_DIR}/../internal" "$PZ_SERVICE_NAME" <<'NATIVE'
+import sys
+sys.path.insert(0,sys.argv[1])
+from writing_start_admission import validate_native_launcher
+try:
+    validate_native_launcher(sys.argv[2])
+except ValueError as error:
+    print(str(error),file=sys.stderr)
+    raise SystemExit(1)
+NATIVE
 # Un drop-in local plus tardif peut vider ExecStartPre ; ne pas annoncer une
 # migration réussie si le garde effectif a disparu. L'archive reste disponible.
 for unit in zomboid.service zomboid_logger.service pz-discord-bot.service \
@@ -24,8 +36,10 @@ for unit in zomboid.service zomboid_logger.service pz-discord-bot.service \
     [[ "$(systemctl --user show "$unit" -p Slice --value)" == pz.slice ]] \
         || die "Placement effectif incorrect : $unit"
     pre="$(systemctl --user show "$unit" -p ExecStartPre --value)"
-    if [[ "$pre" != *"shared_memory_budget.py check"* ]] \
-        && ! { [[ "$unit" == zomboid.service && "$pre" == *"jvm_memory_budget.py check"* ]]; }; then
+    if [[ "$unit" == zomboid.service ]]; then
+        [[ "$pre" == *"startServer.sh --check"* || "$pre" == *"jvm_memory_budget.py check"* ]] \
+            || die "Préflight heap effectif absent après reload : $unit (archive conservée)."
+    elif [[ "$pre" != *"shared_memory_budget.py check"* ]]; then
         die "Garde effectif absent après reload : $unit (archive conservée)."
     fi
     [[ "$pre" != *"--planned-limit"* ]] || die "Validation hors service interdite dans ExecStartPre : $unit"

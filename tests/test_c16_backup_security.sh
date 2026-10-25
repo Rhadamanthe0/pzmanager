@@ -338,6 +338,9 @@ fresh_backup_case() {
     echo "u;1;2026-01-01 00:00:00" > "$WHITELIST_LEDGER"
     export BACKUP_DIR="$bkp" BACKUP_LATEST_LINK="$bkp/latest" SYNC_BACKUPS_DIR="$BK_SYNC"
     export PZ_USER="pzuser" OFFSITE_BACKUP_COUNT=7 PZ_PURGE_LEGACY=0
+    export PZ_SOURCE_DIR="${mgr}/Zomboid" PZ_SERVER_NAME=servertest
+    # Derived outputs from a previous world are not independent overrides.
+    unset PZ_DB_PATH PZ_INI_PATH
     unset AGE_RECIPIENT AGE_RECIPIENTS PZ_AGE_IDENTITY MOCK_AGE_FAIL
     : > "${MOCK_DIR}/age.log"
 }
@@ -417,7 +420,8 @@ reset_restore_env() {
     export RESTORE_SSH=false FORCE_MODE=true PZ_RESTORE_PRIVATE_KEYS=0 MOCK_RESTORE_STATE=inactive
     export PZ_DATA_DIR="$R_MGR/data"
     export PZ_SERVER_NAME=servertest
-    unset PZ_GAME_USER PZ_MANAGER_USER
+    # Root bootstrap exported these outputs before this fixture selected its world.
+    unset PZ_GAME_USER PZ_MANAGER_USER PZ_DB_PATH PZ_INI_PATH
     echo "SYSTEM-SENTINEL" > "$PZ_SUDOERS_DEST"
     : > "${MOCK_DIR}/calls.log"
     : > "${MOCK_DIR}/age.log"

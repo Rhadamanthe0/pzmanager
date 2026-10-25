@@ -25,15 +25,19 @@ if [[ -f "${_PZ_LIB_DIR}/server_state.sh" ]]; then source "${_PZ_LIB_DIR}/server
 unset _PZ_LIB_DIR
 
 # Charge .env avec création automatique depuis .env.example
-# Usage: source_env [racine]   (défaut : PZ_MANAGER_ROOT)
+# Usage: source_env [--read-only|--stop] [racine] (défaut : PZ_MANAGER_ROOT)
 source_env() {
+    local read_only=false
+    local stopping=false
+    if [[ "${1:-}" == --read-only ]]; then read_only=true; shift; fi
+    if [[ "${1:-}" == --stop ]]; then stopping=true; shift; fi
     local root="${1:-$PZ_MANAGER_ROOT}"
     local env_file="${root}/.env"
     local env_example="${root}/data/setupTemplates/.env.example"
 
     python3 "${PZ_MANAGER_ROOT}/data/scripts/lib/shared_memory_budget.py" identity "$env_file" || exit 1
 
-    if [[ ! -f "$env_file" ]] && [[ -f "$env_example" ]]; then
+    if ! "$read_only" && [[ ! -f "$env_file" ]] && [[ -f "$env_example" ]]; then
         # install -m 600 et non `cp` : le .env porte le webhook Discord, le token
         # du bot et la clé privée du compte de service Google (base64). Un `cp`
         # applique l'umask (022 par défaut) et publiait donc ces trois secrets en
@@ -50,12 +54,12 @@ source_env() {
     # Rattrapage pour les installations créées avant le install -m 600 ci-dessus :
     # on resserre un .env trop ouvert au lieu de se contenter de le signaler.
     # Silencieux si on n'en est pas propriétaire (rien à rattraper de toute façon).
-    if [[ -O "$env_file" && "$(stat -c %a "$env_file" 2>/dev/null || echo 600)" != "600" ]]; then
+    if ! "$read_only" && [[ -O "$env_file" && "$(stat -c %a "$env_file" 2>/dev/null || echo 600)" != "600" ]]; then
         chmod 600 "$env_file" 2>/dev/null || true
     fi
 
     source "$env_file"
-    apply_env_defaults
+    apply_env_defaults "$stopping"
 }
 
 # Valeurs par défaut de TOUTE la configuration.
@@ -71,6 +75,7 @@ source_env() {
 # déduite (PZ_MANAGER_ROOT) exactement comme le fait le gabarit. Conséquence utile :
 # .env redevient un fichier de SURCHARGE — `:=` n'écrase jamais une valeur définie.
 apply_env_defaults() {
+    local stopping="${1:-false}"
     # --- Utilisateur et chemins de base ---
     : "${PZ_USER:=$(id -un)}"
     # C17 (split-users) : la JVM tourne sous PZ_GAME_USER, l'admin sous
@@ -97,8 +102,29 @@ apply_env_defaults() {
     : "${PZ_SOURCE_DIR:=${PZ_MANAGER_DIR}/Zomboid}"
     # Nom du monde PZ ; "servertest" est le défaut du jeu. Voir .env.example.
     : "${PZ_SERVER_NAME:=servertest}"
-    : "${PZ_DB_PATH:=${PZ_SOURCE_DIR}/db/${PZ_SERVER_NAME}.db}"
-    : "${PZ_INI_PATH:=${PZ_SOURCE_DIR}/Server/${PZ_SERVER_NAME}.ini}"
+    # Le wrapper du jeu change de cwd ; un chemin relatif n'aurait pas le même
+    # sens pour les commandes CLI et la JVM.
+    local launch_path
+    for launch_path in PZ_SOURCE_DIR PZ_INSTALL_DIR PZ_CONTROL_PIPE; do
+        if [[ "$stopping" != true && "${!launch_path}" != /* ]]; then
+            echo "ERREUR: ${launch_path} doit être un chemin absolu commun au jeu et aux outils." >&2
+            return 1
+        fi
+    done
+    # Le jeu dérive ces deux fichiers de cachedir/servername : aucun réglage
+    # indépendant ne doit faire écrire les outils dans un autre fichier.
+    local expected_db="${PZ_SOURCE_DIR}/db/${PZ_SERVER_NAME}.db"
+    local expected_ini="${PZ_SOURCE_DIR}/Server/${PZ_SERVER_NAME}.ini"
+    if [[ "$stopping" != true && -n "${PZ_DB_PATH:-}" && "$PZ_DB_PATH" != "$expected_db" ]]; then
+        echo 'ERREUR: PZ_DB_PATH est désormais calculé depuis PZ_SOURCE_DIR et PZ_SERVER_NAME ; supprimer cette ancienne valeur contradictoire du .env ou de l’environnement.' >&2
+        return 1
+    fi
+    if [[ "$stopping" != true && -n "${PZ_INI_PATH:-}" && "$PZ_INI_PATH" != "$expected_ini" ]]; then
+        echo 'ERREUR: PZ_INI_PATH est désormais calculé depuis PZ_SOURCE_DIR et PZ_SERVER_NAME ; supprimer cette ancienne valeur contradictoire du .env ou de l’environnement.' >&2
+        return 1
+    fi
+    PZ_DB_PATH="$expected_db"
+    PZ_INI_PATH="$expected_ini"
 
     # --- SteamCMD ---
     : "${STEAMCMD_PATH:=/usr/games/steamcmd}"
@@ -791,7 +817,8 @@ case "$_pz_caller" in
     "${_pz_guard_root}"/data/scripts/core/*.sh|"${_pz_guard_root}"/data/scripts/admin/*.sh|"${_pz_guard_root}"/data/scripts/backup/*.sh|"${_pz_guard_root}"/data/scripts/internal/*.sh|"${_pz_guard_root}"/data/scripts/discord/*.sh)
         if [[ "$(readlink -f -- "$0")" == "$(readlink -f -- "$_pz_caller")" ]] \
             && ! { [[ "$_pz_caller" == */core/pz.sh && "${1:-}" == status ]] \
-                || [[ "$_pz_caller" == */internal/checkDocsDuplication.sh ]]; }; then
+                || [[ "$_pz_caller" == */internal/checkDocsDuplication.sh ]] \
+                || [[ "$_pz_caller" == */internal/startServer.sh && "${1:-}" == --check ]]; }; then
             if ! python3 "${PZ_MANAGER_ROOT}/data/scripts/lib/shared_memory_budget.py" inside; then
                 exec bash "${PZ_MANAGER_ROOT}/data/scripts/lib/run_in_pz_slice.sh" /bin/bash "$0" "$@"
             fi

@@ -58,13 +58,14 @@ class ClosedPaths(unittest.TestCase):
         self.world.symlink_to(original,target_is_directory=True)
         before=snapshot(original);self.rejected_unchanged()
         self.assertEqual(snapshot(original),before)
-    def test_explicit_regular_private_ini_override_is_preserved(self):
+    def test_old_independent_ini_setting_refuses_without_changing_either_file(self):
         import shlex
         with (self.repo/'.env').open('a') as stream:stream.write('PZ_INI_PATH='+shlex.quote(str(self.target))+'\n')
         before=snapshot(self.world)
         result=self.invoke()
-        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-        self.assertEqual(self.target.read_bytes(),b'private-setting=original\nOpen=false\n')
+        self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('PZ_INI_PATH',result.stderr)
+        self.assertEqual(self.target.read_bytes(),b'private-setting=original\n')
         self.assertEqual(snapshot(self.world),before)
     def test_explicit_override_link_still_refused(self):
         import shlex

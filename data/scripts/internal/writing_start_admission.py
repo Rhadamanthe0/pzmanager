@@ -21,6 +21,19 @@ from configureWritingTextOnly import ConfigurationError, open_root, atomic_file
 
 MARKER = 'writing-start.json'
 SOCKET = 'writing-start.sock'
+LAUNCH_KEYS = ('PZ_SOURCE_DIR', 'PZ_SERVER_NAME', 'PZ_INSTALL_DIR', 'PZ_CONTROL_PIPE', 'PZ_MANAGER_DIR')
+
+
+def validate_launch_profile(profile):
+    if (not isinstance(profile, dict) or set(profile) != set(LAUNCH_KEYS) or
+            any(not isinstance(value, str) or not value or '\0' in value or
+                len(value.encode('utf-8')) > 4096 for value in profile.values())):
+        raise ConfigurationError('Malformed start admission configuration')
+    return profile
+
+
+def launch_profile():
+    return validate_launch_profile({key: os.environ.get(key) for key in LAUNCH_KEYS})
 
 
 def process_birth(pid):
@@ -110,7 +123,10 @@ def read_marker(directory_fd):
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise ConfigurationError('Untrusted start admission marker')
-        data = json.loads(stream.read(4097))
+        contents = stream.read(65537)
+        if len(contents) > 65536:
+            raise ConfigurationError('Oversized start admission marker')
+        data = json.loads(contents)
     if not isinstance(data, dict): raise ConfigurationError('Malformed start admission marker')
     required = ('pid', 'birth', 'fd', 'dev', 'ino', 'broker', 'broker_birth')
     if any(type(data.get(key)) is not int or data[key] < 0 for key in required):
@@ -119,6 +135,10 @@ def read_marker(directory_fd):
         raise ConfigurationError('Malformed start admission token/unit')
     if type(data.get('quiet_ready', False)) is not bool:
         raise ConfigurationError('Malformed start admission quiet flag')
+    # Old markers can still be removed once their owner and broker are dead.
+    # Actual handoff requires the profile after FD authentication below.
+    if 'launch' in data:
+        validate_launch_profile(data['launch'])
     return data
 
 
@@ -139,6 +159,52 @@ def unit_state(unit):
 def startup_state(state, pid):
     return state['ActiveState'] == 'activating' and state['SubState'] == 'start-pre' \
         and state['MainPID'] == 0 and state['ControlPID'] > 0 and ancestor(state['ControlPID'], pid)
+
+
+def validate_native_launcher(unit):
+    """Require the effective typed ExecStart, including any installed drop-ins.
+
+    Reading .env cannot update an old inline ExecStart. Refuse that unit before
+    any startup worker writes a world that the game would not actually load.
+    """
+    prefix=['busctl','--user','--json=short','--timeout=5','--']
+    service='org.freedesktop.systemd1'
+    def query(arguments):
+        raw=subprocess.check_output(prefix+arguments,text=True,stderr=subprocess.DEVNULL,timeout=6)
+        if len(raw)>65536:raise ValueError('Oversized unit metadata')
+        return json.loads(raw)
+    try:
+        obj=query(['call',service,'/org/freedesktop/systemd1',service+'.Manager','GetUnit','s',unit])
+        if (not isinstance(obj,dict) or obj.get('type')!='o' or not isinstance(obj.get('data'),list)
+                or len(obj['data'])!=1 or not isinstance(obj['data'][0],str)
+                or not re.fullmatch(r'(?:/[A-Za-z0-9_]+)+',obj['data'][0])):
+            raise ValueError('Invalid service object')
+        def commands(property_name):
+            value=query(['get-property',service,obj['data'][0],service+'.Service',property_name])
+            if (not isinstance(value,dict) or value.get('type')!='a(sasbttttuii)'
+                    or not isinstance(value.get('data'),list)):
+                raise ValueError('Invalid command metadata')
+            for row in value['data']:
+                if (not isinstance(row,list) or len(row)!=10 or not isinstance(row[0],str)
+                        or not row[0].startswith('/') or not isinstance(row[1],list)
+                        or not row[1] or any(not isinstance(arg,str) for arg in row[1])
+                        or type(row[2]) is not bool or any(type(v) is not int for v in row[3:])
+                        or any(v<0 or v>=2**64 for v in row[3:7]) or not 0<=row[7]<2**32
+                        or any(not -2**31<=v<2**31 for v in row[8:])):
+                    raise ValueError('Invalid command row')
+            return value['data']
+        expected=os.path.abspath(str(Path(__file__).with_name('startServer.sh')))
+        main=commands('ExecStart')
+        if len(main)!=1 or main[0][:3]!=[expected,[expected],False]:
+            raise ValueError('ExecStart is not the unified launcher')
+        pre=commands('ExecStartPre')
+        prepare=os.path.abspath(str(Path(__file__).with_name('prepareWorldStart.sh')))
+        if (not pre or pre[0][:3]!=[expected,[expected,'--check'],False]
+                or sum(row[:3]==[prepare,[prepare],False] for row in pre)!=1):
+            raise ValueError('Native preflight is not first or preparation is absent')
+    except (OSError,ValueError,TypeError,subprocess.SubprocessError):
+        # ExecStart can contain credentials: never include its payload/errors.
+        raise ConfigurationError('Lanceur effectif non vérifié : actualiser zomboid.service et ses drop-ins pour utiliser startServer.sh sans argument.') from None
 
 
 def validate_start_identity(data, lock_info, unit):
@@ -186,6 +252,8 @@ def prepare(lock_path, pid, fd, unit, quiet_ready=False):
             info = os.fstat(lock_fd)
             if not ancestor(pid, os.getpid()): raise ConfigurationError('Start owner must be an ancestor')
             locked_fd(pid, fd, (info.st_dev, info.st_ino))
+            validate_native_launcher(unit)
+            launch_profile()
             # Never overwrite a live or malformed admission. Dead owner and
             # broker together make removal of only our stale metadata safe.
             try: old = read_marker(directory_fd)
@@ -223,11 +291,15 @@ def broker(args):
         locked_fd(os.getpid(), args.fd, (info.st_dev, info.st_ino))
         payload = {'pid': args.pid, 'birth': args.birth, 'fd': args.fd, 'dev': info.st_dev,
             'ino': info.st_ino, 'broker': os.getpid(), 'broker_birth': process_birth(os.getpid()),
-            'unit': args.unit, 'token': args.token, 'quiet_ready': args.quiet_ready}
+            'unit': args.unit, 'token': args.token, 'quiet_ready': args.quiet_ready,
+            'launch': launch_profile()}
         validate_marker(payload, info, args.unit)
+        contents = json.dumps(payload, ensure_ascii=False).encode()
+        if len(contents) > 65536:
+            raise ConfigurationError('Oversized start admission marker')
         listener.bind(str(path.parent / SOCKET)); os.chmod(path.parent / SOCKET, 0o600)
         listener.listen(1); listener.settimeout(0.25)
-        atomic_file(directory_fd, MARKER, json.dumps(payload).encode(), 0o600)
+        atomic_file(directory_fd, MARKER, contents, 0o600)
         while live(args.pid, args.birth):
             try: client, _ = listener.accept()
             except socket.timeout: continue
@@ -300,6 +372,13 @@ def run(args):
             raise ConfigurationError('Server state changed before offline cleanup')
         if os.environ.get('PZ_SOURCE_DIR'):
             check_clean(os.environ['PZ_SOURCE_DIR'],legacy=True)
+        if startup:
+            validate_native_launcher(args.unit)
+        if startup and data is not None:
+            # Compare only: a client must never retarget the service environment.
+            # This follows authenticated SCM_RIGHTS and the fresh start-pre proof.
+            if validate_launch_profile(data.get('launch')) != launch_profile():
+                raise ConfigurationError('CLI/service native configuration differs; put shared launch settings in .env')
         if startup and data is not None and data.get('quiet_ready', False):
             invocation = os.environ.get('INVOCATION_ID', '')
             current = subprocess.check_output(['systemctl', '--user', 'show', args.unit,
@@ -337,6 +416,8 @@ def validate_worker_admission(unit=None):
         offline = state['ActiveState'] == 'inactive' and state['MainPID'] == 0 and state['ControlPID'] == 0
         if not offline and not startup_state(state, os.getpid()):
             raise ConfigurationError('Offline worker is not stopped or the authorized start-pre')
+        if not offline:
+            validate_native_launcher(unit)
         return int(raw_fd)
     finally: os.close(directory_fd)
 

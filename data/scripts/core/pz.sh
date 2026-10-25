@@ -8,7 +8,10 @@ set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
-source_env
+case "${1:-}" in
+    stop|status) source_env --stop ;;
+    *) source_env ;;
+esac
 
 readonly ACTION="${1:-}"
 SILENT_MODE=false
@@ -91,8 +94,14 @@ console_echoed_recently() {
 
 # Dernière frame connue du log de jeu (vide si aucune).
 last_game_frame() {
-    journalctl --user -u "${PZ_SERVICE_NAME}" -n 400 --no-pager 2>/dev/null \
-        | grep -oE 'f:[0-9]+ st:' | tail -1 | sed -E 's/^f:([0-9]+) st:$/\1/'
+    local line frame latest=""
+    while IFS= read -r line; do
+        frame="$(game_log_frame "$line")" || continue
+        latest="$frame"
+    done < <(journalctl --user -u "${PZ_SERVICE_NAME}" -n 400 --no-pager -o cat 2>/dev/null || true)
+    [[ -z "$latest" ]] || printf '%s\n' "$latest"
+    # Absence de frame = diagnostic inconnu, jamais un motif d'abandon d'arrêt.
+    return 0
 }
 
 # Nombre de joueurs actuellement connectés.
@@ -312,7 +321,10 @@ shutdown_server() {
     [[ "$state" == inactive ]] || { log "Arrêt non prouvé après la commande stop."; return 1; }
 
     echo "Sauvegarde..."
-    "${SCRIPT_DIR}/../backup/dataBackup.sh"
+    if ! "${SCRIPT_DIR}/../backup/dataBackup.sh"; then
+        log "Serveur arrêté, mais sauvegarde non effectuée : vérifier la configuration et le diagnostic ci-dessus."
+        return 1
+    fi
 }
 
 # systemd cannot inherit our WORLD FD. A private one-shot broker transfers the

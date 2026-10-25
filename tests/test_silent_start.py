@@ -8,6 +8,7 @@ import signal
 import subprocess
 import tempfile
 import unittest
+from startup_bus_fixture import write_busctl
 
 ROOT=Path(os.environ['PZ_TEST_ROOT'])
 A='a'*32
@@ -20,6 +21,7 @@ class SilentStart(unittest.TestCase):
         self.base=Path(self.tmp.name);self.repo=self.base/'repo'
         shutil.copytree(ROOT/'data/scripts',self.repo/'data/scripts')
         self.bin=self.base/'bin';self.bin.mkdir()
+        write_busctl(self.bin,self.repo/'data/scripts/internal/startServer.sh','zomboid.service')
         self.runtime=self.base/'runtime';self.runtime.mkdir(mode=0o700)
         self.world=self.base/'world';self.world.mkdir()
         self.state=self.base/'state';self.sent=self.base/'sent';self.events=self.base/'events'

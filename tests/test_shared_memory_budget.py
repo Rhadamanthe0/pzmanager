@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -125,8 +126,40 @@ class SharedGuard(unittest.TestCase):
         services = list(templates.glob("*.service"))
         self.assertEqual({p.name for p in services}, set(migration.UNITS))
         for p in services:
-            self.assertIn("Slice=pz.slice", p.read_text())
-            self.assertIn("memory_budget.py check", p.read_text())
+            # Parse active Service directives, preserving ExecStartPre order and
+            # systemd's empty-assignment reset; comments cannot satisfy the guard.
+            section = None
+            directives = {}
+            preflight = []
+            for line in p.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith(("#", ";")):
+                    continue
+                if line.startswith("[") and line.endswith("]"):
+                    section = line[1:-1]
+                    continue
+                if section != "Service":
+                    continue
+                key, sep, value = line.partition("=")
+                if not sep:
+                    continue
+                key, value = key.strip(), value.strip()
+                directives[key] = value
+                if key == "ExecStartPre":
+                    if value:
+                        preflight.append(shlex.split(value))
+                    else:
+                        preflight.clear()
+            self.assertEqual(directives.get("Slice"), "pz.slice", p.name)
+            self.assertTrue(preflight, p.name)
+            if p.name == "zomboid.service":
+                # The helper checks the actually launched JSON before world
+                # preparation. Its real guard is exercised by NativeConfiguration.
+                self.assertEqual(preflight[0], [
+                    "%h/pzmanager/data/scripts/internal/startServer.sh", "--check"])
+            else:
+                self.assertEqual(preflight[0], ["/usr/bin/python3",
+                    "%h/pzmanager/data/scripts/lib/shared_memory_budget.py", "check"], p.name)
         self.assertIn("Slice=pz.slice", (templates / "zomboid.socket").read_text())
         self.assertIn("--slice=pz.slice", (ROOT / "data/scripts/backup/dataBackup.sh").read_text())
         self.assertNotIn("user-1005.slice", (templates / "pz.slice").read_text())

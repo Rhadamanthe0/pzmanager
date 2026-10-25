@@ -19,7 +19,12 @@ set -euo pipefail
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 source "${SCRIPT_DIR}/../lib/common.sh"
-source_env
+case "${1:-}" in
+    # Ces seules commandes sont requises pour annoncer et achever un arrêt ;
+    # elles ne lisent ni ne modifient directement les chemins INI/SQLite.
+    players|servermsg|quit) source_env --stop ;;
+    *) source_env ;;
+esac
 
 # Set XDG_RUNTIME_DIR for journalctl --user (required when running via cron)
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"

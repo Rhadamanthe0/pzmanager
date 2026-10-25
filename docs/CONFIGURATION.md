@@ -49,12 +49,27 @@ PZ names every file of the save after the world: `db/<name>.db`,
 
 ```bash
 export PZ_SERVER_NAME="servertest"
-export PZ_DB_PATH="${PZ_SOURCE_DIR}/db/${PZ_SERVER_NAME}.db"
-export PZ_INI_PATH="${PZ_SOURCE_DIR}/Server/${PZ_SERVER_NAME}.ini"
 ```
 
-`zomboid.service` passes it to the game with `-servername`, so the world's name
-and the paths the scripts read cannot drift apart.
+The game launcher and management tools share `PZ_SOURCE_DIR` and
+`PZ_SERVER_NAME`; INI and SQLite paths are calculated automatically. Remove
+obsolete `PZ_INI_PATH` / `PZ_DB_PATH` definitions if they disagree: commands
+refuse them before accessing the world, instead of selecting another file.
+Stop and status remain available while these obsolete settings are corrected.
+After a successful stop, the automatic backup may still refuse this configuration;
+the command reports that the server stopped but the backup was not performed.
+
+CLI starts also refuse a different resolved launch configuration in the service
+environment. Put shared source, world name, install, control and manager paths in
+`.env`; inherited environment settings remain available to offline tools.
+
+Existing installations must refresh the installed
+[zomboid.service](../data/setupTemplates/zomboid.service) while stopped, then
+run `systemctl --user daemon-reload`. Preserve intentional local settings and
+check drop-ins. Custom source, install and control paths must be absolute;
+adapt the unit's `ReadWritePaths`, `WorkingDirectory` and the socket's
+`ListenFIFO` to match. Keep the manager root read-only; do not widen the sandbox
+to bypass a path error.
 
 > ⚠️ **Changing this on an existing server gives you a blank new world.** PZ
 > creates the `<new name>` save next to the old one; the previous world stays on

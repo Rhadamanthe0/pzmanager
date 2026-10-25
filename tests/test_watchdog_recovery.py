@@ -1,6 +1,7 @@
 import json, os
 from pathlib import Path
 import shlex, shutil, sqlite3, subprocess, tempfile, unittest
+from startup_bus_fixture import write_busctl
 ROOT=Path(os.environ['PZ_TEST_ROOT'])
 
 class WatchdogRecovery(unittest.TestCase):
@@ -10,6 +11,7 @@ class WatchdogRecovery(unittest.TestCase):
    runtime=base/'runtime';runtime.mkdir(mode=0o700);state=runtime/'pzmanager';state.mkdir(mode=0o700)
    logs=repo/'logs/zomboid';logs.mkdir(parents=True);world=repo/'Zomboid';world.mkdir()
    bin=base/'bin';bin.mkdir();calls=base/'calls';calls.touch();status=base/'state';status.write_text('active')
+   write_busctl(bin,repo/'data/scripts/internal/startServer.sh','zomboid.service')
    inv='a'*32
    (state/'stallwatch.state').write_text(f'123 42 1999 0 {inv} 123 1000000\n')
    (repo/'.env').write_text('PZ_PROMETHEUS_PORT=1\nDISCORD_WEBHOOK=\nDISCORD_ADMIN_WEBHOOK=\n')

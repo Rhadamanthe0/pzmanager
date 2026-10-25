@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from startup_bus_fixture import write_busctl
 
 ROOT=Path(os.environ['PZ_TEST_ROOT'])
 
@@ -20,6 +21,7 @@ class MaintenanceRecovery(unittest.TestCase):
         shutil.copytree(ROOT/'data/scripts',self.repo/'data/scripts')
         self.runtime=self.base/'runtime';self.runtime.mkdir(mode=0o700)
         self.bin=self.base/'bin';self.bin.mkdir()
+        write_busctl(self.bin,self.repo/'data/scripts/internal/startServer.sh','zomboid.service')
         self.game=self.base/'game';self.game.mkdir()
         self.java=self.base/'java';self.java.mkdir()
         self.world=self.base/'world';self.world.mkdir()
