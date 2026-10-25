@@ -84,6 +84,19 @@ if operation==target and mode=='empty': sys.exit(0)
 if operation==target and mode=='malformed': print('not json'); sys.exit(0)
 if operation==target and mode=='error': print('{"error":{"message":"fixture failure"}}'); sys.exit(0)
 if operation==target and mode=='schema': print('{}'); sys.exit(0)
+sheets_path=os.environ.get('FIXTURE_SHEETS')
+if operation=='batch':
+ (root/'batch.json').write_text(json.dumps(body))
+ if sheets_path:
+  sheets_path=pathlib.Path(sheets_path);candidate=json.loads(sheets_path.read_text())
+  for request in body['requests']:
+   update=request['updateSheetProperties'];properties=update['properties']
+   assert update['fields']=='hidden' and set(properties)=={'sheetId','hidden'}
+   matches=[sheet['properties'] for sheet in candidate['sheets'] if sheet['properties']['sheetId']==properties['sheetId']]
+   assert len(matches)==1 and type(properties['hidden']) is bool
+   matches[0]['hidden']=properties['hidden']
+  if not any(not sheet['properties'].get('hidden',False) for sheet in candidate['sheets']):sys.exit(22)
+  sheets_path.write_text(json.dumps(candidate))
 state_path=os.environ.get('FIXTURE_STATE')
 if state_path and operation in ('clear','put','batch'):
  state_path=pathlib.Path(state_path);state=json.loads(state_path.read_text());candidate=copy.deepcopy(state)
@@ -125,6 +138,7 @@ responses={
  'get':{'sheets':[{'properties':properties}]},
  'values':{'range':'V1!A1:A6','majorDimension':'ROWS','values':[['fixture']]},
  'batch':{'spreadsheetId':'fixture-sheet','replies':[{} for _ in (body['requests'] if operation=='batch' else [])]}}
+if sheets_path and operation=='get':responses['get']=json.loads(pathlib.Path(sheets_path).read_text())
 print(json.dumps(responses[operation]))
 ''')
         self.env = dict(os.environ, PATH=str(commands) + ':' + os.environ['PATH'], FIXTURE_CALLS=str(self.calls),FIXTURE_ROOT=str(self.root),TMPDIR=str(self.secrets))
@@ -328,6 +342,54 @@ print(json.dumps(responses[operation]))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.calls.read_text().splitlines(), ['token','get','batch'])
         self.assertIn('peuplé', result.stdout)
+
+    def hide_old_metadata(self, titles):
+        metadata={'sheets':[{'properties':{'sheetId':index+1,'title':title,'index':index,'hidden':False}}
+                            for index,title in enumerate(titles)]}
+        path=self.root/'sheets.json';path.write_text(json.dumps(metadata));self.env['FIXTURE_SHEETS']=str(path)
+        return path,metadata
+
+    def test_hide_old_rejects_absent_or_nonversion_selection_without_writing(self):
+        for titles,keep in ((['V1','Accueil'],'V999'),(['V1'],'V999'),
+                            (['V1','Accueil'],'Accueil'),(['Accueil'],'V999')):
+            with self.subTest(titles=titles,keep=keep):
+                path,before=self.hide_old_metadata(titles)
+                (self.root/'batch.json').unlink(missing_ok=True)
+                result=self.run_sheet('none','ok','hide-old',keep)
+                self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                self.assertIn('Onglet de version introuvable',result.stderr)
+                self.assertNotIn('reste visible',result.stdout)
+                self.assertEqual(self.calls.read_text().splitlines(),['token','get'])
+                self.assertFalse((self.root/'batch.json').exists())
+                self.assertEqual(json.loads(path.read_text()),before)
+                self.assertEqual(list(self.secrets.iterdir()),[])
+
+    def test_hide_old_explicit_and_default_keep_selected_version(self):
+        for selection,keep in ((['V1'],'V1'),([], 'V10')):
+            with self.subTest(selection=selection):
+                path,before=self.hide_old_metadata(['V1','V10','V2','Accueil'])
+                before['sheets'][1]['properties']['hidden']=True
+                path.write_text(json.dumps(before))
+                result=self.run_sheet('none','ok','hide-old',*selection)
+                self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                self.assertIn(f'Seul {keep} reste visible',result.stdout)
+                self.assertEqual(self.calls.read_text().splitlines(),['token','get','batch'])
+                after=json.loads(path.read_text())
+                self.assertEqual(after['sheets'][-1],before['sheets'][-1])
+                for sheet in after['sheets'][:-1]:
+                    self.assertEqual(sheet['properties']['hidden'],sheet['properties']['title']!=keep)
+                self.assertEqual(len(json.loads((self.root/'batch.json').read_text())['requests']),3)
+                self.assertEqual(list(self.secrets.iterdir()),[])
+
+    def test_hide_old_default_without_versions_does_not_write(self):
+        path,before=self.hide_old_metadata(['Accueil'])
+        result=self.run_sheet('none','ok','hide-old')
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('Aucun onglet de version trouvé',result.stdout)
+        self.assertEqual(self.calls.read_text().splitlines(),['token','get'])
+        self.assertFalse((self.root/'batch.json').exists())
+        self.assertEqual(json.loads(path.read_text()),before)
+        self.assertEqual(list(self.secrets.iterdir()),[])
 
     def test_structured_read_and_batch_succeed(self):
         for args in (('list',),('show','V1'),('setcell','V1','A1','fixture'),('hide-old',)):

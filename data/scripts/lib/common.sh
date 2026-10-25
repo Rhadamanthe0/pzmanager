@@ -328,18 +328,15 @@ ledger_stale_usernames() {
         SELECT username FROM ledger WHERE ${valid} AND created_at < '${cutoff}';" | sqlite3 ':memory:'
 }
 
-# Clause SQL WHERE identifiant les comptes `whitelist` inactifs depuis >= <days>
-# jours, le compte interne 'admin' toujours exclu. Deux cas réunis :
-#   - dernière connexion antérieure à <days> jours ;
-#   - JAMAIS connecté ET inscrit au registre depuis plus de <days> jours.
+# Clause SQL WHERE de purge : seuil strict de <days> jours, 'admin' exclu.
+#   - dernière connexion antérieure à la date limite UTC ;
+#   - JAMAIS connecté et date du registre antérieure au seuil horodaté local.
 # Partagée par la purge auto (purgeInactivePlayers.sh) et la purge interactive
 # (manageWhitelist.sh) pour qu'elles ciblent EXACTEMENT les mêmes comptes — ce
 # prédicat ne doit exister qu'à un seul endroit.
 #
 # Un compte jamais connecté ET absent du registre n'est JAMAIS purgé : on ignore
-# son âge, donc on s'abstient. C'est ce qui manquait avant le 18/08/2026, où la
-# clause déclarait inactif tout compte sans lastConnection quel que soit son âge —
-# un joueur inscrit le jour même perdait son accès au démarrage suivant.
+# son âge, donc on s'abstient.
 inactive_where_clause() {
     local days="$1"
     local valid; valid="$(account_date_valid_sql lastConnection)"
@@ -613,6 +610,8 @@ private_state_path() {
     user="$(id -un 2>/dev/null || echo unknown)"
     runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u 2>/dev/null || echo 0)}"
     [[ "$runtime" == /* ]] || return 1
+    # Garder les LF des noms ; les expansions évitent le retrait de LF par $(...).
+    while [[ "$runtime" != / && "$runtime" == */ ]]; do runtime="${runtime%/}"; done
     if [[ -e "$runtime" || -L "$runtime" ]]; then
         # Refuser une racine runtime détournée ou possédée par un autre UID.
         [[ -d "$runtime" && ! -L "$runtime" && -O "$runtime" ]] || return 1
@@ -624,8 +623,10 @@ private_state_path() {
 
     # Un répertoire final en 0700 ne suffit pas si son parent est remplaçable.
     # Seul /tmp root:sticky peut être ouvert en écriture à d'autres utilisateurs.
-    parent="$(dirname -- "$dir")"
+    parent="${dir%/*}"
+    [[ -n "$parent" ]] || parent=/
     while :; do
+        while [[ "$parent" != / && "$parent" == */ ]]; do parent="${parent%/}"; done
         [[ -d "$parent" && ! -L "$parent" ]] || return 1
         owner="$(stat -c %u -- "$parent" 2>/dev/null)" || return 1
         mode="$(stat -c %a -- "$parent" 2>/dev/null)" || return 1
@@ -634,7 +635,8 @@ private_state_path() {
             [[ "$owner" == 0 && -k "$parent" ]] || return 1
         fi
         [[ "$parent" == / ]] && break
-        parent="$(dirname -- "$parent")"
+        parent="${parent%/*}"
+        [[ -n "$parent" ]] || parent=/
     done
 
     if [[ -e "$dir" || -L "$dir" ]]; then

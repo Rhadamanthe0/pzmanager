@@ -143,6 +143,113 @@ for k in keys:print(k+'='+str(s.get(k,{'LoadState':'loaded','InvocationID':'fixt
         self.assertEqual(self.players.read_bytes(),players)
         self.assertEqual(ledger.read_bytes(),history)
 
+    def test_ledger_lock_contention_preserves_bytes_and_aliases(self):
+        ledger=self.base/'ledger.csv'
+        history=b'# history\nlegacy;;1998-01-01\n'
+        ledger.write_bytes(history)
+        state=self.base/'pzmanager';state.mkdir(mode=0o700)
+        import hashlib
+        lock=state/('ledger-'+hashlib.sha256(os.fsencode(ledger.resolve())).hexdigest()+'.lock')
+        alias=self.base/'alias.csv';alias.symlink_to(ledger)
+        runtime=self.base/'other-runtime';runtime.mkdir(mode=0o700)
+        before=self.db.read_bytes()
+        with lock.open('w') as held:
+            fcntl.flock(held,fcntl.LOCK_EX)
+            inode=lock.stat().st_ino
+            for target in (ledger,alias):
+                with self.subTest(target=target):
+                    with (self.repo/'.env').open('a') as config:
+                        config.write('WHITELIST_LEDGER='+shlex.quote(str(target))+'\n')
+                    result=subprocess.run(['bash',str(self.repo/'data/scripts/admin/creationDateInit.sh')],
+                                          env=dict(self.env,XDG_RUNTIME_DIR=str(runtime)),text=True,capture_output=True,timeout=20)
+                    self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                    self.assertIn('Verrou du registre',result.stderr)
+                    self.assertEqual(ledger.read_bytes(),history)
+                    self.assertEqual(self.db.read_bytes(),before)
+        result=self.invoke('creationDateInit.sh')
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertTrue(ledger.read_bytes().startswith(history))
+        self.assertEqual(lock.stat().st_ino,inode)
+
+    def test_ledger_private_lock_rejects_prepositioned_entries(self):
+        import hashlib
+        ledger=self.base/'ledger.csv';history=b'# immutable history\n'
+        ledger.write_bytes(history)
+        state=self.base/'pzmanager';state.mkdir(mode=0o700)
+        lock=state/('ledger-'+hashlib.sha256(os.fsencode(ledger.resolve())).hexdigest()+'.lock')
+        victim=self.base/'victim';victim.write_bytes(b'untouched')
+        for kind in ('symlink','fifo','hardlink'):
+            with self.subTest(kind=kind):
+                if kind=='symlink':lock.symlink_to(victim)
+                elif kind=='fifo':os.mkfifo(lock,0o600)
+                else:os.link(victim,lock)
+                try:
+                    result=self.invoke('creationDateInit.sh')
+                    self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                    self.assertIn('Verrou du registre non sûr',result.stderr)
+                    self.assertEqual(ledger.read_bytes(),history)
+                    self.assertEqual(victim.read_bytes(),b'untouched')
+                finally:lock.unlink()
+
+    def test_ledger_hardlink_refused_before_mutation(self):
+        ledger=self.base/'ledger.csv';history=b'# immutable history\n'
+        ledger.write_bytes(history);os.link(ledger,self.base/'hardlink.csv')
+        result=self.invoke('creationDateInit.sh')
+        self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('liens multiples',result.stderr)
+        self.assertEqual(ledger.read_bytes(),history)
+
+    def test_ledger_paths_preserve_final_newlines_and_exact_parents(self):
+        import hashlib
+        before=self.db.read_bytes()
+        for name,nested,alias in (('ledger.csv\n',False,False),('ledger.csv\n\n',False,False),
+                                  ('ledger.csv\n',False,True),('ledger.csv',True,False)):
+            with self.subTest(name=name,nested=nested,alias=alias):
+                case=Path(tempfile.mkdtemp(dir=self.base))
+                parent=case/'parent\n' if nested else case
+                parent.mkdir(exist_ok=True)
+                target=parent/name;history=b'# exact configured history\n'
+                target.write_bytes(history)
+                sibling=parent/name.rstrip('\n') if name.endswith('\n') else case/'parent'
+                if nested:sibling.mkdir()
+                else:sibling.write_bytes(b'# unrelated file\n')
+                configured=case/'alias.csv' if alias else target
+                if alias:configured.symlink_to(target)
+                with (self.repo/'.env').open('a') as config:
+                    config.write('WHITELIST_LEDGER='+shlex.quote(str(configured))+'\n')
+                result=self.invoke('creationDateInit.sh')
+                self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                self.assertTrue(target.read_bytes().startswith(history))
+                self.assertIn(b'old;76561198000000002;',target.read_bytes())
+                if not nested:self.assertEqual(sibling.read_bytes(),b'# unrelated file\n')
+                lock=parent/'pzmanager'/('ledger-'+hashlib.sha256(os.fsencode(target)).hexdigest()+'.lock')
+                self.assertTrue(lock.is_file(),str(lock))
+                self.assertEqual(self.db.read_bytes(),before)
+
+    def test_ledger_rejects_exact_insecure_newline_ancestor(self):
+        actual=self.base/'parent\n';actual.mkdir();actual.chmod(0o777)
+        safe=self.base/'parent';safe.mkdir(mode=0o700)
+        directory=actual/'inner';directory.mkdir()
+        target=directory/'ledger.csv';history=b'# untouched\n';target.write_bytes(history)
+        with (self.repo/'.env').open('a') as config:
+            config.write('WHITELIST_LEDGER='+shlex.quote(str(target))+'\n')
+        result=self.invoke('creationDateInit.sh')
+        self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('Verrou du registre non sûr',result.stderr)
+        self.assertEqual(target.read_bytes(),history)
+        self.assertFalse((directory/'pzmanager').exists())
+
+    def test_ledger_canonicalization_failure_rejects_partial_output(self):
+        target=self.base/'partial.csv';history=b'# partial output is not a path\n';target.write_bytes(history)
+        self.executable(self.bin/'readlink', '#!/bin/bash\nif [[ "${1:-}" == -m ]]; then\n'
+                        +'printf "%s\\n" '+shlex.quote(str(target))+'\nexit 23\nfi\nexec /usr/bin/readlink "$@"\n')
+        result=self.invoke('creationDateInit.sh')
+        self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('Chemin du registre',result.stderr)
+        self.assertEqual(target.read_bytes(),history)
+        self.assertFalse((self.base/'ledger.csv').exists())
+        self.assertFalse((self.base/'pzmanager').exists())
+
     def test_ledger_framing_keeps_distinct_unknown_account(self):
         self.check_ledger_framing()
     def test_ledger_new_file_and_interactive_purge_keep_unknown_account(self):

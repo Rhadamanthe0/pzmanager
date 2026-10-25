@@ -2,8 +2,7 @@
 # ------------------------------------------------------------------------------
 # purgeInactivePlayers.sh - Purge AUTOMATIQUE des accès inactifs
 # ------------------------------------------------------------------------------
-# Pour chaque compte inactif depuis >= WHITELIST_PURGE_DAYS jours, retire SES
-# ACCÈS au serveur :
+# Seuil strict WHITELIST_PURGE_DAYS : retire les ACCÈS des comptes sélectionnés :
 #   - l'autorisation SteamID (servertest.db: allowedsteamid) -- seulement si
 #     aucun autre compte encore présent ne partage ce SteamID ;
 #   - le compte de la liste blanche (servertest.db: whitelist).
@@ -131,15 +130,15 @@ readonly DAYS="${DAYS_OVERRIDE:-${WHITELIST_PURGE_DAYS:-90}}"
 # Comptes inactifs (prédicat partagé avec la purge interactive — cf. common.sh).
 WHERE="$(inactive_where_clause "$DAYS")"
 
-log "=== Purge des accès inactifs (>= ${DAYS} jours) ==="
+log "=== Purge des accès inactifs (seuil : ${DAYS} jours) ==="
 
 # Récupérer les victimes : id|username|steamid
 # Séparateur : caractère de contrôle US (0x1f), jamais un | .
 # Un joueur s'appelle littéralement « MabEira | Hannibal » (constaté le
 # 19/08/2026) : avec -separator '|' ses champs débordaient les uns sur les
 # autres, ce qui a produit une ligne de registre corrompue (pseudo tronqué à
-# « MabEira », steamid « Hannibal », date = un SteamID). Un pseudo ne peut pas
-# contenir 0x1f.
+# « MabEira », steamid « Hannibal », date = un SteamID). Les gardes ci-dessous
+# rejettent les lignes dont le cadrage reste ambigu.
 # C4 : erreur SELECT -> die (fail-closed), jamais « vide ». Liste complète des
 # victimes calculée AVANT toute écriture (aucun DELETE n'a encore eu lieu).
 sql_or_die VICTIMS_RAW --sep $'\x1f' \

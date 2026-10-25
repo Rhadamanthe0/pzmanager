@@ -334,10 +334,14 @@ player sends their SteamID64, you authorize it, they connect and set their own p
 
 ### Automatic access purge
 
-Accounts inactive ≥ `WHITELIST_PURGE_DAYS` (default 90) have their access removed
+Inactive accounts past the `WHITELIST_PURGE_DAYS` cutoff (default 90 days) lose access
 **automatically, on every server start** — the account first, then its SteamID
 **only if no remaining account still uses it**. The **character is always kept**,
 and the built-in `admin` account is always spared.
+
+The cutoff is strict: equality is kept. Last connections use SQLite's UTC
+date cutoff; never-connected accounts use their ledger creation date and the
+local timestamp cutoff. Accounts with unknown age are spared.
 
 It runs from `zomboid.service`'s `ExecStartPre`, before the JVM. Admission
 verifies the inherited WORLD descriptor and the actual start-pre identity;

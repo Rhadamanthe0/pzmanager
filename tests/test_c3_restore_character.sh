@@ -136,31 +136,14 @@ import sqlite3
 
 
 def split_sql(text):
-    stmts, cur, in_str = [], [], False
-    i, n = 0, len(text)
-    while i < n:
-        ch = text[i]
-        if in_str:
-            cur.append(ch)
-            if ch == "'":
-                if i + 1 < n and text[i + 1] == "'":
-                    cur.append("'")
-                    i += 2
-                    continue
-                in_str = False
-        else:
-            if ch == "'":
-                in_str = True
-                cur.append(ch)
-            elif ch == ';':
-                cur.append(ch)
-                s = ''.join(cur).strip()
-                if s.strip(';').strip():
-                    stmts.append(s)
-                cur = []
-            else:
-                cur.append(ch)
-        i += 1
+    stmts, cur = [], []
+    for ch in text:
+        cur.append(ch)
+        if ch == ';' and sqlite3.complete_statement(''.join(cur)):
+            stmt = ''.join(cur).strip()
+            if stmt.strip(';').strip():
+                stmts.append(stmt)
+            cur = []
     tail = ''.join(cur).strip()
     if tail.strip(';').strip():
         stmts.append(tail)
@@ -213,13 +196,10 @@ for stmt in split_sql('\n'.join(body_lines)):
     if not s:
         continue
     try:
-        head = s.lstrip(';').strip()[:6].upper()
-        if head in ('SELECT', 'PRAGMA', 'EXPLAI', 'WITH'):
-            cur.execute(s)
+        cur.execute(s)
+        if cur.description is not None:
             for row in cur.fetchall():
                 print('|'.join(fmt(v) for v in row))
-        else:
-            cur.execute(s)
     except sqlite3.Error as ex:
         print('Error: %s' % ex, file=sys.stderr)
         if bail:

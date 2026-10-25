@@ -231,6 +231,9 @@ cmd_hide_old() {  # $1 (optionnel) = titre à garder visible ; défaut = plus r�
     meta="$(fetch_sheets)"
     keep="${1:-$(latest_version "$meta" | jq -r '.title // empty')}"
     [[ -n "$keep" ]] || { echo "Aucun onglet de version trouvé."; return; }
+    jq -e --arg pat "$VPAT" --arg keep "$keep" \
+        'any(.sheets[].properties; (.title | test($pat)) and .title == $keep)' <<<"$meta" >/dev/null \
+        || die "Onglet de version introuvable: ${keep}"
 
     batch="$(jq -c --arg pat "$VPAT" --arg keep "$keep" '
         {requests:[ .sheets[].properties | select(.title|test($pat))

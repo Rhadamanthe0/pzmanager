@@ -20,8 +20,8 @@
 #       intact, aucune copie laissée.
 #   (5) SIGTERM pendant la bascule -> exit non-zéro, live remis à l'origine,
 #       staging et copie supprimés.
-#   (6) validation finale : Saves sans monde -> bascule puis rollback, live
-#       intact ; staging vide (mock EMPTY) -> refus avant bascule.
+#   (6) refus avant bascule : Saves sans monde ou staging vide (mock EMPTY),
+#       live intact, aucune copie temporaire laissée.
 #
 # Preuves réelles : vrai script restoreZomboidData.sh, vrai flock/mv/rsync
 # (rsync et mv mockés par PATH mais DÉLÉGUÉS aux vrais binaires — seuls le
@@ -420,21 +420,21 @@ fi
     || ko "SIGTERM : copie laissée"
 (( $(staging_left) == 0 )) && ok "SIGTERM : staging nettoyé" || ko "SIGTERM : staging résiduel"
 
-# --- (6) validation finale ------------------------------------------------------------------
-echo "== (6) validation finale =="
+# --- (6) refus avant bascule ------------------------------------------------------------------
+echo "== (6) refus avant bascule =="
 fresh_case noworld
 rm -rf "$BKP/Saves/Multiplayer" && echo x > "$BKP/Saves/readme.txt"  # Saves sans monde
 if run_restore "$BKP"; then
     ko "Saves sans monde : succès à tort (0 monde accepté)"; show_out
 else
-    ok "Saves sans monde : validation finale refuse (exit $?)"
+    ok "Saves sans monde : refus avant bascule (exit $?)"
 fi
 grep -q "Validation finale" "${SANDBOX}/out.log" \
-    && ok "Saves sans monde : échec imputé à la validation finale" \
+    && ok "Saves sans monde : refus du staging sans monde identifié" \
     || { ko "Saves sans monde : cause non identifiée"; show_out; }
-live_is_original && ok "Saves sans monde : live intact (rollback effectif)" \
+live_is_original && ok "Saves sans monde : live intact" \
     || ko "Saves sans monde : live altéré"
-(( $(previous_count) == 0 )) && ok "Saves sans monde : copie supprimée après rollback" \
+(( $(previous_count) == 0 )) && ok "Saves sans monde : aucune copie temporaire laissée" \
     || ko "Saves sans monde : copie laissée"
 
 fresh_case stagingempty

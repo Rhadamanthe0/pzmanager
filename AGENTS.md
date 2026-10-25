@@ -8,6 +8,9 @@ de paquet ni désactiver le nettoyage pour faire passer une validation.
 
 Exécuter les tests dans une copie Linux jetable : ils peuvent modifier
 `/tmp` et `.env`, et ne doivent pas tourner sur une installation active.
+Utiliser `tests/run-isolated.py` : une copie seule ne neutralise pas le
+routage vers `pz.slice`. Tout autre banc doit isoler ou simuler le budget
+et les appels système avant d'exécuter un script opérationnel.
 Chaque scénario doit rétablir ses doubles de commande et son état simulé ;
 un refus du bus systemd ne constitue pas une preuve de rejet d'une entrée SQL.
 

@@ -33,7 +33,14 @@ source "${SCRIPT_DIR}/../lib/common.sh"
 source_env
 
 readonly DB_PATH="${PZ_DB_PATH}"
-readonly LEDGER="${WHITELIST_LEDGER}"
+# La sentinelle protège les LF appartenant au nom contre $(...) ; retirer
+# seulement le séparateur de readlink, après avoir vérifié son statut.
+if ! LEDGER="$(readlink -m -- "${WHITELIST_LEDGER}" && printf '.')"; then
+    die "Chemin du registre impossible à résoudre : registre inchangé."
+fi
+LEDGER="${LEDGER%.}"
+LEDGER="${LEDGER%$'\n'}"
+readonly LEDGER
 
 main() {
     require_sqlite
@@ -50,7 +57,23 @@ main() {
         exit 1
     fi
 
-    ensure_directory "$(dirname "$LEDGER")"
+    local ledger_parent="${LEDGER%/*}"
+    [[ -n "$ledger_parent" ]] || ledger_parent=/
+    ensure_directory "$ledger_parent"
+    # Ancré au registre physique, indépendant du runtime timer/CLI et PrivateTmp.
+    # WORLD/SERVERCTL, si déjà détenus par la purge, précèdent toujours ce verrou.
+    local lock_name lock_file ledger_lock_fd
+    lock_name="$(printf '%s' "$LEDGER" | sha256sum)"
+    lock_file="$(XDG_RUNTIME_DIR="$ledger_parent" private_state_path "ledger-${lock_name%% *}.lock")" \
+        || die "Verrou du registre non sûr : registre inchangé."
+    # Deux noms de hardlink auraient des verrous distincts ; refuser cet alias
+    # avant écriture plutôt que prétendre sérialiser par un chemin canonique.
+    if [[ -e "$LEDGER" ]] && { [[ ! -f "$LEDGER" ]] || [[ "$(stat -c %h -- "$LEDGER")" != 1 ]]; }; then
+        die "Verrou du registre : fichier non régulier ou liens multiples, registre inchangé."
+    fi
+    umask 077
+    try_lock "$lock_file" ledger_lock_fd \
+        || die "Verrou du registre occupé ou inaccessible : registre inchangé. Réessayer après l'opération en cours."
     if [[ ! -f "$LEDGER" ]]; then
         printf '# username;steamid;created_at (ne jamais modifier une ligne existante)\n' > "$LEDGER"
         chmod 600 "$LEDGER"

@@ -160,6 +160,57 @@ else:print(stamp+".000 host prog: "+message)
         self.assertIn('invocation changée', result.stdout)
         self.assertFalse((self.root / 'killed').exists())
 
+    def test_partial_identity_is_rejected_before_signal_and_positive_fallback_survives(self):
+        modes={
+            'nominal':True,'iid-stable-enter-missing':True,'replaced-visible':False,
+            'replaced-hidden':False,'fallback-positive':True,'fallback-zero':False,
+            'fallback-source-switch':False,'fallback-pid-zero':False,
+            'fallback-pid-missing':False,'fallback-initial-enter-missing':False,
+            'fallback-epoch-positive':True,
+        }
+        for mode,allowed in modes.items():
+            with self.subTest(mode=mode):
+                case=StallwatchTests();case.setUp()
+                try:
+                    state=case.prepare_restart()
+                    bus=case.commands/'systemctl'
+                    bus.write_text('''#!/usr/bin/python3
+import os,sys
+from pathlib import Path
+root=Path(os.environ['TEST_ROOT']);args=sys.argv[1:]
+mode=os.environ['TEST_IDENTITY_MODE'];captured=(root/'dump-count').exists()
+actual=(root/'invocation').read_text()
+if 'kill' in args:(root/'killed').touch();sys.exit(0)
+def iid():
+ if mode.startswith('fallback-') or mode=='replaced-hidden' and captured:return ''
+ return actual
+def mono():
+ if mode=='fallback-zero':return '0'
+ if mode=='fallback-epoch-positive':return ''
+ if mode=='fallback-initial-enter-missing' and not captured:return ''
+ if captured and mode in ('replaced-hidden','iid-stable-enter-missing','fallback-source-switch'):return ''
+ return '1000'
+def epoch():
+ return '1970-01-01 00:16:40 UTC' if mode=='fallback-epoch-positive' or mode=='fallback-source-switch' and captured else ''
+if 'show' in args and '--value' not in args:
+ fields=dict(LoadState='loaded',ActiveState='failed',MainPID='0',ControlPID='0',InvocationID='' if mode.startswith('fallback-') else actual,ActiveEnterTimestampMonotonic='1000' if mode in ('replaced-hidden','iid-stable-enter-missing') else mono(),ActiveEnterTimestamp=epoch())
+ for key,value in fields.items():print(key+'='+value)
+elif 'InvocationID' in args:print(iid())
+elif 'MainPID' in args:print('0' if mode=='fallback-pid-zero' else '' if mode=='fallback-pid-missing' and captured else '123')
+elif 'ActiveEnterTimestampMonotonic' in args:print(mono())
+elif 'ActiveEnterTimestamp' in args:print(epoch())
+''')
+                    case.env['TEST_IDENTITY_MODE']=mode
+                    if mode.startswith('replaced-'):case.env['TEST_CHANGE_ID']='1'
+                    result=case.run_watch()
+                    self.assertEqual((case.root/'dump-count').read_text(),'3')
+                    self.assertEqual((case.root/'killed').exists(),allowed,result.stdout+result.stderr)
+                    self.assertEqual((case.root/'restarted').exists(),allowed,result.stdout+result.stderr)
+                    self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                    if not allowed:
+                        self.assertEqual(state.read_text().split()[3],'0')
+                finally:case.doCleanups()
+
     def refuse_first_kill(self):
         state=self.prepare_restart()
         path=self.commands/'systemctl'

@@ -452,13 +452,14 @@ if [[ -n "$DIAG_INV" && -n "$REQ_INVOCATION" ]]; then
     fi
 else
     # InvocationID indisponible d'un côté ou des deux : repli PID+ActiveEnter.
-    if [[ -z "$DIAG_MAIN" || -z "$REQ_MAINPID" || "$DIAG_MAIN" != "$REQ_MAINPID" ]]; then
-        log "stallwatch: InvocationID indisponible, PID principal changé ou illisible (diag '${DIAG_MAIN:-?}' -> live '${REQ_MAINPID:-?}') — abandon du SIGKILL."
+    if [[ ! "$DIAG_MAIN" =~ ^[0-9]*[1-9][0-9]*$ || "$DIAG_MAIN" != "$REQ_MAINPID" ]]; then
+        log "stallwatch: InvocationID indisponible, PID principal nul, changé ou illisible (diag '${DIAG_MAIN:-?}' -> live '${REQ_MAINPID:-?}') — abandon du SIGKILL."
         write_state "$pid" "$frame" "$stamp" 0
         exit 0
     fi
-    if [[ -n "$DIAG_ENTER" && -n "$REQ_ACTIVE_ENTER" && "$DIAG_ENTER" != "$REQ_ACTIVE_ENTER" ]]; then
-        log "stallwatch: InvocationID indisponible, ActiveEnter changé (même PID réutilisé ?) — abandon du SIGKILL."
+    if [[ ! "$DIAG_ENTER" =~ ^[0-9]*[1-9][0-9]*$ || "$DIAG_ENTER" != "$REQ_ACTIVE_ENTER" ||
+          ! "$DIAG_ENTER_SOURCE" =~ ^(monotonic|epoch)$ || "$DIAG_ENTER_SOURCE" != "$REQ_ACTIVE_ENTER_SOURCE" ]]; then
+        log "stallwatch: InvocationID indisponible, ActiveEnter absent, nul, changé ou de source différente — abandon du SIGKILL."
         write_state "$pid" "$frame" "$stamp" 0
         exit 0
     fi
