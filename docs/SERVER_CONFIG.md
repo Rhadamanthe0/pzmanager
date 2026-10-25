@@ -101,7 +101,8 @@ its next connection. See [account operations](USAGE.md#steamid-vs-account).
 
 Manage users authorized to connect to the server.
 
-**Admin user**: Created automatically during installation with a random password. Never deleted by purge.
+For the initial `admin` account, see [Administrator credentials](#administrator-credentials).
+Purge exclusions are documented with [whitelist operations](USAGE.md#whitelist).
 
 **View whitelist**:
 ```bash

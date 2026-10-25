@@ -149,6 +149,75 @@ for state in active activating error; do
     [[ ! -e "$manager_home/pzmanager/refusal-marker" ]]
 done
 echo 'OK refus actif/bus sous UID manager : monde et scripts intacts.'
+# The same declared profile must reach root preflight and manager transaction.
+cp "$manager_home/pzmanager/.env" /tmp/profile-env-original
+printf 'export PZ_SOURCE_DIR="${PZ_MANAGER_DIR}/custom-world"\nexport PZ_DATA_DIR="${PZ_MANAGER_DIR}/custom-data"\nexport PZ_INSTALL_DIR="${PZ_DATA_DIR}/custom-game"\nexport PZ_SERVICE_NAME=custom-select.service\n' >> "$manager_home/pzmanager/.env"
+# Only the selected custom unit is inactive; selecting the default must fail.
+python3 - <<'PROFILEBUS'
+from pathlib import Path
+p=Path('/test-bin/systemctl')
+s=p.read_text().replace('if [[ " $* " == *" show "* ]]; then', 'if [[ " $* " == *" custom-select.service "* ]]; then\n    printf \'LoadState=loaded\\nActiveState=%s\\nSubState=dead\\nMainPID=0\\nControlPID=0\\n\' "${CUSTOM_STATE:-inactive}"\n    exit 0\nfi\nif [[ " $* " == *" show "* ]]; then')
+p.write_text(s)
+PROFILEBUS
+python3 - <<'PROFILEARCHIVE'
+import sqlite3,zipfile
+connection=sqlite3.connect(':memory:')
+connection.execute('CREATE TABLE whitelist(username TEXT)')
+with zipfile.ZipFile('/tmp/profile-restore.zip','w') as archive:
+    archive.writestr('zomboid/Saves/Multiplayer/native/player.bin', b'custom-restored')
+    archive.writestr('zomboid/db/servertest.db', connection.serialize())
+    archive.writestr('zomboid/Server/servertest.ini', b'ini')
+PROFILEARCHIVE
+mkdir -p "$manager_home/pzmanager/custom-world/Saves/Multiplayer/native"
+printf custom-before > "$manager_home/pzmanager/custom-world/Saves/Multiplayer/native/player.bin"
+chown -R pzfixture:pzfixture "$manager_home/pzmanager/custom-world"
+MOCK_FRESH_RESTORE=0 MOCK_RESTORE_STATE=active PATH="/test-bin:$PATH" bash "$helper/configurationInitiale.sh" --manager-root "$manager_home/pzmanager" restore /tmp/profile-restore.zip --force
+[[ "$(cat "$manager_home/pzmanager/custom-world/Saves/Multiplayer/native/player.bin")" == custom-restored ]]
+[[ "$(stat -c %u "$manager_home/pzmanager/custom-world/Saves/Multiplayer/native/player.bin")" == "$(id -u pzfixture)" ]]
+[[ "$(cat "$manager_home/pzmanager/Zomboid/Saves/Multiplayer/native/player.bin")" == native ]]
+# Custom unit active: prove the refusal cause and preserve both worlds.
+if CUSTOM_STATE=active MOCK_FRESH_RESTORE=0 PATH="/test-bin:$PATH" bash "$helper/configurationInitiale.sh" --manager-root "$manager_home/pzmanager" restore /tmp/profile-restore.zip --force > /tmp/custom-active.log 2>&1; then exit 1; fi
+grep -qE 'actif|non prouvé arrêté' /tmp/custom-active.log
+[[ "$(cat "$manager_home/pzmanager/custom-world/Saves/Multiplayer/native/player.bin")" == custom-restored && "$(cat "$manager_home/pzmanager/Zomboid/Saves/Multiplayer/native/player.bin")" == native ]]
+# Legacy overrides and unresolved profile must fail before any world mutation.
+for setting in 'PZ_DB_PATH=/tmp/wrong.db' 'PZ_INI_PATH=/tmp/wrong.ini' 'PZ_SOURCE_DIR=${UNKNOWN}/world' 'PZ_SOURCE_DIR="/tmp/custom"#suffix' 'PZ_SOURCE_DIR="/tmp/custom\\world"' 'PZ_SOURCE_DIR=/tmp/custom|true'; do
+    cp "$manager_home/pzmanager/.env" /tmp/profile-env-case
+    printf '%s\n' "$setting" >> "$manager_home/pzmanager/.env"
+    if PATH="/test-bin:$PATH" bash "$helper/configurationInitiale.sh" --manager-root "$manager_home/pzmanager" restore /tmp/profile-restore.zip --force > /tmp/profile-invalid.log 2>&1; then exit 1; fi
+    grep -qE 'contradictoires|non résolu|déclaratif invalide' /tmp/profile-invalid.log
+    [[ "$(cat "$manager_home/pzmanager/custom-world/Saves/Multiplayer/native/player.bin")" == custom-restored ]]
+    mv /tmp/profile-env-case "$manager_home/pzmanager/.env"
+done
+mv /tmp/profile-env-original "$manager_home/pzmanager/.env"
+chown pzfixture:pzfixture "$manager_home/pzmanager/.env"
+echo 'OK profil root/manager : monde custom restauré seul, service custom contrôlé, contradictions refusées avant mutation.'
+# A hash inside an assignment word is literal, unlike a separated comment.
+# Compare the real manager shell's own .env with the root restore target.
+for syntax in unquoted quoted-comment unquoted-comment; do
+    cp "$manager_home/pzmanager/.env" /tmp/hash-env-original
+    case "$syntax" in
+        unquoted) printf 'PZ_SOURCE_DIR=%s/pzmanager/hash#world\n' "$manager_home" ;;
+        quoted-comment) printf 'PZ_SOURCE_DIR="%s/pzmanager/hash#world" # separated comment\n' "$manager_home" ;;
+        unquoted-comment) printf 'PZ_SOURCE_DIR=%s/pzmanager/hash#world # separated comment\n' "$manager_home" ;;
+    esac >> "$manager_home/pzmanager/.env"
+    chmod 0600 "$manager_home/pzmanager/.env"
+    chown pzfixture:pzfixture "$manager_home/pzmanager/.env"
+    manager_source="$(PATH="/test-bin:$PATH" /test-bin/sudo -u pzfixture /bin/bash -eu -c 'source "$1"; printf "%s" "$PZ_SOURCE_DIR"' _ "$manager_home/pzmanager/.env")"
+    [[ "$manager_source" == "$manager_home/pzmanager/hash#world" ]]
+    for world in hash 'hash#world'; do
+        mkdir -p "$manager_home/pzmanager/$world/Saves/Multiplayer/native"
+        printf '%s-before' "$world" > "$manager_home/pzmanager/$world/Saves/Multiplayer/native/player.bin"
+    done
+    chown -R pzfixture:pzfixture "$manager_home/pzmanager/hash" "$manager_home/pzmanager/hash#world"
+    MOCK_FRESH_RESTORE=0 PATH="/test-bin:$PATH" bash "$helper/configurationInitiale.sh" --manager-root "$manager_home/pzmanager" restore /tmp/profile-restore.zip --force
+    printf 'HASH_SYNTAX=%s MANAGER_SOURCE=%s EXPECTED_AFTER=%s NEIGHBOR_AFTER=%s\n' "$syntax" "$manager_source" "$(cat "$manager_source/Saves/Multiplayer/native/player.bin")" "$(cat "$manager_home/pzmanager/hash/Saves/Multiplayer/native/player.bin")"
+    [[ "$(cat "$manager_source/Saves/Multiplayer/native/player.bin")" == custom-restored ]]
+    [[ "$(stat -c %u "$manager_source/Saves/Multiplayer/native/player.bin")" == "$(id -u pzfixture)" ]]
+    [[ "$(cat "$manager_home/pzmanager/hash/Saves/Multiplayer/native/player.bin")" == hash-before ]]
+    mv /tmp/hash-env-original "$manager_home/pzmanager/.env"
+    chown pzfixture:pzfixture "$manager_home/pzmanager/.env"
+done
+echo 'OK # littéral : .env manager UID réel concordant, trois syntaxes restaurent seulement hash#world.'
 # Parcours CLI réel vers helpers privilégiés ; frontières paquets/UFW/session
 # remplacées, aucune installation ou action sur un service système réel.
 cp "$ROOT/pzm" "$manager_home/pzmanager/pzm"

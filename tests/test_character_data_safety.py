@@ -105,6 +105,31 @@ sql_escape() { printf '%s' "$1" | sed "s/'/''/g"; }
         self.assertNotEqual(result.returncode,0,result.stdout)
         self.assertEqual(self.live.read_bytes(),before)
 
+    def test_native_integer_key_required_in_source_and_destination(self):
+        for target in ('source','live'):
+            for declaration,ending in (('', ''), ('id INTEGER, ', ''), ('id TEXT PRIMARY KEY, ', ''),
+                                       ('id INTEGER PRIMARY KEY DESC, ', ''),
+                                       ('id INTEGER, ', ', PRIMARY KEY(id, username)'),
+                                       ('id INTEGER PRIMARY KEY, ', ' WITHOUT ROWID')):
+                with self.subTest(target=target, declaration=declaration,ending=ending):
+                    self.source.unlink(missing_ok=True);self.live.unlink(missing_ok=True)
+                    self.database(self.source);self.database(self.live)
+                    path=getattr(self,target);path.unlink()
+                    schema=declaration+COLS.split(', ',1)[1]
+                    without_rowid=ending==' WITHOUT ROWID'
+                    with connection(path) as db:
+                        db.execute('CREATE TABLE networkPlayers ('+schema+('' if without_rowid else ending)+')'+(ending if without_rowid else ''))
+                        if without_rowid:
+                            db.execute("INSERT INTO networkPlayers(id,world,username,data,worldversion) VALUES(1,'test','selected',x'ff',249)")
+                        else:
+                            db.execute("INSERT INTO networkPlayers(world,username,data,worldversion) VALUES('test','selected',x'ff',249)")
+                    before=self.live.read_bytes();source=self.source.read_bytes()
+                    result=self.run_restore()
+                    self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                    self.assertIn('Schéma incompatible',result.stderr)
+                    self.assertEqual(self.live.read_bytes(),before)
+                    self.assertEqual(self.source.read_bytes(),source)
+
     def test_source_sidecars_refused_without_opening_or_mutating_source(self):
         self.database(self.source);self.database(self.live)
         for suffix in ('-wal','-shm','-journal'):

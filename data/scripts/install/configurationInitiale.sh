@@ -18,7 +18,7 @@
 #
 # Nécessite: root
 # Note: Pour setup système, utilisez setupSystem.sh
-# Note: Crée automatiquement un utilisateur 'admin' avec mot de passe aléatoire
+# Note: Prépare le secret admin utilisé au premier démarrage du jeu
 # Note: identité/home du propriétaire NSS ; configuration .env déclarative.
 # ------------------------------------------------------------------------------
 
@@ -74,6 +74,18 @@ warn_if_not_root_owned() {
 load_root_env_declarative() {
     local env_file="${PZ_MANAGER_ROOT:-}/.env"
     [[ -n "${PZ_MANAGER_ROOT:-}" ]] || env_file="/home/pzuser/pzmanager/.env"
+    # Seed declarative path references from NSS, then validate declarations
+    # against the same identity below. Never derive a manager home from root.
+    local manager_uid manager_name manager_home
+    if [[ -n "$INSTALL_MANAGER_ROOT" ]]; then
+        manager_uid="$(stat -c %u "$INSTALL_MANAGER_ROOT")" || die "Installation absente."
+        [[ "$manager_uid" != 0 ]] || die "L'installation doit appartenir au manager non root."
+        manager_name="$(getent passwd "$manager_uid" | cut -d: -f1)"
+        manager_home="$(getent passwd "$manager_uid" | cut -d: -f6)"
+        [[ "$manager_name" =~ ^[a-z_][a-z0-9_-]{0,31}$ && "$manager_home" == /* ]] \
+            || die "Identité manager introuvable."
+        : "${PZ_USER:=$manager_name}" "${PZ_HOME:=$manager_home}"
+    fi
     if [[ -f "$env_file" ]]; then
         if grep -qE '\$\(|`|;' "$env_file" 2>/dev/null; then
             echo "[WARN] $env_file contient '\$()' / backtick / ';' : contenu non execute, valeurs validees uniquement." >&2
@@ -83,16 +95,11 @@ load_root_env_declarative() {
     # shellcheck disable=SC1090
     . "$lib1"
     if declare -F parse_env_declarative >/dev/null 2>&1; then
-        [[ -f "$env_file" ]] && parse_env_declarative "$env_file" || true
+        if [[ -f "$env_file" ]]; then
+            parse_env_declarative "$env_file" || die "Profil déclaratif invalide : restauration/installation refusée."
+        fi
     fi
     if [[ -n "$INSTALL_MANAGER_ROOT" ]]; then
-        local manager_uid manager_name manager_home
-        manager_uid="$(stat -c %u "$INSTALL_MANAGER_ROOT")" || die "Installation absente."
-        [[ "$manager_uid" != 0 ]] || die "L'installation doit appartenir au manager non root."
-        manager_name="$(getent passwd "$manager_uid" | cut -d: -f1)"
-        manager_home="$(getent passwd "$manager_uid" | cut -d: -f6)"
-        [[ "$manager_name" =~ ^[a-z_][a-z0-9_-]{0,31}$ && "$manager_home" == /* ]] \
-            || die "Identité manager introuvable."
         [[ "${PZ_USER:-$manager_name}" == "$manager_name" && "${PZ_HOME:-$manager_home}" == "$manager_home" ]] \
             || die "Identité/home déclarés incompatibles avec le propriétaire de l'installation."
         [[ "${PZ_MANAGER_USER:-$manager_name}" == "$manager_name" && "${PZ_GAME_USER:-$manager_name}" == "$manager_name" ]] \
@@ -113,8 +120,20 @@ load_root_env_declarative() {
     : "${PZ_INSTALL_DIR:=${PZ_DATA_DIR}/pzserver}"
     : "${PZ_SOURCE_DIR:=${PZ_MANAGER_DIR}/Zomboid}"
     : "${PZ_SERVER_NAME:=servertest}"
-    : "${PZ_DB_PATH:=${PZ_SOURCE_DIR}/db/${PZ_SERVER_NAME}.db}"
-    : "${PZ_INI_PATH:=${PZ_SOURCE_DIR}/Server/${PZ_SERVER_NAME}.ini}"
+    : "${PZ_SERVICE_NAME:=zomboid.service}"
+    local profile_path
+    for profile_path in PZ_DATA_DIR PZ_INSTALL_DIR PZ_SOURCE_DIR; do
+        [[ "${!profile_path}" == /* && "${!profile_path}" != *'..'* && "${!profile_path}" != *$'\n'* ]] \
+            || die "Chemin métier absolu requis : $profile_path."
+    done
+    [[ "$PZ_SERVICE_NAME" =~ ^[A-Za-z0-9_.@:-]+\.service$ && "$PZ_SERVICE_NAME" != -* \
+       && "$PZ_SERVER_NAME" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || die "Unité ou nom de monde invalide."
+    local expected_db="${PZ_SOURCE_DIR}/db/${PZ_SERVER_NAME}.db"
+    local expected_ini="${PZ_SOURCE_DIR}/Server/${PZ_SERVER_NAME}.ini"
+    [[ "${PZ_DB_PATH:-$expected_db}" == "$expected_db" && "${PZ_INI_PATH:-$expected_ini}" == "$expected_ini" ]] \
+        || die "PZ_DB_PATH/PZ_INI_PATH contradictoires avec le monde configuré : supprimer ces anciennes surcharges."
+    PZ_DB_PATH="$expected_db"
+    PZ_INI_PATH="$expected_ini"
     : "${STEAMCMD_PATH:=/usr/games/steamcmd}"
     : "${STEAM_APP_ID:=380870}"
     : "${STEAM_BETA_BRANCH:=}"
@@ -126,7 +145,7 @@ load_root_env_declarative() {
     : "${BACKUP_DIR:=${PZ_DATA_DIR}/dataBackups}"
     : "${SYNC_BACKUPS_DIR:=${PZ_DATA_DIR}/fullBackups}"
     export PZ_USER PZ_GAME_USER PZ_MANAGER_USER PZ_GAME_HOME PZ_MANAGER_HOME PZ_HOME PZ_MANAGER_DIR PZ_DATA_DIR PZ_INSTALL_DIR PZ_SOURCE_DIR \
-        PZ_SERVER_NAME PZ_DB_PATH PZ_INI_PATH \
+        PZ_SERVER_NAME PZ_SERVICE_NAME PZ_DB_PATH PZ_INI_PATH \
         STEAMCMD_PATH STEAM_APP_ID STEAM_BETA_BRANCH STEAM_LOGIN \
         JAVA_VERSION JAVA_PACKAGE JAVA_PATH PZ_JDK_SOURCE \
         BACKUP_DIR SYNC_BACKUPS_DIR
@@ -540,7 +559,7 @@ restore_zomboid_data() {
     cp -a "${SCRIPT_DIR}/.." "$runtime_root/data/scripts" || die "Copie du métier impossible."
     : > "$runtime_root/.env"
     for key in PZ_USER PZ_HOME PZ_MANAGER_DIR PZ_DATA_DIR PZ_SOURCE_DIR PZ_INSTALL_DIR \
-        PZ_SERVER_NAME PZ_GAME_USER PZ_MANAGER_USER PZ_GAME_HOME PZ_MANAGER_HOME; do
+        PZ_SERVER_NAME PZ_SERVICE_NAME PZ_DB_PATH PZ_INI_PATH PZ_GAME_USER PZ_MANAGER_USER PZ_GAME_HOME PZ_MANAGER_HOME; do
         [[ -v "$key" ]] || continue
         printf 'export %s=%q\n' "$key" "${!key}" >> "$runtime_root/.env"
     done

@@ -1,5 +1,7 @@
 """Crash admission and durable intent on real private Linux files."""
 import json
+import contextlib
+import io
 import os
 from pathlib import Path
 import signal
@@ -48,6 +50,23 @@ class WorldTransaction(unittest.TestCase):
         with patch.object(txn.os,'fsync',side_effect=OSError('storage error')):
             with self.assertRaises(OSError):txn.finish(self.world,token,'reverted')
         with self.assertRaises(ValueError):txn.check_clean(self.world)
+
+    def test_targeted_file_sync_persists_only_selected_content_and_rejects_escape(self):
+        synced=[];original=txn.os.fsync
+        def sync(fd):
+            synced.append(os.readlink('/proc/self/fd/'+str(fd)));original(fd)
+        def command(name):
+            with patch.object(sys,'argv',['world_transaction.py','sync','--world',str(self.world),'--file',name]),contextlib.redirect_stderr(io.StringIO()):
+                return txn.main()
+        with patch.object(txn.os,'fsync',sync):
+            self.assertEqual(command('a'),0)
+        self.assertIn(str(self.world/'a'),synced)
+        self.assertIn(str(self.world),synced)
+        self.assertNotIn(str(self.world/'b'),synced)
+        (self.world/'linked').symlink_to(self.recovery,target_is_directory=True)
+        (self.recovery/'outside').write_bytes(b'outside')
+        for name in ('../recovery/outside',str(self.recovery/'outside'),'linked/outside','missing'):
+            with self.subTest(name=name):self.assertNotEqual(command(name),0)
     def test_symlink_and_public_state_directory_refused(self):
         state=txn.location(self.world)[1];state.symlink_to(self.recovery)
         with self.assertRaises((OSError,ValueError)):self.begin()

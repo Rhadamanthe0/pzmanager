@@ -220,7 +220,8 @@ At `http://127.0.0.1:<port>/metrics` you get:
 The console command `statistic` exists but is **not** wired to the FIFO console
 (`Unknown command`), so scraping `/metrics` is the only route. The bot scrapes it
 each monitoring cycle and **falls back to the NIC proxy** if the exporter is not
-exposed. `watchServerStall.sh` uses the same counters to detect a frozen main loop.
+exposed. [Stall diagnostics](TROUBLESHOOTING.md#monitoring-zgc-and-tick-frequency)
+use separate evidence.
 
 > ⚠️ **Security.** The exporter binds `0.0.0.0` — PZ offers no localhost-bind
 > option — and the metrics include **player coordinates**. `setupSystem.sh`

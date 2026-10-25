@@ -177,11 +177,8 @@ The `servertest*` filenames are derived from the world name `PZ_SERVER_NAME`
 
 ### Admin User
 
-An `admin` user is automatically created during installation with a random 24-character password. This password is displayed once during installation - **save it immediately**.
-
-- Username: `admin`
-- Role: 7 (admin)
-- Excluded from `pzm whitelist purge` (never deleted)
+The installer prepares the first-start secret; see
+[Administrator credentials](SERVER_CONFIG.md#administrator-credentials).
 
 ### Access model (SteamID whitelist)
 
@@ -196,7 +193,8 @@ server console (`addsteamid`), and the player self-registers. See
 Access levels are set with `pzm rcon setaccesslevel <name> <level>`, where
 `<level>` is one of `admin`, `moderator`, `gm`, `observer`, `priority`, `user`
 (plus any custom level, e.g. `Animateur`) — lowercase and case-sensitive. The
-built-in `admin` account is created at install and excluded from the purge.
+built-in `admin` account is excluded from the purge; see
+[purge rules](USAGE.md#whitelist).
 
 ---
 

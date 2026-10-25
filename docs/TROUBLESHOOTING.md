@@ -103,22 +103,19 @@ nc -vuz YOUR_SERVER_IP 16261
 
 ## Stop ends in `Failed with result 'timeout'`
 
-The server did not exit on its own and systemd SIGKILLed it after
-`TimeoutStopSec` (120 s). **The usual cause is not a slow save — it is a `quit`
-that was never read.**
+The server did not exit before `TimeoutStopSec` (120 s), so systemd killed it.
+The timeout alone does not distinguish an unprocessed `quit` from a slow shutdown.
 
 Server control is a FIFO: `ExecStop` writes `quit` into
 `data/pzserver/zomboid.control` and the game's console thread reads it.
 `KillSignal=SIGCONT` is deliberate — systemd never sends SIGTERM, so if that
 `quit` is not processed there is **nothing else** that will stop the server, and
-the 120 s wait always ends in a SIGKILL. Raising `TimeoutStopSec` does not help;
-it only makes the wait longer.
+the wait can end in a SIGKILL. A longer deadline helps only when diagnostics
+establish shutdown progress; it cannot unblock an unprocessed command.
 
-Note that writing to the FIFO **succeeds** even when nobody is reading: a pipe
-accepts data into its 64 KB buffer regardless. So "the command was sent" tells you
-nothing.
+A successful FIFO write proves submission, not execution.
 
-### Telling the two apart
+### Inspecting the stop
 
 ```bash
 # Did the game acknowledge ANY console command during the stop?
@@ -126,16 +123,12 @@ journalctl --user -u zomboid.service --since "<stop>" --until "<sigkill>" \
   | grep -c 'command entered via server console'
 ```
 
-- **≥ 1, plus `QueuedQuit` / `Shutdown handling finished`** → the quit *was*
-  received and the save genuinely ran long. That is the case where a longer
-  timeout would help.
-- **0, and no game output at all** → the console reader was not consuming the
-  FIFO. The stop was never going to work.
+Match the stop's own request and completion within the current invocation.
+An unrelated command echo does not prove that `quit` ran. Correlate logs with
+thread dumps; `logs/zomboid/monitoring.csv` supplies resource context, not proof
+that the console or main loop completed a command.
 
-Cross-check the black box (`logs/zomboid/monitoring.csv`): a real save burns CPU
-and logs; a dead console shows an idle process writing nothing.
-
-### Third case: the server never finished booting
+### A server that never finished booting
 
 A positive log frame `f:` proves that the simulation has started. Its absence
 is inconclusive: a healthy empty server can remain at `f:0` for hours. On
@@ -169,22 +162,8 @@ has not been demonstrated; a longer wait does not make a forced stop safe.
 The historical stuck boot of 2026-09-02 is described in
 [INCIDENTS.md](INCIDENTS.md#2026-09-02--a-stop-that-could-not-be-executed).
 
-### A mute console and a frozen game loop are not the same failure
-
-The game echoes `command entered via server console` from its **console thread**,
-which keeps running while the main loop is stuck. So a probe that gets no answer
-has two very different causes, and the echo tells them apart:
-
-| Echo present? | Result returned? | Diagnosis |
-|---|---|---|
-| no | no | the console is not reading the FIFO — a genuinely dead console |
-| **yes** | no | the console reads fine; the **game loop** is frozen and never executes the command |
-
-Both end the same way — the `quit` is not executed and systemd SIGKILLs at 120 s —
-but they point at different things to investigate. On 2026-09-03 at 19:08 it was
-the second case: the `quit` *was* acknowledged, while the frame counter had been
-pinned at `f:88543` since 18:59. `pzm server stop|restart` now names whichever it
-actually is, and prints the frozen frame number.
+See [console responses and slow shutdown](#réponse-console-et-fermeture-lente)
+for the timeout contract and diagnostic captures.
 
 ### Catching it before you need the stop
 
@@ -541,6 +520,12 @@ milliseconds despite its name. The monitor converts a positive finite period
 with `1000 / period_ms`; 103 ms means about 9.7 ticks/s, while 617 ms means
 about 1.6 ticks/s. An old gauge alone cannot prove that the game still responds:
 check fresh frame progression and a console response.
+
+`watchServerStall.sh` compares native log frames and record timestamps within
+the same invocation. With connected players, newer records carrying an unchanged
+positive frame trigger thread dumps. Automatic recovery requires the main thread
+to remain RUNNABLE and burn CPU across the captures. A startup frame `f:0`, no
+players or an inconclusive CPU profile does not justify a forced restart.
 
 ZGC's `Major Collection` summary reports the duration of its concurrent cycle,
 not a stop-the-world pause. The monitor keeps that cycle duration separate and

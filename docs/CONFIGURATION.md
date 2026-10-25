@@ -373,7 +373,7 @@ export DISCORD_WEBHOOK=""
 ### Zomboid Logs
 
 **Location**: `logs/zomboid/`
-**Format**: `zomboid_YYYY-MM-DD_HHhMMmSS.log`
+**Format**: `zomboid_YYYY-MM-DD_HHhMMmSS_<InvocationID>_<unique>.log`
 **Source**: journald (via captureLogs.sh)
 **Retention**: `LOG_RETENTION_DAYS` (default: 30 days)
 

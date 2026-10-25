@@ -387,6 +387,12 @@ python3 "${SCRIPT_DIR}/../lib/world_transaction.py" sync --directory-only --worl
 # (= le plus récent de la fenêtre). BACKUP_PRUNE_DRY_RUN=1 => plan seul, sans rien
 # supprimer (pour inspecter la rétention sur un serveur vivant).
 prune_gfs() {
+    # Forensic snapshots may continue during recovery; their retention must not
+    # remove the snapshot named by an unfinished (or unreadable) journal.
+    if ! python3 "${SCRIPT_DIR}/../lib/world_transaction.py" check --world "$PZ_SOURCE_DIR"; then
+        echo "Rétention GFS différée : récupération du monde à vérifier."
+        return 0
+    fi
     local hourly_h="${BACKUP_GFS_HOURLY_HOURS}"
     local sixh_d="${BACKUP_GFS_SIXHOURLY_DAYS}"
     local daily_d="${BACKUP_GFS_DAILY_DAYS}"

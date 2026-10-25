@@ -203,6 +203,22 @@ grep -q 'Règles ajoutées' "$S/a.log" \
     && ok "A : règles ajoutées journalisées" \
     || ko "A : journal des ajouts absent"
 
+# Extract only local terminal ports: IPv6 components, peers and process text
+# must never become additional firewall openings.
+reset_case
+cat > "$MOCK_DIR/ss_output" <<'LOCALPORTS'
+LISTEN 0 128 [::1]:2222 [2001:db8::9]:7777 users:(("sshd",pid=123,fd=3))
+LISTEN 0 128 [2001:db8::44]:2222 [::]:* users:(("sshd",pid=234,fd=4))
+LISTEN 0 128 [::]:2200 [::1]:4444 users:(("sshd",pid=345,fd=5))
+LISTEN 0 128 127.0.0.1:2201 127.0.0.2:5555 users:(("sshd:9999",pid=456,fd=6))
+LOCALPORTS
+[[ "$(detect_ssh_port)" == $'22\n2200\n2201\n2222' ]] && ok 'ss : ports locaux seuls et dédupliqués IPv4/IPv6' || ko 'ss : adresse/peer/processus interprété comme port'
+configure_firewall > "$S/local-ports.log" 2>&1 || ko 'ss : configuration firewall refusée'
+for port in 22 2200 2201 2222; do
+    grep -qx "$port/tcp ALLOW IN Anywhere" "$MOCK_DIR/ufw.rules" && ok "ss : ouverture locale $port" || ko "ss : port local $port absent"
+done
+[[ "$(grep -c 'tcp ALLOW' "$MOCK_DIR/ufw.rules")" == 4 ]] && ok 'ss : aucune ouverture parasite' || ko 'ss : ouverture parasite'
+
 # --- (B) SSH non standard 2222 ---------------------------------------------------------
 echo "== (B) SSH 2222 =="
 reset_case

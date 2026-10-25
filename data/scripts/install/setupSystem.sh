@@ -198,7 +198,7 @@ ufw_run() {
 detect_ssh_port() {
     local sshd_config="${PZ_SSHD_CONFIG:-/etc/ssh/sshd_config}" ports="" effective="" sshd_bin=""
     if command -v ss >/dev/null 2>&1; then
-        ports="$(ss -lntp 2>/dev/null | grep -i sshd | grep -oE ':[0-9]+' | tr -d ':' | sort -nu || true)"
+        ports="$(ss -lntp 2>/dev/null | awk 'tolower($0) ~ /sshd/ && $1 == "LISTEN" { address=$4; sub(/^.*:/, "", address); print address }' | sort -nu || true)"
     fi
     if [[ -z "$ports" ]]; then
         sshd_bin="$(command -v sshd || command -v /usr/sbin/sshd || true)"

@@ -189,10 +189,20 @@ log "Snapshot de sécurité (normal) avant wipe..."
 "${SCRIPT_DIR}/../backup/dataBackup.sh" --snapshot-only --required --consistent \
     || die "Snapshot de sécurité échoué — wipe annulé (rien supprimé)."
 
-# Un seul rm pour tout le lot : un wipe de 2x2 cellules atteint ~4 000 fichiers,
-# soit autant de processus lancés là où un seul suffit. Le compteur séparé était
-# de toute façon toujours égal à ${#targets[@]} (rm -f n'échoue pas ici).
+# Persist the deletion plan before the first unlink. An interrupted/partial rm
+# leaves admission closed until the snapshot recovery has been verified.
+recovery="$(readlink -f -- "$BACKUP_LATEST_LINK")"
+[[ -d "$recovery" ]] || die "Snapshot de récupération introuvable : wipe annulé."
+plan=()
+for target in "${targets[@]}"; do
+    plan+=(--delete-file "Saves/Multiplayer/${SAVE_NAME}/${target}")
+done
+transaction="$(python3 "${SCRIPT_DIR}/../lib/world_transaction.py" begin \
+    --world "$PZ_SOURCE_DIR" --kind map-wipe --recovery "$recovery" "${plan[@]}")"
+log "Récupération en cas d'interruption : ${recovery} (transaction ${transaction})."
 rm -f -- "${targets[@]/#/${SAVE_DIR}/}"
+python3 "${SCRIPT_DIR}/../lib/world_transaction.py" finish \
+    --world "$PZ_SOURCE_DIR" --token "$transaction" --state complete
 
 log "Supprime: ${#targets[@]} fichier(s). Filet = dernier snapshot normal (pzm backup list)."
 echo "Terminez par: pzm server start  (la zone se regenerera au prochain passage d'un joueur)."

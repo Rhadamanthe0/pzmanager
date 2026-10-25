@@ -210,6 +210,52 @@ ready.with_suffix('.tmp').replace(ready)'''))
         self.assertNotEqual(p.returncode,0,p.stdout)
         self.assertIn('BACKUP_REQUIRED_LOCKED',p.stdout)
         self.assertEqual(self.image(self.live),self.before)
+
+    def test_partial_wipe_blocks_start_until_verified_recovery(self):
+        metadata=self.live/'Saves/Multiplayer/world/metagrid/metacell_0_0.bin'
+        metadata.parent.mkdir(parents=True);metadata.write_bytes(b'cell-metadata')
+        self.executable(self.bin/'date', '''#!/bin/bash
+if [[ "$1" == '+%Y-%m-%d_%Hh%Mm%Ss' ]]; then echo 2001-01-01_00h00m00s
+else exec /usr/bin/date "$@"; fi
+''')
+        self.executable(self.bin/'rm', '''#!/usr/bin/python3
+import os,sys
+targets=[p for p in sys.argv[1:] if p.endswith('/map/0/0.bin')]
+if targets:
+ os.unlink(targets[0]);sys.exit(74)
+os.execv('/usr/bin/rm',['/usr/bin/rm',*sys.argv[1:]])
+''')
+        result=self.run_admin('wipeMapTile.sh','0','0')
+        self.assertNotEqual(result.returncode,0,result.stdout)
+        self.assertFalse(self.tile.exists(),result.stdout);self.assertEqual(metadata.read_bytes(),b'cell-metadata')
+        records=self.records();self.assertEqual(len(records),1)
+        record=records[0];self.assertEqual(record['state'],'prepared')
+        snapshot=self.backups.joinpath('latest').resolve()
+        self.assertEqual(Path(record['recovery']),snapshot)
+        self.assertEqual((snapshot/self.tile.relative_to(self.live)).read_bytes(),b'old-map')
+        helper=self.repo/'data/scripts/lib/world_transaction.py'
+        def transaction(*args):
+            return subprocess.run(['python3',str(helper),*args,'--world',str(self.live)],env=self.env,capture_output=True,text=True)
+        check=transaction('check');self.assertNotEqual(check.returncode,0);self.assertIn('unfinished',check.stderr)
+        premature=transaction('finish','--token',record['id'],'--state','complete')
+        self.assertNotEqual(premature.returncode,0)
+        (self.bin/'date').unlink()
+        backup=self.repo/'data/scripts/backup/dataBackup.sh'
+        forensic=subprocess.run(['bash',str(backup)],env=self.env,capture_output=True,text=True,timeout=20)
+        self.assertEqual(forensic.returncode,0,forensic.stdout+forensic.stderr)
+        self.assertTrue(snapshot.is_dir(),'retention deleted the pending recovery')
+        self.assertNotEqual((self.backups/'latest').resolve(),snapshot)
+        self.tile.write_bytes((snapshot/self.tile.relative_to(self.live)).read_bytes())
+        reverted=transaction('finish','--token',record['id'],'--state','reverted')
+        self.assertEqual(reverted.returncode,0,reverted.stderr)
+        self.assertEqual(transaction('check').returncode,0)
+        self.executable(self.bin/'date', '''#!/bin/bash
+if [[ "$1" == '+%Y-%m-%d_%Hh%Mm%Ss' ]]; then echo 2030-01-01_00h00m00s
+else exec /usr/bin/date "$@"; fi
+''')
+        clean=subprocess.run(['bash',str(backup)],env=self.env,capture_output=True,text=True,timeout=20)
+        self.assertEqual(clean.returncode,0,clean.stdout+clean.stderr)
+        self.assertFalse(snapshot.exists(),'clean journal should retain ordinary GFS pruning')
     def wipe_decimal(self,text):
         wanted=self.live/'Saves/Multiplayer/world/map/12/0.bin'
         wrong=self.live/'Saves/Multiplayer/world/map/8/0.bin'

@@ -193,8 +193,7 @@ build_archive() {
         publish_encrypted_archive
         return 0
     fi
-    mv -f "${TMP_ARCHIVE}" "${FINAL_ARCHIVE}"
-    chmod 600 "${FINAL_ARCHIVE}" || die "chmod 600 impossible sur ${FINAL_ARCHIVE}."
+    publish_durable_archive "$TMP_ARCHIVE" "$FINAL_ARCHIVE"
     [[ "$(stat -c %a "${FINAL_ARCHIVE}" 2>/dev/null || echo ?)" == "600" ]] \
         || die "Permissions inattendues sur ${FINAL_ARCHIVE} (attendu 600)."
     log "ZIP prêt : ${FINAL_ARCHIVE} ($(du -h "${FINAL_ARCHIVE}" | cut -f1))"
@@ -223,13 +222,24 @@ resolve_age_recipients() {
     (( ${#C16_AGE_ARGS[@]} > 0 )) || die "AGE_RECIPIENT(S) sans destinataire exploitable : pas de backup clair hors-site silencieux."
 }
 
+# Publish only durable contents, then persist the name before retention can
+# remove an earlier recovery. A failed barrier leaves previous archives intact.
+publish_durable_archive() {
+    local staging="$1" final="$2"
+    python3 "${SCRIPT_DIR}/../lib/world_transaction.py" sync \
+        --world "$SYNC_BACKUPS_DIR" --file "$(basename -- "$staging")"
+    mv -f -- "$staging" "$final"
+    python3 "${SCRIPT_DIR}/../lib/world_transaction.py" sync \
+        --world "$SYNC_BACKUPS_DIR" --directory-only
+}
+
 # Seul le ciphertext passe par le dossier synchronisé, en 0600 dès sa
 # création, puis publication par rename sur le même système de fichiers.
 publish_encrypted_archive() {
     age "${C16_AGE_ARGS[@]}" -o "$TMP_ENCRYPTED" "$TMP_ARCHIVE" \
         || die "Chiffrement age en échec : rien n'est publié."
     chmod 600 "$TMP_ENCRYPTED" || die "chmod 600 impossible sur ${TMP_ENCRYPTED}."
-    mv -f "$TMP_ENCRYPTED" "${FINAL_ARCHIVE}.age"
+    publish_durable_archive "$TMP_ENCRYPTED" "${FINAL_ARCHIVE}.age"
     [[ "$(stat -c %a "${FINAL_ARCHIVE}.age" 2>/dev/null || echo ?)" == "600" ]] \
         || die "Permissions inattendues sur ${FINAL_ARCHIVE}.age (attendu 600)."
     rm -f -- "$TMP_ARCHIVE"

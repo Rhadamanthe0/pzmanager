@@ -257,6 +257,52 @@ while not (root/'release').exists():time.sleep(.02)
         self.assertEqual(list(self.sync.iterdir()),[])
         self.assertFalse((self.root/'archive-path').exists())
 
+    def test_full_archive_durability_precedes_rotation_in_both_modes(self):
+        # Real packaging and copying; only the optional encryption boundary is
+        # synthetic. The fsync observer above still calls the actual syscall.
+        for name in ('zip','unzip','rsync'):
+            executable=shutil.which(name,path='/usr/bin:/bin')
+            self.assertIsNotNone(executable,name+' required')
+            self.command(name,'import os,sys\nos.execv('+repr(executable)+','+repr([executable])+'+sys.argv[1:])')
+        self.command('rm', '''import json,os,pathlib,sys
+with pathlib.Path(os.environ['FIXTURE_EVENTS']).open('a') as stream:
+ stream.write(json.dumps({'action':'remove','paths':sys.argv[1:]})+'\\n')
+os.execv('/bin/rm',['/bin/rm',*sys.argv[1:]])
+''')
+        for encrypted in (False,True):
+            for failure in ('1','2',''):
+                with self.subTest(encrypted=encrypted,failure=failure):
+                    for path in self.sync.iterdir():path.unlink()
+                    self.events.unlink(missing_ok=True)
+                    previous=self.sync/'2001-01-01_00-00.zip';previous.write_bytes(b'previous-recovery')
+                    env=dict(self.env,AGE_RECIPIENT='fixture' if encrypted else '',OFFSITE_BACKUP_COUNT='1',FIXTURE_SYNC_FAIL=failure)
+                    result=subprocess.run(['bash',str(self.scripts/'backup/fullBackup.sh')],env=env,capture_output=True,text=True,timeout=10)
+                    events=[json.loads(line) for line in self.events.read_text().splitlines()]
+                    if failure:
+                        self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                        self.assertEqual(previous.read_bytes(),b'previous-recovery')
+                        self.assertNotIn('Backup off-site terminé',result.stdout)
+                        continue
+                    self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                    self.assertFalse(previous.exists())
+                    rename=next(i for i,e in enumerate(events) if e['action']=='rename')
+                    final=events[rename]['destination'];temporary=events[rename]['source']
+                    self.assertIn(temporary,[e['path'] for e in events[:rename] if e['action']=='fsync'])
+                    removal=next(i for i,e in enumerate(events) if e['action']=='remove' and str(previous) in e['paths'])
+                    self.assertIn(str(self.sync),[e['path'] for e in events[rename:removal] if e['action']=='fsync'])
+                    self.assertTrue(Path(final).is_file())
+
+    def test_forensic_backup_keeps_old_recovery_when_journal_is_corrupt(self):
+        expired=self.backups/'backup_2001-01-01_00h00m00s';expired.mkdir()
+        (expired/'recovery').write_bytes(b'keep-for-recovery')
+        state=self.world.parent/('.'+self.world.name+'.pzm-transactions');state.mkdir(mode=0o700)
+        record=state/'damaged.json';record.write_text('{broken');record.chmod(0o600)
+        result=subprocess.run(['bash',str(self.scripts/'backup/dataBackup.sh')],env=self.env,capture_output=True,text=True,timeout=10)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual((expired/'recovery').read_bytes(),b'keep-for-recovery')
+        self.assertEqual((self.latest/'Saves/world').read_text(),'new-world')
+        self.assertIn('Rétention GFS différée',result.stdout)
+
     def test_plaintext_outside_sync_while_zip_is_running(self):self.observe_full('zip')
     def test_plaintext_outside_sync_while_age_is_blocked(self):self.observe_full('age')
     def test_age_failure_leaves_no_plaintext_or_partial_in_sync(self):self.observe_full('age',fail=True)

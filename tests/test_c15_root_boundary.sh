@@ -43,6 +43,42 @@ parse_env_declarative "$TMP_ENV" || fail "parse_env_declarative a echoue"
 [[ -z "${MALICIOUS:-}" ]] || fail "MALICIOUS aurait du etre ignore"
 pass "parsing declaratif sans execution (PZ_USER=pzmanager, PZ_PORT_GAME=16261)"
 
+# Business profile: declarative path references are resolved without a shell.
+cat > "$TMP_ENV" <<'PROFILE'
+PZ_MANAGER_DIR=/tmp/profile-manager
+PZ_DATA_DIR="${PZ_MANAGER_DIR}/custom-data" # declarative comment
+PZ_INSTALL_DIR="${PZ_DATA_DIR}/custom-game"
+PZ_SOURCE_DIR="${PZ_MANAGER_DIR}/custom-world"
+PZ_SERVICE_NAME='custom-test.service' # literal service
+PZ_DB_PATH="${PZ_SOURCE_DIR}/db/servertest.db"
+PZ_INI_PATH="${PZ_SOURCE_DIR}/Server/servertest.ini"
+PROFILE
+( unset INSTALL_MANAGER_ROOT; parse_env_declarative "$TMP_ENV"; [[ "$PZ_DATA_DIR" == /tmp/profile-manager/custom-data && "$PZ_INSTALL_DIR" == /tmp/profile-manager/custom-data/custom-game && "$PZ_SOURCE_DIR" == /tmp/profile-manager/custom-world && "$PZ_SERVICE_NAME" == custom-test.service && "$PZ_DB_PATH" == "$PZ_SOURCE_DIR/db/servertest.db" && "$PZ_INI_PATH" == "$PZ_SOURCE_DIR/Server/servertest.ini" ]] ) || fail 'profil métier perdu'
+for setting in 'PZ_SOURCE_DIR="$(touch /tmp/pz-root-pwned-c15)"' 'PZ_SOURCE_DIR=${UNKNOWN}/world' "PZ_SOURCE_DIR='\${PZ_MANAGER_DIR}/literal-world'" 'PZ_SOURCE_DIR=relative' 'PZ_SERVICE_NAME=-bad.service' 'PZ_SERVICE_NAME=foo.socket' 'PZ_SERVER_NAME=${UNKNOWN}' 'PZ_SERVER_NAME=invalid/name'; do
+    printf '%s\n' "$setting" > "$TMP_ENV"
+    if ( parse_env_declarative "$TMP_ENV" ); then fail "profil invalide accepté : $setting"; fi
+    [[ ! -e "$MARKER" ]] || fail 'profil exécuté'
+done
+# Real .env template expressions for the newly supported business paths.
+( unset PZ_DATA_DIR PZ_INSTALL_DIR PZ_SOURCE_DIR PZ_DB_PATH PZ_INI_PATH;
+  INSTALL_MANAGER_ROOT=/tmp/template-manager PZ_HOME=/tmp/template-home;
+  parse_env_declarative "$REPO_ROOT/data/setupTemplates/.env.example";
+  [[ "$PZ_DATA_DIR" == /tmp/template-manager/data && "$PZ_INSTALL_DIR" == /tmp/template-manager/data/pzserver && "$PZ_SOURCE_DIR" == /tmp/template-manager/Zomboid && "$PZ_SERVICE_NAME" == zomboid.service ]] ) || fail 'expressions du template canonique perdues'
+for assignment in 'PZ_SOURCE_DIR=/tmp/custom#world' 'PZ_SOURCE_DIR=/tmp/custom#world # comment' 'PZ_SOURCE_DIR="/tmp/custom#world" # comment'; do
+    printf '%s\n' "$assignment" > "$TMP_ENV"
+    ( parse_env_declarative "$TMP_ENV"; [[ "$PZ_SOURCE_DIR" == '/tmp/custom#world' ]] ) || fail 'caractère # littéral tronqué'
+done
+for assignment in 'PZ_SOURCE_DIR="/tmp/custom"#suffix' 'PZ_SOURCE_DIR=/tmp/custom world' 'PZ_SOURCE_DIR=/tmp/custom\#world'; do
+    printf '%s\n' "$assignment" > "$TMP_ENV"
+    if ( parse_env_declarative "$TMP_ENV" ); then fail "syntaxe ambiguë acceptée : $assignment"; fi
+done
+for assignment in 'PZ_SOURCE_DIR="/tmp/world\\cache"' 'PZ_SOURCE_DIR=/tmp/world|true' 'PZ_SOURCE_DIR=/tmp/world&true' 'PZ_SOURCE_DIR=/tmp/world>/tmp/other' 'PZ_SOURCE_DIR=/tmp/world</tmp/other' 'PZ_SOURCE_DIR=/tmp/world:~'; do
+    printf '%s\n' "$assignment" > "$TMP_ENV"
+    if ( parse_env_declarative "$TMP_ENV" ); then fail "syntaxe shell complexe acceptée : $assignment"; fi
+done
+pass 'chemins avec # littéral et commentaires séparés ; syntaxe ambiguë refusée'
+pass 'profil métier résolu ; template, commentaires, injection et profils indéterminés contrôlés'
+
 # parse_env_declarative ne doit jamais executer : pas de source/eval dans le helper
 if grep -qE '(^|[^A-Za-z0-9_])(source|eval)([^A-Za-z0-9_]|$)' "$ENV_PARSE"; then
     fail "env_parse.sh contient source/eval"

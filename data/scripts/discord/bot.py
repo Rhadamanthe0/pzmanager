@@ -1056,26 +1056,15 @@ def _net_counters(iface):
     return None
 
 
-def _server_ini_path(prev: dict):
-    """Chemin du .ini serveur (servertest.ini par défaut), mis en cache dans prev."""
-    if "ini_path" in prev:
-        return prev["ini_path"]
-    # PZ_INI_PATH est exporté par source_env (run-bot.sh source le .env) pour que
-    # personne n'ait à recomposer le nom du monde ; on ne recompose qu'à défaut.
-    path = ""
+def _server_ini_path():
+    """Chemin canonique exporté par common.sh, même avant création du fichier."""
     env_ini = os.environ.get("PZ_INI_PATH", "")
-    if env_ini and os.path.isfile(env_ini):
-        prev["ini_path"] = env_ini
+    if env_ini:
         return env_ini
     if PZ_SOURCE_DIR:
-        cand = f"{PZ_SOURCE_DIR}/Server/servertest.ini"
-        if os.path.isfile(cand):
-            path = cand
-        else:
-            inis = glob.glob(f"{PZ_SOURCE_DIR}/Server/*.ini")
-            path = inis[0] if inis else ""
-    prev["ini_path"] = path
-    return path
+        name = os.environ.get("PZ_SERVER_NAME") or "servertest"
+        return f"{PZ_SOURCE_DIR}/Server/{name}.ini"
+    return ""
 
 
 def _ini_ints(path, keys):
@@ -1264,8 +1253,8 @@ def collect_stats(prev: dict) -> dict:
         prev["prom_ctr"] = (ps["send_c"], ps["recv_c"], ps["send_b"], ps["recv_b"])
         prev["prom_rbc"] = ps["recv_by_client"]
         prev["prom_ts"] = now
-    # Plafonds configurés (servertest.ini) pour les ratios « par rapport au max ».
-    caps = _ini_ints(_server_ini_path(prev), ("MaxPlayers", "MaxPacketsPerSecond"))
+    # Plafonds de l'INI canonique pour les ratios « par rapport au max ».
+    caps = _ini_ints(_server_ini_path(), ("MaxPlayers", "MaxPacketsPerSecond"))
     s["max_players"] = caps.get("MaxPlayers")
     s["max_pps"] = caps.get("MaxPacketsPerSecond")
     return s
