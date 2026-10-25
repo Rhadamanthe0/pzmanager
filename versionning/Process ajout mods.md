@@ -10,8 +10,8 @@
 ## Fichiers locaux
 
 - `V[N].txt` — une version par fichier (voir format ci-dessous).
-- `Mods bugués à intégrer plus tard.csv` — mods écartés après échec de la
-  vérification en jeu, avec le symptôme observé.
+- `Mods bugués à intégrer plus tard.csv` — mods écartés, avec le problème
+  observé ou le motif du retrait.
 
 ## Format de V[N].txt — ALLÉGÉ (modèle ci-dessous), identique à chaque version
 
