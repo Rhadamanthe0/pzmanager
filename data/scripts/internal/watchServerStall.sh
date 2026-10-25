@@ -465,6 +465,7 @@ else
 fi
 if ! systemctl --user kill --signal=SIGKILL --kill-whom=all "${PZ_SERVICE_NAME}"; then
     log "stallwatch: SIGKILL refusé — aucun démarrage automatique."
+    write_state "$pid" "$frame" "$stamp" 0
     exit 1
 fi
 

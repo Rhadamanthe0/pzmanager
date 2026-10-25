@@ -664,6 +664,9 @@ for scenario in inactive failed activating deactivating error missing-pid; do
 done
 
 # Arrêt entre le préavis et save : la seconde observation doit supprimer save.
+only_warning_attempted() {
+    grep -q servermsg "$1" && [[ "$(wc -l < "$1")" -eq 1 ]]
+}
 fresh_case normal-fifo-stop-after-warning
 export MOCK_FIFO_ATTEMPT_LOG="${SANDBOX}/stop-after-warning-fifo.log"
 export MOCK_FIFO_STOP_FILE="${SANDBOX}/stopped-after-warning"
@@ -671,14 +674,30 @@ export BACKUP_WARN_DELAY=1
 mkfifo "$PZ_CONTROL_PIPE"
 rc=0; run_backup || rc=$?
 if (( rc == 0 && $(final_count "$BKP") == 1 )) \
-    && grep -q servermsg "$MOCK_FIFO_ATTEMPT_LOG" \
-    && ! grep -q "echo 'save'" "$MOCK_FIFO_ATTEMPT_LOG"; then
+    && only_warning_attempted "$MOCK_FIFO_ATTEMPT_LOG"; then
     ok "arrêt après préavis : save ignoré sans réveil du serveur"
 else
     ko "arrêt après préavis : save tenté ou snapshot refusé (rc=$rc)"; show_out
 fi
+# Prove the same assertion rejects an additional real save transport, recorded
+# by the existing timeout double without opening the FIFO or changing product.
+save_transport="$(sed -n 's/^[[:space:]]*elif \(timeout .*bash -c .*\) 2>\/dev\/null; then$/\1/p' "$SCRIPT")"
+if [[ -n "$save_transport" ]]; then
+    witness_log="${MOCK_FIFO_ATTEMPT_LOG}.with-save"
+    cp "$MOCK_FIFO_ATTEMPT_LOG" "$witness_log"
+    transport_status=0
+    MOCK_FIFO_ATTEMPT_LOG="$witness_log" bash -c "$save_transport" || transport_status=$?
+    if (( transport_status == 124 )) && ! only_warning_attempted "$witness_log"; then
+        ok "témoin arrêt après préavis : transport save supplémentaire détecté"
+    else
+        ko "témoin arrêt après préavis : transport save supplémentaire accepté"
+    fi
+else
+    ko "témoin arrêt après préavis : transport save du produit introuvable"
+fi
+unset -f only_warning_attempted
 rm -f "${BIN}/timeout"
-unset MOCK_FIFO_ATTEMPT_LOG
+unset MOCK_FIFO_ATTEMPT_LOG MOCK_FIFO_STOP_FILE
 
 # --- Bilan -------------------------------------------------------------------------
 echo ""

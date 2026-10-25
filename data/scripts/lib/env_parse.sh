@@ -32,7 +32,7 @@ parse_env_declarative() {
 
             if [[ -z "$val" ]]; then
                 case "$key" in
-                    PZ_SOURCE_DIR|PZ_DATA_DIR|PZ_INSTALL_DIR|PZ_SERVICE_NAME|PZ_SERVER_NAME|PZ_DB_PATH|PZ_INI_PATH)
+                    PZ_HOME|PZ_MANAGER_DIR|PZ_SOURCE_DIR|PZ_DATA_DIR|PZ_INSTALL_DIR|PZ_SERVICE_NAME|PZ_SERVER_NAME|PZ_DB_PATH|PZ_INI_PATH)
                         echo "Profil déclaratif vide : $key." >&2; return 1 ;;
                     STEAM_BETA_BRANCH|STEAM_LOGIN|PZ_JDK_SOURCE)
                         export "$key="
@@ -44,7 +44,7 @@ parse_env_declarative() {
             # These fields select the world and the unit whose stop is proved.
             # Never silently replace an unresolvable profile with defaults.
             case "$key" in
-                PZ_SOURCE_DIR|PZ_DATA_DIR|PZ_INSTALL_DIR|PZ_SERVICE_NAME|PZ_SERVER_NAME|PZ_DB_PATH|PZ_INI_PATH)
+                PZ_HOME|PZ_MANAGER_DIR|PZ_SOURCE_DIR|PZ_DATA_DIR|PZ_INSTALL_DIR|PZ_SERVICE_NAME|PZ_SERVER_NAME|PZ_DB_PATH|PZ_INI_PATH)
                     literal=false
                     if [[ "$val" == \"* ]]; then
                         [[ "$val" =~ ^\"([^\"]*)\"([[:space:]]+#.*)?$ ]] || return 1
@@ -67,11 +67,14 @@ parse_env_declarative() {
                     local ref replacement token
                     while [[ "$literal" == false && "$val" =~ \$\{([A-Z_]+)\} ]]; do
                         token="${BASH_REMATCH[0]}"; ref="${BASH_REMATCH[1]}"
+                        [[ "$ref" != "$key" ]] || { echo "Profil déclaratif auto-référent : $key." >&2; return 1; }
                         case "$ref" in
+                            PZ_USER) replacement="${PZ_USER:-pzuser}" ;;
+                            PZ_MANAGER_ROOT) replacement="${PZ_MANAGER_ROOT:-}" ;;
                             PZ_HOME) replacement="${PZ_HOME:-/home/${PZ_USER:-pzuser}}" ;;
-                            PZ_MANAGER_DIR) replacement="${INSTALL_MANAGER_ROOT:-${PZ_MANAGER_DIR:-${PZ_MANAGER_ROOT:-}}}" ;;
-                            PZ_DATA_DIR) replacement="${PZ_DATA_DIR:-${INSTALL_MANAGER_ROOT:-${PZ_MANAGER_DIR:-${PZ_MANAGER_ROOT:-}}}/data}" ;;
-                            PZ_SOURCE_DIR) replacement="${PZ_SOURCE_DIR:-${INSTALL_MANAGER_ROOT:-${PZ_MANAGER_DIR:-${PZ_MANAGER_ROOT:-}}}/Zomboid}" ;;
+                            PZ_MANAGER_DIR) replacement="${PZ_MANAGER_DIR:-${INSTALL_MANAGER_ROOT:-${PZ_MANAGER_ROOT:-}}}" ;;
+                            PZ_DATA_DIR) replacement="${PZ_DATA_DIR:-${PZ_MANAGER_DIR:-${INSTALL_MANAGER_ROOT:-${PZ_MANAGER_ROOT:-}}}/data}" ;;
+                            PZ_SOURCE_DIR) replacement="${PZ_SOURCE_DIR:-${PZ_MANAGER_DIR:-${INSTALL_MANAGER_ROOT:-${PZ_MANAGER_ROOT:-}}}/Zomboid}" ;;
                             PZ_SERVER_NAME) replacement="${PZ_SERVER_NAME:-servertest}" ;;
                             *) echo "Profil déclaratif non résolu : $key ($ref)." >&2; return 1 ;;
                         esac
@@ -90,6 +93,14 @@ parse_env_declarative() {
                         [[ "$val" == /* && "$val" != *'..'* && "$val" != *'$'* && "$val" != *'`'* && "$val" != *';'* && "$val" != *$'\n'* && "$val" != *'"'* && "$val" != *"'"* ]] || {
                             echo "Chemin déclaratif invalide : $key." >&2; return 1;
                         }
+                    fi
+                    if [[ "$key" == PZ_MANAGER_DIR && -n "${INSTALL_MANAGER_ROOT:-}" ]]; then
+                        [[ "$(realpath -e -- "$val")" == "$(realpath -e -- "$INSTALL_MANAGER_ROOT")" ]] || {
+                            echo "Alias PZ_MANAGER_DIR contradictoire avec la racine explicite." >&2; return 1;
+                        }
+                        # Same installation: resolve subsequent path references
+                        # from its physical root, without a mutable alias ancestor.
+                        val="$(realpath -e -- "$INSTALL_MANAGER_ROOT")"
                     fi
                     export "$key=$val"
                     continue
@@ -113,9 +124,11 @@ parse_env_declarative() {
                 PZ_USER|PZ_GAME_USER|PZ_MANAGER_USER)
                     if [[ "$val" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
                         export "$key=$val"
+                    elif [[ "$key" == PZ_USER ]]; then
+                        echo "Identité déclarative non résolue : PZ_USER." >&2; return 1
                     fi
                     ;;
-                PZ_HOME|PZ_MANAGER_DIR|JAVA_PATH|STEAMCMD_PATH)
+                JAVA_PATH|STEAMCMD_PATH)
                     if [[ "$val" == /* ]] \
                         && [[ "$val" != *".."* ]] \
                         && [[ "$val" != *";"* ]] \

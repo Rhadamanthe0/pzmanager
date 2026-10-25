@@ -29,10 +29,28 @@ printf 'pzfixture:x:65533:\n' >> /etc/group
 mkdir -p /usr/local/libexec /etc/sudoers.d /home/pzfixture /run/user
 chmod 0755 /home /run /run/user
 chmod 0755 /usr/local /usr/local/libexec
+# Authority uses a private, empty kernel snapshot in this transport fixture;
+# real proc/UID/SSHD behavior has its own namespace integration suite.
+cp -p "$ROOT/data/scripts/lib/ssh_listener_authority.py" /tmp/pz-fixture-authority.orig
+mkdir -p /tmp/pz-fixture-proc/net
+printf 'header\n' > /tmp/pz-fixture-proc/net/tcp
+printf 'header\n' > /tmp/pz-fixture-proc/net/tcp6
+mkdir -p /test-bin
+chmod 0755 /test-bin
+printf '#!/bin/sh\nprintf "port 22\\n"\n' > /test-bin/sshd
+chmod 0755 /test-bin/sshd
+printf 'Port 22\n' > /test-bin/pz-fixture-sshd-config
+export PZ_SSHD_CONFIG=/test-bin/pz-fixture-sshd-config
+python3 - "$ROOT/data/scripts/lib/ssh_listener_authority.py" <<'AUTHORITYPATHS'
+from pathlib import Path
+import sys
+p=Path(sys.argv[1])
+p.write_text(p.read_text().replace("Path('/proc')","Path('/tmp/pz-fixture-proc')").replace("Path('/usr/sbin/sshd')","Path('/test-bin/sshd')").replace("Path('/run/dbus/system_bus_socket')","Path('/tmp/pz-fixture-proc/no-bus')"))
+AUTHORITYPATHS
 # The firewall boundary below is IPv4-only. Remap only the product reader's
 # physical policy path inside this disposable copy, never the host /etc file.
 cp -p "$ROOT/data/scripts/lib/ufw_access.py" /tmp/pz-fixture-ufw-reader.orig
-trap 'cp -p /tmp/pz-fixture-ufw-reader.orig "$ROOT/data/scripts/lib/ufw_access.py"; rm -f /tmp/pz-fixture-ufw-reader.orig /tmp/pz-fixture-ufw-defaults /tmp/pz-fixture-ufw.conf' EXIT
+trap 'cp -p /tmp/pz-fixture-authority.orig "$ROOT/data/scripts/lib/ssh_listener_authority.py"; rm -rf /tmp/pz-fixture-proc; rm -f /tmp/pz-fixture-authority.orig /test-bin/pz-fixture-sshd-config; cp -p /tmp/pz-fixture-ufw-reader.orig "$ROOT/data/scripts/lib/ufw_access.py"; rm -f /tmp/pz-fixture-ufw-reader.orig /tmp/pz-fixture-ufw-defaults /tmp/pz-fixture-ufw.conf' EXIT
 printf 'IPV6=no\n' > /tmp/pz-fixture-ufw-defaults
 printf 'ENABLED=no\n' > /tmp/pz-fixture-ufw.conf
 chmod 0644 /tmp/pz-fixture-ufw.conf
@@ -205,6 +223,41 @@ done
 mv /tmp/profile-env-original "$manager_home/pzmanager/.env"
 chown pzfixture:pzfixture "$manager_home/pzmanager/.env"
 echo 'OK profil root/manager : monde custom restauré seul, service custom contrôlé, contradictions refusées avant mutation.'
+# The declarative manager alias may only name this same physical installation.
+cp "$manager_home/pzmanager/.env" /tmp/alias-env-original
+mkdir -p "$manager_home/pzmanager/alternate-manager/alternate-world/Saves/Multiplayer/native" "$manager_home/pzmanager/alternate-world/Saves/Multiplayer/native"
+printf intended-before > "$manager_home/pzmanager/alternate-manager/alternate-world/Saves/Multiplayer/native/player.bin"
+printf neighbor-before > "$manager_home/pzmanager/alternate-world/Saves/Multiplayer/native/player.bin"
+chown -R pzfixture:pzfixture "$manager_home/pzmanager/alternate-manager" "$manager_home/pzmanager/alternate-world"
+for alias in "$manager_home/pzmanager/alternate-manager" '${UNKNOWN}' home-expression; do
+    cp /tmp/alias-env-original "$manager_home/pzmanager/.env"
+    if [[ "$alias" == home-expression ]]; then
+        printf 'PZ_HOME="${PZ_MANAGER_ROOT}/alternate-home"\nPZ_MANAGER_DIR="${PZ_HOME}/pzmanager"\nPZ_SOURCE_DIR="${PZ_MANAGER_DIR}/alternate-world"\n' >> "$manager_home/pzmanager/.env"
+    else
+        printf 'PZ_MANAGER_DIR=%s\nPZ_SOURCE_DIR="${PZ_MANAGER_DIR}/alternate-world"\n' "$alias" >> "$manager_home/pzmanager/.env"
+    fi
+    chown pzfixture:pzfixture "$manager_home/pzmanager/.env"
+    if [[ "$alias" != *UNKNOWN* && "$alias" != home-expression ]]; then
+        manager_source="$(PATH="/test-bin:$PATH" /test-bin/sudo -u pzfixture bash -eu -c 'source "$1/data/scripts/lib/common.sh"; source_env; printf "%s" "$PZ_SOURCE_DIR"' _ "$manager_home/pzmanager")"
+        [[ "$manager_source" == "$manager_home/pzmanager/alternate-manager/alternate-world" ]]
+    fi
+    if PATH="/test-bin:$PATH" bash "$helper/configurationInitiale.sh" --manager-root "$manager_home/pzmanager" restore /tmp/profile-restore.zip --force > /tmp/alias-refusal.log 2>&1; then cat /tmp/alias-refusal.log; echo 'Alias manager divergent accepté.' >&2; exit 1; fi
+    grep -qE 'alias|racine|non résolu|déclaratif invalide' /tmp/alias-refusal.log
+    [[ "$(cat "$manager_home/pzmanager/alternate-manager/alternate-world/Saves/Multiplayer/native/player.bin")" == intended-before && "$(cat "$manager_home/pzmanager/alternate-world/Saves/Multiplayer/native/player.bin")" == neighbor-before ]]
+done
+ln -s "$manager_home/pzmanager" "$manager_home/manager-alias"
+chown -h pzfixture:pzfixture "$manager_home/manager-alias"
+for alias in '${PZ_HOME}/pzmanager' "$manager_home/manager-alias"; do
+    cp /tmp/alias-env-original "$manager_home/pzmanager/.env"
+    printf 'PZ_HOME=%s\nPZ_MANAGER_DIR="%s"\nPZ_SOURCE_DIR="${PZ_MANAGER_DIR}/canonical-world"\n' "$manager_home" "$alias" >> "$manager_home/pzmanager/.env"
+    chown pzfixture:pzfixture "$manager_home/pzmanager/.env"
+    PATH="/test-bin:$PATH" bash "$helper/configurationInitiale.sh" --manager-root "$manager_home/pzmanager" restore /tmp/profile-restore.zip --force
+    [[ "$(cat "$manager_home/pzmanager/canonical-world/Saves/Multiplayer/native/player.bin")" == custom-restored ]]
+    [[ "$(cat "$manager_home/pzmanager/alternate-manager/alternate-world/Saves/Multiplayer/native/player.bin")" == intended-before && "$(cat "$manager_home/pzmanager/alternate-world/Saves/Multiplayer/native/player.bin")" == neighbor-before ]]
+done
+mv /tmp/alias-env-original "$manager_home/pzmanager/.env"
+chown pzfixture:pzfixture "$manager_home/pzmanager/.env"
+echo 'OK alias manager : canonique et même racine physique acceptés, divergence/non-résolution refusées sans mutation des deux mondes.'
 # A hash inside an assignment word is literal, unlike a separated comment.
 # Compare the real manager shell's own .env with the root restore target.
 for syntax in unquoted quoted-comment unquoted-comment; do

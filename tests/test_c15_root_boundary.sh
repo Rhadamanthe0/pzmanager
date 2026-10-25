@@ -10,8 +10,10 @@ SETUP_SYS="$REPO_ROOT/data/scripts/install/setupSystem.sh"
 CONF_INIT="$REPO_ROOT/data/scripts/install/configurationInitiale.sh"
 MARKER="/tmp/pz-root-pwned-c15"
 TMP_ENV=""
+ALIAS_ROOT=""
 
 cleanup() {
+    [[ -z "$ALIAS_ROOT" ]] || rm -rf "$ALIAS_ROOT"
     rm -f "$MARKER"
     [[ -n "$TMP_ENV" && -f "$TMP_ENV" ]] && rm -f "$TMP_ENV"
 }
@@ -60,10 +62,16 @@ for setting in 'PZ_SOURCE_DIR="$(touch /tmp/pz-root-pwned-c15)"' 'PZ_SOURCE_DIR=
     [[ ! -e "$MARKER" ]] || fail 'profil exécuté'
 done
 # Real .env template expressions for the newly supported business paths.
-( unset PZ_DATA_DIR PZ_INSTALL_DIR PZ_SOURCE_DIR PZ_DB_PATH PZ_INI_PATH;
-  INSTALL_MANAGER_ROOT=/tmp/template-manager PZ_HOME=/tmp/template-home;
+ALIAS_ROOT="$(mktemp -d)"
+mkdir "$ALIAS_ROOT/pzmanager"
+( unset INSTALL_MANAGER_ROOT PZ_HOME PZ_MANAGER_DIR PZ_DATA_DIR PZ_INSTALL_DIR PZ_SOURCE_DIR PZ_DB_PATH PZ_INI_PATH;
   parse_env_declarative "$REPO_ROOT/data/setupTemplates/.env.example";
-  [[ "$PZ_DATA_DIR" == /tmp/template-manager/data && "$PZ_INSTALL_DIR" == /tmp/template-manager/data/pzserver && "$PZ_SOURCE_DIR" == /tmp/template-manager/Zomboid && "$PZ_SERVICE_NAME" == zomboid.service ]] ) || fail 'expressions du template canonique perdues'
+  [[ "$PZ_HOME" == /home/pzuser && "$PZ_MANAGER_DIR" == /home/pzuser/pzmanager && "$PZ_DATA_DIR" == /home/pzuser/pzmanager/data && "$PZ_INSTALL_DIR" == /home/pzuser/pzmanager/data/pzserver && "$PZ_SOURCE_DIR" == /home/pzuser/pzmanager/Zomboid && "$PZ_SERVICE_NAME" == zomboid.service ]] ) || fail 'expressions du template canonique perdues'
+for setting in 'PZ_MANAGER_DIR=${UNKNOWN}' 'PZ_MANAGER_DIR=/tmp/other-manager' 'PZ_MANAGER_DIR=${PZ_MANAGER_DIR}' 'PZ_MANAGER_DIR='; do
+    printf '%s\n' "$setting" > "$TMP_ENV"
+    if ( INSTALL_MANAGER_ROOT="$ALIAS_ROOT/pzmanager"; parse_env_declarative "$TMP_ENV" ); then fail "alias manager divergent accepté : $setting"; fi
+done
+pass 'alias manager canonique résolu ; contradiction et alias non résolu refusés'
 for assignment in 'PZ_SOURCE_DIR=/tmp/custom#world' 'PZ_SOURCE_DIR=/tmp/custom#world # comment' 'PZ_SOURCE_DIR="/tmp/custom#world" # comment'; do
     printf '%s\n' "$assignment" > "$TMP_ENV"
     ( parse_env_declarative "$TMP_ENV"; [[ "$PZ_SOURCE_DIR" == '/tmp/custom#world' ]] ) || fail 'caractère # littéral tronqué'

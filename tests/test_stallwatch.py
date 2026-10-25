@@ -160,6 +160,55 @@ else:print(stamp+".000 host prog: "+message)
         self.assertIn('invocation changée', result.stdout)
         self.assertFalse((self.root / 'killed').exists())
 
+    def refuse_first_kill(self):
+        state=self.prepare_restart()
+        path=self.commands/'systemctl'
+        source=path.read_text()
+        needle="if 'kill' in args: (root/'killed').touch()"
+        self.assertIn(needle,source)
+        path.write_text(source.replace(needle,"""if 'kill' in args:
+ count=root/'kill-count';n=int(count.read_text())+1 if count.exists() else 1;count.write_text(str(n))
+ if n==1:sys.exit(1)
+ (root/'killed').touch()"""))
+        result=self.run_watch()
+        self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+        self.assertIn('SIGKILL refusé',result.stdout)
+        self.assertEqual((self.root/'dump-count').read_text(),'3')
+        self.assertEqual((self.root/'kill-count').read_text(),'1')
+        self.assertFalse((self.root/'killed').exists())
+        self.assertFalse((self.root/'restarted').exists())
+        return state
+
+    def test_refused_kill_retries_only_after_a_new_complete_diagnostic(self):
+        self.refuse_first_kill()
+        self.env['TEST_STAMP']='2001'
+        result=self.run_watch()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual((self.root/'dump-count').read_text(),'6')
+        self.assertEqual((self.root/'kill-count').read_text(),'2')
+        self.assertTrue((self.root/'killed').exists())
+        self.assertTrue((self.root/'restarted').exists())
+
+    def test_retry_rechecks_world_and_changed_invocation_before_kill(self):
+        state=self.refuse_first_kill()
+        self.env['TEST_STAMP']='2001'
+        with (self.state_dir/'world.lock').open('w') as holder:
+            fcntl.flock(holder,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            result=self.run_watch()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('verrou monde occupé',result.stdout)
+        self.assertEqual(state.read_text().split()[3],'0')
+        self.assertEqual((self.root/'dump-count').read_text(),'3')
+        self.assertEqual((self.root/'kill-count').read_text(),'1')
+        self.env.update(TEST_STAMP='2002',TEST_CHANGE_ID='1')
+        result=self.run_watch()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('invocation changée',result.stdout)
+        self.assertEqual((self.root/'dump-count').read_text(),'6')
+        self.assertEqual((self.root/'kill-count').read_text(),'1')
+        self.assertFalse((self.root/'killed').exists())
+        self.assertFalse((self.root/'restarted').exists())
+
     def test_diagnostic_only_captures_with_world_busy(self):
         self.prepare_restart()
         self.env['STALL_AUTO_RESTART'] = '0'

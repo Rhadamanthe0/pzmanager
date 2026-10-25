@@ -141,7 +141,7 @@ else:
         for mode in ('echo', 'lua', 'malformed', 'error', 'restart', 'noframe'):
             with self.subTest(mode=mode):
                 self.count.unlink(missing_ok=True)
-                result = self.run_ready(mode)
+                result = self.run_ready(mode, timeout=3 if mode == 'restart' else 1)
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 expected=('invocation' if mode in ('error','restart') else 'fin de boot toujours non signalée')
                 self.assertIn(expected, result.stderr)

@@ -70,6 +70,124 @@ for k in keys:print(k+'='+str(s.get(k,{'LoadState':'loaded','InvocationID':'fixt
         self.assertEqual({str(p.relative_to(self.world)):p.read_bytes() for p in self.world.rglob('*') if p.is_file()},tree)
         reverted=transaction('finish','--token',prepared.stdout.strip(),'--state','reverted')
         self.assertEqual(reverted.returncode,0,reverted.stderr)
+    def test_ledger_framing_keeps_distinct_unknown_account(self):
+        self.check_ledger_framing()
+    def test_ledger_new_file_and_interactive_purge_keep_unknown_account(self):
+        self.check_ledger_framing(prior=False,manual=True)
+    def check_ledger_framing(self,prior=True,manual=False):
+        shutil.copy2(ROOT/'pzm',self.repo/'pzm')
+        def rename(old,new):
+            result=subprocess.run(['bash',str(self.repo/'pzm'),'whitelist','rename-account',old,new],env=self.env,text=True,capture_output=True,timeout=20)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        victim='new-player'
+        with closing(sqlite3.connect(self.db)) as db:
+            db.execute('INSERT INTO whitelist VALUES(?,?,?,?,?,?,?)',(4,victim,'fixture','76561198000000004',None,'user','New'))
+            db.execute('INSERT INTO allowedsteamid VALUES(?)',('76561198000000004',));db.commit()
+        ledger=self.base/'ledger.csv'
+        history=b'# historical registry\nhistoric;;1999-01-01 00:00:00\nold;76561198000000002;1998-01-01\n'
+        if prior:ledger.write_bytes(history)
+        else:history=b''
+        players=self.rows(self.players,'networkPlayers')
+        alias='prefix\n'+victim
+        rename('old',alias)
+        generated=self.invoke('creationDateInit.sh')
+        self.assertEqual(generated.returncode,0,generated.stdout+generated.stderr)
+        self.assertTrue(ledger.read_bytes().startswith(history))
+        before_guard=self.rows(self.db,'whitelist')
+        guard=self.invoke('purgeInactivePlayers.sh','--dry-run','--days','30')
+        self.assertNotEqual(guard.returncode,0,guard.stdout+guard.stderr)
+        self.assertIn('Registre incohérent',guard.stderr)
+        self.assertEqual(self.rows(self.db,'whitelist'),before_guard)
+        rename(alias,'old')
+        purged=(self.invoke('manageWhitelist.sh','purge','30j','--delete',input='oui\n')
+                if manual else self.invoke('purgeInactivePlayers.sh','--days','30'))
+        self.assertEqual(purged.returncode,0,purged.stdout+purged.stderr)
+        self.assertIn(victim,[row[1] for row in self.rows(self.db,'whitelist')])
+        self.assertIn(('76561198000000004',),self.rows(self.db,'allowedsteamid'))
+        self.assertNotIn('old',[row[1] for row in self.rows(self.db,'whitelist')])
+        self.assertEqual(self.rows(self.players,'networkPlayers'),players)
+        self.assertTrue(ledger.read_bytes().startswith(history))
+        self.assertNotIn(b'new-player;76561198000000002;',ledger.read_bytes())
+
+    def test_ledger_select_failure_preserves_absence_or_history(self):
+        with closing(sqlite3.connect(self.db)) as db:
+            db.execute('ALTER TABLE whitelist RENAME TO unavailable');db.commit()
+        before=self.db.read_bytes()
+        ledger=self.base/'ledger.csv'
+        for history in (None,b'# historic\nold;;1998-01-01\n'):
+            with self.subTest(existing=history is not None):
+                if history is not None:ledger.write_bytes(history)
+                result=self.invoke('creationDateInit.sh')
+                self.assertIn('registre inchangé',result.stdout+result.stderr)
+                self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                self.assertEqual(ledger.read_bytes() if ledger.exists() else None,history)
+                self.assertEqual(self.db.read_bytes(),before)
+
+    def test_ledger_representable_names_and_first_appearance(self):
+        ledger=self.base/'ledger.csv'
+        history=b'# historic\r\nhistoric;;1999-01-01 00:00:00\r\nold;76561198000000002;1998-01-01\n'
+        ledger.write_bytes(history)
+        for alias in ('MabEira | Hannibal 世界','US-prefix\x1fUS-suffix'):
+            with self.subTest(alias=alias):
+                rename=self.invoke('manageWhitelist.sh','rename-account','old',alias)
+                self.assertEqual(rename.returncode,0,rename.stdout+rename.stderr)
+                before=self.db.read_bytes()
+                result=self.invoke('creationDateInit.sh')
+                self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                expected=(alias+';76561198000000002;2000-01-01\n').encode()
+                self.assertIn(expected,ledger.read_bytes())
+                self.assertEqual(self.db.read_bytes(),before)
+                with closing(sqlite3.connect(self.db)) as db:
+                    db.execute('UPDATE whitelist SET lastConnection=? WHERE username=?',('2001-01-01',alias));db.commit()
+                again=self.invoke('creationDateInit.sh')
+                self.assertEqual(again.returncode,0,again.stdout+again.stderr)
+                self.assertEqual(ledger.read_bytes().count(expected),1)
+                self.assertNotIn((alias+';76561198000000002;2001-01-01').encode(),ledger.read_bytes())
+                self.assertTrue(ledger.read_bytes().startswith(history))
+                restored=self.invoke('manageWhitelist.sh','rename-account',alias,'old')
+                self.assertEqual(restored.returncode,0,restored.stdout+restored.stderr)
+                with closing(sqlite3.connect(self.db)) as db:
+                    db.execute('UPDATE whitelist SET lastConnection=? WHERE username=?',('2000-01-01','old'));db.commit()
+        self.assertEqual(ledger.stat().st_mode & 0o777,0o600)
+
+    def test_ledger_rejects_unrepresentable_fields_without_forged_rows(self):
+        ledger=self.base/'ledger.csv'
+        history=b'# historic\nhistoric;;1999-01-01 00:00:00\n'
+        ledger.write_bytes(history)
+        for field in ('username','steamid','lastConnection'):
+            for delimiter in (';','\n','\r','\0'):
+                with self.subTest(field=field,delimiter=repr(delimiter)):
+                    with closing(sqlite3.connect(self.db)) as db:
+                        db.execute('UPDATE whitelist SET username=?,steamid=?,lastConnection=? WHERE id=2',('old','76561198000000002','2000-01-01'))
+                        db.execute('UPDATE whitelist SET '+field+'=? WHERE id=2',('prefix'+delimiter+'forged',));db.commit()
+                    result=self.invoke('creationDateInit.sh')
+                    self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                    self.assertIn('AVERTISSEMENT',result.stderr)
+                    content=ledger.read_bytes()
+                    self.assertTrue(content.startswith(history))
+                    self.assertNotIn(b'old;',content)
+                    self.assertNotIn(b'prefix',content)
+                    self.assertNotIn(b'forged',content)
+        with closing(sqlite3.connect(self.db)) as db:
+            db.execute('UPDATE whitelist SET username=?,steamid=?,lastConnection=? WHERE id=2',('#comment','76561198000000002','2000-01-01'));db.commit()
+        result=self.invoke('creationDateInit.sh')
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('AVERTISSEMENT',result.stderr)
+        self.assertNotIn(b'#comment',ledger.read_bytes())
+
+    def test_ledger_busy_read_preserves_absence(self):
+        ledger=self.base/'ledger.csv'
+        with closing(sqlite3.connect(self.db)) as lock:
+            lock.execute('BEGIN EXCLUSIVE')
+            before=lock.execute('SELECT * FROM whitelist ORDER BY id').fetchall()
+            result=self.invoke('creationDateInit.sh')
+            self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+            self.assertIn('registre inchangé',result.stdout)
+            self.assertIn('locked',result.stderr)
+            self.assertFalse(ledger.exists())
+            self.assertEqual(lock.execute('SELECT * FROM whitelist ORDER BY id').fetchall(),before)
+            lock.rollback()
+
     def test_pending_rename_refused(self):self.check_pending_mutation('manageWhitelist.sh','rename-account','old','new')
     def test_pending_remove_refused(self):self.check_pending_mutation('manageWhitelist.sh','remove-account','old')
     def test_pending_resetpassword_refused(self):self.check_pending_mutation('manageWhitelist.sh','resetpassword','old')

@@ -188,36 +188,8 @@ ufw_run() {
 # Sans binaire NI configuration, installation locale sans SSH : garde-fou 22.
 # Une configuration indéterminée refuse toute mutation du pare-feu.
 detect_ssh_port() {
-    local sshd_config="${PZ_SSHD_CONFIG:-/etc/ssh/sshd_config}" ports="" effective="" sshd_bin=""
-    if command -v ss >/dev/null 2>&1; then
-        ports="$(ss -lntp 2>/dev/null | awk 'tolower($0) ~ /sshd/ && $1 == "LISTEN" { address=$4; sub(/^.*:/, "", address); print address }' | sort -nu || true)"
-    fi
-    if [[ -z "$ports" ]]; then
-        sshd_bin="$(command -v sshd || command -v /usr/sbin/sshd || true)"
-        if [[ -n "$sshd_bin" && -f "$sshd_config" ]]; then
-            effective="$(LC_ALL=C LANGUAGE=C "$sshd_bin" -T -f "$sshd_config")" \
-                || { echo "[ERROR] Configuration SSH indéterminée : aucune règle modifiée." >&2; return 1; }
-            ports="$(awk 'tolower($1)=="port" {print $2}' <<< "$effective")"
-            [[ -n "$ports" ]] \
-                || { echo "[ERROR] Aucun port SSH effectif : aucune règle modifiée." >&2; return 1; }
-        elif [[ -n "$sshd_bin" || -e "$sshd_config" || -L "$sshd_config" ]]; then
-            echo "[ERROR] Configuration ou binaire SSH indisponible : aucune règle modifiée." >&2
-            return 1
-        else
-            echo "[INFO] Aucun serveur SSH installé ; accès local, garde-fou 22." >&2
-        fi
-    fi
-    if [[ -n "$ports" ]]; then
-        # sshd accepte les zéros initiaux en décimal : comparer et autoriser
-        # toujours le port canonique, sans débordement arithmétique Bash.
-        ports="$(awk '/^[0-9]+$/ && $0+0 >= 1 && $0+0 <= 65535 { printf "%d\n", $0+0; next } { exit 1 }' <<< "$ports" | sort -nu)" \
-            || { echo "[ERROR] Port SSH invalide : aucune règle modifiée." >&2; return 1; }
-    fi
-    [[ -n "$ports" ]] || ports="22"
-    if ! grep -qx '22' <<< "$ports"; then
-        ports="$(printf '%s\n%s' "22" "$ports" | sort -nu)"
-    fi
-    printf '%s\n' "$ports"
+    python3 "${SCRIPT_DIR}/../lib/ssh_listener_authority.py" \
+        --config "${PZ_SSHD_CONFIG:-/etc/ssh/sshd_config}"
 }
 
 # UFW compare les doublons sans tenir compte d'action/log/comment : prepend

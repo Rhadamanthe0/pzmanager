@@ -104,9 +104,11 @@ load_root_env_declarative() {
             || die "Identité/home déclarés incompatibles avec le propriétaire de l'installation."
         [[ "${PZ_MANAGER_USER:-$manager_name}" == "$manager_name" && "${PZ_GAME_USER:-$manager_name}" == "$manager_name" ]] \
             || die "Les identités jeu/manager doivent correspondre au propriétaire de l'installation."
+        [[ "$(realpath -e -- "${PZ_MANAGER_DIR:-$INSTALL_MANAGER_ROOT}")" == "$(realpath -e -- "$INSTALL_MANAGER_ROOT")" ]] \
+            || die "Alias PZ_MANAGER_DIR contradictoire avec la racine explicite."
         PZ_USER="$manager_name"
         PZ_HOME="$manager_home"
-        PZ_MANAGER_DIR="$INSTALL_MANAGER_ROOT"
+        PZ_MANAGER_DIR="$(realpath -e -- "$INSTALL_MANAGER_ROOT")"
     fi
     : "${PZ_USER:=pzuser}"
     : "${PZ_HOME:=/home/${PZ_USER}}"

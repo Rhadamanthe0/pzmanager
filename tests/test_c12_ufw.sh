@@ -13,7 +13,7 @@
 #       (16262/udp) ajouté, pas de reset.
 #   (D) DRY-RUN=1 : rien modifié (règles + état inchangés), commandes
 #       journalisées [DRY-RUN].
-#   (E) SSH : ss prioritaire, sinon sshd -T (Include), erreurs bloquantes ;
+#   (E) SSH : autorité kernel couverte séparément ; fallback sshd -T (Include),
 #       accès local admis seulement sans binaire ni configuration SSH.
 #
 # Preuves réelles : vraies fonctions sourcées (garde BASH_SOURCE du script),
@@ -23,6 +23,10 @@ set -euo pipefail
 
 ROOT="${PZ_TEST_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 SETUP_SYS="${ROOT}/data/scripts/install/setupSystem.sh"
+if (( EUID != 0 )); then
+    echo '[SKIP] administrative root-owned fixtures run in the isolated root suite.'
+    exit 0
+fi
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/c12-ufw-XXXXXX")"
 
 PASS=0
@@ -32,6 +36,7 @@ ko() { FAIL=$(( FAIL + 1 )); echo "[FAIL] $*" >&2; }
 
 cleanup() {
     [[ ! -f "$SANDBOX/ufw_access.py.orig" ]] || cp -p "$SANDBOX/ufw_access.py.orig" "$ROOT/data/scripts/lib/ufw_access.py"
+    [[ ! -f "$SANDBOX/ssh-authority.orig" ]] || cp -p "$SANDBOX/ssh-authority.orig" "$ROOT/data/scripts/lib/ssh_listener_authority.py"
     [[ "${C12_KEEP:-0}" == "1" ]] || rm -rf "$SANDBOX"
 }
 trap cleanup EXIT
@@ -75,6 +80,16 @@ MOCK_DIR="${S}/mock"
 BIN="${S}/bin"
 mkdir -p "$MOCK_DIR" "$BIN"
 export MOCK_DIR
+cp -p "$ROOT/data/scripts/lib/ssh_listener_authority.py" "$SANDBOX/ssh-authority.orig"
+mkdir -p "$MOCK_DIR/proc/net"
+printf 'header\n' > "$MOCK_DIR/proc/net/tcp"
+printf 'header\n' > "$MOCK_DIR/proc/net/tcp6"
+python3 - "$ROOT/data/scripts/lib/ssh_listener_authority.py" "$MOCK_DIR/proc" "$BIN/sshd" <<'AUTHORITYPATHS'
+from pathlib import Path
+import sys
+p=Path(sys.argv[1])
+p.write_text(p.read_text().replace("Path('/proc')",'Path('+repr(sys.argv[2])+')').replace("Path('/usr/sbin/sshd')",'Path('+repr(sys.argv[3])+')').replace("Path('/run/dbus/system_bus_socket')",'Path('+repr(sys.argv[2]+'/no-bus')+')'))
+AUTHORITYPATHS
 # Only the physical UFW configuration path is remapped in this disposable copy.
 # The product reader and coverage decision remain real.
 cp -p "$ROOT/data/scripts/lib/ufw_access.py" "$SANDBOX/ufw_access.py.orig"
@@ -178,7 +193,7 @@ cat > "$BIN/sshd" <<'MOCKEOF'
 #!/usr/bin/env bash
 [[ "${MOCK_SSHD_FAIL:-0}" == 0 ]] || exit 23
 [[ "$1" == -T && "$2" == -f ]] || exit 24
-awk 'tolower($1)=="port" { print "port",$2; found=1 } END { if (!found) print "port 22" }' "$3"
+awk 'tolower($1)=="listenaddress" { print "listenaddress",$2 } tolower($1)=="port" { print "port",$2; found=1 } END { if (!found) print "port 22" }' "$3"
 MOCKEOF
 chmod +x "$BIN/"*
 export PATH="$BIN:$PATH"
@@ -243,8 +258,8 @@ grep -q 'Règles ajoutées' "$S/a.log" \
     && ok "A : règles ajoutées journalisées" \
     || ko "A : journal des ajouts absent"
 
-# Extract only local terminal ports: IPv6 components, peers and process text
-# must never become additional firewall openings.
+# Effective fallback ports remain decimal and deduplicated; process-name
+# authority is exercised with real sockets in test_ssh_listener_authority.py.
 reset_case
 cat > "$MOCK_DIR/ss_output" <<'LOCALPORTS'
 LISTEN 0 128 [::1]:2222 [2001:db8::9]:7777 users:(("sshd",pid=123,fd=3))
@@ -252,7 +267,8 @@ LISTEN 0 128 [2001:db8::44]:2222 [::]:* users:(("sshd",pid=234,fd=4))
 LISTEN 0 128 [::]:2200 [::1]:4444 users:(("sshd",pid=345,fd=5))
 LISTEN 0 128 127.0.0.1:2201 127.0.0.2:5555 users:(("sshd:9999",pid=456,fd=6))
 LOCALPORTS
-[[ "$(detect_ssh_port)" == $'22\n2200\n2201\n2222' ]] && ok 'ss : ports locaux seuls et dédupliqués IPv4/IPv6' || ko 'ss : adresse/peer/processus interprété comme port'
+printf 'Port 02222\nPort 2200\nPort 2201\nPort 2222\n' > "$S/sshd_config"
+[[ "$(detect_ssh_port)" == $'22\n2200\n2201\n2222' ]] && ok 'fallback : ports effectifs canoniques et dédupliqués' || ko 'fallback : port effectif perdu'
 configure_firewall > "$S/local-ports.log" 2>&1 || ko 'ss : configuration firewall refusée'
 for port in 22 2200 2201 2222; do
     grep -qx "$port/tcp ALLOW IN Anywhere" "$MOCK_DIR/ufw.rules" && ok "ss : ouverture locale $port" || ko "ss : port local $port absent"
@@ -374,59 +390,70 @@ if (configure_firewall) > "$S/failed-config.log" 2>&1; then ko 'échec sshd acce
 [[ ! -s "$MOCK_DIR/ufw.log" ]] && ok 'échec sshd : aucune commande UFW' || ko 'UFW invoqué malgré échec sshd'
 unset MOCK_SSHD_FAIL
 
-# Absence prouvée de sshd (résolution seule doublée), installation locale.
+# Fixed administrative binary absent: no PATH-name substitute.
 reset_case
 export PZ_SSHD_CONFIG="$S/sshd_config_absent"
-(
-    command() {
-        if [[ "$*" == '-v sshd' || "$*" == '-v /usr/sbin/sshd' ]]; then return 1; fi
-        builtin command "$@"
-    }
-    configure_firewall > "$S/local.log" 2>&1
-) && ok 'sans binaire ni config SSH : installation locale admise' || ko 'installation locale sans SSH refusée'
+mv "$BIN/sshd" "$BIN/sshd.absent"
+configure_firewall > "$S/local.log" 2>&1 && ok 'sans binaire ni config SSH : installation locale admise' || ko 'installation locale sans SSH refusée'
 grep -q '^ufw allow 22/tcp$' "$MOCK_DIR/ufw.log" && ok 'installation locale : garde-fou22 conservé' || ko 'garde-fou22 perdu'
 reset_case
-(
-    command() {
-        if [[ "$*" == '-v sshd' || "$*" == '-v /usr/sbin/sshd' ]]; then return 1; fi
-        builtin command "$@"
-    }
-    configure_firewall > "$S/missing-binary.log" 2>&1
-) && ko 'config présente sans binaire SSH acceptée' || ok 'config présente sans binaire SSH refusée'
+configure_firewall > "$S/missing-binary.log" 2>&1 && ko 'config présente sans binaire SSH acceptée' || ok 'config présente sans binaire SSH refusée'
 [[ ! -s "$MOCK_DIR/ufw.log" ]] && ok 'binaire absent avec config : aucune commande UFW' || ko 'UFW invoqué malgré binaire absent'
+mv "$BIN/sshd.absent" "$BIN/sshd"
 reset_case
 export MOCK_SSHD_FAIL=1
 printf 'LISTEN 0 128 0.0.0.0:2222 0.0.0.0:* users:(("sshd",pid=222,fd=3))\n' > "$MOCK_DIR/ss_output"
-[[ "$(detect_ssh_port)" == $'22\n2222' ]] && ok 'ss observé prioritaire même si configuration invalide' || ko 'configuration invalide écrase ss'
+if detect_ssh_port > "$S/untrusted-name.log" 2>&1; then ko 'texte ss non authentifié contourne configuration invalide'; else ok 'texte ss seul ne fait pas autorité'; fi
 unset MOCK_SSHD_FAIL
+
+reset_case
+printf 'Port 3022\nListenAddress 0.0.0.0:2222\nListenAddress [::1]:2223\n' > "$S/sshd_config"
+[[ "$(detect_ssh_port)" == $'22\n2222\n2223' ]] && ok 'ListenAddress : endpoints IPv4/IPv6 conservés' || ko 'ListenAddress : ports perdus'
+configure_firewall > "$S/listen.log" 2>&1 || ko 'ListenAddress : refus inattendu'
+grep -qx 'ufw allow 2222/tcp' "$MOCK_DIR/ufw.log" && grep -qx 'ufw allow 2223/tcp' "$MOCK_DIR/ufw.log" && ! grep -qx 'ufw allow 3022/tcp' "$MOCK_DIR/ufw.log" && ok 'ListenAddress : ouvertures avant activation' || ko 'ListenAddress : accès omis'
+reset_case
+printf 'ListenAddress indeterminate\n' > "$S/sshd_config"
+if configure_firewall > "$S/listen-invalid.log" 2>&1; then ko 'ListenAddress indéterminée acceptée'; else ok 'ListenAddress indéterminée refusée'; fi
+! grep -qE '^ufw (allow|default|prepend|--force)' "$MOCK_DIR/ufw.log" && ok 'ListenAddress indéterminée : aucune mutation' || ko 'ListenAddress indéterminée : mutation'
 
 # Vraie configuration effective OpenSSH : Include, plusieurs ports et décimal.
 reset_case
 if [[ -x /usr/sbin/sshd ]] && command -v ssh-keygen >/dev/null; then
     ssh-keygen -q -t ed25519 -N '' -f "$S/hostkey"
-    printf 'Port 02222\nPort 2223\n' > "$S/sshd-included.conf"
+    printf 'Port 02222\nPort 2223\nListenAddress 0.0.0.0:2230\nListenAddress [::]:2231\n' > "$S/sshd-included.conf"
     printf 'HostKey %s\nInclude %s\n' "$S/hostkey" "$S/sshd-included.conf" > "$S/sshd_config"
     # Le binaire de production est retrouvé par PATH, sans changer son interface.
     mv "$BIN/sshd" "$BIN/sshd.mock"
-    ln -s /usr/sbin/sshd "$BIN/sshd"
+    cp /usr/sbin/sshd "$BIN/sshd"
+    chmod 0755 "$BIN/sshd"
     if /usr/sbin/sshd -T -f "$S/sshd_config" > "$S/effective.log" 2> "$S/effective.err"; then
         (
             command() { [[ "$*" != '-v ss' ]] && builtin command "$@"; }
             configure_firewall
         ) > "$S/include.log" 2>&1 || ko 'Include natif : refus inattendu'
-        grep -qx 'ufw allow 2222/tcp' "$MOCK_DIR/ufw.log" && grep -qx 'ufw allow 2223/tcp' "$MOCK_DIR/ufw.log" \
+        ! grep -qx 'ufw allow 2222/tcp' "$MOCK_DIR/ufw.log" && ! grep -qx 'ufw allow 2223/tcp' "$MOCK_DIR/ufw.log" \
+            && grep -qx 'ufw allow 2230/tcp' "$MOCK_DIR/ufw.log" && grep -qx 'ufw allow 2231/tcp' "$MOCK_DIR/ufw.log" \
             && ok 'Include natif : tous ports effectifs autorisés avant enable' || ko 'Include natif : port perdu'
         if python3 - "$MOCK_DIR/ufw.log" <<'ORDER'
 import sys
 rows=open(sys.argv[1]).read().splitlines()
-assert rows.index('ufw allow 2222/tcp') < rows.index('ufw --force enable')
-assert rows.index('ufw allow 2223/tcp') < rows.index('ufw --force enable')
+assert 'ufw allow 2222/tcp' not in rows
+assert 'ufw allow 2223/tcp' not in rows
+assert rows.index('ufw allow 2230/tcp') < rows.index('ufw --force enable')
+assert rows.index('ufw allow 2231/tcp') < rows.index('ufw --force enable')
 ORDER
         then ok 'Include natif : ordre autorisations avant activation'; else ko 'Include natif : activation prématurée'; fi
         : > "$MOCK_DIR/ufw.log"
-        export PZ_PROMETHEUS_PORT=2222
+        export PZ_PROMETHEUS_PORT=2230
         if (configure_firewall) > "$S/include-collision.log" 2>&1; then ko 'Include natif : collision acceptée'; fi
         [[ ! -s "$MOCK_DIR/ufw.log" ]] && ok 'Include natif : collision refusée avant UFW' || ko 'Include natif : mutation malgré collision'
+        reset_case
+        printf 'HostKey %s\nPort 3022\nListenAddress 0.0.0.0:2222\n' "$S/hostkey" > "$S/sshd_config"
+        /usr/sbin/sshd -T -f "$S/sshd_config" > "$S/listen-effective.log"
+        grep -E '^(port|listenaddress) ' "$S/listen-effective.log"
+        [[ "$(detect_ssh_port)" == $'22\n2222' ]] && ok 'ListenAddress natif : endpoints prioritaires sur Port3022' || ko 'ListenAddress natif : Port3022 parasite'
+        configure_firewall > "$S/listen-native.log" 2>&1 || ko 'ListenAddress natif : configuration refusée'
+        grep -qx 'ufw allow 2222/tcp' "$MOCK_DIR/ufw.log" && ! grep -qx 'ufw allow 3022/tcp' "$MOCK_DIR/ufw.log" && ok 'ListenAddress natif : accès2222 seul avec garde22' || ko 'ListenAddress natif : ouverture manquante ou parasite'
     else
         echo "[SKIP] sshd -T natif indisponible dans ce banc : $(cat "$S/effective.err")"
     fi

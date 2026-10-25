@@ -58,6 +58,24 @@ def connect(path):
     return sqlite3.connect(Path(path).absolute().as_uri()+'?mode=rw',uri=True,timeout=0)
 
 
+def ledger_rows(db_path,now):
+    """Read typed SQLite fields before emitting rows for the historical CSV."""
+    validate_database(db_path)
+    with closing(sqlite3.connect(Path(db_path).absolute().as_uri()+'?mode=ro',uri=True,timeout=0)) as db:
+        rows=db.execute("SELECT username, COALESCE(steamid,''), COALESCE(lastConnection,'') FROM whitelist").fetchall()
+    for username,sid,lastconn in rows:
+        if not all(isinstance(value,str) for value in (username,sid,lastconn)):
+            raise ValueError('Invalid account text fields for ledger')
+        if not username:continue
+        # No quoting exists in this CSV. NUL would also be lost in Bash;
+        # a leading # would turn the username into a comment on the next read.
+        if username.startswith('#') or any(char in value for value in (username,sid,lastconn) for char in ';\r\n\0'):
+            print('AVERTISSEMENT: compte non représentable ignoré au registre: '+json.dumps(username,ensure_ascii=False),file=sys.stderr)
+            continue
+        # An unknown age uses the current time, conservatively delaying purge.
+        print(username+';'+sid+';'+(lastconn or now))
+
+
 def select_players(world,server):
     saves=Path(world)/'Saves/Multiplayer'
     try:parent,_=open_root(saves)
@@ -178,6 +196,7 @@ def main():
     sub.add_parser('verify-worker')
     p=sub.add_parser('validate-db');p.add_argument('--db',required=True);p.add_argument('--missing-ok',action='store_true')
     p=sub.add_parser('select-players');p.add_argument('--world',required=True);p.add_argument('--server',required=True)
+    p=sub.add_parser('ledger-rows');p.add_argument('--db',required=True);p.add_argument('--now',required=True)
     p=sub.add_parser('backup');p.add_argument('--db',required=True)
     p=sub.add_parser('remove');p.add_argument('--db',required=True);p.add_argument('--dry-run',action='store_true');p.add_argument('targets',nargs='+')
     p=sub.add_parser('rename');p.add_argument('--db',required=True);p.add_argument('--players');p.add_argument('old');p.add_argument('new')
@@ -188,6 +207,7 @@ def main():
             if selected is not None:print(selected)
         elif a.action=='verify-worker':verify_worker()
         elif a.action=='validate-db':validate_database(a.db,a.missing_ok)
+        elif a.action=='ledger-rows':ledger_rows(a.db,a.now)
         elif a.action=='backup':backup(a.db)
         elif a.action=='remove':remove(a.db,a.targets,a.dry_run)
         elif a.action=='rename':rename(a.db,a.players,a.old,a.new)

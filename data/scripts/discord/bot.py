@@ -1155,7 +1155,8 @@ def collect_stats(prev: dict) -> dict:
     now = time.monotonic()
     s = jvm_status(PZ_SERVICE_NAME)
     if prev.get("invocation") != s["invocation"]:
-        for key in ("jif", "prom_ctr", "prom_ts", "prom_rbc"):
+        for key in ("jif", "prom_ctr", "prom_ts", "prom_rbc",
+                    "user_tail", "online", "user_path"):
             prev.pop(key, None)
     prev["invocation"] = s["invocation"]
     s["mem"] = _meminfo()
@@ -1163,6 +1164,7 @@ def collect_stats(prev: dict) -> dict:
     s["rss_kb"], s["hwm_kb"], s["pswap_kb"] = st.get("VmRSS"), st.get("VmHWM"), st.get("VmSwap")
     s.update(_service_memory())
     s["uptime"] = _proc_uptime_seconds(s["pid"]) if s["pid"] else None
+    boot = time.time() - s["uptime"] if s["uptime"] is not None else None
     s["cpu_pct"] = None
     if s["pid"]:
         jif = _proc_cpu_jiffies(s["pid"])
@@ -1195,7 +1197,14 @@ def collect_stats(prev: dict) -> dict:
     except OSError:
         s["disk"] = None
     s["heapdump"] = _recent_heapdump()
-    s["players"] = _online_players(prev)
+    s["players"] = None
+    if s["service_state"] == "inactive":
+        for key in ("user_tail", "online", "user_path"):
+            prev.pop(key, None)
+        s["players"] = 0
+    elif (s["service_state"] == "active" and s["invocation"]
+          and s["uptime"] is not None and 0 <= s["uptime"] < float("inf")):
+        s["players"] = _online_players(prev, since=boot)
     # Débit réseau sur l'interface de la route par défaut (delta entre cycles).
     # C'est le REPLI : PZ expose ses propres compteurs via son exporteur Prometheus
     # (lu plus bas, et préféré par l'embed) ; le NIC ne sert que si l'exporteur
@@ -1260,10 +1269,11 @@ def collect_stats(prev: dict) -> dict:
     return s
 
 
-def _online_players(prev: dict):
+def _online_players(prev: dict, *, since=None):
     """Nombre de joueurs connectés, sans RCON : on rejoue user.txt (connexions/
     déconnexions) via un _Tail dédié. État porté par `prev` entre les cycles.
-    None si le dossier de logs est inconnu. Remis à zéro sur rotation de session."""
+    None si la source manque ou précède le boot JVM `since`.
+    Remis à zéro sur rotation de session."""
     if not PZ_LOGS_DIR:
         return None
     tail = prev.get("user_tail")
@@ -1277,6 +1287,19 @@ def _online_players(prev: dict):
     # glob + max(getmtime) : les deux devaient rester d'accord, sans quoi le set
     # des connectés était vidé au mauvais cycle.
     lines = tail.read()
+    if tail.available and since is not None:
+        # Le mtime peut être rafraîchi sur un ancien journal. La création Linux
+        # doit appartenir à cette JVM ; sans birth time, garder la mesure inconnue.
+        try:
+            born = int(subprocess.check_output(
+                ["stat", "-c", "%W", "--", tail.path], text=True,
+                stderr=subprocess.DEVNULL, timeout=2).strip())
+            current = 0 < since <= born <= time.time()
+        except (OSError, ValueError, subprocess.SubprocessError):
+            current = False
+        if not current:
+            prev.pop("user_tail", None)  # Rejouer si la source redevient attribuable.
+            tail.available = False
     if not tail.available:
         online.clear()
         prev["user_path"] = None
