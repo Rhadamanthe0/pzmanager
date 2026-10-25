@@ -31,6 +31,7 @@ ok() { PASS=$(( PASS + 1 )); echo "[OK] $*"; }
 ko() { FAIL=$(( FAIL + 1 )); echo "[FAIL] $*" >&2; }
 
 cleanup() {
+    [[ ! -f "$SANDBOX/ufw_access.py.orig" ]] || cp -p "$SANDBOX/ufw_access.py.orig" "$ROOT/data/scripts/lib/ufw_access.py"
     [[ "${C12_KEEP:-0}" == "1" ]] || rm -rf "$SANDBOX"
 }
 trap cleanup EXIT
@@ -48,9 +49,9 @@ grep -q '^detect_ssh_port() {' "$SETUP_SYS" \
 grep -q 'PZ_SSHD_CONFIG' "$SETUP_SYS" \
     && ok "sshd_config surchargeable (PZ_SSHD_CONFIG)" \
     || ko "PZ_SSHD_CONFIG absent"
-grep -q 'ufw_has_rule' "$SETUP_SYS" \
-    && ok "ajout conditionné aux règles manquantes (ufw_has_rule)" \
-    || ko "ufw_has_rule absent"
+grep -q 'ufw_access.py' "$SETUP_SYS" \
+    && ok "ajout conditionné aux règles manquantes (ufw_access.py)" \
+    || ko "ufw_access.py absent"
 grep -q 'PZ_UFW_DRY_RUN' "$SETUP_SYS" \
     && ok "DRY-RUN PZ_UFW_DRY_RUN supporté" \
     || ko "PZ_UFW_DRY_RUN absent"
@@ -74,6 +75,16 @@ MOCK_DIR="${S}/mock"
 BIN="${S}/bin"
 mkdir -p "$MOCK_DIR" "$BIN"
 export MOCK_DIR
+# Only the physical UFW configuration path is remapped in this disposable copy.
+# The product reader and coverage decision remain real.
+cp -p "$ROOT/data/scripts/lib/ufw_access.py" "$SANDBOX/ufw_access.py.orig"
+mkdir "$MOCK_DIR/ipv6-capability"
+python3 - "$ROOT/data/scripts/lib/ufw_access.py" "$MOCK_DIR/ufw.defaults" <<'DEFAULTSPATH'
+from pathlib import Path
+import sys
+p=Path(sys.argv[1])
+p.write_text(p.read_text().replace('Path("/etc/default/ufw")', 'Path('+repr(sys.argv[2])+')').replace('Path("/etc/ufw/ufw.conf")', 'Path('+repr(str(Path(sys.argv[2]).parent/'ufw.conf'))+')').replace('Path("/proc/sys/net/ipv6")', 'Path('+repr(str(Path(sys.argv[2]).parent/'ipv6-capability'))+')'))
+DEFAULTSPATH
 
 # Mock ufw D'ÉTAT : $MOCK_DIR/ufw.rules (une règle/ligne), ufw.active (yes/no),
 # ufw.log (toutes les invocations). `reset` est piégé : il log RESET_CALLED et
@@ -98,8 +109,35 @@ def key(row):
     row=row.split('#',1)[0].strip()
     row=re.sub(r' \(log(?:-all)?\)$','',row)
     return re.sub(r' (ALLOW|DENY|REJECT|LIMIT) (IN|OUT|FWD) ',r' \2 ',row)
-if args[0]=='status':
+if args==['show','added']:
+    print("Added user rules (see 'ufw status' for running firewall):")
+    if not rules: print('(None)')
+    for row in rules:
+        row=row.split('#',1)[0].strip()
+        match=re.fullmatch(r'(.*?) (ALLOW|LIMIT|DENY|REJECT) (IN|OUT|FWD) (.*)',row)
+        if not match: print('ufw UNKNOWN'); continue
+        target,action,direction,source=match.groups()
+        ipv6='(v6)' in target
+        target=target.replace(' (v6)','');source=source.replace(' (v6)','')
+        source=re.sub(r' \(log(?:-all)?\)$','',source)
+        iface=''
+        if ' on ' in target: target,iface=target.split(' on ',1)
+        suffix=''
+        if '/' in target:
+            target,proto=target.rsplit('/',1);suffix=' proto '+proto
+        command='ufw '+action.lower()+(' out' if direction=='OUT' else '')
+        if iface: command+=' in on '+iface
+        source_port=''
+        if ' ' in source:
+            source,source_port=source.split(' ',1)
+            source_port=source_port.split('/')[0]
+        source=('::/0' if ipv6 else 'any') if source=='Anywhere' else source
+        command+=' from '+source+(' port '+source_port if source_port else '')+' to any'
+        if target!='Anywhere': command+=' port '+target
+        print(command+suffix)
+elif args[0]=='status':
     french=os.environ.get('MOCK_UFW_FRENCH')=='1' and (os.environ.get('LC_ALL')!='C' or os.environ.get('LANGUAGE')!='C')
+    if os.environ.get('MOCK_UFW_UNKNOWN')=='1': print('Status: unknown');sys.exit(0)
     print(('État : actif' if french else 'Status: active') if active else ('État : inactif' if french else 'Status: inactive'))
     if active:
         for index,row in enumerate(rules,1): print('[ %d] %s' % (index,row))
@@ -160,8 +198,10 @@ reset_case() {
     echo "no" > "$MOCK_DIR/ufw.active"
     : > "$MOCK_DIR/ufw.log"
     : > "$MOCK_DIR/ss_output"
-    unset PZ_SSHD_CONFIG MOCK_SSHD_FAIL MOCK_UFW_FAIL MOCK_UFW_FRENCH PZ_PROMETHEUS_PORT 2>/dev/null || true
+    unset PZ_SSHD_CONFIG MOCK_SSHD_FAIL MOCK_UFW_FAIL MOCK_UFW_FRENCH MOCK_UFW_UNKNOWN PZ_PROMETHEUS_PORT 2>/dev/null || true
     rm -f "$MOCK_DIR/ufw.ipv6"
+    printf 'IPV6=no\n' > "$MOCK_DIR/ufw.defaults"
+    printf 'ENABLED=no\n' > "$MOCK_DIR/ufw.conf"
     printf 'Port 22\n' > "$S/sshd_config"
     export PZ_SSHD_CONFIG="$S/sshd_config"
 }
@@ -401,6 +441,7 @@ for initial in yes no; do
     reset_case
     echo "$initial" > "$MOCK_DIR/ufw.active"
     touch "$MOCK_DIR/ufw.ipv6"
+    printf 'IPV6=yes\n' > "$MOCK_DIR/ufw.defaults"
     export MOCK_UFW_FRENCH=1 LANGUAGE=fr
     cat > "$MOCK_DIR/ufw.rules" <<'RULES'
 9000:9200/tcp ALLOW IN Anywhere
@@ -453,16 +494,84 @@ for port in 0 65536; do
     ! grep -qE '^ufw (allow|default|prepend|--force)' "$MOCK_DIR/ufw.log" \
         && ok "SSH hors plage $port refusé avant mutation" || ko 'mutation malgré SSH invalide'
 done
-for failure in status prepend delete enable; do
+for failure in status show prepend delete enable; do
     reset_case
     echo yes > "$MOCK_DIR/ufw.active"
     echo '9110/tcp ALLOW IN Anywhere' > "$MOCK_DIR/ufw.rules"
-    [[ "$failure" != enable ]] || echo no > "$MOCK_DIR/ufw.active"
+    [[ "$failure" != enable && "$failure" != show ]] || echo no > "$MOCK_DIR/ufw.active"
     export MOCK_UFW_FAIL="$failure"
     if (configure_firewall) > "$S/command-failure.log" 2>&1; then ko "erreur $failure ignorée"; else ok "erreur $failure bloquante"; fi
     ! grep -q 'restreint à localhost' "$S/command-failure.log" || ko "faux succès après $failure"
 done
-unset MOCK_UFW_FAIL MOCK_UFW_FRENCH PZ_PROMETHEUS_PORT
+unset MOCK_UFW_FAIL MOCK_UFW_FRENCH MOCK_UFW_UNKNOWN PZ_PROMETHEUS_PORT
+
+# Exact incoming authorizations only; no policy widening on conflicts.
+for initial in yes no; do
+    for row in '12222/tcp ALLOW IN Anywhere' '9999/tcp ALLOW IN Anywhere 22/tcp' '9999/tcp ALLOW IN Anywhere # 22/tcp ALLOW IN Anywhere' '22/tcp ALLOW OUT Anywhere'; do
+        reset_case; echo "$initial" > "$MOCK_DIR/ufw.active"
+        printf '%s\n' "$row" > "$MOCK_DIR/ufw.rules"
+        printf 'Port 2222\n' > "$S/sshd_config"
+        configure_firewall > "$S/exact.log" 2>&1 || { ko "exact $initial : refus inattendu $row"; cat "$S/exact.log"; continue; }
+        grep -qx '22/tcp ALLOW IN Anywhere' "$MOCK_DIR/ufw.rules" && grep -qx '2222/tcp ALLOW IN Anywhere' "$MOCK_DIR/ufw.rules" && ok "exact $initial : vrais accès présents" || ko "exact $initial : accès omis"
+        grep -qxF "$row" "$MOCK_DIR/ufw.rules" && ok "exact $initial : ACL originale conservée" || ko "exact $initial : ACL remplacée"
+    done
+    for action in ALLOW LIMIT; do
+        reset_case; echo "$initial" > "$MOCK_DIR/ufw.active"
+        printf '22/tcp %s IN Anywhere\n' "$action" > "$MOCK_DIR/ufw.rules"
+        configure_firewall > "$S/existing.log" 2>&1 || ko "existant $initial $action : refus"
+        ! grep -qx 'ufw allow 22/tcp' "$MOCK_DIR/ufw.log" && grep -qx "22/tcp $action IN Anywhere" "$MOCK_DIR/ufw.rules" && ok "existant $initial : $action IN conservé" || ko "existant $initial : $action modifié"
+    done
+    for row in '2222/tcp DENY IN Anywhere' '2222/tcp REJECT IN Anywhere' '2222/tcp ALLOW IN 10.0.0.0/8' '2200:2300/tcp DENY IN Anywhere' '16262/udp DENY IN Anywhere' '22/tcp (v6) ALLOW IN Anywhere (v6)' 'inconnu'; do
+        reset_case; echo "$initial" > "$MOCK_DIR/ufw.active"
+        printf 'Port 2222\n' > "$S/sshd_config"
+        printf '%s\n' "$row" > "$MOCK_DIR/ufw.rules"
+        before="$(cat "$MOCK_DIR/ufw.rules")"
+        if [[ "$row" == *'(v6)'* ]]; then printf 'LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=123,fd=3))\n' > "$MOCK_DIR/ss_output"; fi
+        if configure_firewall > "$S/conflict.log" 2>&1; then ko "conflit $initial : accepté $row"; else ok "conflit $initial : refus explicite"; fi
+        [[ "$(cat "$MOCK_DIR/ufw.rules")" == "$before" ]] && ! grep -qE '^ufw (allow|default|prepend|--force)' "$MOCK_DIR/ufw.log" && ok "conflit $initial : état intact" || ko "conflit $initial : mutation"
+    done
+done
+reset_case
+export MOCK_UFW_UNKNOWN=1
+if configure_firewall > "$S/unknown.log" 2>&1; then ko 'statut inconnu accepté'; else ok 'statut inconnu refusé'; fi
+! grep -qE '^ufw (allow|default|prepend|--force)' "$MOCK_DIR/ufw.log" && ok 'statut inconnu : aucune mutation' || ko 'statut inconnu : mutation'
+unset MOCK_UFW_UNKNOWN
+
+# Required families come from UFW policy, never from existing ACL inventory.
+for policy in no yes unknown conflict missing inline-comment no-capability state-conflict lowercase; do
+    reset_case
+    echo yes > "$MOCK_DIR/ufw.active"
+    printf 'LISTEN 0 128 [::]:22 [::]:* users:(("sshd",pid=123,fd=3))\n' > "$MOCK_DIR/ss_output"
+    printf '22/tcp ALLOW IN Anywhere\n' > "$MOCK_DIR/ufw.rules"
+    case "$policy" in
+        no) printf 'LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=123,fd=3))\n' > "$MOCK_DIR/ss_output" ;;
+        yes) touch "$MOCK_DIR/ufw.ipv6"; printf 'IPV6=yes\n' > "$MOCK_DIR/ufw.defaults" ;;
+        unknown) printf 'IPV6=perhaps\n' > "$MOCK_DIR/ufw.defaults" ;;
+        conflict) printf 'IPV6=yes\nIPV6=no\n' > "$MOCK_DIR/ufw.defaults" ;;
+        missing) rm "$MOCK_DIR/ufw.defaults" ;;
+        state-conflict) printf 'IPV6=yes\n' > "$MOCK_DIR/ufw.conf" ;;
+        lowercase) printf 'ipv6=yes\n' >> "$MOCK_DIR/ufw.defaults" ;;
+        inline-comment) printf 'IPV6=yes#unexpected\n' > "$MOCK_DIR/ufw.defaults" ;;
+        no-capability) printf 'IPV6=yes\n' > "$MOCK_DIR/ufw.defaults"; rmdir "$MOCK_DIR/ipv6-capability" ;;
+    esac
+    before="$(cat "$MOCK_DIR/ufw.rules")"
+    if [[ "$policy" == no ]]; then
+        configure_firewall > "$S/family.log" 2>&1 && ok 'IPv4 seul : politique IPv6=no acceptée' || ko 'IPv4 seul légitime refusé'
+    else
+        if configure_firewall > "$S/family.log" 2>&1; then ko "famille $policy : accepté sans preuve"; else ok "famille $policy : refus explicite"; fi
+        [[ "$(cat "$MOCK_DIR/ufw.rules")" == "$before" ]] && ! grep -qE '^ufw (allow|default|prepend|--force)' "$MOCK_DIR/ufw.log" && ok "famille $policy : refus avant mutation" || ko "famille $policy : mutation"
+    fi
+    mkdir -p "$MOCK_DIR/ipv6-capability"
+done
+for initial in yes no; do
+    reset_case; echo "$initial" > "$MOCK_DIR/ufw.active"
+    touch "$MOCK_DIR/ufw.ipv6"; printf 'IPV6="yes"\n' > "$MOCK_DIR/ufw.defaults"
+    if [[ "$initial" == yes ]]; then
+        printf '22/tcp ALLOW IN Anywhere\n22/tcp (v6) ALLOW IN Anywhere (v6)\n' > "$MOCK_DIR/ufw.rules"
+    fi
+    configure_firewall > "$S/dual.log" 2>&1 || ko "dual $initial : contexte valide refusé"
+    grep -qx '22/tcp ALLOW IN Anywhere' "$MOCK_DIR/ufw.rules" && grep -qx '22/tcp (v6) ALLOW IN Anywhere (v6)' "$MOCK_DIR/ufw.rules" && ok "dual $initial : accès deux familles prouvé" || ko "dual $initial : famille manquante"
+done
 
 # --- bash -n -------------------------------------------------------------------------
 for f in "$SETUP_SYS" "$0"; do

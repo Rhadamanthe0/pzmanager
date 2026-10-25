@@ -173,14 +173,6 @@ load_ports_from_env() {
     fi
 }
 
-# Règle ufw déjà présente ? Motif fixe (ex. "16261/udp", "OpenSSH").
-# Lecture seule (sonde) : sûre en contexte `if`, jamais de modification.
-ufw_has_rule() {
-    local status
-    status="$(LC_ALL=C LANGUAGE=C ufw status numbered)" || { echo "[ERROR] Lecture UFW impossible." >&2; exit 1; }
-    grep -qF "$1" <<< "$status"
-}
-
 # Exécute ufw, sauf en DRY-RUN (PZ_UFW_DRY_RUN=1, tests) où la commande est
 # seulement journalisée sans toucher au pare-feu. Les lectures (status) ne
 # passent jamais par ici.
@@ -294,36 +286,40 @@ configure_firewall() {
     echo "[INFO] UFW avant :"
     echo "$ufw_before"
 
-    local ufw_active=false
-    if grep -q "Status: active" <<< "$ufw_before"; then
-        ufw_active=true
-    fi
+    local ufw_active=false persisted="" missing_access
+    case "${ufw_before%%$'\n'*}" in
+        'Status: active') ufw_active=true ;;
+        'Status: inactive')
+            # status hides saved ACLs while disabled; inspect them before allow
+            # can replace a saved DENY or widen a restricted source.
+            persisted="$(LC_ALL=C LANGUAGE=C ufw show added)" || return 1 ;;
+        *) echo "[ERROR] Statut UFW inconnu : aucune règle modifiée." >&2; return 1 ;;
+    esac
+    local -a requested=()
+    local p r
+    while IFS= read -r p; do
+        [[ -z "$p" ]] || requested+=("${p}/tcp")
+    done <<< "$ssh_ports"
+    requested+=("${rules[@]}")
+    # The reader requires explicit IPV6=yes/no from UFW's own configuration;
+    # absent IPv6 ACLs never prove that the backend is IPv4-only.
+    missing_access="$(printf '%s\n--PERSISTED--\n%s' "$ufw_before" "$persisted" | \
+        python3 "${SCRIPT_DIR}/../lib/ufw_access.py" "${requested[@]}")" || return 1
 
     # JAMAIS de `ufw --force reset` (C12) : destructeur, il effaçait les règles
     # existantes (dont un SSH non standard => lock-out admin). UFW actif : on
     # n'ajoute que les manquants. UFW inactif : défauts + SSH + jeu, puis
     # enable — toujours sans reset.
     local -a added=()
-    local p r
     if [[ "$ufw_active" != true ]]; then
         ufw_run default deny incoming || return 1
         ufw_run default allow outgoing || return 1
     fi
-    # Ports numériques : le profil OpenSSH peut être absent (installation locale).
-    while IFS= read -r p; do
-        [[ -n "$p" ]] || continue
-        if ! ufw_has_rule "${p}/tcp"; then
-            ufw_run allow "${p}/tcp" || return 1
-            added+=("${p}/tcp")
-        fi
-    done <<< "$ssh_ports"
-    # Jeu : uniquement les règles manquantes (jamais de doublon).
-    for r in "${rules[@]}"; do
-        if ! ufw_has_rule "$r"; then
-            ufw_run allow "$r" || return 1
-            added+=("$r")
-        fi
-    done
+    while IFS= read -r r; do
+        [[ -n "$r" ]] || continue
+        ufw_run allow "$r" || return 1
+        added+=("$r")
+    done <<< "$missing_access"
     echo "[INFO] Ports ouverts: ${rules[*]}"
 
     # Inactif : les anciennes règles restent enregistrées mais status ne les

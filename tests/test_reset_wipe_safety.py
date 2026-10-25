@@ -202,6 +202,29 @@ ready.with_suffix('.tmp').replace(ready)'''))
     def command(self,script,*args):return ['bash',str(self.repo/'data/scripts/admin'/script),*args]
     def run_admin(self,script,*args):return subprocess.run(self.command(script,*args),env=self.env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=30)
     def records(self):return [json.loads(p.read_text()) for p in (self.home/'.Zomboid.pzm-transactions').glob('*.json')]
+    def test_hourly_backup_delivers_save_to_literal_configured_fifo(self):
+        self.executable(self.bin/'systemctl', '#!/bin/sh\nprintf "%s\\n" LoadState=loaded ActiveState=active SubState=running MainPID=123 ControlPID=0 InvocationID=fixture\n')
+        self.executable(self.bin/'sleep', '#!/bin/sh\nexit 0\n')
+        before=self.image(self.live)
+        for number,name in enumerate(('server.control',"server's.control")):
+            with self.subTest(name=name):
+                fifo=self.base/name;os.mkfifo(fifo,0o600)
+                backups=self.base/('hourly-backups-'+str(number))
+                with (self.repo/'.env').open('a') as config:
+                    config.write('\nPZ_CONTROL_PIPE='+shlex.quote(str(fifo))+'\nBACKUP_DIR='+shlex.quote(str(backups))+'\nBACKUP_WARN_DELAY=0\n')
+                reader=os.open(fifo,os.O_RDONLY|os.O_NONBLOCK)
+                try:
+                    result=subprocess.run(['bash',str(self.repo/'data/scripts/backup/dataBackup.sh')],env=self.env,capture_output=True,text=True,timeout=20)
+                    received=os.read(reader,4096)
+                finally:os.close(reader)
+                self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                self.assertEqual(received,b'save\n',result.stdout+result.stderr)
+                self.assertNotIn('Could not send save command',result.stdout)
+                snapshot=self.image(backups/'latest');manifest=json.loads(snapshot.pop('.pzm-snapshot.json'))
+                self.assertEqual(manifest['consistency'],'best-effort')
+                self.assertEqual(snapshot,before)
+                self.assertEqual(self.image(self.live),before)
+
     def test_wipe_locked_backup_preserves_all_files(self):
         state=self.runtime/'pzmanager';state.mkdir(mode=0o700)
         with (state/'backup.lock').open('w') as lock:

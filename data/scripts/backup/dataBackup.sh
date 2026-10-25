@@ -251,7 +251,7 @@ if [[ "$SNAPSHOT_ONLY" != "1" && "$CONSISTENT" != "1" && -p "${PZ_CONTROL_PIPE}"
 
     if ! backup_server_running; then
         echo "BACKUP_SAVE_SKIPPED — JVM absente ou état indéterminé après le préavis ; aucune écriture FIFO."
-    elif timeout 10 bash -c "echo 'save' > '${PZ_CONTROL_PIPE}'" 2>/dev/null; then
+    elif timeout 10 bash -c 'printf "%s\n" save > "$1"' _ "$PZ_CONTROL_PIPE" 2>/dev/null; then
         sleep 60
     else
         echo "Warning: Could not send save command (pipe timeout or server not responding)"

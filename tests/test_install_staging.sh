@@ -29,6 +29,20 @@ printf 'pzfixture:x:65533:\n' >> /etc/group
 mkdir -p /usr/local/libexec /etc/sudoers.d /home/pzfixture /run/user
 chmod 0755 /home /run /run/user
 chmod 0755 /usr/local /usr/local/libexec
+# The firewall boundary below is IPv4-only. Remap only the product reader's
+# physical policy path inside this disposable copy, never the host /etc file.
+cp -p "$ROOT/data/scripts/lib/ufw_access.py" /tmp/pz-fixture-ufw-reader.orig
+trap 'cp -p /tmp/pz-fixture-ufw-reader.orig "$ROOT/data/scripts/lib/ufw_access.py"; rm -f /tmp/pz-fixture-ufw-reader.orig /tmp/pz-fixture-ufw-defaults /tmp/pz-fixture-ufw.conf' EXIT
+printf 'IPV6=no\n' > /tmp/pz-fixture-ufw-defaults
+printf 'ENABLED=no\n' > /tmp/pz-fixture-ufw.conf
+chmod 0644 /tmp/pz-fixture-ufw.conf
+chmod 0644 /tmp/pz-fixture-ufw-defaults
+python3 - "$ROOT/data/scripts/lib/ufw_access.py" <<'UFWDEFAULTS'
+from pathlib import Path
+import sys
+p=Path(sys.argv[1])
+p.write_text(p.read_text().replace('Path("/etc/default/ufw")', 'Path("/tmp/pz-fixture-ufw-defaults")').replace('Path("/etc/ufw/ufw.conf")', 'Path("/tmp/pz-fixture-ufw.conf")'))
+UFWDEFAULTS
 PZ_USER=pzfixture bash -c 'source "$1/data/scripts/install.sh"; stage_root_helpers "$1"' _ "$ROOT"
 helper=/usr/local/libexec/pzmanager/install
 [[ -f "$helper/../../setupTemplates/pzuser-sudoers" && -f "$helper/../internal/configureJvm.sh" ]]

@@ -305,8 +305,9 @@ it never overlaps its own execution or a restart warning).
   is the only reclaim. Quiet server = no needless restart. See
   [ADVANCED.md](ADVANCED.md#memory-driven-restart-why-the-server-restarts-on-its-own).
 
-**Service**: `pz-heapcheck.service` (oneshot, `TimeoutStartSec=1500` to cover the
-warning countdown).
+**Service**: `pz-heapcheck.service` (oneshot, `TimeoutStartSec=7200`): a two-hour
+overall limit for warnings up to 30 minutes, stop, backup and activation. The
+direct backup shares this deadline; it has no separate 2400-second timeout.
 
 #### pz-maintenance.timer - Daily maintenance (4:30 AM)
 
