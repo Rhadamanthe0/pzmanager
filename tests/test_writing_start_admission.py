@@ -454,5 +454,20 @@ os.execv(sys.executable,sys.argv[3:])
         self.assertEqual(outside.read_bytes(),original)
         marker.chmod(0o600);release.touch();self.assertEqual(owner.wait(timeout=5),0,(self.root/'owner.stderr').read_text())
 
+    def test_quiet_metadata_is_optional_and_strictly_boolean(self):
+        owner,release=self.prepare_owner();marker=self.private/admission.MARKER
+        directory_fd=os.open(self.private,os.O_RDONLY|os.O_DIRECTORY)
+        try:
+            for value in (None,0,1,'false',[],{}):
+                marker.write_text(json.dumps(dict(self.original_marker,quiet_ready=value)))
+                with self.subTest(value=value),self.assertRaises(admission.ConfigurationError):
+                    admission.read_marker(directory_fd)
+            legacy=dict(self.original_marker);legacy.pop('quiet_ready',None)
+            marker.write_text(json.dumps(legacy))
+            self.assertNotIn('quiet_ready',admission.read_marker(directory_fd))
+        finally:
+            marker.write_text(json.dumps(self.original_marker));os.close(directory_fd)
+        release.touch();self.assertEqual(owner.wait(timeout=5),0,(self.root/'owner.stderr').read_text())
+
 
 if __name__ == '__main__': unittest.main()

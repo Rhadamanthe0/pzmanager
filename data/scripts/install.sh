@@ -34,6 +34,11 @@ check_root() {
     [[ $EUID -eq 0 ]] || error "This script must be run as root (use sudo)"
 }
 
+check_install_destination() {
+    [[ ! -e "$INSTALL_DIR" && ! -L "$INSTALL_DIR" ]] \
+        || error "Installation déjà présente : ${INSTALL_DIR}. Utiliser pzm install zomboid depuis cette installation."
+}
+
 check_os() {
     if [[ ! -f /etc/debian_version ]]; then
         error "This script only supports Debian/Ubuntu"
@@ -114,14 +119,13 @@ configure_env() {
 }
 
 move_to_home() {
+    check_install_destination
     log "Installing to ${INSTALL_DIR}..."
-
-    if [[ -d "${INSTALL_DIR}" ]]; then
-        warn "Existing installation found, backing up..."
-        mv "${INSTALL_DIR}" "${INSTALL_DIR}.backup.$(date +%s)"
-    fi
-
-    mv "${TMP_DIR}" "${INSTALL_DIR}"
+    # -n préserve aussi une destination apparue après le contrôle ; dans ce cas
+    # mv peut réussir sans déplacer le staging, donc ne jamais chown la cible.
+    mv -T -n -- "${TMP_DIR}" "${INSTALL_DIR}"
+    [[ ! -e "$TMP_DIR" && ! -L "$TMP_DIR" ]] \
+        || error "Destination apparue pendant l'installation : ${INSTALL_DIR}. Installation refusée."
     chown -R "${PZ_USER}:${PZ_USER}" "${INSTALL_DIR}"
 }
 
@@ -159,6 +163,7 @@ main() {
     echo ""
 
     check_root
+    check_install_destination
     check_os
     check_dependencies
     clone_repo

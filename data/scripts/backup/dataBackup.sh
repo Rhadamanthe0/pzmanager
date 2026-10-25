@@ -110,8 +110,11 @@ if [[ "${PZ_BACKUP_CPU_SCOPED:-0}" != "1" ]]; then
         cpu_list="" # Pas de confinement au cœur réservé quand la JVM est absente.
     fi
     cpu_scope="pz-backup-cpu-$$.scope"
-    scope_args=(--user --scope --slice=pz.slice --quiet --collect --expand-environment=no
+    source "${SCRIPT_DIR}/../lib/systemd_scope.sh"
+    scope_noexpand="$(pz_scope_noexpand_arg)" || die "Options de la scope de sauvegarde non vérifiées."
+    scope_args=(--user --scope --slice=pz.slice --quiet --collect
         --unit="$cpu_scope" --property="CPUQuota=${cpu_quota}%" --property=CPUWeight=10)
+    [[ -z "$scope_noexpand" ]] || scope_args+=("$scope_noexpand")
     [[ -z "$cpu_list" ]] || scope_args+=(--property="AllowedCPUs=${cpu_list}")
     # Le timeout/stop du service horaire doit aussi arrêter sa scope enfant.
     if [[ "$(cat /proc/self/cgroup)" == *"/pz-backup.service" ]]; then

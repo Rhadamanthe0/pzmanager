@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import stat
 import sys
 import time
 import uuid
@@ -13,22 +14,64 @@ import uuid
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'internal'))
 from writing_start_admission import validate_worker_admission
 from world_transaction import check_clean
-from configureWritingTextOnly import ConfigurationError, open_root
+from configureWritingTextOnly import ConfigurationError, open_root, trusted_owner
+
+
+def validate_database(path,missing_ok=False):
+    """Validate physical SQLite files, including journals, before SQLite opens them.
+
+    Safe ancestors prevent replacement by another UID; WORLD serializes our
+    writers. SQLite canonicalizes filenames, so a /proc/fd URI is not a pin.
+    """
+    path=Path(os.path.abspath(path))
+    if not path.name:raise ConfigurationError('SQLite path must name a regular file')
+    try:parent,private=open_root(path.parent)
+    except FileNotFoundError:
+        if not missing_ok:raise
+        ancestor=path.parent
+        while True:
+            try:parent,_=open_root(ancestor);break
+            except FileNotFoundError:ancestor=ancestor.parent
+        os.close(parent)
+        return False
+    try:
+        present=False
+        for suffix in ('','-journal','-wal','-shm'):
+            try:fd=os.open(path.name+suffix,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=parent)
+            except FileNotFoundError:
+                if not suffix and not missing_ok:raise
+                continue
+            try:
+                info=os.fstat(fd)
+                if (not stat.S_ISREG(info.st_mode) or info.st_nlink!=1
+                        or not trusted_owner(info.st_uid) or info.st_mode & 0o002
+                        or info.st_mode & 0o020 and not private):
+                    raise ConfigurationError('SQLite files must be trusted regular files with one link: '+str(path)+suffix)
+                if not suffix:present=True
+            finally:os.close(fd)
+        return present
+    finally:os.close(parent)
 
 
 def connect(path):
+    validate_database(path)
     return sqlite3.connect(Path(path).absolute().as_uri()+'?mode=rw',uri=True,timeout=0)
 
 
 def select_players(world,server):
     saves=Path(world)/'Saves/Multiplayer'
-    try:entries=list(saves.iterdir())
+    try:parent,_=open_root(saves)
     except FileNotFoundError:return None
-    candidates=[]
-    for entry in entries:
-        if not entry.is_dir():continue
-        candidate=entry/'players.db'
-        if candidate.is_file():candidates.append(candidate)
+    try:
+        candidates=[]
+        for name in os.listdir(parent):
+            entry=saves/name
+            info=os.stat(name,dir_fd=parent,follow_symlinks=False)
+            if stat.S_ISLNK(info.st_mode):raise ConfigurationError('Linked character directory refused: '+str(entry))
+            if not stat.S_ISDIR(info.st_mode):continue
+            candidate=entry/'players.db'
+            if validate_database(candidate,missing_ok=True):candidates.append(candidate)
+    finally:os.close(parent)
     matching=[path for path in candidates if path.parent.name==server]
     if matching:return matching[0]
     if len(candidates)>1:
@@ -39,6 +82,7 @@ def select_players(world,server):
 def verify_worker():
     validate_worker_admission()
     check_clean(os.environ['PZ_SOURCE_DIR'],legacy=True)
+    if os.environ.get('PZ_DB_PATH'):validate_database(os.environ['PZ_DB_PATH'],missing_ok=True)
 
 
 def valid_id(value):
@@ -83,6 +127,7 @@ def remove(db_path,targets,dry_run=False):
 
 def rename(db_path,players,old,new):
     if old=='admin':raise ValueError('The admin account is protected')
+    if players:validate_database(players)
     with closing(connect(db_path)) as db:
         schemas=['main']
         if players:
@@ -107,6 +152,7 @@ def rename(db_path,players,old,new):
 
 def backup(db_path):
     verify_worker()
+    validate_database(db_path)
     path=Path(db_path).absolute();parent,_=open_root(path.parent)
     temporary=path.name+'.pre-purge-'+str(time.time_ns())+'-'+uuid.uuid4().hex+'.tmp'
     final=temporary[:-4]
@@ -130,6 +176,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     sub=parser.add_subparsers(dest='action',required=True)
     sub.add_parser('verify-worker')
+    p=sub.add_parser('validate-db');p.add_argument('--db',required=True);p.add_argument('--missing-ok',action='store_true')
     p=sub.add_parser('select-players');p.add_argument('--world',required=True);p.add_argument('--server',required=True)
     p=sub.add_parser('backup');p.add_argument('--db',required=True)
     p=sub.add_parser('remove');p.add_argument('--db',required=True);p.add_argument('--dry-run',action='store_true');p.add_argument('targets',nargs='+')
@@ -140,6 +187,7 @@ def main():
             selected=select_players(a.world,a.server)
             if selected is not None:print(selected)
         elif a.action=='verify-worker':verify_worker()
+        elif a.action=='validate-db':validate_database(a.db,a.missing_ok)
         elif a.action=='backup':backup(a.db)
         elif a.action=='remove':remove(a.db,a.targets,a.dry_run)
         elif a.action=='rename':rename(a.db,a.players,a.old,a.new)

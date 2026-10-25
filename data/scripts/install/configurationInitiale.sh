@@ -285,25 +285,26 @@ install_sudoers() {
     local dest="${PZ_SUDOERS_DEST:-/etc/sudoers.d/${PZ_USER}}"
 
     if [[ ! -f "$template" ]]; then
-        echo "[WARN] Template sudoers introuvable: $template"
-        return 0
+        echo "[ERROR] Template sudoers introuvable: $template" >&2
+        return 1
     fi
 
-    # Générer le sudoers avec les bonnes valeurs. mktemp et non un
-    # /tmp/<user>-sudoers prévisible : ce fichier est écrit par root, donc un lien
-    # symbolique déposé d'avance à ce chemin connu ferait écrire root à la place
-    # visée par le lien.
+    # Temporaire privé sur le même FS : validation et permissions précèdent la
+    # publication atomique, sans altérer le sudoers précédent en cas d'échec.
     local staged
-    staged="$(mktemp)"
+    staged="$(mktemp "$(dirname "$dest")/.${PZ_USER}-sudoers.XXXXXX")" || return 1
     # shellcheck disable=SC2064
     trap "rm -f '${staged}'" RETURN
-    sed -e "s|__PZ_USER__|${PZ_USER}|g" -e "s|__PZ_HOME__|${PZ_HOME}|g" "$template" > "$staged"
+    sed -e "s|__PZ_USER__|${PZ_USER}|g" -e "s|__PZ_HOME__|${PZ_HOME}|g" "$template" > "$staged" || return 1
 
     if visudo -cf "$staged"; then
-        install -o root -g root -m 440 "$staged" "$dest"
+        chown root:root -- "$staged" || return 1
+        chmod 440 -- "$staged" || return 1
+        mv -fT -- "$staged" "$dest" || return 1
         echo "[INFO] Sudoers installé: $dest"
     else
         echo "[ERROR] Fichier sudoers invalide, installation annulée" >&2
+        return 1
     fi
 }
 
@@ -640,16 +641,10 @@ install_zomboid_dependencies() {
     # C14 (matrice OS/JDK) : ne jamais supposer que JAVA_VERSION existe dans
     # les depots de l'OS — resolve le triple effectif (avec repli loggue),
     # puis controle le binaire EFFECTIF apres install (die si mismatch).
-    local jdk_lib="${SCRIPT_DIR}/../lib/jdk_matrix.sh"
-    if [[ -f "$jdk_lib" ]]; then
-        # shellcheck disable=SC1090
-        . "$jdk_lib"
-    fi
-    if declare -F resolve_java_package >/dev/null 2>&1; then
-        resolve_java_package
-    fi
+    source "${SCRIPT_DIR}/../lib/jdk_matrix.sh"
     dpkg --add-architecture i386
     apt-get update -qq
+    resolve_java_package
     # steamcmd n'est pas dans les dépôts de base : ne pas modifier les sources
     # APT automatiquement, expliquer le prérequis avant toute installation.
     if ! LC_ALL=C apt-cache policy steamcmd | awk '$1 == "Candidate:" && $2 != "(none)" { found=1 } END { exit !found }'; then
@@ -689,6 +684,37 @@ download_zomboid_server() {
         "force_install_dir \"${PZ_INSTALL_DIR}\"" \
         "login \"${STEAM_LOGIN:-anonymous}\"" \
         "app_update \"${STEAM_APP_ID:-380870}\" -beta \"${branch}\" validate"
+}
+
+# Un code retour Steam réussi ne garantit pas un téléchargement utilisable.
+# Inspection de fichiers seulement : aucune JVM ni lanceur n'est exécuté ici.
+validate_zomboid_payload() {
+    local file
+    [[ -d "$PZ_INSTALL_DIR/jre64" && ! -L "$PZ_INSTALL_DIR/jre64" && \
+       -d "$PZ_INSTALL_DIR/jre64/bin" && ! -L "$PZ_INSTALL_DIR/jre64/bin" ]] \
+        || die "Payload Steam incomplet ou invalide : JRE stock absent ou symbolique."
+    for file in ProjectZomboid64 start-server.sh jre64/bin/java; do
+        [[ -f "$PZ_INSTALL_DIR/$file" && ! -L "$PZ_INSTALL_DIR/$file" && -x "$PZ_INSTALL_DIR/$file" ]] \
+            || die "Payload Steam incomplet ou invalide : exécutable $file absent ou non régulier."
+    done
+    python3 - "$PZ_INSTALL_DIR/ProjectZomboid64.json" <<'PAYLOAD'
+import json, pathlib, sys
+try:
+    path = pathlib.Path(sys.argv[1])
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("JSON absent ou non régulier")
+    data = json.loads(path.read_text())
+    if not isinstance(data, dict) or not isinstance(data.get("mainClass"), str) or not data["mainClass"]:
+        raise ValueError("mainClass absent ou invalide")
+    for key in ("classpath", "vmArgs"):
+        if not isinstance(data.get(key), list) or any(not isinstance(value, str) for value in data[key]):
+            raise ValueError(key + " doit être une liste de chaînes")
+    if not data["classpath"] or any(not entry for entry in data["classpath"]):
+        raise ValueError("classpath vide")
+except (OSError, ValueError) as error:
+    print("Payload Steam incomplet ou invalide : " + str(error), file=sys.stderr)
+    raise SystemExit(1)
+PAYLOAD
 }
 
 configure_zomboid_jvm() {
@@ -827,11 +853,16 @@ install_zomboid_manager() {
     python3 "${SCRIPT_DIR}/../lib/world_transaction.py" check --world "$PZ_SOURCE_DIR"
 
     if [[ "$download_server" == true ]]; then
+        # source_env recharge la préférence utilisateur ; recalculer le triple
+        # effectif dans ce processus, sans modifier son .env.
+        source "${SCRIPT_DIR}/../lib/jdk_matrix.sh"
+        resolve_java_package
         # validate ne doit jamais suivre le lien vers un JRE externe.
         "${PZ_MANAGER_DIR}/data/scripts/internal/linkJvm.sh" --stock
         [[ ! -L "${PZ_INSTALL_DIR}/jre64" ]] || die "JRE stock non rétabli : validate interdit."
         unset STEAMCMD_AS_USER
         download_zomboid_server
+        validate_zomboid_payload || die "Payload Steam incomplet ou invalide : installation refusée."
         configure_zomboid_jvm
     fi
     prepare_server_directories

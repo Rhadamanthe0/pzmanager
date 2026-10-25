@@ -1,5 +1,6 @@
 # Sensitive configuration (à la racine ; contient aussi la clé de service Google)
 .env
+/.admin_password
 
 # Operational logs
 logs/

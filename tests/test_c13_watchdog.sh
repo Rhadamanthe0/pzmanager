@@ -84,6 +84,9 @@ acquire_world_lock() {
 }
 release_world_lock() { return 0; }
 MOCKEOF
+    # Le parseur natif est partagé avec la readiness : conserver le vrai helper.
+    bash -c 'source "$1"; declare -f game_log_frame' _ \
+        "$ROOT/data/scripts/lib/common.sh" >> "$s/scripts/lib/common.sh"
 
     # Mock systemctl : show MainPID/InvocationID/ActiveEnter, kill enregistreur.
     cat > "$s/bin/systemctl" <<'MOCKEOF'
@@ -124,7 +127,7 @@ esac
 MOCKEOF
     cat > "$s/bin/journalctl" <<'MOCKEOF'
 #!/usr/bin/env bash
-printf '%s.000 host prog: f:%s st:ready\n' "${MOCK_STAMP:-2000}" "${MOCK_FRAME:-42}"
+printf '{"__REALTIME_TIMESTAMP":"%s000000","MESSAGE":"LOG  : General f:%s t:1 st:1> fixture"}\n' "${MOCK_STAMP:-2000}" "${MOCK_FRAME:-42}"
 MOCKEOF
     cat > "$s/bin/curl" <<'MOCKEOF'
 #!/usr/bin/env bash

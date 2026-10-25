@@ -37,6 +37,7 @@ readonly LEDGER="${WHITELIST_LEDGER}"
 
 main() {
     require_sqlite
+    python3 "${SCRIPT_DIR}/../lib/account_safety.py" validate-db --db "$DB_PATH" --missing-ok || exit 1
     [[ -f "$DB_PATH" ]] || { log "Base de données introuvable: $DB_PATH (registre inchangé)"; exit 0; }
 
     ensure_directory "$(dirname "$LEDGER")"

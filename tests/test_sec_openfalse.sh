@@ -107,7 +107,7 @@ fi
 printf '# Open=true\nPassword=secret-preserved\nOpen=false\n  Open = true  \r\nOpen=true\n' > "$INI"
 chmod 600 "$INI"
 if run_enforce; then
-    if [[ "$(grep -c '^Open=false$' "$INI")" == 3 ]] &&
+    if [[ "$(awk '{sub(/\r$/,"" )} $0 == "Open=false" {n++} END {print n+0}' "$INI")" == 3 ]] &&
        ! grep -qE '^[[:space:]]*Open[[:space:]]*=[[:space:]]*true' "$INI"; then
         ok "doublons contradictoires : toutes les occurrences actives fermées"
     else

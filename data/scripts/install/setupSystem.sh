@@ -388,25 +388,26 @@ install_sudoers() {
     local dest="/etc/sudoers.d/${PZ_USER}"
 
     if [[ ! -f "$template" ]]; then
-        echo "[WARN] Template sudoers introuvable: $template"
-        return
+        echo "[ERROR] Template sudoers introuvable: $template" >&2
+        return 1
     fi
 
-    # Générer le sudoers avec les bonnes valeurs. mktemp et non un
-    # /tmp/<user>-sudoers prévisible : ce fichier est écrit par root, donc un lien
-    # symbolique déposé d'avance à ce chemin connu ferait écrire root à la place
-    # visée par le lien.
+    # Temporaire privé sur le même FS : validation et permissions précèdent la
+    # publication atomique, sans altérer le sudoers précédent en cas d'échec.
     local staged
-    staged="$(mktemp)"
+    staged="$(mktemp "$(dirname "$dest")/.${PZ_USER}-sudoers.XXXXXX")" || return 1
     # shellcheck disable=SC2064
     trap "rm -f '${staged}'" RETURN
-    sed -e "s|__PZ_USER__|${PZ_USER}|g" -e "s|__PZ_HOME__|${PZ_HOME}|g" "$template" > "$staged"
+    sed -e "s|__PZ_USER__|${PZ_USER}|g" -e "s|__PZ_HOME__|${PZ_HOME}|g" "$template" > "$staged" || return 1
 
     if visudo -cf "$staged"; then
-        install -o root -g root -m 440 "$staged" "$dest"
+        chown root:root -- "$staged" || return 1
+        chmod 440 -- "$staged" || return 1
+        mv -fT -- "$staged" "$dest" || return 1
         echo "[INFO] Sudoers installé: $dest"
     else
         echo "[ERROR] Fichier sudoers invalide, installation annulée" >&2
+        return 1
     fi
 }
 

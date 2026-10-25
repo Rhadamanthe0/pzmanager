@@ -27,6 +27,17 @@ source_env
 OPT_KEEP_WHITELIST=false
 OPT_KEEP_CONFIG=false
 
+# Une transition systemd ne prouve pas l'absence de JVM, même sans monde live.
+require_reset_stopped() {
+    python3 - "${SCRIPT_DIR}/../lib" "$PZ_SERVICE_NAME" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from snapshot_consistency import probe, stopped
+if not stopped(probe(sys.argv[2])):
+    raise SystemExit(1)
+PY
+}
+
 # Parsé depuis main() : show_help n'est définie que plus bas dans le fichier.
 parse_args() {
     for arg in "$@"; do
@@ -323,7 +334,7 @@ rollback_live() {
 
 swap_staging_to_live() {
     validate_staging_world "$STAGING_DIR" || die "Monde invalide — live intact."
-    require_server_stopped "Bascule du monde après reset"
+    require_reset_stopped || die "Bascule du reset refusée : serveur non prouvé arrêté."
     local parent
     parent="$(dirname -- "${PZ_SOURCE_DIR}")"
     mkdir -p -- "$parent"
@@ -419,7 +430,7 @@ main() {
     stop_server
     # L'arrêt a eu lieu (ou le serveur était déjà arrêté) : l'exiger prouvé
     # avant de déplacer le monde (fail-closed sur erreur systemd).
-    require_server_stopped "Reset du monde"
+    require_reset_stopped || die "Reset refusé : serveur non prouvé arrêté."
     backup_current
 
     # La génération conserve le live. Après préparation du journal, les traps

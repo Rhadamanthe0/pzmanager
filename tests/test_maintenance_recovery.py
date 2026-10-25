@@ -77,6 +77,13 @@ for key in keys:print(key+'='+str(state[key]))
         common=self.repo/'data/scripts/lib/common.sh'
         with common.open('a') as out:
             out.write('\nnotify() { printf "%s\\n" "$*" >> "$MAINT_TEST_NOTES"; }\nwait_for_server_ready() { if [[ "$0" == */core/pz.sh ]]; then return "${MAINT_TEST_STOP_READY_RC:-0}"; fi; return "${MAINT_TEST_READY_RC:-0}"; }\n')
+        # APT et /usr/lib/jvm sont des frontières de ce banc de récupération.
+        # Garder le vrai résolveur ; remapper son seul chemin OS dans SA copie.
+        self.executable(self.bin/'apt-cache', '#!/bin/bash\necho "Candidate: 25.0-fixture"\n')
+        matrix=self.repo/'data/scripts/lib/jdk_matrix.sh'
+        os_path='JAVA_PATH="/usr/lib/jvm/java-${v}-openjdk-amd64"'
+        self.assertIn(os_path,matrix.read_text())
+        matrix.write_text(matrix.read_text().replace(os_path,'JAVA_PATH='+shlex.quote(str(self.java))))
         vals=dict(PZ_HOME=str(self.base),PZ_SOURCE_DIR=str(self.world),PZ_INSTALL_DIR=str(self.game),JAVA_PATH=str(self.java),STEAMCMD_PATH=str(self.bin/'steamcmd'),PZ_MAINT_SELF_UPDATE='0')
         (self.repo/'.env').write_text('\n'.join(k+'='+shlex.quote(v) for k,v in vals.items())+'\n')
         self.env=dict(os.environ,PATH=str(self.bin)+':'+os.environ['PATH'],XDG_RUNTIME_DIR=str(self.runtime),PZ_MAINT_STATE_FILE=str(self.state),MAINT_TEST_EVENTS=str(self.events),MAINT_TEST_NOTES=str(self.notes))

@@ -14,5 +14,8 @@ fi
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 # Unité absente/bus refusé : pas de fallback qui annoncerait un faux plafond.
 systemctl --user start pz.slice
-exec systemd-run --user --scope --slice=pz.slice --quiet --collect \
-    --expand-environment=no --unit="pz-command-$$.scope" /bin/bash "${BASH_SOURCE[0]}" "$@"
+source "${PZ_BUDGET_LIB}/systemd_scope.sh"
+scope_noexpand="$(pz_scope_noexpand_arg)" || exit 1
+scope_args=(--user --scope --slice=pz.slice --quiet --collect)
+[[ -z "$scope_noexpand" ]] || scope_args+=("$scope_noexpand")
+exec systemd-run "${scope_args[@]}" --unit="pz-command-$$.scope" /bin/bash "${BASH_SOURCE[0]}" "$@"

@@ -32,11 +32,20 @@ server_is_active() { [[ ! -e "$TEST_ROOT/killed" ]]; }
 notify() { :; }
 log() { printf '%s\\n' "$*"; }
 ''')
+        common=(Path(__file__).resolve().parents[1]/'data/scripts/lib/common.sh').read_text()
+        frame='game_log_frame() {'+common.split('game_log_frame() {',1)[1].split('\n}',1)[0]+'\n}\n'
+        with (scripts/'lib/common.sh').open('a') as out:out.write(frame)
         commands = self.root / 'bin'
         commands.mkdir()
         for name, body in {
             'python3': 'case "${1:-}" in */service_process.py) echo 123 ;; *) exec /usr/bin/python3 "$@" ;; esac',
-            'journalctl': 'echo "${TEST_STAMP:-2000}.000 f:${TEST_FRAME:-42} st:ready"' ,
+            'journalctl': '''exec /usr/bin/python3 -c '
+import json,os,sys
+stamp=os.environ.get("TEST_STAMP","2000")
+message=os.environ.get("TEST_MESSAGE","LOG : General f:"+os.environ.get("TEST_FRAME","42")+" st:123> native tick")
+if "json" in sys.argv:print(json.dumps({"__REALTIME_TIMESTAMP":stamp+"000000","MESSAGE":message}))
+else:print(stamp+".000 host prog: "+message)
+' "$@"''',
             'curl': "echo 'game{parameter=\"players\"} 1'",
         }.items():
             command = commands / name
@@ -101,6 +110,25 @@ log() { printf '%s\\n' "$*"; }
             self.assertNotIn('PUBLIC-TOKEN',arguments)
         self.assertNotIn('ADMIN-TOKEN',result.stdout+result.stderr)
 
+    def test_native_time_frame_progress_updates_state_without_dump(self):
+        state=self.prepare_restart()
+        for frame,stamp in [('43','2000'),('44','2001'),('44','2001')]:
+            self.env.update(TEST_STAMP=stamp,TEST_MESSAGE='LOG : General f:'+frame+' t:1,234 st:1\u202f235> native tick')
+            result=self.run_watch()
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            self.assertEqual(state.read_text().split()[1:4],[frame,stamp,'0'])
+        self.assertFalse((self.root/'dump-count').exists())
+        self.assertFalse((self.root/'killed').exists())
+        self.assertFalse((self.root/'restarted').exists())
+    def test_zero_native_frame_with_payload_tokens_never_dumps_or_kills(self):
+        state=self.prepare_restart()
+        self.env['TEST_MESSAGE']='LOG : General f:0 t:1,234 st:1234> command entered via server console (System.in): "servermsg f:42 st:999>"'
+        result=self.run_watch()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual(state.read_text().split()[1:4],['0','2000','0'])
+        self.assertFalse((self.root/'dump-count').exists())
+        self.assertFalse((self.root/'killed').exists())
+        self.assertFalse((self.root/'restarted').exists())
     def test_conclusive_admin_notification_uses_private_environment(self):
         self.admin_notification_route(True)
 

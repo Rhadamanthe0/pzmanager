@@ -65,6 +65,7 @@ readonly SEND_COMMAND="${SCRIPT_DIR}/../internal/sendCommand.sh"
 readonly ACTION="${1:-}"
 
 check_database() {
+    python3 "${SCRIPT_DIR}/../lib/account_safety.py" validate-db --db "$DB_PATH" || exit 1
     [[ -f "$DB_PATH" ]] || die "Base de données introuvable: $DB_PATH"
 }
 
@@ -436,6 +437,7 @@ wl_assert_stopped_or_die() {
 # ou un schéma absent en décision). Usage: wl_sql_or_die VAR DB "SELECT ..."
 wl_sql_or_die() {
     local __var="$1" __db="$2" __sql="$3" __out __rc=0
+    python3 "${SCRIPT_DIR}/../lib/account_safety.py" validate-db --db "$__db" || exit 1
     __out="$(sqlite3 "$__db" "$__sql")" || __rc=$?
     if (( __rc != 0 )); then
         die "Lecture SQLite impossible (sqlite exit=${__rc}) — opération annulée, rien n'a été modifié (fail-closed)."

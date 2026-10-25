@@ -213,28 +213,16 @@ export REBOOT_ON_MAINTENANCE=true   # true = reboot machine, false = restart ser
 
 ```bash
 export HEAP_RESTART_PERCENT=95      # restart when post-GC heap reaches this % of -Xmx
-export PZ_RAM_RESTART_GB=18         # restart at this total service memory (GiB, integer 1..19)
+export PZ_RAM_RESTART_GB=18         # restart at this aggregate PZ process RSS (GiB, integer 1..19)
 export HEAP_RESTART_DELAY="5m"      # player warning before the restart
 #export PZ_XMX_GB=16                # integer 2..16; empty = rounded-up half RAM, capped at 16 GiB
 ```
 
-The heap fills with live map cells that nothing can free at runtime, so the
-server restarts itself when the post-major-GC heap (read from
-`logs/zomboid/gc.log`) reaches `HEAP_RESTART_PERCENT`. `PZ_XMX_GB` overrides the
-heap ceiling within **16 GiB**; the remaining **4 GiB** cover all other cgroup
-charges. `Xmx20` together with `MemoryMax20G` is rejected by the blocking,
-read-only startup preflight. It checks the launched JSON and the current
-cgroup limit, including a stricter ancestor limit. Independently, every ~30 seconds the monitor sums process RSS inside the service cgroup
-(including child cgroups) and requests the same clean restart at **18 GiB**, even without
-a GC log. `zomboid.service` sets **`MemoryMax=20G`**, `OOMPolicy=kill` and
-`MemorySwapMax=0`: if usage cannot be reclaimed below 20 GiB, the kernel kills
-the service, possibly during the warning or save. The preventive threshold and Discord total cover process RSS (heap, native
-memory and descendants), excluding reclaimable file and kernel caches. The
-hard cgroup cap includes these caches too; Linux can reclaim them before an
-OOM-kill. Discord displays resident memory and heap usage. `MemoryHigh` is not set. The hard limit lives in the service
-unit, not `.env`; refresh installed units when updating existing installations.
-See [ADVANCED.md](ADVANCED.md#ram--jvm-configuration) for the full
-model, the OOM caveat and the [migration plan](ADVANCED.md#existing-installation-migration-to-the-20-gib-budget).
+See [RAM / JVM Configuration](ADVANCED.md#ram--jvm-configuration) for
+measurement sources, the shared memory budget, startup checks and OOM limits.
+Existing installations must follow the
+[migration plan](ADVANCED.md#existing-installation-migration-to-the-20-gib-budget)
+to update their installed units.
 
 ### Discord (Optional)
 

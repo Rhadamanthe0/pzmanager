@@ -22,6 +22,7 @@ mkdir -p "$manager/data" "$SANDBOX/bin" "$XDG_RUNTIME_DIR"
 cp -a "$ROOT/data/scripts" "$ROOT/data/setupTemplates" "$manager/data/"
 user="$(id -un)"
 printf 'export PZ_USER=%q\nexport PZ_MANAGER_DIR=%q\nexport PZ_HOME=%q\nexport STEAMCMD_PATH=%q\n' "$user" "$manager" "$HOME" "$SANDBOX/bin/steamcmd" > "$ROOT/.env"
+printf 'export JAVA_VERSION=25\nexport JAVA_PACKAGE=openjdk-25-jre-headless\nexport JAVA_PATH=/usr/lib/jvm/java-25-openjdk-amd64\n' >> "$ROOT/.env"
 cp "$ROOT/.env" "$manager/.env"
 cat > "$SANDBOX/bin/systemctl" <<'SYSTEMCTL'
 #!/bin/bash
@@ -51,16 +52,30 @@ grep -q 'app_update .*validate' "$2"
 [[ ! -L "$PZ_INSTALL_DIR/jre64" ]]
 # Le descendant doit garder les deux OFD verrouillés, et pouvoir les reprendre.
 bash -eu -c 'source "$1"; acquire_world_lock --required; acquire_serverctl_lock_or_die; grep -q "FLOCK.*WRITE" "/proc/self/fdinfo/$PZ_WORLD_LOCK_FD"; grep -q "FLOCK.*WRITE" "/proc/self/fdinfo/$SERVERCTL_LOCK_FD"' _ "$PZ_MANAGER_DIR/data/scripts/lib/common.sh"
-printf 'steam uid=%s fd-world=%s fd-server=%s\n' "$(id -u)" "$PZ_WORLD_LOCK_FD" "$SERVERCTL_LOCK_FD" >> "$INSTALL_CALLS"
-mkdir -p "$PZ_INSTALL_DIR/jre64"
-printf '{"vmArgs": []}\n' > "$PZ_INSTALL_DIR/ProjectZomboid64.json"
-touch "$PZ_INSTALL_DIR/ProjectZomboid64"
+printf 'steam uid=%s fd-world=%s fd-server=%s java=%s/%s\n' "$(id -u)" "$PZ_WORLD_LOCK_FD" "$SERVERCTL_LOCK_FD" "$JAVA_VERSION" "$JAVA_PACKAGE" >> "$INSTALL_CALLS"
+[[ "${INSTALL_PAYLOAD:-complete}" != missing ]] || exit 0
+mkdir -p "$PZ_INSTALL_DIR/jre64/bin"
+for file in ProjectZomboid64 start-server.sh jre64/bin/java; do
+    printf '#!/bin/sh\nexit 91 # fixture executable, never launched\n' > "$PZ_INSTALL_DIR/$file"
+    chmod 0700 "$PZ_INSTALL_DIR/$file"
+done
+printf '{"mainClass":"zombie/network/GameServer","classpath":["java/."],"vmArgs": []}\n' > "$PZ_INSTALL_DIR/ProjectZomboid64.json"
+case "${INSTALL_PAYLOAD:-complete}" in
+    incomplete) rm "$PZ_INSTALL_DIR/start-server.sh" ;;
+    nonexec) chmod 0600 "$PZ_INSTALL_DIR/ProjectZomboid64" ;;
+    malformed) printf '{broken' > "$PZ_INSTALL_DIR/ProjectZomboid64.json" ;;
+    schema) printf '{"vmArgs":"wrong"}' > "$PZ_INSTALL_DIR/ProjectZomboid64.json" ;;
+esac
 STEAM
+cat > "$SANDBOX/bin/apt-cache" <<'APT'
+#!/bin/bash
+if [[ "$2" == openjdk-17-jre-headless ]]; then echo 'Candidate: 17.0-fixture'; else echo 'Candidate: (none)'; fi
+APT
 chmod +x "$SANDBOX/bin/"*
 export PATH="$SANDBOX/bin:$PATH"
 # Exporter les variables réelles comme l'enfant manager du helper privilégié.
 run_phase() {
-    bash -eu -c 'source "$1" --manager-root "$2"; source_env; install_zomboid_manager true' _ "$ROOT/data/scripts/install/configurationInitiale.sh" "$manager"
+    bash -eu -c 'source "$1" --manager-root "$2"; source_env; source "${1%/*}/../lib/jdk_matrix.sh"; resolve_java_package; source_env; install_zomboid_manager true' _ "$ROOT/data/scripts/install/configurationInitiale.sh" "$manager"
 }
 for state in active activating error; do
     : > "$INSTALL_CALLS"
@@ -70,9 +85,22 @@ for state in active activating error; do
     [[ ! -e "$manager/Zomboid" && ! -e "$manager/.config" && ! -e "$HOME/.config/systemd/user/zomboid.service" ]]
 done
 echo 'OK état actif/transitoire/bus : aucun Steam, monde ou unité.'
+for payload in missing incomplete nonexec malformed schema; do
+    rm -rf "$manager/data/pzserver"
+    : > "$INSTALL_CALLS"
+    if INSTALL_PAYLOAD="$payload" run_phase > "$SANDBOX/payload-$payload.log" 2>&1; then
+        echo "Payload Steam $payload accepté" >&2; exit 1
+    fi
+    grep -q 'Payload Steam incomplet ou invalide' "$SANDBOX/payload-$payload.log"
+    ! grep -q 'enable zomboid.service' "$INSTALL_CALLS"
+    [[ ! -e "$manager/.admin_password" && ! -e "$manager/data/pzserver/ProjectZomboid64.json.bak" ]]
+done
+echo 'OK Steam exit0 sans payload valide : refus avant JVM/secret/activation.'
+rm -rf "$manager/data/pzserver"
 : > "$INSTALL_CALLS"
 run_phase > "$SANDBOX/fresh.log" 2>&1 || { cat "$SANDBOX/fresh.log"; exit 1; }
-grep -q '^steam ' "$INSTALL_CALLS"
+grep -q '^steam .*java=17/openjdk-17-jre-headless$' "$INSTALL_CALLS"
+grep -q '^export JAVA_VERSION=25$' "$manager/.env"
 grep -q readiness-paths-private "$INSTALL_CALLS"
 [[ -s "$manager/.admin_password" && "$(stat -c %a "$manager/.admin_password")" == 600 ]]
 python3 - "$manager/data/pzserver/ProjectZomboid64.json" <<'JSON'
@@ -133,7 +161,7 @@ for lock in WORLD SERVERCTL; do
             export SERVERCTL_LOCK_FILE="$path" SERVERCTL_LOCK_FD="$fd"
         fi
         exec bash -eu -c "$4" _ "$1/data/scripts/install/configurationInitiale.sh" "$2"
-    ' _ "$ROOT" "$manager" "$lock" 'source "$1" --manager-root "$2"; source_env; install_zomboid_manager true' > "$SANDBOX/forged.log" 2>&1; then exit 1; fi
+    ' _ "$ROOT" "$manager" "$lock" 'source "$1" --manager-root "$2"; source_env; source "${1%/*}/../lib/jdk_matrix.sh"; resolve_java_package; source_env; install_zomboid_manager true' > "$SANDBOX/forged.log" 2>&1; then exit 1; fi
     grep -qi 'réentrance.*non prouvée' "$SANDBOX/forged.log"
     ! grep -q '^steam ' "$INSTALL_CALLS"
 done

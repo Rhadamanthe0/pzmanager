@@ -83,6 +83,8 @@ before the first start. It writes the same secret to the manager-owned
 `-adminpassword`, which sets the game's admin account password, and truncates
 the file before launching the JVM. Consumption failure blocks startup; the empty
 `0600` file remains, so later starts do not reapply the password.
+The native `-adminpassword` argument can expose this secret to other local
+accounts through the process list while that JVM runs.
 
 There is no `AdminPassword` INI setting. `Password` controls the shared server
 join password; it does not grant admin rights or replace SteamID admission.

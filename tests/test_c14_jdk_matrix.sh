@@ -241,6 +241,39 @@ parse_env_declarative "$TMP_ENV" \
 rm -f "$TMP_ENV"
 export PZ_JDK_SOURCE="debian"
 
+# Consommateur maintenance après reload : .env garde25, APT ne propose que17.
+consumer="$S/consumer"; mkdir "$consumer"
+printf 'export JAVA_VERSION=25\nexport JAVA_PACKAGE=openjdk-25-jre-headless\nexport JAVA_PATH=/usr/lib/jvm/java-25-openjdk-amd64\n' > "$consumer/.env"
+awk '/^update_system\(\) \{/,/^\}/' "$ROOT/data/scripts/admin/performFullMaintenance.sh" > "$S/update_system.sh"
+set +e
+APT_CACHE_AVAILABLE=openjdk-17-jre-headless bash -eu -c '
+    source "$1/data/scripts/lib/common.sh"
+    source "$1/data/scripts/lib/jdk_matrix.sh"
+    source_env "$2"
+    resolve_java_package
+    [[ "$JAVA_VERSION" == 17 ]]
+    source_env "$2"
+    [[ "$JAVA_VERSION" == 25 ]]
+    SCRIPT_DIR="$1/data/scripts/admin"
+    source "$3"
+    apt_log="$4"
+    sudo() {
+        printf "apt %s effective=%s/%s\n" "$*" "$JAVA_VERSION" "$JAVA_PACKAGE" >> "$apt_log"
+        [[ "$*" != /usr/bin/apt-get\ install* ]] || return 73
+    }
+    report_effective() { printf "effective=%s/%s\n" "$JAVA_VERSION" "$JAVA_PACKAGE"; }
+    trap report_effective EXIT
+    update_system
+' _ "$ROOT" "$consumer" "$S/update_system.sh" "$S/maintenance-apt.log" > "$S/maintenance.log" 2>&1
+RC=$?
+set -e
+if [[ "$RC" == 73 ]] && grep -q 'apt /usr/bin/apt-get install .*openjdk-17-jre-headless effective=17/openjdk-17-jre-headless' "$S/maintenance-apt.log" &&
+   grep -q 'effective=17/openjdk-17-jre-headless' "$S/maintenance.log" && grep -qx 'export JAVA_VERSION=25' "$consumer/.env"; then
+    ok 'resolve17 → reload préférence25 → maintenance installe17 sans changer .env'
+else
+    ko 'sélection effective perdue après reload/maintenance'; cat "$S/maintenance.log"
+fi
+
 # --- bash -n ----------------------------------------------------------------------
 for f in "$JDK_LIB" "$CONF_INIT" "$COMMON" "$ENV_PARSE" "$0"; do
     bash -n "$f" || { ko "bash -n : $f"; }

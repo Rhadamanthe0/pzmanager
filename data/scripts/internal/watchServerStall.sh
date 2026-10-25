@@ -173,15 +173,39 @@ read_service_identity
 # Le discriminant exact n'est donc pas « le log est-il actif ? » mais « le jeu
 # a-t-il écrit une ligne NOUVELLE depuis le relevé précédent, en gardant la même
 # frame ? ». D'où l'horodatage, comparé d'un passage à l'autre.
+# Les champs structurés gardent le timestamp journald séparé du MESSAGE.
+# Parcourir au plus 400 messages du plus récent au plus ancien ; le préfixe du
+# jeu est interprété par le même parseur que la readiness et les notifications.
 read -r frame stamp < <(
-    journalctl --user -u "${PZ_SERVICE_NAME:-zomboid.service}" -n 400 --no-pager -o short-unix 2>/dev/null |
-    awk 'match($0, /f:[0-9]+ st:/) {
-             t = $1; sub(/\..*$/, "", t)
-             f = substr($0, RSTART + 2, RLENGTH - 6)
-             last_f = f; last_t = t
-         }
-         END { if (last_f != "") printf "%s %s\n", last_f, last_t }'
-) || true   # read renvoie 1 sur une dernière ligne sans \n — ne pas tuer le script
+    while IFS=$'\t' read -r stamp message; do
+        frame="$(game_log_frame "$message")" || continue
+        printf '%s %s\n' "$frame" "$stamp"
+        break
+    done < <(
+        journalctl --user -u "${PZ_SERVICE_NAME:-zomboid.service}" -n 400 --no-pager -o json 2>/dev/null |
+        python3 -c '
+import json, os, sys
+records = []
+for line in sys.stdin:
+    try:
+        record = json.loads(line)
+    except ValueError:
+        continue
+    if not isinstance(record, dict):
+        continue
+    stamp = record.get("__REALTIME_TIMESTAMP", "")
+    message = record.get("MESSAGE", "")
+    if (isinstance(stamp, str) and stamp.isascii() and stamp.isdigit()
+            and len(stamp) <= 20 and isinstance(message, str) and message):
+        records.append((str(int(stamp) // 1000000), message.split("\n", 1)[0]))
+try:
+    sys.stdout.write("".join(stamp + "\t" + message + "\n" for stamp, message in reversed(records)))
+    sys.stdout.flush()
+except BrokenPipeError:
+    os._exit(0)
+'
+    )
+) || true   # Aucune preuve exploitable : ne jamais conclure à un gel.
 [[ -n "${frame:-}" && -n "${stamp:-}" ]] || exit 0   # aucune ligne `f:` -> indéterminé
 
 # `f:0` couvre toute l'initialisation, y compris une phase où des joueurs peuvent

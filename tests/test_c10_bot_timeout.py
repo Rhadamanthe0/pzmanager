@@ -10,6 +10,7 @@ Exécute le vrai bot.py (stub discord) avec un faux `pzm` :
 POSIX uniquement (killpg/session) : ignoré ailleurs.
 """
 import asyncio
+import errno
 import importlib.util
 import os
 import signal
@@ -215,8 +216,10 @@ class C10BotTests(unittest.TestCase):
             for _ in range(30):
                 try:
                     state = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1][0]
-                except FileNotFoundError:
-                    break
+                except OSError as error:
+                    if error.errno in (errno.ENOENT, errno.ESRCH):
+                        break
+                    raise
                 if state in ("Z", "X"):  # zombie : plus d'exécution
                     break
                 asyncio.run(asyncio.sleep(0.1))

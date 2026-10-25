@@ -117,6 +117,8 @@ def read_marker(directory_fd):
         raise ConfigurationError('Malformed start admission marker')
     if not re.fullmatch(r'[0-9a-f]{32}', data.get('token', '')) or not isinstance(data.get('unit'), str):
         raise ConfigurationError('Malformed start admission token/unit')
+    if type(data.get('quiet_ready', False)) is not bool:
+        raise ConfigurationError('Malformed start admission quiet flag')
     return data
 
 
@@ -174,7 +176,9 @@ def clear(lock_path, token):
     finally: os.close(directory_fd)
 
 
-def prepare(lock_path, pid, fd, unit):
+def prepare(lock_path, pid, fd, unit, quiet_ready=False):
+    if type(quiet_ready) is not bool:
+        raise ConfigurationError('Malformed start admission quiet flag')
     path, directory_fd = directory(lock_path)
     try:
         lock_fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
@@ -196,7 +200,7 @@ def prepare(lock_path, pid, fd, unit):
             token = uuid.uuid4().hex
             child = subprocess.Popen([sys.executable, __file__, 'broker', '--lock-path', str(path),
                 '--pid', str(pid), '--birth', str(process_birth(pid)), '--fd', str(fd),
-                '--unit', unit, '--token', token], pass_fds=(fd,),
+                '--unit', unit, '--token', token] + (['--quiet-ready'] if quiet_ready else []), pass_fds=(fd,),
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             for _ in range(100):
                 try:
@@ -219,7 +223,7 @@ def broker(args):
         locked_fd(os.getpid(), args.fd, (info.st_dev, info.st_ino))
         payload = {'pid': args.pid, 'birth': args.birth, 'fd': args.fd, 'dev': info.st_dev,
             'ino': info.st_ino, 'broker': os.getpid(), 'broker_birth': process_birth(os.getpid()),
-            'unit': args.unit, 'token': args.token}
+            'unit': args.unit, 'token': args.token, 'quiet_ready': args.quiet_ready}
         validate_marker(payload, info, args.unit)
         listener.bind(str(path.parent / SOCKET)); os.chmod(path.parent / SOCKET, 0o600)
         listener.listen(1); listener.settimeout(0.25)
@@ -249,6 +253,7 @@ def run(args):
         check_clean(os.environ['PZ_SOURCE_DIR'],legacy=True)
     path, directory_fd = directory(args.lock_path)
     held_fd = None
+    data = None
     try:
         state = unit_state(args.unit)
         startup = startup_state(state, os.getpid())
@@ -295,6 +300,15 @@ def run(args):
             raise ConfigurationError('Server state changed before offline cleanup')
         if os.environ.get('PZ_SOURCE_DIR'):
             check_clean(os.environ['PZ_SOURCE_DIR'],legacy=True)
+        if startup and data is not None and data.get('quiet_ready', False):
+            invocation = os.environ.get('INVOCATION_ID', '')
+            current = subprocess.check_output(['systemctl', '--user', 'show', args.unit,
+                '-p', 'InvocationID', '--value'], text=True).strip()
+            if not re.fullmatch(r'[0-9a-fA-F]{32}', invocation) or current != invocation:
+                raise ConfigurationError('Silent readiness requires the current service invocation')
+            # Only authenticated handoff can bind silence to this start. A failed
+            # or killed caller cannot silence a later, unrelated invocation.
+            atomic_file(directory_fd, 'notify-ready-' + invocation + '.silent', b'', 0o600)
         environment = dict(os.environ, PZ_WORLD_LOCK_FD=str(held_fd), PZ_WORLD_LOCK_DEPTH='1',
             PZ_WORLD_LOCK_FILE=str(path), PZ_SERVICE_NAME=args.unit)
         return subprocess.call(args.command, pass_fds=(held_fd,), env=environment)
@@ -335,6 +349,7 @@ def main():
         p = sub.add_parser(action); p.add_argument('--lock-path', required=True)
         if action in ('prepare', 'broker'):
             p.add_argument('--pid', type=int, required=True); p.add_argument('--fd', type=int, required=True)
+            p.add_argument('--quiet-ready', action='store_true')
         if action in ('prepare', 'broker', 'run'): p.add_argument('--unit', required=True)
         if action == 'broker': p.add_argument('--birth', type=int, required=True)
         if action in ('broker', 'clear'): p.add_argument('--token', required=True)
@@ -342,7 +357,7 @@ def main():
     args = parser.parse_args()
     try:
         if args.action == 'path': print(runtime_lock_path(args.name)); return 0
-        if args.action == 'prepare': print(prepare(args.lock_path, args.pid, args.fd, args.unit)); return 0
+        if args.action == 'prepare': print(prepare(args.lock_path, args.pid, args.fd, args.unit, args.quiet_ready)); return 0
         if args.action == 'clear': clear(args.lock_path, args.token); return 0
         if args.action == 'broker': broker(args); return 0
         if args.command and args.command[0] == '--': args.command.pop(0)

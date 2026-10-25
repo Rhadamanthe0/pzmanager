@@ -39,6 +39,7 @@ source "${SCRIPT_DIR}/../lib/common.sh"
 source_env
 
 readonly DB_PATH="${PZ_DB_PATH}"
+readonly ACCOUNT_HELPER="${SCRIPT_DIR}/../lib/account_safety.py"
 
 ORIGINAL_ARGS=("$@")
 ADMITTED_WORKER=false
@@ -62,6 +63,7 @@ if [[ -n "$DAYS_OVERRIDE" ]]; then
 fi
 
 require_sqlite
+python3 "$ACCOUNT_HELPER" validate-db --db "$DB_PATH" --missing-ok || exit 1
 [[ -f "$DB_PATH" ]] || { log "Base introuvable: $DB_PATH (purge ignorée)"; exit 0; }
 
 # C4 (fail-closed) : toute lecture qui décide d'une suppression passe par ici.
@@ -89,7 +91,6 @@ sql_or_die() {
 
 # Toute mutation passe par le courtier existant. Un drapeau worker n'est
 # jamais une preuve : le worker revérifie lui-même FD, état et journal.
-readonly ACCOUNT_HELPER="${SCRIPT_DIR}/../lib/account_safety.py"
 readonly ADMISSION_HELPER="${SCRIPT_DIR}/../internal/writing_start_admission.py"
 if [[ "$DRY_RUN" != true && "$ADMITTED_WORKER" != true ]]; then
     _purge_lock="$(python3 "$ADMISSION_HELPER" path)" || exit 1

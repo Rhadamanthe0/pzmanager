@@ -92,28 +92,9 @@ would allow apt option injection as root).
 
 **File**: `/etc/sudoers.d/<PZ_USER>` (generated from template with actual username and paths)
 
-**Allowed commands** (NOPASSWD):
-
-**APT (package management)** - specific commands only:
-```
-/usr/bin/apt-get update -qq
-/usr/bin/apt-get upgrade -y -qq
-/usr/bin/apt-get install -y -qq openjdk-25-jre-headless
-/usr/bin/apt-get install -y -qq openjdk-21-jre-headless
-/usr/bin/apt-get install -y -qq openjdk-17-jre-headless
-/usr/bin/apt-get autoremove -y -qq
-/usr/bin/apt-get autoclean -qq
-```
-
-**Backups** - read-only access:
-```
-/bin/cat /etc/sudoers.d/pzuser
-```
-
-**System**:
-```
-/sbin/reboot
-```
+The [sudoers template](../data/setupTemplates/pzuser-sudoers) defines the exact
+NOPASSWD commands for package maintenance, read-only backup of this file and
+reboot. Installation substitutes the configured username and paths.
 
 ---
 
@@ -162,61 +143,10 @@ must stay reachable on loopback only and must never be forwarded on the router.
 
 **File**: `/home/pzuser/pzmanager/data/pzserver/ProjectZomboid64.json`
 
-**Automatically applied parameters**:
-
-```json
-{
-  "vmArgs": [
-    "-Djava.awt.headless=true",
-    "-Djava.library.path=linux64/:natives/",
-    "-Djava.security.egd=file:/dev/urandom",
-    "-XX:-OmitStackTraceInFastThrow",
-    "-Xmx7g",
-    "-XX:+UseZGC",
-    "-XX:+AlwaysPreTouch",
-    "-XX:ZCollectionInterval=60",
-    "-XX:+UseStringDeduplication",
-    "-XX:+UseCompactObjectHeaders",
-    "-Djava.net.preferIPv4Stack=true",
-    "-XX:+HeapDumpOnOutOfMemoryError",
-    "-XX:HeapDumpPath=.../logs/zomboid",
-    "-Xlog:gc*:file=.../logs/zomboid/gc.log:...:filecount=5,filesize=20M"
-  ]
-}
-```
-
-**Optimizations**:
-- **No `-Xms`**: removed — with `AlwaysPreTouch` the resident cost is the
-  pre-touched `-Xmx`, and ZGC give-back never fires on this ever-growing
-  workload. The heap starts at the ergonomic default and grows on demand.
-- **Heap ceiling**: `-Xmx` = **`PZ_XMX_GB` GB if set in `.env`, else half of
-  physical RAM** (computed at install; e.g. 7g on a 14 GiB machine). Real
-  guardrail: clean Java OOM before the heap starves PZ's native memory + the OS.
-- **Generational ZGC** (`-XX:+UseZGC`, generational by default on JDK 25) with
-  `AlwaysPreTouch` and a 60s periodic major cycle — sub-millisecond GC pauses.
-  (`ZCollectionInterval` forces a *major* collection at that interval; 60s keeps
-  the cheap young collections frequent while making the majors rare, instead of
-  the old 5s that ran a near-continuous, near-useless major pass.)
-- **String deduplication** (`-XX:+UseStringDeduplication`): the heap is full of
-  map cells with repeated sprite/tile strings; dedup trims the String live set.
-- **Compact object headers** (`-XX:+UseCompactObjectHeaders`, JEP 519, product in
-  JDK 25): shrinks every object header from ~12 to 8 bytes. The heap is millions
-  of tiny map-cell objects, so this cuts ~10-20% of the live set — less resident
-  RAM and a later OOM, plus slightly shorter GC pauses (fewer bytes to scan).
-- **IPv4 stack** (`-Djava.net.preferIPv4Stack=true`): RakNet/UdpEngine stability.
-- **Diagnostics**: heap dump on OOM + rotating GC log to `logs/zomboid/`.
-- **Headless**: No GUI / **Steam**: integration enabled.
-
-**Modify RAM**: set `PZ_XMX_GB` in `.env` (or edit `Xmx` in
-`data/scripts/internal/configureJvm.sh`), run the script, and restart. The script
-applies the tuning at install time and re-applies it after every SteamCMD update
-(which restores the vanilla JSON) — a manual edit of `ProjectZomboid64.json`
-would not survive the nightly maintenance. There is no `pzm config ram` command.
-The monitor requests a restart at 18 GiB RSS. The heap ceiling is 16 GiB
-within the shared pz.slice20 GiB cap, leaving common headroom for native memory, bot and background PZ tasks.
-A blocking, read-only startup check rejects a stale JSON with Xmx20 and an
-incompatible effective parent memory limit. See
-[ADVANCED.md](ADVANCED.md#ram--jvm-configuration).
+`configureJvm.sh` writes the JVM settings at installation and after each
+SteamCMD update. For heap sizing through `PZ_XMX_GB`, applying changes, JVM
+options and the shared memory budget, see
+[RAM / JVM Configuration](ADVANCED.md#ram--jvm-configuration).
 
 ### Server Data
 
@@ -294,47 +224,17 @@ and readiness checks apply.
 
 **Type**: Systemd socket for control pipe
 
-**Template file**: `~/pzmanager/data/setupTemplates/zomboid.socket`
+**Template**: [zomboid.socket](../data/setupTemplates/zomboid.socket)
 **Installed file**: `~/.config/systemd/user/zomboid.socket`
 
-**Configuration**:
-```ini
-[Unit]
-Description=Project Zomboid Server Control Socket
-PartOf=zomboid.service
-Before=zomboid.service
-
-[Socket]
-ListenFIFO=%h/pzmanager/data/pzserver/zomboid.control
-FileDescriptorName=control
-SocketMode=0660
-SocketUser=%u
-ExecStartPre=/bin/rm -f %h/pzmanager/data/pzserver/zomboid.control
-RemoveOnStop=true
-```
-
-**Function**: Manages the FIFO (named pipe) used to send commands to the server via RCON.
+**Function**: Provides the local control FIFO used to send commands to the server.
 
 ### zomboid_logger.service Service
 
 **Type**: Log capture service
 
-**Template file**: `~/pzmanager/data/setupTemplates/zomboid_logger.service`
+**Template**: [zomboid_logger.service](../data/setupTemplates/zomboid_logger.service)
 **Installed file**: `~/.config/systemd/user/zomboid_logger.service`
-
-**Configuration**:
-```ini
-[Unit]
-Description=Logger for Project Zomboid
-PartOf=zomboid.service
-After=zomboid.service
-
-[Service]
-Type=simple
-ExecStart=%h/pzmanager/data/scripts/internal/captureLogs.sh
-Restart=always
-RestartSec=5
-```
 
 **Function**: Captures server logs from journald and saves them to timestamped files.
 

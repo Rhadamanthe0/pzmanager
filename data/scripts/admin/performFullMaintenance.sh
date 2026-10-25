@@ -228,6 +228,9 @@ update_system() {
     # alignée sur les règles de data/setupTemplates/pzuser-sudoers.
     local -a apt_lock=(-o DPkg::Lock::Timeout=300)
     sudo /usr/bin/apt-get update -qq "${apt_lock[@]}"
+    # Résoudre la préférence .env avec les candidats fraîchement actualisés.
+    source "${SCRIPT_DIR}/../lib/jdk_matrix.sh"
+    resolve_java_package
     sudo /usr/bin/apt-get upgrade -y -qq "${apt_lock[@]}"
     sudo /usr/bin/apt-get install -y -qq "${apt_lock[@]}" "${JAVA_PACKAGE}"
     sudo /usr/bin/apt-get autoremove -y -qq "${apt_lock[@]}"

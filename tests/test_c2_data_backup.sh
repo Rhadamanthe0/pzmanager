@@ -150,6 +150,13 @@ fi
 MOCKEOF
 cat > "${BIN}/systemd-run" <<'MOCKEOF'
 #!/usr/bin/env bash
+if [[ "${1:-}" == --help ]]; then
+    [[ "${MOCK_SCOPE_HELP_FAIL:-0}" == 0 ]] || exit 7
+    printf '%s\n' --scope
+    if (( ${MOCK_SCOPE_VERSION:-257} >= 254 )); then printf '%s\n' --expand-environment=BOOL; fi
+    exit 0
+fi
+if (( ${MOCK_SCOPE_VERSION:-257} < 254 )) && [[ " $* " == *' --expand-environment=no '* ]]; then exit 64; fi
 [[ -z "${MOCK_SCOPE_LOG:-}" ]] || printf '%s\n' "$*" >> "$MOCK_SCOPE_LOG"
 [[ "${MOCK_SCOPE_FAIL:-0}" == "0" ]] || exit 1
 # La scope doit conserver le FD du verrou monde, même après un fork/exec.
@@ -182,6 +189,7 @@ fresh_case() {
     export BACKUP_WARN_DELAY=0 RSYNC_RETRY_DELAY=0 BACKUP_PRUNE_DRY_RUN=1
     unset MOCK_RSYNC_EXIT MOCK_RSYNC_SLEEP MOCK_RSYNC_EMPTY MOCK_LN_FAIL MOCK_MV_FAIL
     unset MOCK_CPU_STATE MOCK_CPU_SUBSTATE MOCK_CPU_MAINPID MOCK_SCOPE_LOG MOCK_SCOPE_FAIL
+    unset MOCK_SCOPE_VERSION MOCK_SCOPE_HELP_FAIL
     unset MOCK_CPU_PIN_FAIL
     unset MOCK_RSYNC_READY MOCK_COPY_REAL MOCK_DRIFT_FILE MOCK_FIFO_STOP_FILE
 }
@@ -475,6 +483,28 @@ fi
 unset PZ_WORLD_LOCK_RETRIES PZ_WORLD_LOCK_RETRY_DELAY
 
 # --- Budgets CPU et héritage des verrous ---------------------------------------
+for version in 249 252 254 257; do
+    fresh_case "scope-version-$version"
+    export MOCK_SCOPE_VERSION="$version" MOCK_SCOPE_LOG="${SANDBOX}/scope-version-$version.log"
+    if run_backup --snapshot-only --required; then
+        ok "systemd $version : scope de backup et FD hérités"
+    else
+        ko "systemd $version : scope de backup refusée"; show_out
+    fi
+    if (( version >= 254 )); then
+        grep -q -- '--expand-environment=no' "$MOCK_SCOPE_LOG" \
+            && ok "systemd $version : expansion explicitement désactivée" \
+            || ko "systemd $version : option de protection absente"
+    elif grep -q -- '--expand-environment=' "$MOCK_SCOPE_LOG"; then
+        ko "systemd $version : option inconnue transmise"
+    else
+        ok "systemd $version : scope historique sans option inconnue"
+    fi
+done
+fresh_case scope-help-failed
+export MOCK_SCOPE_HELP_FAIL=7
+if run_backup; then ko "aide scope refusée : succès à tort"; else ok "aide scope refusée : aucun repli"; fi
+(( $(final_count "$BKP") == 0 )) && ok "aide scope refusée : rien publié" || ko "aide scope refusée : snapshot publié"
 for policy in active inactive startup loading failed error; do
     fresh_case "cpu-$policy"
     export MOCK_SCOPE_LOG="${SANDBOX}/scope-$policy.log" BACKUP_CPU_LIST=7,15

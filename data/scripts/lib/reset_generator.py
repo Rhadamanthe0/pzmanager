@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Keep a stable session leader until the complete reset generator group stops."""
 import argparse
+import errno
 import json
 import os
 from pathlib import Path
@@ -28,8 +29,10 @@ def members(identity):
             continue
         try:
             info = process(int(path.name))
-        except FileNotFoundError:
-            continue
+        except OSError as error:
+            if error.errno in (errno.ENOENT, errno.ESRCH):
+                continue
+            raise
         if info['sid'] == identity['sid'] and info['state'] not in {'Z', 'X'}:
             if info['pgid'] != identity['pgid']:
                 raise ValueError('Generator descendant escaped the dedicated process group')

@@ -8,7 +8,9 @@ export APT_FIXTURE_LOG="$fixture/calls"
 cat > "$fixture/bin/apt-cache" <<'CACHE'
 #!/bin/bash
 printf 'cache locale=%s %s\n' "${LC_ALL:-}" "$*" >> "$APT_FIXTURE_LOG"
-if [[ "$2" == steamcmd && "${STEAM_CANDIDATE:-none}" == none ]]; then
+if [[ "$2" == openjdk-* && "$2" != openjdk-17-jre-headless ]]; then
+    echo 'Candidate: (none)'
+elif [[ "$2" == steamcmd && "${STEAM_CANDIDATE:-none}" == none ]]; then
     echo 'Candidate: (none)'
 elif [[ "$2" == steamcmd && "${LC_ALL:-}" != C ]]; then
     printf 'Candidat : 1.0\n'
@@ -45,7 +47,7 @@ for candidate in none present; do
         ! grep -q '^apt install' "$APT_FIXTURE_LOG"
     else
         [[ "$status" == 73 ]] || { echo 'FAIL faux refus steamcmd présent sous locale française.' >&2; cat "$fixture/out"; exit 1; }
-        grep -q '^apt install.*steamcmd' "$APT_FIXTURE_LOG"
+        grep -q '^apt install.*steamcmd openjdk-17-jre-headless$' "$APT_FIXTURE_LOG"
         grep -q 'cache locale=C policy steamcmd' "$APT_FIXTURE_LOG"
     fi
     [[ "$LC_ALL" == fr_FR.UTF-8 && "$LANGUAGE" == fr ]]

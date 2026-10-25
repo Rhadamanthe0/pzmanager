@@ -330,9 +330,11 @@ start_with_writing_admission() {
     python3 "${SCRIPT_DIR}/../lib/world_transaction.py" check --world "$PZ_SOURCE_DIR" \
         || die "Une opération monde inachevée exige une récupération explicite."
     local start_owner_pid="$BASHPID"
+    local -a ready_options=()
+    [[ "$SILENT_MODE" == true ]] && ready_options+=(--quiet-ready)
     PZ_WRITING_START_LOCK="$(world_lock_path)"
     PZ_WRITING_START_TOKEN="$(python3 "${SCRIPT_DIR}/../internal/writing_start_admission.py" prepare \
-        --lock-path "$PZ_WRITING_START_LOCK" --pid "$start_owner_pid" --fd "$PZ_WORLD_LOCK_FD" --unit "$PZ_SERVICE_NAME")"
+        --lock-path "$PZ_WRITING_START_LOCK" --pid "$start_owner_pid" --fd "$PZ_WORLD_LOCK_FD" --unit "$PZ_SERVICE_NAME" "${ready_options[@]}")"
     trap clear_writing_start_admission EXIT
     systemctl --user start "${PZ_SERVICE_NAME}"
     clear_writing_start_admission

@@ -92,17 +92,29 @@ fi
 # Après authentification de l'invocation et acquisition du verrou, un
 # démarrage silencieux est marqué comme consommé. Une seconde exécution pour la
 # même invocation ne doit pas envoyer une annonce après consommation du drapeau.
+readonly INVOCATION_SILENT_FLAG="${LOCK_FILE%.lock}.silent"
+quiet_current_boot=false
+if [[ -e "$INVOCATION_SILENT_FLAG" || -L "$INVOCATION_SILENT_FLAG" ]]; then
+    if [[ ! -f "$INVOCATION_SILENT_FLAG" || -L "$INVOCATION_SILENT_FLAG" || ! -O "$INVOCATION_SILENT_FLAG" ]] ||
+       [[ "$(stat -c '%a:%h' -- "$INVOCATION_SILENT_FLAG" 2>/dev/null)" != 600:1 ]]; then
+        echo "[pz-ready] Marqueur silencieux invalide." >&2
+        exit 1
+    fi
+    rm -- "$INVOCATION_SILENT_FLAG"
+    quiet_current_boot=true
+fi
 if [[ -f "$SILENT_FLAG" ]]; then
     rm -f -- "$SILENT_FLAG"
     if [[ -f "$LEGACY_SILENT_FLAG" ]]; then
         : > "$LEGACY_CONSUMED_FLAG"
     fi
-    printf '%s\n' "$BOOT_ID" > "$LOCK_FILE"
-    exit 0
-fi
-if [[ -f "$LEGACY_SILENT_FLAG" && ! -f "$LEGACY_CONSUMED_FLAG" ]]; then
+    quiet_current_boot=true
+elif [[ -f "$LEGACY_SILENT_FLAG" && ! -f "$LEGACY_CONSUMED_FLAG" ]]; then
     : > "$LEGACY_CONSUMED_FLAG"
     echo "[pz-ready] Ancien marqueur de maintenance consommé une fois (nettoyage hors sandbox requis)." >&2
+    quiet_current_boot=true
+fi
+if $quiet_current_boot; then
     printf '%s\n' "$BOOT_ID" > "$LOCK_FILE"
     exit 0
 fi

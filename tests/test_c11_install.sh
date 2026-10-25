@@ -287,6 +287,17 @@ for f in "$CONF_INIT" "$0"; do
 done
 ok "bash -n : scripts OK"
 
+# Le secret bootstrap doit rester hors index même avec git add --all.
+git_fixture="$SANDBOX/gitignore"
+mkdir "$git_fixture"
+git -C "$git_fixture" init -q
+cp "$ROOT/.gitignore" "$git_fixture/.gitignore"
+printf 'fixture-not-a-credential\n' > "$git_fixture/.admin_password"
+chmod 0600 "$git_fixture/.admin_password"
+if git -C "$git_fixture" check-ignore -q .admin_password; then ok 'secret bootstrap ignoré par Git'; else ko 'secret bootstrap non ignoré'; fi
+git -C "$git_fixture" add --all
+if [[ -z "$(git -C "$git_fixture" ls-files -- .admin_password)" ]]; then ok 'git add --all ne publie pas le secret'; else ko 'secret bootstrap ajouté à l’index'; fi
+
 # --- Bilan -------------------------------------------------------------------------
 echo ""
 if (( FAIL == 0 )); then
