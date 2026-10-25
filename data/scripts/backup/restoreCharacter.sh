@@ -180,6 +180,10 @@ LIVE_DB="$(find_players_db_strict "${PZ_SOURCE_DIR}")" || die "players.db live i
 if _same_file "$LIVE_DB" "$BK_DB"; then
     die "Source et destination identiques (${LIVE_DB}) : refuse de restaurer un monde sur lui-même. Rien n'a été modifié."
 fi
+# Validate every live ancestor and SQLite alias before even a schema read.
+# Backup roots may be `latest` links and snapshot files may share hardlinks.
+python3 "${SCRIPT_DIR}/../lib/account_safety.py" validate-db --db "$LIVE_DB" \
+    || die "Destination SQLite non sûre : restauration refusée avant toute ouverture."
 # Preview/schema queries must not recover a destination journal or create SHM.
 for suffix in -wal -shm -journal; do
     [[ ! -e "${LIVE_DB}${suffix}" && ! -L "${LIVE_DB}${suffix}" ]] \

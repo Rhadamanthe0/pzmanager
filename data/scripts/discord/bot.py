@@ -127,7 +127,7 @@ bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
 
 # Commandes pzm reconnues en tête de ligne d'un batch (évite de réagir au bavardage).
-KNOWN_CMDS = {"server", "backup", "whitelist", "admin", "install", "map",
+KNOWN_CMDS = {"server", "backup", "whitelist", "admin", "install", "map", "mods",
               "rcon", "discord", "help", "--help", "-h"}
 
 # Un seul pzm à la fois (un `server stop 2m` tient le process plusieurs minutes).
@@ -1166,7 +1166,8 @@ def collect_stats(prev: dict) -> dict:
     now = time.monotonic()
     s = jvm_status(PZ_SERVICE_NAME)
     if prev.get("invocation") != s["invocation"]:
-        prev.pop("jif", None)
+        for key in ("jif", "prom_ctr", "prom_ts", "prom_rbc"):
+            prev.pop(key, None)
     prev["invocation"] = s["invocation"]
     s["mem"] = _meminfo()
     st = _proc_status(s["pid"]) if s["pid"] else {}

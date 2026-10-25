@@ -92,6 +92,11 @@ MOCKEOF
     cat > "$s/bin/systemctl" <<'MOCKEOF'
 #!/usr/bin/env bash
 if [[ " $* " == *" show "* ]]; then
+    if [[ " $* " != *" --value "* ]]; then
+        printf 'LoadState=loaded\nActiveState=failed\nMainPID=0\nControlPID=0\nInvocationID=%s\nActiveEnterTimestampMonotonic=%s\n' \
+            "$(cat "${MOCK_DIR}/mock_invocation")" "$(cat "${MOCK_DIR}/mock_enter")"
+        exit 0
+    fi
     prop=""
     prev=""
     for a in "$@"; do

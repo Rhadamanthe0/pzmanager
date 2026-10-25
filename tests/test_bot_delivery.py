@@ -65,8 +65,25 @@ class Delivery(unittest.TestCase):
             mocking = patch.object(bot, name, value)
             mocking.start()
             self.addCleanup(mocking.stop)
-        self.author = SimpleNamespace(mention='<@123>', roles=[SimpleNamespace(id=2)])
+        self.author = SimpleNamespace(mention='<@123>', bot=False, roles=[SimpleNamespace(id=2)])
         self.args = ['server', 'restart', 'now', '--reason', '``````' + '😀`*' * 1100 + '\nend']
+
+    def test_documented_mods_message_executes_exact_argv_for_authorized_admin(self):
+        source=Transport();source.channel=Transport();source.author=self.author
+        source.guild=SimpleNamespace(id=3)
+        source.content='pzm mods check "candidate ini; echo untouched"'
+        asyncio.run(bot.on_message(source))
+        self.assertEqual([json.loads(line) for line in self.calls.read_text().splitlines()],
+                         [['mods','check','candidate ini; echo untouched']])
+        self.assertTrue(source.deleted)
+
+    def test_mods_message_preserves_channel_and_role_authorization(self):
+        source=Transport();source.channel=Transport();source.guild=SimpleNamespace(id=3)
+        source.content='pzm mods check candidate.ini'
+        source.author=SimpleNamespace(bot=False,roles=[])
+        asyncio.run(bot.on_message(source));self.assertFalse(self.calls.exists())
+        source.author=self.author;source.channel.id=99
+        asyncio.run(bot.on_message(source));self.assertFalse(self.calls.exists())
 
     def assert_complete(self, channel):
         self.assertEqual([json.loads(line) for line in self.calls.read_text().splitlines()], [self.args])

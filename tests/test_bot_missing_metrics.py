@@ -58,7 +58,7 @@ class MissingMetrics(unittest.TestCase):
             self.assertEqual(bot._online_players(state), 0)
 
     def collect(self, state, snapshot=None, *, meminfo=None, netdev=None,
-                now=None, prom_text=None, gc_log=None):
+                now=None, prom_text=None, gc_log=None, invocation=None):
         real_open = open
 
         def fixture_open(path, *args, **kwargs):
@@ -77,7 +77,7 @@ class MissingMetrics(unittest.TestCase):
         with ExitStack() as stack:
             stack.enter_context(patch('builtins.open', side_effect=fixture_open))
             for name, value in {
-                'jvm_status': {'pid': None, 'invocation': None, 'service_state': 'unknown'},
+                'jvm_status': {'pid': None, 'invocation': invocation, 'service_state': 'unknown'},
                 '_service_memory': {}, '_percpu_stat': None, '_temps': {},
                 '_gc_heap': None, '_recent_heapdump': None, '_online_players': None,
                 '_server_ini_path': '/fixture.ini',
@@ -95,6 +95,25 @@ class MissingMetrics(unittest.TestCase):
                 stack.enter_context(patch.object(bot.urllib.request, 'urlopen',
                                                 return_value=io.BytesIO(prom_text.encode())))
             return bot.collect_stats(state)
+
+    def test_prometheus_restart_waits_for_comparable_boot_but_nic_remains_host_wide(self):
+        def dev(n):return f'fixture0: 0 {n} 0 0 0 0 0 0 0 {n} 0 0 0 0 0 0\n'
+        def prom(n):return (f'packet_send_bytes_count {n}\npacket_send_bytes_sum {n*1024}\n'
+                           f'packet_receive_bytes_count{{client="alice"}} {n}\n'
+                           f'packet_receive_bytes_sum {n*1024}\n')
+        state={}
+        first=self.collect(state,invocation='a'*32,now=100,netdev=dev(100),prom_text=prom(1000))
+        self.assertIsNone(first['game_net'])
+        restarted=self.collect(state,invocation='b'*32,now=110,netdev=dev(200),prom_text=prom(200))
+        self.assertIsNone(restarted['game_net'])
+        row=dict(zip(bot._CSV_HEADER,bot._csv_row(restarted)))
+        self.assertEqual(row['game_pps_sent'],'');self.assertEqual(row['game_pps_recv'],'')
+        self.assertEqual(restarted['net']['pps'],20)
+        current=self.collect(state,invocation='b'*32,now=120,netdev=dev(260),prom_text=prom(240))
+        self.assertEqual(current['game_net']['pps_sent'],4)
+        self.assertEqual(current['game_net']['pps_recv'],4)
+        self.assertEqual(current['game_net']['recv_pps_max_client'],4)
+        self.assertEqual(current['net']['pps'],12)
 
     def test_machine_memory_missing_partial_zero_and_nominal(self):
         cases = (

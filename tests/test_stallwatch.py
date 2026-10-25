@@ -66,7 +66,7 @@ else:print(stamp+".000 host prog: "+message)
         self.identity = self.root / 'invocation'
         self.identity.write_text('a' * 32)
         for name, source in {
-            'systemctl': "#!/usr/bin/python3\nimport os,pathlib,sys\nroot=pathlib.Path(os.environ['TEST_ROOT']); args=sys.argv[1:]\nif 'kill' in args: (root/'killed').touch()\nelif 'InvocationID' in args: print((root/'invocation').read_text())\nelif 'MainPID' in args: print('123')\nelif 'ActiveEnterTimestampMonotonic' in args: print('1000')\n",
+            'systemctl': "#!/usr/bin/python3\nimport os,pathlib,sys\nroot=pathlib.Path(os.environ['TEST_ROOT']); args=sys.argv[1:]\nif 'kill' in args: (root/'killed').touch()\nelif 'show' in args and '--value' not in args:\n print('LoadState=loaded\\nActiveState=failed\\nMainPID=0\\nControlPID=0\\nInvocationID='+(root/'invocation').read_text()+'\\nActiveEnterTimestampMonotonic=1000')\nelif 'InvocationID' in args: print((root/'invocation').read_text())\nelif 'MainPID' in args: print('123')\nelif 'ActiveEnterTimestampMonotonic' in args: print('1000')\n",
             'jcmd': '#!/usr/bin/python3\nimport os,pathlib\nroot=pathlib.Path(os.environ[\'TEST_ROOT\']); path=root/\'dump-count\'\nn=int(path.read_text())+1 if path.exists() else 1; path.write_text(str(n))\nif os.environ.get(\'TEST_CHANGE_ID\'): (root/\'invocation\').write_text(\'b\'*32)\nprint(\'"main" cpu=\'+str(n*10000)+\'ms elapsed=\'+str(n*10)+\'s runnable\')\n',
             'top': '#!/bin/sh\nexit 0\n',
             'sleep': '#!/bin/sh\nexit 0\n',

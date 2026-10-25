@@ -29,8 +29,10 @@ class CharacterDataSafety(unittest.TestCase):
         lib = script.parent.parent/'lib'; lib.mkdir()
         # Execute the real transaction guard and its real path/ownership reader.
         shutil.copy2(ROOT/'data/scripts/lib/world_transaction.py',lib/'world_transaction.py')
+        shutil.copy2(ROOT/'data/scripts/lib/account_safety.py',lib/'account_safety.py')
         internal=script.parent.parent/'internal';internal.mkdir()
         shutil.copy2(ROOT/'data/scripts/internal/configureWritingTextOnly.py',internal/'configureWritingTextOnly.py')
+        shutil.copy2(ROOT/'data/scripts/internal/writing_start_admission.py',internal/'writing_start_admission.py')
         (lib/'common.sh').write_text("""
 source_env() { :; }
 require_sqlite() { :; }

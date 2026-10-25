@@ -96,7 +96,7 @@ write_cooldown() {
 # --try. Si elle a changé -> abandon (reset state, exit 0).
 # InvocationID vide (service non démarré, bus partiel) -> repli PID+ActiveEnter.
 read_service_identity() {
-    REQ_INVOCATION=""; REQ_MAINPID=""; REQ_ACTIVE_ENTER=""
+    REQ_INVOCATION=""; REQ_MAINPID=""; REQ_ACTIVE_ENTER=""; REQ_ACTIVE_ENTER_SOURCE=""
     local svc="${PZ_SERVICE_NAME:-zomboid.service}" v
     v="$(systemctl --user show -p InvocationID --value "$svc" 2>/dev/null || true)"
     [[ "$v" =~ ^[0-9a-fA-F]{32}$ ]] && REQ_INVOCATION="$v"
@@ -105,10 +105,13 @@ read_service_identity() {
     v="$(systemctl --user show -p ActiveEnterTimestampMonotonic --value "$svc" 2>/dev/null || true)"
     if [[ "$v" =~ ^[0-9]{1,20}$ ]]; then
         REQ_ACTIVE_ENTER="$v"
+        REQ_ACTIVE_ENTER_SOURCE=monotonic
     else
         v="$(systemctl --user show -p ActiveEnterTimestamp --value "$svc" 2>/dev/null || true)"
         [[ -n "$v" ]] && v="$(date -d "$v" +%s 2>/dev/null || true)"
-        [[ "${v:-}" =~ ^[0-9]{1,18}$ ]] && REQ_ACTIVE_ENTER="$v"
+        if [[ "${v:-}" =~ ^[0-9]{1,18}$ ]]; then
+            REQ_ACTIVE_ENTER="$v"; REQ_ACTIVE_ENTER_SOURCE=epoch
+        fi
     fi
     return 0  # identité partielle/vide = repli, jamais une erreur fatale
 }
@@ -281,6 +284,7 @@ write_state "$pid" "$frame" "$stamp" "$strikes"
 # Identité diagnostiquée : le pré-SIGKILL la comparera au live (restart pendant
 # la capture de ~20 s). Ne pas la réécrire d'ici là.
 DIAG_INV="${REQ_INVOCATION}"; DIAG_MAIN="${REQ_MAINPID}"; DIAG_ENTER="${REQ_ACTIVE_ENTER}"
+DIAG_ENTER_SOURCE="$REQ_ACTIVE_ENTER_SOURCE"
 
 (( strikes >= STALL_SAMPLES )) || exit 0
 
@@ -459,15 +463,57 @@ else
         exit 0
     fi
 fi
-systemctl --user kill --signal=SIGKILL --kill-whom=all "${PZ_SERVICE_NAME}" || true
+if ! systemctl --user kill --signal=SIGKILL --kill-whom=all "${PZ_SERVICE_NAME}"; then
+    log "stallwatch: SIGKILL refusé — aucun démarrage automatique."
+    exit 1
+fi
 
-# Laisser systemd constater la mort : tant qu'il voit le service actif, pz.sh
-# tenterait l'arrêt propre et on aurait rattrapé les 120 s qu'on vient d'éviter.
+# Le chemin d'arrêt ordinaire refuse à raison un service failed : aucune
+# sauvegarde propre n'est prouvée après SIGKILL. Attendre la fin de CETTE
+# invocation puis demander start, sans relancer son arrêt ni viser un autre boot.
+stopped=false
 for _ in $(seq 30); do
-    server_is_active || break
+    properties="$(systemctl --user show "${PZ_SERVICE_NAME}" \
+        -p LoadState -p ActiveState -p MainPID -p ControlPID -p InvocationID \
+        -p ActiveEnterTimestampMonotonic -p ActiveEnterTimestamp --no-pager)" || {
+        log "stallwatch: état post-SIGKILL illisible — aucun démarrage automatique."
+        exit 1
+    }
+    loaded=""; active=""; main=""; control=""; invocation=""; entered=""; entered_date=""
+    while IFS='=' read -r key value; do
+        case "$key" in
+            LoadState) loaded="$value" ;;
+            ActiveState) active="$value" ;;
+            MainPID) main="$value" ;;
+            ControlPID) control="$value" ;;
+            InvocationID) invocation="$value" ;;
+            ActiveEnterTimestampMonotonic) entered="$value" ;;
+            ActiveEnterTimestamp) entered_date="$value" ;;
+        esac
+    done <<< "$properties"
+    entered_source=monotonic
+    if [[ ! "$entered" =~ ^[0-9]{1,20}$ ]]; then
+        entered_source=epoch
+        [[ -n "$entered_date" ]] || { log "stallwatch: identité post-SIGKILL inconnue."; exit 1; }
+        entered="$(date -d "$entered_date" +%s 2>/dev/null || true)"
+    fi
+    if [[ "$loaded" != loaded ]] ||
+       { [[ -n "$DIAG_INV" ]] && [[ "$invocation" != "$DIAG_INV" ]]; } ||
+       { [[ -z "$DIAG_INV" ]] && [[ -n "$invocation" || -z "$DIAG_ENTER" || "$DIAG_ENTER" =~ ^0+$ ||
+           "$entered" != "$DIAG_ENTER" || "$entered_source" != "$DIAG_ENTER_SOURCE" ]]; }; then
+        log "stallwatch: invocation post-SIGKILL remplacée ou non prouvée — aucun démarrage automatique."
+        exit 1
+    fi
+    if [[ "$main" == 0 && "$control" == 0 && ( "$active" == inactive || "$active" == failed ) ]]; then
+        stopped=true
+        break
+    fi
     sleep 1
 done
+$stopped || { log "stallwatch: fin du service non prouvée après SIGKILL — aucun démarrage automatique."; exit 1; }
 
 log "stallwatch: redémarrage automatique du serveur."
-"${PZ_MANAGER_DIR}/pzm" server restart now --silent --reason "Gel du thread principal (redémarrage automatique)" \
-    || log "stallwatch: le redémarrage automatique a échoué — intervention manuelle nécessaire."
+if ! "${PZ_MANAGER_DIR}/pzm" server start --silent --reason "Gel du thread principal (redémarrage automatique)"; then
+    log "stallwatch: le redémarrage automatique a échoué — intervention manuelle nécessaire."
+    exit 1
+fi
