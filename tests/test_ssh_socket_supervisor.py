@@ -35,15 +35,25 @@ a=sys.argv[1:]
 with (state/'calls').open('a') as f:f.write(repr(a)+'\\n')
 verb=a[0]
 if verb=='show':
- name=a[-1]
- print('loaded' if (state/name).exists() else 'not-found')
+ name=a[-1];prop=a[a.index('-p')+1]
+ mode=(state/'after-stop').read_text() if (state/'stopped').exists() and (state/'after-stop').exists() else 'inactive'
+ if mode=='bus-error':raise SystemExit('controlled state bus failure')
+ if prop=='LoadState':print('unknown-load' if mode=='load-unknown' else 'loaded' if (state/name).exists() else 'not-found')
+ elif prop=='ActiveState':print(mode)
+ else:raise SystemExit('unexpected property')
 elif verb=='daemon-reload':
  for p in units.iterdir():(state/p.name).touch()
  for p in state.iterdir():
   if p.name.endswith(('.socket','.service')) and not (units/p.name).exists():p.unlink()
 elif verb=='stop':
  if (state/'fail-stop').exists():raise SystemExit('controlled stop failure')
-elif verb=='reset-failed':pass
+ (state/'stopped').touch()
+ if (state/'gc-stop').exists():
+  for name in a[2:]:(state/name).unlink(missing_ok=True)
+elif verb=='reset-failed':
+ if any(not (state/name).exists() for name in a[2:]):raise SystemExit('Unit not loaded')
+ if (state/'fail-reset').exists():raise SystemExit('controlled reset failure')
+ (state/'after-stop').write_text('inactive')
 else:raise SystemExit('unexpected '+repr(a))
 ''');self.control.chmod(0o700)
         self.project=self.base/'project'
@@ -118,6 +128,63 @@ if mode=='command-failure':raise SystemExit(1)
         (self.state/'fail-stop').unlink()
         self.module.cleanup(self.registry)
         self.assert_clean()
+
+    def test_stop_unloads_units_without_stale_reset(self):
+        (self.state/'gc-stop').touch()
+        result=self.execute('normal')
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assert_clean()
+        calls=[__import__('ast').literal_eval(line) for line in (self.state/'calls').read_text().splitlines()]
+        self.assertFalse(any(call[0]=='reset-failed' for call in calls))
+
+    def test_failed_or_unknown_post_stop_states_preserve_retry(self):
+        for mode in ('failed','active','load-unknown','bus-error','unknown'):
+            with self.subTest(mode=mode):
+                (self.state/'after-stop').write_text(mode)
+                result=self.execute('normal')
+                if mode=='failed':
+                    self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                    self.assertIn("['reset-failed',",(self.state/'calls').read_text())
+                    self.assert_clean()
+                else:
+                    self.assertNotEqual(result.returncode,0)
+                    self.assertTrue(self.registry.exists())
+                    self.assertEqual(len(list(self.units.iterdir())),5)
+                    (self.state/'after-stop').write_text('inactive')
+                    self.module.cleanup(self.registry)
+                    self.assert_clean()
+        (self.state/'after-stop').write_text('failed')
+        (self.state/'fail-reset').touch()
+        result=self.execute('normal')
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('controlled reset failure',result.stderr)
+        self.assertTrue(self.registry.exists())
+        (self.state/'fail-reset').unlink()
+        self.module.cleanup(self.registry)
+        self.assert_clean()
+
+    def test_publish_transfers_only_both_result_trees(self):
+        public=Path(tempfile.mkdtemp(prefix='ssh-result-access-',dir='/run'))
+        public.chmod(0o755);self.addCleanup(shutil.rmtree,public)
+        first=public/'pz-test-results';second=public/'pz-ssh-socket-results'
+        foreign=public/'unrelated';foreign.mkdir(mode=0o700)
+        for directory in (first,second):
+            directory.mkdir(mode=0o700)
+            (directory/'probe.log').write_text('private test result')
+        (first/'summary.json').write_text(json.dumps({'suites':89,'failures':[]}))
+        binary=public/'bin';binary.mkdir()
+        (binary/'sudo').write_text('#!/bin/sh\nexec "$@"\n');(binary/'sudo').chmod(0o755)
+        (binary/'id').write_text('#!/bin/sh\ncase "$1" in -u|-g) echo 65533;; *) exit 2;; esac\n');(binary/'id').chmod(0o755)
+        block=(ROOT/'.github/workflows/tests.yml').read_text().split('      - name: Publish test summary\n',1)[1].split('      - name: Retain test results\n',1)[0].split('        run: |\n',1)[1]
+        script='\n'.join(line[10:] if line.startswith('          ') else line for line in block.splitlines())+'\n'
+        result=subprocess.run(['bash','-e','-c',script],env=dict(os.environ,PATH=str(binary)+':'+os.environ['PATH'],RESULTS=str(first),SSH_RESULTS=str(second),GITHUB_STEP_SUMMARY=str(public/'summary')),text=True,capture_output=True,timeout=10)
+        self.assertEqual(result.returncode,0,result.stderr)
+        for directory in (first,second):
+            scan=subprocess.run(['/usr/bin/setpriv','--reuid','65533','--regid','65533','--clear-groups',sys.executable,'-c','import os,sys;print(list(os.scandir(sys.argv[1])))',str(directory)],capture_output=True,text=True,timeout=5)
+            self.assertEqual(scan.returncode,0,scan.stderr)
+            self.assertEqual(directory.stat().st_uid,65533)
+        self.assertEqual(foreign.stat().st_uid,0)
+        self.assertEqual(foreign.stat().st_mode&0o777,0o700)
 
     def test_initial_socket_errors_remove_only_our_empty_directory(self):
         neighbor=self.run/'pz-ssh-authority-foreign';neighbor.mkdir()

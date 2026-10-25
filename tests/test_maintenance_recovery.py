@@ -58,7 +58,7 @@ import json,os,sys
 from pathlib import Path
 if os.environ.get('MAINT_TEST_BUS_REFUSED')=='1':sys.exit(1)
 path=Path(os.environ['MAINT_TEST_SERVER_STATE']) if os.environ.get('MAINT_TEST_SERVER_STATE') else None
-state=json.loads(path.read_text()) if path else dict(LoadState='loaded',ActiveState='active' if os.environ.get('MAINT_TEST_ACTIVE','1')=='1' else 'inactive',SubState='running',MainPID='1234',ControlPID='0',InvocationID='fixture')
+state=json.loads(path.read_text()) if path else dict(LoadState='loaded',ActiveState='active' if os.environ.get('MAINT_TEST_ACTIVE','1')=='1' else 'inactive',SubState='running',MainPID='1234',ControlPID='0',InvocationID='0123456789abcdef0123456789abcdef')
 args=sys.argv[1:]
 if path and os.environ.get('MAINT_TEST_ACTIVATE_ON_SHOW')=='1' and 'show' in args and state['ActiveState']=='activating':
  count=path.with_suffix('.shows');n=int(count.read_text())+1 if count.exists() else 1;count.write_text(str(n))
@@ -90,7 +90,7 @@ for key in keys:print(key+'='+str(state[key]))
         (self.repo/'.env').write_text('\n'.join(k+'='+shlex.quote(v) for k,v in vals.items())+'\n')
         self.env=dict(os.environ,PATH=str(self.bin)+':'+os.environ['PATH'],XDG_RUNTIME_DIR=str(self.runtime),PZ_MAINT_STATE_FILE=str(self.state),MAINT_TEST_EVENTS=str(self.events),MAINT_TEST_NOTES=str(self.notes))
         service=self.base/'service.json'
-        service.write_text(json.dumps(dict(LoadState='loaded',ActiveState='active',SubState='running',MainPID='1234',ControlPID='0',InvocationID='fixture')))
+        service.write_text(json.dumps(dict(LoadState='loaded',ActiveState='active',SubState='running',MainPID='1234',ControlPID='0',InvocationID='0123456789abcdef0123456789abcdef')))
         self.env['MAINT_TEST_SERVER_STATE']=str(service)
     def tearDown(self):self.tmp.cleanup()
     def executable(self,path,text):path.write_text(text);path.chmod(0o700)
@@ -114,7 +114,7 @@ for key in keys:print(key+'='+str(state[key]))
     def real_stop_backup_chain(self):
         shutil.copy2(ROOT/'data/scripts/core/pz.sh',self.repo/'data/scripts/core/pz.sh')
         state=self.base/'service.json'
-        state.write_text(json.dumps(dict(LoadState='loaded',ActiveState='active',SubState='running',MainPID='1234',ControlPID='0',InvocationID='fixture')))
+        state.write_text(json.dumps(dict(LoadState='loaded',ActiveState='active',SubState='running',MainPID='1234',ControlPID='0',InvocationID='0123456789abcdef0123456789abcdef')))
         self.env.update(MAINT_TEST_SERVER_STATE=str(state),PZ_BACKUP_CPU_SCOPED='1')
         self.executable(self.bin/'sleep','#!/bin/bash\nexit 0\n')
         self.executable(self.repo/'data/scripts/internal/sendCommand.sh','#!/bin/bash\necho "Players connected (0)"\n')
@@ -279,6 +279,86 @@ sys.exit(23)
         self.env['MAINT_TEST_READY_RC']='1'
         p=self.invoke('--no-reboot')
         self.assert_failure_recovered(p,1,2)
+    def real_final_readiness(self, fault='', phase='SELF'):
+        # Exercise the actual helper; only bus, journal, JVM and notify transports
+        # are private doubles. Every test owns and removes its complete state.
+        common=self.repo/'data/scripts/lib/common.sh'
+        shutil.copy2(ROOT/'data/scripts/lib/common.sh',common)
+        with common.open('a') as out:
+            out.write('\nnotify() { printf "%s\\n" "$*" >> "$MAINT_TEST_NOTES"; }\n')
+        self.env.update(MAINT_TEST_FINAL_FAULT=fault,MAINT_TEST_FINAL_PHASE=phase)
+        bus=self.bin/'systemctl';source=bus.read_text()
+        needle="if 'is-active' in args:sys.exit(0 if state['ActiveState']=='active' else 3)"
+        replacement='''phase=Path(os.environ['PZ_MAINT_STATE_FILE']).read_text().strip()
+fault=os.environ.get('MAINT_TEST_FINAL_FAULT','')
+marker=path.with_suffix('.ready-proof')
+if phase==os.environ['MAINT_TEST_FINAL_PHASE']:
+ if fault=='disappear-before-wait' and 'is-active' in args and state['ActiveState']=='active':
+  state.update(ActiveState='inactive',SubState='dead',MainPID='0');path.write_text(json.dumps(state));sys.exit(0)
+ if marker.exists() and 'InvocationID' in args:
+  count=path.with_suffix('.proof-reads');n=int(count.read_text())+1 if count.exists() else 1;count.write_text(str(n))
+  # First read is readiness's own revalidation; change only AFTER that proof.
+  if n>1:
+   if fault=='unknown-after-proof':sys.exit(1)
+   if fault=='replace-after-proof':
+    state['InvocationID']='fedcba9876543210fedcba9876543210';path.write_text(json.dumps(state))
+   if fault=='disappear-after-proof':
+    state.update(ActiveState='inactive',SubState='dead',MainPID='0');path.write_text(json.dumps(state))
+if 'ActiveEnterTimestamp' in args:
+ print('2026-10-25 00:00:00 UTC');sys.exit(0)
+if 'is-active' in args:sys.exit(0 if state['ActiveState']=='active' else 3)'''
+        self.assertIn(needle,source);bus.write_text(source.replace(needle,replacement))
+        self.executable(self.bin/'journalctl','''#!/usr/bin/env python3
+import os
+from pathlib import Path
+Path(os.environ['MAINT_TEST_SERVER_STATE']).with_suffix('.ready-proof').touch()
+print('LOG  : General f:1> native game loop')
+''')
+
+    def test_real_readiness_jvm_loss_keeps_recovery(self):
+        self.real_final_readiness()
+        self.executable(self.bin/'pgrep','''#!/usr/bin/env python3
+import os,sys
+from pathlib import Path
+sys.exit(1 if Path(os.environ['MAINT_TEST_SERVER_STATE']).with_suffix('.ready-proof').exists() else 0)
+''')
+        p=self.invoke('--no-reboot')
+        self.assert_failure_recovered(p,1,2)
+        self.assertNotIn('serveur prêt',self.messages())
+
+    def test_real_readiness_nominal_disarms(self):
+        self.real_final_readiness()
+        p=self.invoke('--no-reboot')
+        self.assertEqual(p.returncode,0,p.stdout+p.stderr)
+        self.assertEqual(self.state.read_text().strip(),'DONE')
+        self.assertFalse(Path(str(self.state)+'.recovery_armed').exists())
+
+    def test_real_readiness_disappearance_before_wait_keeps_recovery(self):
+        self.real_final_readiness('disappear-before-wait')
+        p=self.invoke('--no-reboot')
+        self.assert_failure_recovered(p,1,2)
+        # A new, genuinely ready recovery may succeed; main must remain FAILED.
+        self.assertEqual(json.loads(Path(self.env['MAINT_TEST_SERVER_STATE']).read_text())['ActiveState'],'active')
+
+    def test_real_readiness_rejects_lost_final_proof(self):
+        # Separate fixture per fault, including all counters and service state.
+        for fault in ('unknown-after-proof','replace-after-proof','disappear-after-proof'):
+            with self.subTest(fault=fault):
+                case=MaintenanceRecovery();case.setUp()
+                try:
+                    case.real_final_readiness(fault)
+                    p=case.invoke('--no-reboot')
+                    case.assert_failure_recovered(p,1,2)
+                finally:case.tearDown()
+
+    def test_real_recovery_disappearance_never_claims_ready(self):
+        self.real_final_readiness('disappear-before-wait','FAILED')
+        self.env['MAINT_TEST_REBOOT_RC']='7'
+        p=self.invoke()
+        self.assert_failure_recovered(p,7,1)
+        self.assertNotIn('serveur prêt',self.messages())
+        self.assertIn('non vérifiée',self.messages())
+
     def test_service_validated_start_disarms_without_rescue(self):
         p=self.invoke('--no-reboot')
         self.assertEqual(p.returncode,0,p.stdout+p.stderr)

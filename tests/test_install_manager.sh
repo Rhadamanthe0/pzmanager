@@ -59,7 +59,40 @@ for file in ProjectZomboid64 start-server.sh jre64/bin/java; do
     printf '#!/bin/sh\nexit 91 # fixture executable, never launched\n' > "$PZ_INSTALL_DIR/$file"
     chmod 0700 "$PZ_INSTALL_DIR/$file"
 done
-printf '{"mainClass":"zombie/network/GameServer","classpath":["java/."],"vmArgs": []}\n' > "$PZ_INSTALL_DIR/ProjectZomboid64.json"
+python3 - "$PZ_INSTALL_DIR" "${INSTALL_PAYLOAD:-complete}" <<'CLASSES'
+import json, pathlib, sys, zipfile
+root = pathlib.Path(sys.argv[1])
+kind = sys.argv[2]
+main = 'zombie/network/GameServer'
+classpath = ['java/.', 'optional-missing.jar', 'empty-libs/*']
+(root / 'empty-libs').mkdir(exist_ok=True)
+if kind != 'absent-classes':
+    (root / 'java').mkdir(exist_ok=True)
+if kind not in ('absent-classes', 'empty-classes', 'wrong-class', 'empty-class', 'jar', 'zip', 'wildcard', 'nested-wildcard', 'bad-jar'):
+    target = root / 'java' / (main + '.class')
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b'synthetic class presence fixture; never executed')
+if kind in ('wrong-class', 'empty-class'):
+    target = root / 'java' / (main + ('.class' if kind == 'empty-class' else 'Other.class'))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b'' if kind == 'empty-class' else b'synthetic other class')
+if kind in ('jar', 'zip', 'wildcard', 'nested-wildcard', 'bad-jar'):
+    archive = root / 'java' / ('game.zip' if kind == 'zip' else 'game.JAR')
+    if kind == 'nested-wildcard':
+        archive = root / 'java/nested/game.jar'
+        archive.parent.mkdir()
+    if kind == 'bad-jar':
+        archive.write_bytes(b'not a zip archive')
+    else:
+        with zipfile.ZipFile(archive, 'w') as jar:
+            jar.writestr(main + '.class', b'synthetic class presence fixture; never executed')
+    classpath = ['java/*' if 'wildcard' in kind else str(archive.relative_to(root)), 'optional-missing.jar', 'empty-libs/*']
+if kind == 'dotted':
+    main = main.replace('/', '.')
+if kind == 'absolute':
+    classpath[0] = str(root / 'java')
+(root / 'ProjectZomboid64.json').write_text(json.dumps(dict(mainClass=main, classpath=classpath, vmArgs=[])))
+CLASSES
 case "${INSTALL_PAYLOAD:-complete}" in
     incomplete) rm "$PZ_INSTALL_DIR/start-server.sh" ;;
     nonexec) chmod 0600 "$PZ_INSTALL_DIR/ProjectZomboid64" ;;
@@ -85,7 +118,7 @@ for state in active activating error; do
     [[ ! -e "$manager/Zomboid" && ! -e "$manager/.config" && ! -e "$HOME/.config/systemd/user/zomboid.service" ]]
 done
 echo 'OK état actif/transitoire/bus : aucun Steam, monde ou unité.'
-for payload in missing incomplete nonexec malformed schema; do
+for payload in missing incomplete nonexec malformed schema absent-classes empty-classes wrong-class empty-class nested-wildcard bad-jar; do
     rm -rf "$manager/data/pzserver"
     : > "$INSTALL_CALLS"
     if INSTALL_PAYLOAD="$payload" run_phase > "$SANDBOX/payload-$payload.log" 2>&1; then
@@ -96,6 +129,15 @@ for payload in missing incomplete nonexec malformed schema; do
     [[ ! -e "$manager/.admin_password" && ! -e "$manager/data/pzserver/ProjectZomboid64.json.bak" ]]
 done
 echo 'OK Steam exit0 sans payload valide : refus avant JVM/secret/activation.'
+# Même garde produit, sans lancement des exécutables de fixture. Chaque cas
+# manager ci-dessus a déjà exercé ce garde avant configuration/secret/enable.
+run_guard() {
+    bash -eu -c 'source "$1" --manager-root "$2"; source_env; validate_zomboid_payload' _ "$ROOT/data/scripts/install/configurationInitiale.sh" "$manager"
+}
+if run_guard > "$SANDBOX/guard-refusal.log" 2>&1; then
+    echo 'Garde direct : archive invalide acceptée' >&2; exit 1
+fi
+grep -q 'Payload Steam incomplet ou invalide' "$SANDBOX/guard-refusal.log"
 rm -rf "$manager/data/pzserver"
 : > "$INSTALL_CALLS"
 run_phase > "$SANDBOX/fresh.log" 2>&1 || { cat "$SANDBOX/fresh.log"; exit 1; }
@@ -108,6 +150,14 @@ import json,sys
 assert any(arg.startswith('-Xmx') for arg in json.load(open(sys.argv[1]))['vmArgs'])
 JSON
 echo 'OK fresh : JRE/Steam/JVM, chemins privés avant enable, FD exclusifs hérités/repris.'
+run_guard
+for payload in jar zip wildcard dotted absolute; do
+    rm -rf "$manager/data/pzserver"
+    INSTALL_PAYLOAD="$payload" run_phase > "$SANDBOX/positive-$payload.log" 2>&1 || { cat "$SANDBOX/positive-$payload.log"; exit 1; }
+    run_guard
+    grep -q 'Installation terminée' "$SANDBOX/positive-$payload.log"
+done
+echo 'OK garde direct et manager : classe répertoire/JAR/ZIP/wildcard, nom pointé, chemin absolu ; absents facultatifs et wildcard vide ignorés.'
 # Réinstallation : un lien externe doit être retiré et le stock restauré d'abord.
 external="$SANDBOX/external-jre"; mkdir "$external"
 echo untouched > "$external/victim"

@@ -190,10 +190,27 @@ def cleanup(path):
                 errors.append('Unit load state unproved: '+name)
             elif result.stdout.strip()=='loaded':loaded.append(name)
         if not errors and loaded:
-            for verb in ('stop','reset-failed'):
+            try:
+                result=systemctl('stop','--',*loaded,check=False)
+                if result.returncode:errors.append(result.stderr or 'stop failed')
+            except (OSError,subprocess.SubprocessError) as error:errors.append(str(error))
+            failed=[]
+            if not errors:
+                # A successful stop can garbage-collect a unit immediately.
+                # Only a freshly observed failed unit needs reset-failed.
+                for name in loaded:
+                    result=systemctl('show','--value','-p','LoadState','--',name,check=False)
+                    if result.returncode or result.stdout.strip() not in ('loaded','not-found'):
+                        errors.append('Post-stop load state unproved: '+name)
+                    elif result.stdout.strip()=='loaded':
+                        state=systemctl('show','--value','-p','ActiveState','--',name,check=False)
+                        if state.returncode or state.stdout.strip() not in ('inactive','failed'):
+                            errors.append('Post-stop inactive state unproved: '+name)
+                        elif state.stdout.strip()=='failed':failed.append(name)
+            if not errors and failed:
                 try:
-                    result=systemctl(verb,'--',*loaded,check=False)
-                    if result.returncode:errors.append(result.stderr or verb+' failed')
+                    result=systemctl('reset-failed','--',*failed,check=False)
+                    if result.returncode:errors.append(result.stderr or 'reset-failed failed')
                 except (OSError,subprocess.SubprocessError) as error:errors.append(str(error))
         # A failed stop leaves the evidence intact for an explicit retry.
         if errors:raise RuntimeError('; '.join(errors))

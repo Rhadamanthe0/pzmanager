@@ -719,7 +719,7 @@ validate_zomboid_payload() {
             || die "Payload Steam incomplet ou invalide : exécutable $file absent ou non régulier."
     done
     python3 - "$PZ_INSTALL_DIR/ProjectZomboid64.json" <<'PAYLOAD'
-import json, pathlib, sys
+import json, pathlib, sys, zipfile
 try:
     path = pathlib.Path(sys.argv[1])
     if path.is_symlink() or not path.is_file():
@@ -732,6 +732,44 @@ try:
             raise ValueError(key + " doit être une liste de chaînes")
     if not data["classpath"] or any(not entry for entry in data["classpath"]):
         raise ValueError("classpath vide")
+    # Le lanceur est exécuté depuis l'installation. Chercher le point
+    # d'entrée déclaré, sans imposer l'existence des entrées facultatives.
+    # Présence seulement : ni bytecode ni dépendances transitives validés.
+    main = data["mainClass"].replace(".", "/") + ".class"
+    if any(not part for part in main.split("/")) or "\\" in main:
+        raise ValueError("mainClass invalide")
+
+    def contains_main(entry):
+        try:
+            if entry.is_dir():
+                target = entry / main
+                if target.is_file():
+                    with target.open("rb") as stream:
+                        return bool(stream.read(1))
+            elif entry.is_file():
+                with zipfile.ZipFile(entry) as archive:
+                    with archive.open(main) as stream:
+                        return bool(stream.read(1))
+        except (OSError, ValueError, KeyError, zipfile.BadZipFile, RuntimeError, NotImplementedError):
+            pass
+        return False
+
+    found = False
+    for value in data["classpath"]:
+        entry = path.parent / value
+        if entry.name == "*":
+            # Wildcard Java : JAR directs seulement, expansion vide autorisée.
+            try:
+                candidates = [item for item in entry.parent.iterdir() if item.suffix in (".jar", ".JAR")]
+            except OSError:
+                candidates = []
+        else:
+            candidates = [entry]
+        if any(contains_main(candidate) for candidate in candidates):
+            found = True
+            break
+    if not found:
+        raise ValueError("classe d'entrée introuvable ou vide dans le classpath : " + data["mainClass"])
 except (OSError, ValueError) as error:
     print("Payload Steam incomplet ou invalide : " + str(error), file=sys.stderr)
     raise SystemExit(1)

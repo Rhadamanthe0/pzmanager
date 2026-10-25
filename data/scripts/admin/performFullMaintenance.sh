@@ -121,12 +121,24 @@ validate_final_start() {
         log "ERREUR: validation finale — service actif mais JVM ProjectZomboid64 absente."
         return 1
     fi
-    # wait_for_server_ready ne consomme PAS le délai joueurs (warn_players) : il
-    # attend le boot COURANT (boucle f:1, repli marqueur Lua), borné ici à 120 s.
-    # Gardé tel quel : un boot long post-validate retombe en FAILED explicite
-    # plutôt qu'en DONE aveugle.
+    local invocation current_invocation
+    invocation="$(server_readiness_invocation)" || {
+        log "ERREUR: validation finale — invocation active illisible."
+        return 1
+    }
+    # Attente du boot courant (frame native ou réponse players), bornée à 120 s.
+    # Son retour 0 signifie aussi « service arrêté » pour le parcours stop :
+    # la maintenance exige ensuite une preuve positive de la même invocation.
     if ! wait_for_server_ready 120; then
         log "ERREUR: validation finale — JVM présente mais boot jamais prêt (timeout 120 s)."
+        return 1
+    fi
+    if ! pgrep -f 'ProjectZomboid64' >/dev/null 2>&1; then
+        log "ERREUR: validation finale — JVM ProjectZomboid64 disparue après l'attente."
+        return 1
+    fi
+    if ! current_invocation="$(server_readiness_invocation)" || [[ "$current_invocation" != "$invocation" ]]; then
+        log "ERREUR: validation finale — invocation inactive, remplacée ou illisible après l'attente."
         return 1
     fi
     return 0
@@ -202,8 +214,8 @@ install -m 600 /dev/null "${MAINT_LOG}"
 exec > >(tee -a "${MAINT_LOG}") 2>&1
 
 stop_server() {
-    # NB délai : le wait_for_server_ready de pz.sh attend le boot COURANT (f:1 /
-    # marqueur Lua) AVANT préavis/comptage/arrêt et rend la main aussitôt prêt —
+    # NB délai : le wait_for_server_ready de pz.sh attend le boot COURANT (frame
+    # native ou réponse players) AVANT préavis/comptage/arrêt et rend la main aussitôt prêt —
     # il ne consomme le délai joueurs ($DELAY, warn_players) qu'en cas de boot
     # bloqué (timeout). Gardé tel quel.
     # Tableau et non chaînes non quotées : même raison que dans main() plus bas —

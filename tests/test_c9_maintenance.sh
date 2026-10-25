@@ -285,7 +285,7 @@ ln -s "$LIB_DIR" "${SANDBOX}/scripts/lib"
 export PZ_SOURCE_DIR="${SANDBOX}/Zomboid" PZ_HOME="$SANDBOX"
 cat > "${MOCKBIN}/systemctl" <<'MOCKEOF'
 #!/usr/bin/env bash
-printf '%s\n' LoadState=loaded ActiveState=active SubState=running MainPID=1234 ControlPID=0 InvocationID=fixture
+printf '%s\n' LoadState=loaded ActiveState=active SubState=running MainPID=1234 ControlPID=0 InvocationID=0123456789abcdef0123456789abcdef
 MOCKEOF
 chmod +x "${MOCKBIN}/systemctl"
 export PATH="${MOCKBIN}:$PATH"

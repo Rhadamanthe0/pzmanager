@@ -70,6 +70,79 @@ for k in keys:print(k+'='+str(s.get(k,{'LoadState':'loaded','InvocationID':'fixt
         self.assertEqual({str(p.relative_to(self.world)):p.read_bytes() for p in self.world.rglob('*') if p.is_file()},tree)
         reverted=transaction('finish','--token',prepared.stdout.strip(),'--state','reverted')
         self.assertEqual(reverted.returncode,0,reverted.stderr)
+    def whitelist_cli(self,*args):
+        shutil.copy2(ROOT/'pzm',self.repo/'pzm')
+        return subprocess.run(['bash',str(self.repo/'pzm'),'whitelist',*args],env=self.env,
+                              text=True,capture_output=True,timeout=20)
+
+    def test_whitelist_reads_locked_database_report_failure(self):
+        ledger=self.base/'ledger.csv'
+        players=self.players.read_bytes()
+        for bans in (False,True):
+            if bans:
+                with closing(sqlite3.connect(self.db)) as db:
+                    db.executescript("CREATE TABLE bannedid(steamid TEXT,reason TEXT); INSERT INTO bannedid VALUES('76561198000000099','fixture');")
+                    db.commit()
+            before=self.db.read_bytes()
+            for history in (None,b'# historical registry\nold;;1998-01-01\n'):
+                if history is not None:ledger.write_bytes(history)
+                with closing(sqlite3.connect(self.db)) as lock:
+                    lock.execute('BEGIN EXCLUSIVE')
+                    self.assertEqual(lock.execute('SELECT COUNT(*) FROM whitelist').fetchone()[0],3)
+                    self.assertEqual(lock.execute("SELECT COUNT(*) FROM whitelist WHERE username<>'admin' AND lastConnection<date('now','-30 days')").fetchone()[0],1)
+                    for args in (('list',),('purge','30j')):
+                        with self.subTest(bannedid=bans,history=history is not None,args=args):
+                            result=self.whitelist_cli(*args)
+                            self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                            self.assertIn('Lecture SQLite impossible',result.stderr)
+                            self.assertIn('locked',result.stderr)
+                            self.assertNotIn('Total: 0',result.stdout)
+                            self.assertNotIn('Aucun compte trouvé.',result.stdout)
+                            self.assertEqual(ledger.read_bytes() if ledger.exists() else None,history)
+                    help_result=self.whitelist_cli('help')
+                    self.assertEqual(help_result.returncode,0,help_result.stdout+help_result.stderr)
+                    self.assertIn('Usage:',help_result.stdout)
+                    lock.rollback()
+                self.assertEqual(self.db.read_bytes(),before)
+                self.assertEqual(self.players.read_bytes(),players)
+                if ledger.exists():ledger.unlink()
+
+    def test_whitelist_reads_nominal_and_empty(self):
+        ledger=self.base/'ledger.csv'
+        history=b'# historical registry\nold;;1998-01-01\nadmin;;1998-01-01\nkept;;1998-01-01\n'
+        ledger.write_bytes(history)
+        for bans in (False,True):
+            if bans:
+                with closing(sqlite3.connect(self.db)) as db:
+                    db.executescript("CREATE TABLE bannedid(steamid TEXT,reason TEXT); INSERT INTO bannedid VALUES('76561198000000099','fixture');")
+                    db.commit()
+            before=self.db.read_bytes();players=self.players.read_bytes()
+            listed=self.whitelist_cli('list')
+            self.assertEqual(listed.returncode,0,listed.stdout+listed.stderr)
+            self.assertIn('Total: 1 SteamID autorisé(s)',listed.stdout)
+            self.assertIn('Total: 3 compte(s)',listed.stdout)
+            self.assertEqual('SteamID bannis (1)' in listed.stdout,bans)
+            preview=self.whitelist_cli('purge','30j')
+            self.assertEqual(preview.returncode,0,preview.stdout+preview.stderr)
+            self.assertIn('Total: 1 compte(s)',preview.stdout)
+            self.assertIn('old',preview.stdout)
+            self.assertEqual(self.db.read_bytes(),before)
+            self.assertEqual(self.players.read_bytes(),players)
+            self.assertEqual(ledger.read_bytes(),history)
+        with closing(sqlite3.connect(self.db)) as db:
+            db.executescript('DELETE FROM whitelist; DELETE FROM allowedsteamid; DELETE FROM bannedid;')
+            db.commit()
+        before=self.db.read_bytes()
+        listed=self.whitelist_cli('list');preview=self.whitelist_cli('purge','30j')
+        self.assertEqual(listed.returncode,0,listed.stdout+listed.stderr)
+        self.assertIn('Total: 0 SteamID autorisé(s)',listed.stdout)
+        self.assertIn('Total: 0 compte(s)',listed.stdout)
+        self.assertEqual(preview.returncode,0,preview.stdout+preview.stderr)
+        self.assertIn('Aucun compte trouvé.',preview.stdout)
+        self.assertEqual(self.db.read_bytes(),before)
+        self.assertEqual(self.players.read_bytes(),players)
+        self.assertEqual(ledger.read_bytes(),history)
+
     def test_ledger_framing_keeps_distinct_unknown_account(self):
         self.check_ledger_framing()
     def test_ledger_new_file_and_interactive_purge_keep_unknown_account(self):

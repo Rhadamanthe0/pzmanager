@@ -124,37 +124,39 @@ list_whitelist() {
     # comptes/SteamID) -> on REGROUPE par SteamID (GROUP BY) et on concatène les
     # pseudos, sinon le LEFT JOIN démultiplie les lignes et le nombre affiché ne
     # correspond plus au total d'autorisations.
-    if ! sqlite3 -header -column "$DB_PATH" \
+    local results allowed_count count banned_table banned_count
+    wl_sql_or_die results "$DB_PATH" \
         "SELECT a.steamid AS steamid,
                 COALESCE(GROUP_CONCAT(w.username, ', '), '(jamais connecté)') AS comptes,
                 MAX(w.lastConnection) AS derniere_connexion
          FROM allowedsteamid a
          LEFT JOIN whitelist w ON w.steamid = a.steamid
          GROUP BY a.steamid
-         ORDER BY derniere_connexion DESC" 2>/dev/null; then
-        echo "(table allowedsteamid illisible)"
-    fi
-    local allowed_count
-    allowed_count=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM allowedsteamid" 2>/dev/null || echo "0")
+         ORDER BY derniere_connexion DESC" -header -column
+    [[ -z "$results" ]] || echo "$results"
+    wl_sql_or_die allowed_count "$DB_PATH" "SELECT COUNT(*) FROM allowedsteamid"
     echo ""
     echo "Total: $allowed_count SteamID autorisé(s)"
 
     echo ""
     echo "=== Comptes enregistrés (table whitelist) ==="
     echo ""
-    sqlite3 -header -column "$DB_PATH" "SELECT $WHITELIST_COLUMNS FROM whitelist ORDER BY lastConnection DESC" 2>/dev/null || true
-    local count
-    count=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist" 2>/dev/null || echo "0")
+    wl_sql_or_die results "$DB_PATH" "SELECT $WHITELIST_COLUMNS FROM whitelist ORDER BY lastConnection DESC" -header -column
+    [[ -z "$results" ]] || echo "$results"
+    wl_sql_or_die count "$DB_PATH" "SELECT COUNT(*) FROM whitelist"
     echo ""
     echo "Total: $count compte(s)"
 
-    local banned_count
-    banned_count=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM bannedid" 2>/dev/null || echo "0")
+    # La table optionnelle peut manquer ; une lecture échouée ne prouve pas son absence.
+    wl_sql_or_die banned_table "$DB_PATH" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='bannedid'"
+    [[ "$banned_table" -gt 0 ]] || return 0
+    wl_sql_or_die banned_count "$DB_PATH" "SELECT COUNT(*) FROM bannedid"
     if [[ "$banned_count" -gt 0 ]]; then
         echo ""
         echo "=== SteamID bannis ($banned_count) ==="
         echo ""
-        sqlite3 -header -column "$DB_PATH" "SELECT steamid, reason FROM bannedid" 2>/dev/null || true
+        wl_sql_or_die results "$DB_PATH" "SELECT steamid, reason FROM bannedid" -header -column
+        echo "$results"
     fi
 }
 
@@ -374,7 +376,8 @@ purge_whitelist() {
     echo "=== $description ==="
     echo ""
 
-    local results=$(sqlite3 -header -column "$DB_PATH" "SELECT $WHITELIST_COLUMNS FROM whitelist WHERE $where_clause ORDER BY lastConnection" 2>/dev/null)
+    local results count
+    wl_sql_or_die results "$DB_PATH" "SELECT $WHITELIST_COLUMNS FROM whitelist WHERE $where_clause ORDER BY lastConnection" -header -column
 
     if [[ -z "$results" ]]; then
         echo "Aucun compte trouvé."
@@ -384,7 +387,7 @@ purge_whitelist() {
     echo "$results"
     echo ""
 
-    local count=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE $where_clause" 2>/dev/null || echo "0")
+    wl_sql_or_die count "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE $where_clause"
     echo "Total: $count compte(s)"
 
     # Suppression si demandée
@@ -434,11 +437,12 @@ wl_assert_stopped_or_die() {
 }
 # Lecture fail-closed : toute erreur SQLite MEURT au lieu de se lire comme 0
 # ou vide (l'ancien `2>/dev/null || echo 0` transformait une base verrouillée
-# ou un schéma absent en décision). Usage: wl_sql_or_die VAR DB "SELECT ..."
+# ou un schéma absent en décision). Usage: wl_sql_or_die VAR DB "SELECT ..." [options SQLite]
 wl_sql_or_die() {
     local __var="$1" __db="$2" __sql="$3" __out __rc=0
     python3 "${SCRIPT_DIR}/../lib/account_safety.py" validate-db --db "$__db" || exit 1
-    __out="$(sqlite3 "$__db" "$__sql")" || __rc=$?
+    shift 3
+    __out="$(sqlite3 "$@" "$__db" "$__sql")" || __rc=$?
     if (( __rc != 0 )); then
         die "Lecture SQLite impossible (sqlite exit=${__rc}) — opération annulée, rien n'a été modifié (fail-closed)."
     fi
