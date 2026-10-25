@@ -63,9 +63,11 @@ vanilla var of its `VERSION` (6).
 
 ### Important Parameters
 
+Set the world name through [`PZ_SERVER_NAME`](CONFIGURATION.md#world-name),
+passed to the game as `-servername`, rather than an INI `ServerName` key.
+
 ```ini
 # servertest.ini
-ServerName=MyServer           # Internal name
 PublicName=My Public Name     # Browser display name
 Password=                     # Shared join password (empty = no password)
 MaxPlayers=32                # Maximum players
@@ -154,9 +156,10 @@ Default ports (automatically configured by pzmanager):
 - **16261/UDP** - Main game
 - **16262/UDP** - Secondary game
 
-These are the only two ports PZ B42 listens on, and the only two `setupSystem.sh`
-opens. The old 8766 (RCON) and 27015 (Steam query) entries were B41 leftovers: no
-socket uses them in B42, so they are deliberately left closed.
+These are the game ports managed by the installer. Native TCP RCON is a separate
+opt-in interface configured with `RCONPort`/`RCONPassword`; enabling it does not
+open its firewall port automatically. `pzm rcon` uses the local FIFO instead
+and needs no TCP RCON listener.
 
 Modification (only if conflict):
 ```ini

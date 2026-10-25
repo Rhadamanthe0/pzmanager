@@ -58,7 +58,9 @@ class MissingMetrics(unittest.TestCase):
             self.assertEqual(bot._online_players(state), 0)
 
     def collect(self, state, snapshot=None, *, meminfo=None, netdev=None,
-                now=None, prom_text=None):
+                now=None, prom_text=None, gc_log=None):
+        real_open = open
+
         def fixture_open(path, *args, **kwargs):
             fixtures = {
                 '/proc/meminfo': meminfo,
@@ -66,6 +68,8 @@ class MissingMetrics(unittest.TestCase):
                 '/proc/net/dev': netdev,
                 '/fixture.ini': 'MaxPacketsPerSecond=100\n',
             }
+            if gc_log is not None and str(path) == str(gc_log):
+                return real_open(path, *args, **kwargs)
             if str(path) not in fixtures or fixtures[str(path)] is None:
                 raise OSError('unavailable fixture: ' + str(path))
             return io.StringIO(fixtures[str(path)])
@@ -78,7 +82,10 @@ class MissingMetrics(unittest.TestCase):
                 '_gc_heap': None, '_recent_heapdump': None, '_online_players': None,
                 '_server_ini_path': '/fixture.ini',
             }.items():
-                stack.enter_context(patch.object(bot, name, return_value=value))
+                if name != '_gc_heap' or gc_log is None:
+                    stack.enter_context(patch.object(bot, name, return_value=value))
+            if gc_log is not None:
+                stack.enter_context(patch.object(bot, 'GC_LOG_PATH', str(gc_log)))
             if now is not None:
                 stack.enter_context(patch.object(bot.time, 'monotonic', return_value=now))
             if prom_text is None:
@@ -149,6 +156,35 @@ class MissingMetrics(unittest.TestCase):
                 row = dict(zip(bot._CSV_HEADER, bot._csv_row(observed)))
                 self.assertEqual(row['recv_cap_pct'], percentage)
                 self.assertEqual(row['pps_pct'], '')
+
+    def test_heap_capacity_is_observed_or_unknown_without_ram_heuristic(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / 'gc.log'
+            for ram in (32130864, 64 * 1048576):
+                for configured in ('', '24'):
+                    with self.subTest(ram=ram, configured=configured):
+                        log.write_text('[gc] GC(1) Major Collection (Timer) 9000M(55%)->8192M(50%) 1.0s\n')
+                        with patch.object(bot, 'GC_LOG_PATH', str(log)), \
+                             patch.dict(bot.os.environ, {'PZ_XMX_GB': configured}):
+                            observed = self.collect({}, meminfo=f'MemTotal: {ram} kB\n', gc_log=log)
+                            self.assertIsNone(bot._xmx_gb())
+                            view = _serveur('fixture')
+                            view.update(observed)
+                            field = next(f['value'] for f in bot._monitoring_embed(view).fields
+                                         if f['name'] == '🧠 RAM de PZ')
+                            self.assertIn('8.0 / — Go', field)
+                            self.assertIn('**50%**', field)
+                            row = dict(zip(bot._CSV_HEADER, bot._csv_row(view)))
+                            self.assertEqual(row['heap_pct'], '50')
+                            self.assertEqual(row['heap_used_mb'], '8192')
+            for capacity in ('16384M', '16G'):
+                with self.subTest(capacity=capacity), patch.object(bot, 'GC_LOG_PATH', str(log)):
+                    log.write_text('Max Capacity: ' + capacity + '\nSoft Max Capacity: 8192M\n')
+                    self.assertEqual(bot._xmx_gb(), 16)
+                    rotated = log.with_suffix('.log.1')
+                    log.rename(rotated)
+                    log.write_text('[gc] GC(2) Minor Collection (Timer) 9000M(55%)->8192M(50%) 1.0s\n')
+                    self.assertIsNone(bot._xmx_gb(), 'rotated header must not become a current observation')
 
     def test_missing_counters_never_become_rates_in_embed_or_csv(self):
         state = {}

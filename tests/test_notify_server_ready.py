@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Regression tests for the Discord ready notification and webhook transport."""
 import json
+import ast
+import re
 import os
 import shutil
 import subprocess
@@ -46,6 +48,9 @@ class ReadyNotificationTests(unittest.TestCase):
         console_start = common_source.index('console_players_responded() {')
         console_end = common_source.index('\n}\n', console_start) + 2
         console_helper = common_source[console_start:console_end]
+        frame_start = common_source.index('game_log_frame() {')
+        frame_end = common_source.index('\n}\n', frame_start) + 2
+        frame_helper = common_source[frame_start:frame_end]
         (self.lib / "common.sh").write_text(
             'source_env() {\n'
             '  PZ_MANAGER_DIR="$MOCK_MANAGER_DIR"\n'
@@ -53,7 +58,7 @@ class ReadyNotificationTests(unittest.TestCase):
             '  DISCORD_WEBHOOK="$MOCK_DISCORD_WEBHOOK"\n'
             '  export PZ_MANAGER_DIR PZ_SERVICE_NAME DISCORD_WEBHOOK\n'
             '}\n'
-            + private_state_helper + "\n" + console_helper + "\n"
+            + private_state_helper + "\n" + console_helper + "\n" + frame_helper + "\n"
         )
         (self.mockbin / "systemctl").write_text(
             '#!/usr/bin/env python3\n'
@@ -89,6 +94,10 @@ class ReadyNotificationTests(unittest.TestCase):
             '    if "INVOCATION_ID=" + boot not in sys.argv[1:]: sys.exit(0)\n'
             '    mode = "instant"\n'
             'if mode == "delayed": time.sleep(2)\n'
+            'if mode == "payload-frame":\n'
+            '    print(\'LOG : General f:0 st:123> command entered via server console (System.in): "servermsg f:42 st: f:19 st:"\', flush=True)\n'
+            'if mode == "native-frame-with-payload":\n'
+            '    print("LOG  : General      f:42 t:1,234 st:1\\u202f234 at GameServer.main> servermsg f:0 st:999> loading", flush=True)\n'
             'if mode in ("instant", "delayed"):\n'
             '    print("LOG : General f:0 st:123> loading", flush=True)\n'
             '    print("LOG : General f:2 st:456> ready", flush=True)\n'
@@ -169,6 +178,16 @@ class ReadyNotificationTests(unittest.TestCase):
         self.assertEqual(self.sent_count(), 0, result.stdout + result.stderr)
         self.assertEqual((self.root / 'invocation').read_text(), BOOT_B)
 
+    def test_payload_frame_does_not_announce_ready(self):
+        env=dict(self.env,MOCK_JOURNAL_MODE='payload-frame',PZ_NOTIFY_READY_TIMEOUT='1')
+        result=self.run_ready(env=env)
+        self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual(self.sent_count(),0)
+    def test_native_positive_frame_with_zero_payload_is_announced(self):
+        env=dict(self.env,MOCK_JOURNAL_MODE='native-frame-with-payload')
+        result=self.run_ready(env=env)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual(self.sent_count(),1)
     def test_ready_frame_announced_once(self):
         result = self.run_ready()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -379,26 +398,46 @@ class DiscordTransportTests(unittest.TestCase):
         self.script = internal / "sendDiscord.sh"
         shutil.copy2(ROOT / "data/scripts/internal/sendDiscord.sh", self.script)
         (lib / "common.sh").write_text(
-            'source_env() { DISCORD_WEBHOOK="$MOCK_DISCORD_WEBHOOK"; }\n'
+            'source_env() { source "$MOCK_ENV_FILE"; DISCORD_WEBHOOK="${MOCK_DISCORD_WEBHOOK-$DISCORD_WEBHOOK}"; if [[ -v MOCK_SOURCE_OVERRIDE ]]; then export PZ_DISCORD_WEBHOOK_OVERRIDE="$MOCK_SOURCE_OVERRIDE"; fi; }\n'
         )
+        self.binpath=binpath
+        self.real_curl=shutil.which('curl')
+        (self.base/'.env').write_text("DISCORD_WEBHOOK='https://discord.invalid/SECRET'\n")
+        python=binpath/'python3'
+        python.write_text('#!/usr/bin/python3\nimport json,os,pathlib,sys\n'
+                          'with pathlib.Path(os.environ["MOCK_ARGV"]).open("a") as stream: stream.write(json.dumps({"command":"python3","arguments":sys.argv[1:]})+"\\n")\n'
+                          'if os.environ.get("MOCK_CONFIG_FAIL"):sys.exit(9)\n'
+                          'os.execv("/usr/bin/python3",["/usr/bin/python3",*sys.argv[1:]])\n')
+        python.chmod(0o700)
         curl = binpath / "curl"
-        curl.write_text(
-            '#!/usr/bin/env python3\n'
-            'import os, pathlib, sys\n'
-            'args = sys.argv[1:]\n'
-            'if os.environ.get("MOCK_TARGET"):\n'
-            '    pathlib.Path(os.environ["MOCK_TARGET"]).write_text(args[-1])\n'
-            'path = os.environ.get("MOCK_PAYLOAD")\n'
-            'if path and "-d" in args:\n'
-            '    pathlib.Path(path).write_text(args[args.index("-d") + 1])\n'
-            'print(os.environ.get("MOCK_HTTP", "204"), end="")\n'
-            'sys.exit(int(os.environ.get("MOCK_CURL_RC", "0")))\n'
-        )
+        curl.write_text(r"""#!/usr/bin/python3
+import json,os,pathlib,re,sys
+args=sys.argv[1:]
+with pathlib.Path(os.environ['MOCK_ARGV']).open('a') as stream:stream.write(json.dumps({'command':'curl','arguments':args})+'\n')
+if '--config' in args:
+ config=sys.stdin.read();pathlib.Path(os.environ['MOCK_CONFIG']).write_text(config)
+ fields={}
+ for line in config.split('\n'):
+  if not line.strip():continue
+  key,separator,value=line.partition('=');value=value.strip()
+  if not separator or not (value.startswith('"') and value.endswith('"')):raise SystemExit(2)
+  escapes={'n':'\n','r':'\r','t':'\t','v':'\v','"':'"','\\':'\\'}
+  fields[key.strip()]=re.sub(r'\\(.)',lambda match:escapes.get(match[1],match[1]),value[1:-1])
+ target=fields['url'];payload=fields['data']
+else:
+ target=args[-1];payload=args[args.index('-d')+1]
+pathlib.Path(os.environ['MOCK_TARGET']).write_text(target)
+pathlib.Path(os.environ['MOCK_PAYLOAD']).write_text(payload)
+print(os.environ.get('MOCK_HTTP','204'),end='')
+sys.exit(int(os.environ.get('MOCK_CURL_RC','0')))
+""")
         curl.chmod(0o755)
         self.env = dict(os.environ)
         self.env.update({
             "PATH": f'{binpath}:{os.environ.get("PATH", "")}',
-            "MOCK_DISCORD_WEBHOOK": "https://discord.invalid/SECRET",
+            "MOCK_ENV_FILE": str(self.base/'.env'),
+            "MOCK_ARGV": str(self.base/'argv.jsonl'),
+            "MOCK_CONFIG": str(self.base/'curl.config'),
             "MOCK_HTTP": "204",
             "MOCK_PAYLOAD": str(self.base / "payload.json"),
             "MOCK_TARGET": str(self.base / "target.txt"),
@@ -413,9 +452,66 @@ class DiscordTransportTests(unittest.TestCase):
             timeout=5
         )
 
+    def test_private_environment_override_is_snapshotted_and_cli_wins(self):
+        env=dict(self.env,PZ_DISCORD_WEBHOOK_OVERRIDE='https://discord.invalid/PRIVATE',MOCK_SOURCE_OVERRIDE='https://discord.invalid/REEXPORTED')
+        result=self.run_discord(strict=True,env=env)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual((self.base/'target.txt').read_text(),'https://discord.invalid/PRIVATE')
+        result=subprocess.run(['bash',str(self.script),'incident','--webhook','https://discord.invalid/EXPLICIT','--strict'],
+                              env=env,capture_output=True,text=True,timeout=5)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual((self.base/'target.txt').read_text(),'https://discord.invalid/EXPLICIT')
+
+    def test_empty_private_environment_does_not_fall_back_to_public(self):
+        env=dict(self.env,PZ_DISCORD_WEBHOOK_OVERRIDE='')
+        self.assertEqual(self.run_discord(env=env).returncode,0)
+        self.assertEqual(self.run_discord(strict=True,env=env).returncode,1)
+        self.assertFalse((self.base/'target.txt').exists())
+
+    def test_default_env_webhook_is_not_forwarded_in_process_arguments(self):
+        result=self.run_discord(strict=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual((self.base/'target.txt').read_text(),'https://discord.invalid/SECRET')
+        argv=(self.base/'argv.jsonl').read_text()
+        self.assertNotIn('https://discord.invalid/SECRET',argv)
+        self.assertNotIn('SECRET',argv)
+        self.assertNotIn('SECRET',result.stdout+result.stderr)
+
+    def test_native_curl_config_parser_preserves_url_and_payload_without_network(self):
+        if not self.real_curl:self.skipTest('curl unavailable')
+        destinations=('https://discord.invalid/quo"te\\slash/SECRET?path=é', 'https://discord.invalid/SECRET\b\f\x01\nheader=not-an-option')
+        content='Annonce\n\r\t"citation" \\ slash 🧟 contrôle\b\f\x01'
+        for destination in destinations:
+            with self.subTest(destination=destination):
+                result=self.run_discord(strict=True,env=dict(self.env,MOCK_DISCORD_WEBHOOK=destination),message=content)
+                self.assertEqual(result.returncode,0,result.stderr)
+                config=self.base/'curl.config';self.assertTrue(config.exists())
+                output=self.base/'curl-native.c'
+                native=subprocess.run([self.real_curl,'--config','-','--proto','=file','--libcurl',str(output),'--output','/dev/null'],
+                                      input=config.read_text(),capture_output=True,text=True,timeout=5)
+                self.assertNotEqual(native.returncode,0)
+                self.assertTrue(output.is_file(),native.stderr)
+                source=output.read_text()
+                for option,expected in (('CURLOPT_URL',destination),('CURLOPT_POSTFIELDS',json.dumps({'content':content},ensure_ascii=False))):
+                    literal=re.search(option+r',\s*((?:"(?:\\.|[^"\\])*"\s*)+)\);',source)
+                    self.assertIsNotNone(literal,source)
+                    chunks=re.findall(r'"(?:\\.|[^"\\])*"',literal[1])
+                    value=b''.join(ast.literal_eval('b'+chunk.replace(r'\?', '?')) for chunk in chunks).decode('utf-8')
+                    self.assertEqual(value,expected)
+                self.assertEqual((self.base/'target.txt').read_text(),destination)
+                self.assertEqual(json.loads((self.base/'payload.json').read_text()),{'content':content})
+
+    def test_config_generation_failure_is_strict_or_best_effort_without_transport(self):
+        env=dict(self.env,MOCK_CONFIG_FAIL='1')
+        self.assertEqual(self.run_discord(strict=True,env=env).returncode,1)
+        self.assertEqual(self.run_discord(env=env).returncode,0)
+        self.assertFalse((self.base/'target.txt').exists())
+
     def test_discord_success(self):
-        result = self.run_discord(strict=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        for status in ('200','201','204','207','299'):
+            with self.subTest(status=status):
+                result = self.run_discord(strict=True,env=dict(self.env,MOCK_HTTP=status))
+                self.assertEqual(result.returncode,0,result.stderr)
 
     def test_multiline_control_and_unicode_json(self):
         content = 'Annonce\nLigne 2\r\t"citation" \\ barre 🧟'
@@ -425,14 +521,14 @@ class DiscordTransportTests(unittest.TestCase):
         self.assertEqual(payload, {"content": content})
 
     def test_discord_http_error_strict_and_best_effort(self):
-        env = dict(self.env, MOCK_HTTP="429")
-        strict = self.run_discord(strict=True, env=env)
-        self.assertNotEqual(strict.returncode, 0)
-        self.assertIn("HTTP=429", strict.stderr)
-        self.assertNotIn("SECRET", strict.stderr)
-        best_effort = self.run_discord(env=env)
-        self.assertEqual(best_effort.returncode, 0, best_effort.stderr)
-        self.assertIn("HTTP=429", best_effort.stderr)
+        for status in ('400','429','500','503'):
+            with self.subTest(status=status):
+                env=dict(self.env,MOCK_HTTP=status)
+                for strict,expected in ((True,1),(False,0)):
+                    result=self.run_discord(strict=strict,env=env)
+                    self.assertEqual(result.returncode,expected,result.stderr)
+                    self.assertIn('HTTP='+status,result.stderr)
+                    self.assertNotIn('SECRET',result.stdout+result.stderr)
 
     def test_explicit_webhook_options_in_both_orders(self):
         destination = "https://discord.invalid/ADMIN"
@@ -473,10 +569,14 @@ class DiscordTransportTests(unittest.TestCase):
                 self.assertIn("--webhook requiert une URL", result.stderr)
 
     def test_discord_transport_failure(self):
-        env = dict(self.env, MOCK_HTTP="000", MOCK_CURL_RC="7")
-        result = self.run_discord(strict=True, env=env)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("curl=7", result.stderr)
+        for code in ('7','28'):
+            with self.subTest(code=code):
+                env=dict(self.env,MOCK_HTTP='000',MOCK_CURL_RC=code)
+                for strict,expected in ((True,1),(False,0)):
+                    result=self.run_discord(strict=strict,env=env)
+                    self.assertEqual(result.returncode,expected,result.stderr)
+                    self.assertIn('curl='+code,result.stderr)
+                    self.assertNotIn('SECRET',result.stdout+result.stderr)
 
     def test_missing_webhook_in_strict_mode(self):
         env = dict(self.env, MOCK_DISCORD_WEBHOOK="")

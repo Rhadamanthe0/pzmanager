@@ -152,6 +152,7 @@ if [[ "$DRY_RUN" != true ]]; then
     # ne porte aucun `2>/dev/null`, seul le `flock -n` sonde est masqué) —
     # aucune sauvegarde/restauration de fd n'est nécessaire ici.
     acquire_world_lock --required || exit 1
+    python3 "${SCRIPT_DIR}/../lib/world_transaction.py" check --world "$PZ_SOURCE_DIR" || exit 1
     if declare -F assert_server_stopped_proven >/dev/null 2>&1; then
         assert_server_stopped_proven "Restauration personnage"
     else

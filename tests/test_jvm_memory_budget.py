@@ -124,7 +124,7 @@ class StartupBudget(unittest.TestCase):
         unit = (ROOT / "data/setupTemplates/zomboid.service").read_text()
         preflight = "ExecStartPre=/usr/bin/python3 %h/pzmanager/data/scripts/lib/jvm_memory_budget.py check %h/pzmanager/data/pzserver/ProjectZomboid64.json"
         self.assertIn(preflight, unit)
-        self.assertLess(unit.index(preflight), unit.index("ExecStartPre=-%h/pzmanager/data/scripts/admin/purgeInactivePlayers.sh"))
+        self.assertLess(unit.index(preflight), unit.index("ExecStartPre=%h/pzmanager/data/scripts/internal/prepareWorldStart.sh"))
         self.assertLess(unit.index(preflight), unit.index("ExecStart="))
         self.assertIn("MemoryMax=20G", unit)
         self.assertNotIn("--planned-limit", unit)

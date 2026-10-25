@@ -27,6 +27,10 @@ class CharacterDataSafety(unittest.TestCase):
         script.parent.mkdir(parents=True)
         shutil.copy2(os.environ.get('PZ_CHARACTER_RESTORE_SCRIPT', ROOT/'data/scripts/backup/restoreCharacter.sh'), script)
         lib = script.parent.parent/'lib'; lib.mkdir()
+        # Execute the real transaction guard and its real path/ownership reader.
+        shutil.copy2(ROOT/'data/scripts/lib/world_transaction.py',lib/'world_transaction.py')
+        internal=script.parent.parent/'internal';internal.mkdir()
+        shutil.copy2(ROOT/'data/scripts/internal/configureWritingTextOnly.py',internal/'configureWritingTextOnly.py')
         (lib/'common.sh').write_text("""
 source_env() { :; }
 require_sqlite() { :; }
@@ -56,6 +60,22 @@ sql_escape() { printf '%s' "$1" | sed "s/'/''/g"; }
 
     def run_restore(self, *args):
         return subprocess.run(['bash',str(self.script),'selected',str(self.source),*args],env=self.env,capture_output=True,text=True,timeout=10)
+
+    def test_prepared_transaction_refuses_before_delete_and_can_revert(self):
+        self.database(self.source);self.database(self.live)
+        world=self.root/'live';staged=self.root/'staged';shutil.copytree(world,staged)
+        helper=self.script.parent.parent/'lib/world_transaction.py'
+        def transaction(*args):
+            return subprocess.run(['python3',str(helper),*args,'--world',str(world)],env=self.env,capture_output=True,text=True,timeout=10)
+        prepared=transaction('begin','--kind','fixture','--recovery',str(self.root/'recovery'),'--after-tree',str(staged))
+        self.assertEqual(prepared.returncode,0,prepared.stderr)
+        before=self.live.read_bytes();source=self.source.read_bytes()
+        result=self.run_restore()
+        self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('unfinished',result.stderr)
+        self.assertEqual(self.live.read_bytes(),before);self.assertEqual(self.source.read_bytes(),source)
+        reverted=transaction('finish','--token',prepared.stdout.strip(),'--state','reverted')
+        self.assertEqual(reverted.returncode,0,reverted.stderr)
 
     def test_native_refusal_precedes_delete_and_leaves_all_rows_intact(self):
         self.database(self.source);self.database(self.live)

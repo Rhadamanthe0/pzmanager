@@ -112,6 +112,7 @@ fi
 # puis arrêt PROUVÉ (inactive seule ; failed/unknown/error -> refus fail-closed).
 # Le snapshot --snapshot-only enfant participe au verrou (pas de deadlock).
 acquire_world_lock --required || exit 1
+python3 "${SCRIPT_DIR}/../lib/world_transaction.py" check --world "$PZ_SOURCE_DIR" || exit 1
 if declare -F assert_server_stopped_proven >/dev/null 2>&1; then
     assert_server_stopped_proven "Wipe de zone carte"
 else

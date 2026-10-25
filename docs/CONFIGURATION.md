@@ -76,10 +76,9 @@ export PZ_PORT_GAME=16261             # DefaultPort in servertest.ini
 export PZ_PORT_GAME2=16262            # UDPPort in servertest.ini
 ```
 
-`PZ_PORT_RCON` and `PZ_PORT_STEAM` were removed: no script read them, and B42
-binds neither port. Note the two names were also **swapped** here relative to
-`.env.example` (8766 is the Steam port, 27015 the RCON one) — an inversion that
-cancelled itself out only because both values were unused.
+`PZ_PORT_RCON` and `PZ_PORT_STEAM` are retired; they configure neither listeners
+nor firewall rules. See [network ports](SERVER_CONFIG.md#network-ports) for the
+separate native TCP RCON interface and PZManager's local FIFO transport.
 
 ### SteamCMD
 

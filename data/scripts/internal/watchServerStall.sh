@@ -363,8 +363,8 @@ if (( runnable_count < ${#main_lines[@]} )) || (( burn_pct < BURN_MIN_PCT )); th
     # aurait dit sur QUOI la main loop était bloquée venait d'être effacé.
     log "stallwatch: NON CONCLUANT (main runnable ${runnable_count}/${#main_lines[@]}, CPU brûlé ${burn_pct}% < ${BURN_MIN_PCT}%) — pas de redémarrage ; capture CONSERVÉE dans ${out} ; pause ${FALSE_POSITIVE_COOLDOWN}s."
     if [[ -n "${DISCORD_ADMIN_WEBHOOK:-}" ]]; then
-        notify "⚠️ Boucle principale bloquée ${clients} joueur(s), sans consommer de CPU — pas un gel actif, aucun redémarrage. Dump : \`logs/zomboid/$(basename "$out")\`" \
-            --webhook "${DISCORD_ADMIN_WEBHOOK}"
+        PZ_DISCORD_WEBHOOK_OVERRIDE="$DISCORD_ADMIN_WEBHOOK" \
+            notify "⚠️ Boucle principale bloquée ${clients} joueur(s), sans consommer de CPU — pas un gel actif, aucun redémarrage. Dump : \`logs/zomboid/$(basename "$out")\`"
     fi
     # Réarmer : sans ça, `strikes` continuait de grimper et le script répondait
     # « dump déjà pris » sans plus rien vérifier — 40 min d'aveuglement le 14/08
@@ -386,12 +386,11 @@ fi
 
 # Détail technique (chemin du dump) : réservé à l'admin. Sur
 # DISCORD_ADMIN_WEBHOOK si défini dans .env, sinon journal seul — jamais sur le
-# canal public. Passe par sendDiscord.sh --webhook plutôt que par un jq|curl
-# recopié : celui-ci n'avait pas le repli sans jq du script partagé, donc le
-# message admin disparaissait en silence sur une machine sans jq.
+# canal public. Le helper partagé transmet l'URL via l'environnement privé,
+# jamais argv, et conserve le repli sans jq.
 if [[ -n "${DISCORD_ADMIN_WEBHOOK:-}" ]]; then
-    notify "🧊 Gel confirmé (main RUNNABLE, ${clients} joueur(s), compteur figé ~$(( STALL_SAMPLES + 1 )) min). Thread dump : \`logs/zomboid/stall_${ts}.txt\`" \
-        --webhook "${DISCORD_ADMIN_WEBHOOK}"
+    PZ_DISCORD_WEBHOOK_OVERRIDE="$DISCORD_ADMIN_WEBHOOK" \
+        notify "🧊 Gel confirmé (main RUNNABLE, ${clients} joueur(s), compteur figé ~$(( STALL_SAMPLES + 1 )) min). Thread dump : \`logs/zomboid/stall_${ts}.txt\`"
 fi
 
 # --- Redémarrage automatique --------------------------------------------------

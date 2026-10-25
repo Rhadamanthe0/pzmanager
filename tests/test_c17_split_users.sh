@@ -98,8 +98,8 @@ rm -f "$tmp_env"
 [[ -z "${PZ_GAME_USER:-}" ]] || fail "valeur invalide acceptée : ${PZ_GAME_USER:-}"
 pass "env_parse.sh : PZ_GAME_USER/PZ_MANAGER_USER validés comme PZ_USER, reste rejeté"
 
-# --- (b) zomboid.service : identité split déclarée + durcissement ------------
-for key in 'User=' 'NoNewPrivileges=true' 'ProtectSystem=strict' 'ReadWritePaths'; do
+# --- (b) unités --user : identité héritée et durcissement -------------------
+for key in 'NoNewPrivileges=true' 'ProtectSystem=strict' 'ReadWritePaths'; do
     grep -qF "$key" "$SERVICE" || fail "zomboid.service : '$key' absent"
 done
 grep -q 'WorkingDirectory=' "$SERVICE" || fail "zomboid.service : WorkingDirectory perdu"
@@ -110,10 +110,9 @@ code_lines "$SERVICE" | grep -qE '^[[:space:]]*User=' \
 grep -q 'ReadWritePaths=%h/pzmanager/data/pzserver' "$SERVICE" || fail "ReadWritePaths install absent"
 grep -q 'ReadWritePaths=.*%h/pzmanager/Zomboid' "$SERVICE" || fail "ReadWritePaths monde absent"
 grep -q 'ReadWritePaths=.*%h/pzmanager/logs' "$SERVICE" || fail "ReadWritePaths logs absent"
-pass "zomboid.service : User= documenté (commenté, unité --user), durcissement + ReadWritePaths install/monde/logs"
+pass "zomboid.service : identité héritée (--user), durcissement + ReadWritePaths install/monde/logs"
 grep -q 'SocketMode=0660' "$SOCKET" || fail "zomboid.socket : SocketMode 0660 perdu"
-grep -q 'SocketGroup' "$SOCKET" || fail "zomboid.socket : SocketGroup non documenté"
-pass "zomboid.socket : SocketMode 0660 conservé, SocketGroup documenté"
+pass "zomboid.socket : SocketMode 0660 conservé"
 
 # --- (c) secrets manager jamais exposés ; split refusé dynamiquement en (e) ---
 grep -n 'chmod 0600' "$SETUP_SYS" | grep -qiE 'secret|ssh' \

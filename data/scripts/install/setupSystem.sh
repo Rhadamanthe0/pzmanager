@@ -192,20 +192,28 @@ ufw_run() {
     ufw "$@"
 }
 
-# Port(s) SSH réel(s) (C12) : écoute sshd observée d'abord
-# (`ss -lntp | grep sshd`, mockable via PATH), sinon directive Port de
-# ${PZ_SSHD_CONFIG:-/etc/ssh/sshd_config} (surchargeable pour les tests),
-# sinon 22. Imprime un port par ligne, 22 toujours inclus (garde-fou admin :
-# on ne se lock-out jamais en oubliant le port standard).
+# Ports SSH observés en priorité ; sinon configuration effective (Include inclus).
+# Sans binaire NI configuration, installation locale sans SSH : garde-fou 22.
+# Une configuration indéterminée refuse toute mutation du pare-feu.
 detect_ssh_port() {
-    local sshd_config="${PZ_SSHD_CONFIG:-/etc/ssh/sshd_config}" ports=""
+    local sshd_config="${PZ_SSHD_CONFIG:-/etc/ssh/sshd_config}" ports="" effective="" sshd_bin=""
     if command -v ss >/dev/null 2>&1; then
-        # Sonde lecture seule : le `|| true` absorbe le grep sans match.
         ports="$(ss -lntp 2>/dev/null | grep -i sshd | grep -oE ':[0-9]+' | tr -d ':' | sort -nu || true)"
     fi
-    if [[ -z "$ports" && -f "$sshd_config" ]]; then
-        # Sonde lecture seule : idem ci-dessus.
-        ports="$(grep -iE '^[[:space:]]*Port[[:space:]]+[0-9]+' "$sshd_config" | grep -oE '[0-9]+' | sort -nu || true)"
+    if [[ -z "$ports" ]]; then
+        sshd_bin="$(command -v sshd || command -v /usr/sbin/sshd || true)"
+        if [[ -n "$sshd_bin" && -f "$sshd_config" ]]; then
+            effective="$(LC_ALL=C LANGUAGE=C "$sshd_bin" -T -f "$sshd_config")" \
+                || { echo "[ERROR] Configuration SSH indéterminée : aucune règle modifiée." >&2; return 1; }
+            ports="$(awk 'tolower($1)=="port" {print $2}' <<< "$effective")"
+            [[ -n "$ports" ]] \
+                || { echo "[ERROR] Aucun port SSH effectif : aucune règle modifiée." >&2; return 1; }
+        elif [[ -n "$sshd_bin" || -e "$sshd_config" || -L "$sshd_config" ]]; then
+            echo "[ERROR] Configuration ou binaire SSH indisponible : aucune règle modifiée." >&2
+            return 1
+        else
+            echo "[INFO] Aucun serveur SSH installé ; accès local, garde-fou 22." >&2
+        fi
     fi
     if [[ -n "$ports" ]]; then
         # sshd accepte les zéros initiaux en décimal : comparer et autoriser
@@ -301,11 +309,7 @@ configure_firewall() {
         ufw_run default deny incoming || return 1
         ufw_run default allow outgoing || return 1
     fi
-    # Accès admin conservé : OpenSSH + chaque port sshd détecté.
-    if ! ufw_has_rule "OpenSSH"; then
-        ufw_run allow OpenSSH || return 1
-        added+=("OpenSSH")
-    fi
+    # Ports numériques : le profil OpenSSH peut être absent (installation locale).
     while IFS= read -r p; do
         [[ -n "$p" ]] || continue
         if ! ufw_has_rule "${p}/tcp"; then

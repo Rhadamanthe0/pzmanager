@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Real maintenance entrypoint/state/trap; package, game and reboot boundaries stubbed."""
+from contextlib import closing
 import json
 import os
 from pathlib import Path
@@ -39,7 +40,12 @@ from pathlib import Path
 state=Path(os.environ['PZ_MAINT_STATE_FILE']);events=Path(os.environ['MAINT_TEST_EVENTS'])
 starts=sum(e['kind']=='pz' and e['args'][0]=='start' for e in map(json.loads,events.read_text().splitlines())) if events.exists() else 0
 with events.open('a') as out:out.write(json.dumps(dict(kind='pz',args=sys.argv[1:],state=state.read_text().strip() if state.exists() else None,armed=Path(str(state)+'.recovery_armed').exists()))+'\\n')
-sys.exit(int(os.environ.get('MAINT_TEST_FIRST_START_RC','0')) if sys.argv[1]=='start' and starts==0 else 0)
+rc=int(os.environ.get('MAINT_TEST_FIRST_START_RC','0')) if sys.argv[1]=='start' and starts==0 else 0
+if rc==0 and not (sys.argv[1]=='stop' and os.environ.get('MAINT_TEST_FAKE_STOP_NO_STATE_CHANGE')=='1'):
+ service=Path(os.environ['MAINT_TEST_SERVER_STATE']);data=json.loads(service.read_text())
+ data.update(ActiveState='inactive' if sys.argv[1]=='stop' else 'active',SubState='dead' if sys.argv[1]=='stop' else 'running',MainPID='0' if sys.argv[1]=='stop' else '1234',ControlPID='0')
+ service.write_text(json.dumps(data))
+sys.exit(rc)
 ''')
         for relative in ('internal/linkJvm.sh','internal/configureJvm.sh','backup/fullBackup.sh'):
             self.executable(self.repo/'data/scripts'/relative,'#!/bin/bash\nexit 0\n')
@@ -52,6 +58,10 @@ if os.environ.get('MAINT_TEST_BUS_REFUSED')=='1':sys.exit(1)
 path=Path(os.environ['MAINT_TEST_SERVER_STATE']) if os.environ.get('MAINT_TEST_SERVER_STATE') else None
 state=json.loads(path.read_text()) if path else dict(LoadState='loaded',ActiveState='active' if os.environ.get('MAINT_TEST_ACTIVE','1')=='1' else 'inactive',SubState='running',MainPID='1234',ControlPID='0',InvocationID='fixture')
 args=sys.argv[1:]
+if path and os.environ.get('MAINT_TEST_ACTIVATE_ON_SHOW')=='1' and 'show' in args and state['ActiveState']=='activating':
+ count=path.with_suffix('.shows');n=int(count.read_text())+1 if count.exists() else 1;count.write_text(str(n))
+ if n>1:
+  state.update(ActiveState='active',SubState='running',MainPID='1234',ControlPID='0');path.write_text(json.dumps(state))
 if 'is-active' in args:sys.exit(0 if state['ActiveState']=='active' else 3)
 for action in ('stop','start'):
  if action in args:
@@ -70,6 +80,9 @@ for key in keys:print(key+'='+str(state[key]))
         vals=dict(PZ_HOME=str(self.base),PZ_SOURCE_DIR=str(self.world),PZ_INSTALL_DIR=str(self.game),JAVA_PATH=str(self.java),STEAMCMD_PATH=str(self.bin/'steamcmd'),PZ_MAINT_SELF_UPDATE='0')
         (self.repo/'.env').write_text('\n'.join(k+'='+shlex.quote(v) for k,v in vals.items())+'\n')
         self.env=dict(os.environ,PATH=str(self.bin)+':'+os.environ['PATH'],XDG_RUNTIME_DIR=str(self.runtime),PZ_MAINT_STATE_FILE=str(self.state),MAINT_TEST_EVENTS=str(self.events),MAINT_TEST_NOTES=str(self.notes))
+        service=self.base/'service.json'
+        service.write_text(json.dumps(dict(LoadState='loaded',ActiveState='active',SubState='running',MainPID='1234',ControlPID='0',InvocationID='fixture')))
+        self.env['MAINT_TEST_SERVER_STATE']=str(service)
     def tearDown(self):self.tmp.cleanup()
     def executable(self,path,text):path.write_text(text);path.chmod(0o700)
     def invoke(self,*args):
@@ -102,7 +115,8 @@ with open(os.environ['MAINT_TEST_EVENTS'],'a') as out:out.write(json.dumps(dict(
 sys.exit(23)
 ''')
         (self.world/'db').mkdir()
-        with sqlite3.connect(self.world/'db/servertest.db') as db:db.execute('CREATE TABLE fixture(value TEXT)')
+        with closing(sqlite3.connect(self.world/'db/servertest.db')) as db:
+            db.execute('CREATE TABLE fixture(value TEXT)');db.commit()
         return state
     def test_backup_failure_after_real_stop_recovers(self):
         state=self.real_stop_backup_chain()
@@ -115,6 +129,45 @@ sys.exit(23)
         self.assertEqual(self.state.read_text().strip(),'FAILED')
         self.assertTrue(Path(str(self.state)+'.recovery_armed').exists())
         self.assertIn('prêt',self.messages())
+    def test_bus_refusal_with_successful_rsync_never_reaches_system_phases(self):
+        state=self.real_stop_backup_chain();self.env['MAINT_TEST_BUS_REFUSED']='1'
+        (self.bin/'rsync').unlink()  # Genuine successful copy must not mask bus refusal.
+        p=self.invoke('--no-reboot')
+        self.assertNotEqual(p.returncode,0,p.stdout+p.stderr)
+        self.assertFalse([e for e in self.recorded() if e['kind']=='service'],p.stdout+p.stderr)
+        self.assertFalse([e for e in self.recorded() if e['kind']=='sudo'],p.stdout+p.stderr)
+        self.assertNotIn('État maintenance: SYSTEM',p.stdout)
+        self.assertEqual(json.loads(state.read_text())['ActiveState'],'active')
+        self.assertEqual(json.loads(state.read_text())['MainPID'],'1234')
+    def test_zero_stop_status_without_stopped_proof_blocks_maintenance(self):
+        self.env['MAINT_TEST_FAKE_STOP_NO_STATE_CHANGE']='1'
+        p=self.invoke('--no-reboot')
+        self.assertNotEqual(p.returncode,0,p.stdout+p.stderr)
+        self.assertNotIn('État maintenance: SYSTEM',p.stdout)
+        self.assertFalse([e for e in self.recorded() if e['kind']=='sudo'],p.stdout+p.stderr)
+        self.assertEqual([e['args'][0] for e in self.recorded() if e['kind']=='pz'],['stop'])
+    def test_activation_is_waited_until_active_before_real_stop(self):
+        state=self.real_stop_backup_chain();data=json.loads(state.read_text())
+        data.update(ActiveState='activating',SubState='start-pre',MainPID='0',ControlPID='999')
+        state.write_text(json.dumps(data));self.env['MAINT_TEST_ACTIVATE_ON_SHOW']='1'
+        p=self.invoke('--no-reboot')
+        self.assertNotEqual(p.returncode,0,p.stdout+p.stderr)  # rsync23 after a real stop.
+        self.assertGreater(int(state.with_suffix('.shows').read_text()),1)
+        self.assertEqual([e['action'] for e in self.recorded() if e['kind']=='service'],['stop','start'])
+        self.assertTrue(any(e['kind']=='rsync' for e in self.recorded()),p.stdout+p.stderr)
+    def test_ambiguous_initial_states_never_stop_or_mutate(self):
+        state=self.real_stop_backup_chain()
+        original=json.loads(state.read_text())
+        for active,main,control in [('failed','0','0'),('deactivating','1234','999'),('active','0','0'),('active','1234','999')]:
+            with self.subTest(active=active,main=main,control=control):
+                self.state.unlink(missing_ok=True)
+                Path(str(self.state)+'.recovery_armed').unlink(missing_ok=True)
+                state.write_text(json.dumps(dict(original,ActiveState=active,MainPID=main,ControlPID=control)))
+                self.events.write_text('')
+                p=self.invoke('--no-reboot')
+                self.assertNotEqual(p.returncode,0,p.stdout+p.stderr)
+                self.assertFalse([e for e in self.recorded() if e['kind'] in {'service','sudo','rsync'}],p.stdout+p.stderr)
+                self.assertIn('État serveur non prouvé',p.stdout+p.stderr)
     def test_boot_stop_refusal_does_not_start_recovery(self):
         state=self.real_stop_backup_chain();self.env['MAINT_TEST_STOP_READY_RC']='1'
         p=self.invoke('--no-reboot')
@@ -134,7 +187,8 @@ sys.exit(23)
         p=self.invoke('--no-reboot')
         self.assertNotEqual(p.returncode,0,p.stdout+p.stderr)
         events=self.recorded()
-        self.assertTrue(any(e['kind']=='rsync' and e['code']==23 for e in events),p.stdout+p.stderr)
+        self.assertFalse([e for e in events if e['kind']=='rsync'],p.stdout+p.stderr)
+        self.assertIn('État serveur non prouvé',p.stdout+p.stderr)
         self.assertEqual([e['action'] for e in events if e['kind']=='service'],['stop'])
         self.assertEqual(json.loads(state.read_text())['ControlPID'],'999')
         self.assertIn('reprise refusée',self.messages())
@@ -186,7 +240,9 @@ sys.exit(23)
         self.assertEqual(record.returncode,0,record.stderr)
         self.env['MAINT_TEST_REBOOT_RC']='7'
         p=self.invoke()
-        self.assertEqual(p.returncode,7,p.stdout+p.stderr)
+        self.assertEqual(p.returncode,1,p.stdout+p.stderr)
+        self.assertNotIn('État maintenance: SYSTEM',p.stdout)
+        self.assertFalse([e for e in self.recorded() if e['kind']=='sudo'])
         self.assertFalse([e for e in self.recorded() if e['kind']=='pz' and e['args'][0]=='start'],p.stdout+p.stderr)
         self.assertIn('unfinished',p.stdout+p.stderr)
         self.assertTrue(Path(str(self.state)+'.recovery_armed').exists())

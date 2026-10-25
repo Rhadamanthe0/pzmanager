@@ -45,7 +45,6 @@ done
 
 # Valider répertoires
 validate_directory "${PZ_SOURCE_DIR}" "Répertoire source Zomboid"
-ensure_directory "${BACKUP_DIR}"
 
 # C1 : verrou monde AVANT le verrou backup (ordre WORLD -> spécifique,
 # réentrant : les snapshots --snapshot-only appelés PAR une opération qui
@@ -84,6 +83,13 @@ elif ! acquire_world_lock --try; then
         exit 0
     fi
 fi
+
+# A forensic best-effort copy remains available during recovery. Only a
+# consistent recovery point requires a clean journal, under the WORLD lock.
+if [[ "$CONSISTENT" == 1 ]]; then
+    python3 "${SCRIPT_DIR}/../lib/world_transaction.py" check --world "$PZ_SOURCE_DIR" || exit 1
+fi
+ensure_directory "${BACKUP_DIR}"
 
 # Le verrou monde est acquis AVANT de choisir l'affinité : aucun start concurrent
 # ne peut libérer les cœurs réservés pendant que la JVM tourne. Une scope
@@ -378,9 +384,9 @@ python3 "${SCRIPT_DIR}/../lib/world_transaction.py" sync --directory-only --worl
 # (= le plus récent de la fenêtre). BACKUP_PRUNE_DRY_RUN=1 => plan seul, sans rien
 # supprimer (pour inspecter la rétention sur un serveur vivant).
 prune_gfs() {
-    local hourly_h="${BACKUP_GFS_HOURLY_HOURS:-12}"
-    local sixh_d="${BACKUP_GFS_SIXHOURLY_DAYS:-3}"
-    local daily_d="${BACKUP_GFS_DAILY_DAYS:-14}"
+    local hourly_h="${BACKUP_GFS_HOURLY_HOURS}"
+    local sixh_d="${BACKUP_GFS_SIXHOURLY_DAYS}"
+    local daily_d="${BACKUP_GFS_DAILY_DAYS}"
     local dry="${BACKUP_PRUNE_DRY_RUN:-0}"
     # Plafond de suppressions par run (0 = illimité). Supprimer un snapshot hardlinké
     # = des centaines de milliers d'unlink() ; cela reste coûteux en métadonnées. On borne

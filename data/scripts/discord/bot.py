@@ -110,7 +110,6 @@ MONITORING_CSV_DAYS = max(1, int(os.environ.get("DISCORD_BOT_MONITORING_CSV_DAYS
 # la mesure au niveau de la carte réseau. Vide = non exposé -> on retombe sur le NIC.
 PZ_PROMETHEUS_PORT = os.environ.get("PZ_PROMETHEUS_PORT", "").strip()
 PROMETHEUS_URL = f"http://127.0.0.1:{PZ_PROMETHEUS_PORT}/metrics" if PZ_PROMETHEUS_PORT else ""
-_PZ_XMX_RAW = os.environ.get("PZ_XMX_GB", "").strip()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -168,34 +167,44 @@ def _result_header(label: str, code: int, mention: str | None = None) -> str:
             else f"❌ `{label}` (exit={code}){tail}")
 
 
+def _bounded_content(text: str) -> str:
+    """Borne le rendu, y compris les emoji (deux unités UTF-16 sur Discord)."""
+    text = text.replace("\0", "\\0")
+    encoded = text.encode("utf-16-le")
+    if len(encoded) <= DISCORD_MAX * 2:
+        return text
+    # Repartir dans un bloc fermé : une coupure au milieu des backticks d'un
+    # argument ne doit pas exposer son Markdown ou ses mentions au salon.
+    literal = text.replace("`", "`\u200b").encode("utf-16-le")
+    shortened = literal[:(DISCORD_MAX - 10) * 2].decode("utf-16-le", errors="ignore")
+    return f"```\n{shortened}…\n```"
+
+
 async def _send_chunked(send, header: str, output: str):
-    """Repli quand la pièce jointe est refusée (permission « Joindre des fichiers »
-    absente) : poste l'en-tête puis la sortie en blocs de code < 2000 caractères.
-    Ne requiert que « Envoyer des messages »."""
-    await send(header)
-    budget = DISCORD_MAX - len("```\n\n```") - 1
-    for i in range(0, len(output), budget):
-        await send(f"```\n{output[i:i + budget]}\n```")
+    """Repli sans pièce jointe : chaque bloc tient même avec 900 emoji."""
+    await send(_bounded_content(header))
+    rendered = output.replace("\0", "\\0").replace("`", "`\u200b")
+    for i in range(0, len(rendered), 900):
+        await send(f"```\n{rendered[i:i + 900]}\n```")
 
 
 async def deliver(send, header: str, output: str, *, filename: str = "pzm-output.txt"):
-    """Envoie statut + sortie en UN SEUL message via le callable `send`.
-    Si tout tient dans un bloc de code -> inline ; sinon -> pièce jointe (Discord
-    ne fait pas ce repli automatiquement via l'API). Si l'envoi du fichier est
-    refusé (permission « Joindre des fichiers » manquante), repli en messages
-    découpés plutôt que de planter sans rien répondre."""
-    output = output.rstrip() or "(aucune sortie)"
-    inline_limit = DISCORD_MAX - len(header) - len("\n```\n\n```") - 1
-    if len(output) <= inline_limit:
-        await send(f"{header}\n```\n{output}\n```")
+    """Borne le message et conserve en fichier tout en-tête abrégé et la sortie.
+    Une pièce jointe refusée est remplacée par des messages découpés."""
+    output = output or "(aucune sortie)"
+    shown_header = _bounded_content(header)
+    full_output = f"{header}\n\n{output}" if shown_header != header else output
+    inline = f"{shown_header}\n```\n{output}\n```"
+    if (shown_header == header and len(inline.encode("utf-16-le")) <= DISCORD_MAX * 2
+            and "```" not in output and "\0" not in output):
+        await send(inline)
         return
-    file = discord.File(io.BytesIO(output.encode("utf-8")), filename=filename)
+    file = discord.File(io.BytesIO(full_output.encode("utf-8")), filename=filename)
     try:
-        await send(header, file=file)
+        await send(shown_header, file=file)
     except discord.Forbidden:
-        log.warning("Envoi en pièce jointe refusé (permission « Joindre des fichiers » "
-                    "manquante) -> repli en messages découpés")
-        await _send_chunked(send, header, output)
+        log.warning("Envoi en pièce jointe refusé -> repli en messages découpés")
+        await _send_chunked(send, shown_header, full_output)
 
 
 # Délai gracieux entre SIGTERM et SIGKILL du groupe (voir _kill_tree).
@@ -348,8 +357,6 @@ async def reject_batch(message: discord.Message, bad: list[tuple[int, str]]):
     header = (f"⛔ Commande non reconnue ({author.mention}){note} — rien n'a été exécuté.\n"
               f"Ligne(s) invalide(s) (attendu `pzm <commande> …`) :\n```\n{detail}\n```\n"
               f"Voir l'aide `pzm help` en pièce jointe.")
-    if len(header) > DISCORD_MAX:
-        header = header[:DISCORD_MAX - 1] + "…"
     _, help_out = await run_pzm(["help"])
     # deliver() gère la pièce jointe (ou le repli en messages découpés si la
     # permission « Joindre des fichiers » manque).
@@ -368,10 +375,10 @@ async def _dispatch_pasted(message: discord.Message, label: str, work):
 
     # Si un pzm tourne déjà, on met en file d'attente (lock FIFO) au lieu de refuser :
     # le statut l'indique puis bascule sur « en cours… » quand c'est son tour.
-    running = f"▶️ {label} en cours… (demandé par {author.mention}){note}"
+    running = _bounded_content(f"▶️ {label} en cours… (demandé par {author.mention}){note}")
     queued = run_lock.locked()
     status = await channel.send(
-        f"⏳ {label} en file d'attente… (demandé par {author.mention}){note}"
+        _bounded_content(f"⏳ {label} en file d'attente… (demandé par {author.mention}){note}")
         if queued else running)
     try:
         async with run_lock:
@@ -1004,29 +1011,20 @@ def _recent_heapdump():
 # Capacité max du heap telle que la JVM la journalise elle-même au démarrage
 # ET à chaque GC ("Max Capacity: 20480M"). Le négatif-lookbehind écarte la ligne
 # "Soft Max Capacity", qui peut différer (SoftMaxHeapSize).
-_GC_MAXCAP_RE = re.compile(r"(?<!Soft )Max Capacity: (\d+)M")
+_GC_MAXCAP_RE = re.compile(r"(?<!Soft )Max Capacity: (\d+)([MG])\b")
 
 
-def _xmx_gb() -> float:
-    """Plafond du heap EN VIGUEUR, en Go.
+def _xmx_gb() -> float | None:
+    """Capacité observée dans le fragment GC courant, sinon inconnue.
 
-    Source de vérité : gc.log, écrit par la JVM en cours d'exécution. .env n'est
-    qu'un repli, car il décrit le PROCHAIN démarrage, pas celui qui tourne : le
-    19/07/2026, PZ_XMX_GB avait été passé de 9 à 8 mais la JVM tournait toujours
-    en 9g (le JSON n'est relu qu'au lancement, et le restart avait été différé
-    pour ne pas éjecter 29 joueurs). Pendant ces heures-là, l'embed aurait
-    affiché « 8,7 / 8 Go » — un dénominateur faux, précisément la nuit où on
-    surveillait la mémoire. Les pourcentages, eux, viennent déjà de la JVM.
+    La RAM hôte et PZ_XMX_GB décrivent une configuration possible, sans prouver
+    le plafond de la JVM qui tourne. Ne pas reconstruire ce plafond ici.
     """
-    txt = _tail_text(GC_LOG_PATH)
-    if txt:
-        caps = _GC_MAXCAP_RE.findall(txt)
-        if caps:
-            return int(caps[-1]) / 1024
-    if _PZ_XMX_RAW.isdigit():
-        return float(_PZ_XMX_RAW)
-    total = _meminfo().get("MemTotal", 0)
-    return float(max(2, total // 1024 // 1024 // 2))
+    caps = _GC_MAXCAP_RE.findall(_tail_text(GC_LOG_PATH))
+    if caps:
+        value, unit = caps[-1]
+        return (int(value) / 1024 if unit == "M" else float(value)) or None
+    return None
 
 
 def _default_iface():
@@ -1431,7 +1429,8 @@ def _monitoring_embed(s: dict) -> discord.Embed:
     # Le heap inclut des pages shmem non assimilables au cache disque.
     if gc:
         used_g, pct = gc[0] / 1024, gc[1]
-        heap_line = f"Jeu (heap) **{used_g:.1f} / {xmx:g} Go** · **{pct}%**"
+        capacity = f"{xmx:g}" if xmx is not None else "—"
+        heap_line = f"Jeu (heap) **{used_g:.1f} / {capacity} Go** · **{pct}%**"
     else:
         heap_line = "Jeu (heap) —"
     noncache_bytes = s.get("memory_noncache_bytes")

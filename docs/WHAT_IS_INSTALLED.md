@@ -135,8 +135,9 @@ would allow apt option injection as root).
 | 16261/UDP | Game | Main Project Zomboid port |
 | 16262/UDP | Game | Secondary Project Zomboid port |
 
-Only those are opened. 8766/27015 are B41 leftovers that B42 never binds, and the
-Prometheus metrics port (`PZ_PROMETHEUS_PORT`, default 9110) is explicitly
+Game-port configuration and optional TCP RCON are described in
+[network ports](SERVER_CONFIG.md#network-ports). The Prometheus metrics port
+(`PZ_PROMETHEUS_PORT`, default 9110) is explicitly
 **denied** from outside — it binds `0.0.0.0` and exposes player coordinates, so it
 must stay reachable on loopback only and must never be forwarded on the router.
 
@@ -595,36 +596,8 @@ Every variable is documented — with its default and its trade-offs — in
 
 **File**: `/home/pzuser/pzmanager/Zomboid/Server/servertest.ini`
 
-**Default parameters (first installation)**:
-
-```ini
-# General
-ServerName=servertest
-PublicName=My PZ Server
-Password=                    # Empty = no shared join password
-MaxPlayers=32
-
-# Gameplay
-PauseEmpty=true              # Pause if no players
-Open=false                   # SteamID whitelist (required by pzmanager's access model)
-Public=true                  # Visible in server list
-PublicPort=16261
-PublicDescription=
-
-# Save
-SaveWorldEveryMinutes=20
-BackupsCount=5
-BackupsOnStart=true
-BackupsOnVersionChange=true
-
-# Security
-AllowCoop=true
-SteamAuthenticationRequired=true
-ResetID=0
-```
-
-**Complete documentation**: [server settings](SERVER_CONFIG.md), including
-[administrator credentials](SERVER_CONFIG.md#administrator-credentials).
+Game options and credentials are documented in [SERVER_CONFIG](SERVER_CONFIG.md);
+the world name and manager paths are configured in [CONFIGURATION](CONFIGURATION.md#world-name).
 
 ---
 

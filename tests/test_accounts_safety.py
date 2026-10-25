@@ -49,6 +49,35 @@ for k in keys:print(k+'='+str(s.get(k,{'LoadState':'loaded','InvocationID':'fixt
     def rows(self,path,table):
         with closing(sqlite3.connect(path)) as db:return db.execute('SELECT * FROM '+table+' ORDER BY 1').fetchall()
     def invoke(self,script,*args,**kw):return subprocess.run(['bash',str(self.repo/'data/scripts/admin'/script),*args],env=self.env,text=True,capture_output=True,timeout=20,**kw)
+    def check_pending_mutation(self,script,*args):
+        staging=self.base/'staged';shutil.copytree(self.world,staging)
+        helper=self.repo/'data/scripts/lib/world_transaction.py'
+        def transaction(*arguments):
+            return subprocess.run(['python3',str(helper),*arguments,'--world',str(self.world)],env=self.env,capture_output=True,text=True)
+        prepared=transaction('begin','--kind','fixture','--recovery',str(self.base/'recovery'),'--after-tree',str(staging))
+        self.assertEqual(prepared.returncode,0,prepared.stderr)
+        before=self.rows(self.db,'whitelist');allowed=self.rows(self.db,'allowedsteamid')
+        tree={str(p.relative_to(self.world)):p.read_bytes() for p in self.world.rglob('*') if p.is_file()}
+        if script in {'dataBackup.sh','restoreCharacter.sh'}:
+            result=subprocess.run(['bash',str(self.repo/'data/scripts/backup'/script),*args],env=dict(self.env,PZ_BACKUP_CPU_SCOPED='1'),capture_output=True,text=True,timeout=20)
+        else:result=self.invoke(script,*args,input='oui\n')
+        self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('unfinished',result.stderr)
+        self.assertEqual(self.rows(self.db,'whitelist'),before)
+        self.assertEqual(self.rows(self.db,'allowedsteamid'),allowed)
+        self.assertEqual({str(p.relative_to(self.world)):p.read_bytes() for p in self.world.rglob('*') if p.is_file()},tree)
+        reverted=transaction('finish','--token',prepared.stdout.strip(),'--state','reverted')
+        self.assertEqual(reverted.returncode,0,reverted.stderr)
+    def test_pending_rename_refused(self):self.check_pending_mutation('manageWhitelist.sh','rename-account','old','new')
+    def test_pending_remove_refused(self):self.check_pending_mutation('manageWhitelist.sh','remove-account','old')
+    def test_pending_resetpassword_refused(self):self.check_pending_mutation('manageWhitelist.sh','resetpassword','old')
+    def test_pending_interactive_purge_refused(self):self.check_pending_mutation('manageWhitelist.sh','purge','30j','--delete')
+    def test_pending_wipe_refused(self):self.check_pending_mutation('wipeMapTile.sh','0','0')
+    def test_pending_consistent_backup_refused(self):self.check_pending_mutation('dataBackup.sh','--consistent','--snapshot-only')
+    def test_pending_character_restore_refused(self):
+        source=self.base/'source-players.db';shutil.copy2(self.players,source)
+        self.check_pending_mutation('restoreCharacter.sh','old',str(source))
+
     def test_remove_invalid_id_refused(self):
         with closing(sqlite3.connect(self.db)) as db:
             db.executescript("ALTER TABLE whitelist RENAME TO original; CREATE TABLE whitelist AS SELECT * FROM original;")
@@ -156,6 +185,22 @@ account_safety.rename(sys.argv[2],sys.argv[3],'old','new')
             self.wait_for_purge_backup(p,sentinel)
             backup=Path(sentinel.read_text())
             self.assertEqual(self.rows(backup,'whitelist'),before)
+            # Wait for the real pre-DELETE sleep to exec before signalling its group.
+            deadline=time.monotonic()+5
+            observed=None
+            while time.monotonic()<deadline and p.poll() is None:
+                for candidate in Path('/proc').iterdir():
+                    if not candidate.name.isdigit():continue
+                    try:
+                        fields=(candidate/'stat').read_text().rsplit(')',1)[1].split()
+                        argv=(candidate/'cmdline').read_bytes().split(b'\0')
+                        executable=os.readlink(candidate/'exe')
+                        if int(fields[2])==p.pid and executable=='/usr/bin/sleep' and argv[:2]==[b'sleep',b'10']:
+                            observed=(int(candidate.name),int(fields[2]),executable);break
+                    except (OSError,ValueError):continue
+                if observed:break
+                time.sleep(.005)
+            self.assertIsNotNone(observed,'native sleep 10 was not exec in purge process group')
             os.killpg(p.pid,signal.SIGTERM);out,err=p.communicate(timeout=10)
             self.assertNotEqual(p.returncode,0,out+err)
             self.assertEqual(self.rows(self.db,'whitelist'),before)

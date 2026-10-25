@@ -9,8 +9,8 @@
 # (le flux « whitelist dès la première connexion » est inchangé).
 #
 # Preuves réelles : vrai script, vrai .ini sandbox. Isolé : PZ_SOURCE_DIR
-# sandbox, .env stubé (sauvegardé + restauré via trap). Sans flock/sqlite :
-# exécutable partout.
+# sandbox, .env stubé (sauvegardé + restauré via trap), vrai verrou WORLD
+# et admission ; seul le bus systemd est simulé.
 set -euo pipefail
 
 ROOT="${PZ_TEST_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -37,6 +37,14 @@ cleanup() {
 trap cleanup EXIT
 rm -rf "$SANDBOX"
 mkdir -p "$SANDBOX/world"
+mkdir -m 700 "$SANDBOX/runtime" "$SANDBOX/bin"
+cat > "$SANDBOX/bin/systemctl" <<'MOCK'
+#!/bin/bash
+printf 'ActiveState=inactive\nSubState=dead\nMainPID=0\nControlPID=0\n'
+MOCK
+chmod 700 "$SANDBOX/bin/systemctl"
+export PATH="$SANDBOX/bin:$PATH" XDG_RUNTIME_DIR="$SANDBOX/runtime"
+
 
 export PZ_MANAGER_ROOT="$ROOT"
 if [[ -f "$REPO_ENV" ]]; then
@@ -50,8 +58,8 @@ run_enforce() { bash "$SCRIPT" >"${SANDBOX}/out.log" 2>&1; }
 
 # --- (0) câblage statique ------------------------------------------------------
 echo "== (0) câblage =="
-if grep -q '^ExecStartPre=%h/pzmanager/data/scripts/internal/enforceClosedServer.sh' "$SERVICE" \
-    && ! grep -q '^-[^-]*enforceClosedServer' "$SERVICE"; then
+if grep -q '^ExecStartPre=%h/pzmanager/data/scripts/internal/prepareWorldStart.sh' "$SERVICE" \
+    && ! grep -q '^ExecStartPre=-.*prepareWorldStart' "$SERVICE"; then
     ok "ExecStartPre BLOQUANT (sans tiret) dans zomboid.service"
 else
     ko "ExecStartPre enforce absent ou non-bloquant"

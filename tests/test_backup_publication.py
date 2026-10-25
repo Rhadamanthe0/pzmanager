@@ -21,7 +21,7 @@ class BackupPublication(unittest.TestCase):
         shutil.copytree(ROOT/'data/scripts/lib',scripts/'lib')
         (scripts/'internal').mkdir()
         shutil.copy2(ROOT/'data/scripts/internal/configureWritingTextOnly.py',scripts/'internal/configureWritingTextOnly.py')
-        for name in ('fullBackup.sh','dataBackup.sh'):shutil.copy2(ROOT/'data/scripts/backup'/name,scripts/'backup'/name)
+        for name in ('fullBackup.sh','dataBackup.sh','listBackups.sh'):shutil.copy2(ROOT/'data/scripts/backup'/name,scripts/'backup'/name)
         common=scripts/'lib/common.sh'
         common.write_text(common.read_text()+'\nsource_env() { apply_env_defaults; }\n')
         self.bin=self.root/'bin';self.bin.mkdir()
@@ -113,6 +113,38 @@ os.execv('/bin/mv',['/bin/mv',*args])
     def run_data(self,fail=''):
         return subprocess.run(['bash',str(self.scripts/'backup/dataBackup.sh'),'--snapshot-only','--required'],
                               env=dict(self.env,FIXTURE_SYNC_FAIL=fail),capture_output=True,text=True,timeout=10)
+
+    def test_incremental_staging_is_hidden_until_real_rsync_publication(self):
+        self.command('rsync', """import os,pathlib,subprocess,sys,time
+subprocess.run(['/usr/bin/rsync',*sys.argv[1:]],check=True)
+root=pathlib.Path(os.environ['FIXTURE_ROOT']);(root/'gate').touch()
+while not (root/'release').exists():time.sleep(.02)
+""")
+        legacy=self.backups/'backup_legacy';legacy.mkdir()
+        proc=subprocess.Popen(['bash',str(self.scripts/'backup/dataBackup.sh'),'--snapshot-only','--required'],
+                              env=self.env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)
+        def listing():
+            result=subprocess.run(['bash',str(self.scripts/'backup/listBackups.sh')],env=self.env,capture_output=True,text=True,timeout=8)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            return result.stdout
+        try:
+            deadline=time.monotonic()+8
+            while not self.gate.exists() and proc.poll() is None and time.monotonic()<deadline:time.sleep(.02)
+            self.assertTrue(self.gate.exists(),'producer did not reach real rsync publication barrier')
+            staged=list(self.backups.glob('backup_*.tmp'));self.assertEqual(len(staged),1)
+            final=Path(str(staged[0])[:-4])
+            before=listing()
+            self.assertNotIn(str(staged[0]),before)
+            self.assertNotIn(str(final)+'\n',before)
+            self.assertIn(str(legacy),before)
+            self.assertIn('12h horaires / 3j@6h / 14j daily',before)
+            self.release.touch();out,err=proc.communicate(timeout=8)
+            self.assertEqual(proc.returncode,0,out+err)
+            self.assertFalse(staged[0].exists())
+            self.assertTrue(final.is_dir())
+            self.assertIn(str(final),listing())
+        finally:
+            if proc.poll() is None:os.killpg(proc.pid,signal.SIGKILL);proc.communicate()
 
     def test_staging_sync_failure_prevents_publication(self):
         result=self.run_data('1')

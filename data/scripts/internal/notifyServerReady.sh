@@ -131,7 +131,7 @@ exec {JOURNAL_FD}< <(
     # L'ID reste celui du démarrage courant, pas une fenêtre horodatée.
     journalctl -n all --follow --no-pager -o cat \
         "INVOCATION_ID=${BOOT_ID}" + "_SYSTEMD_INVOCATION_ID=${BOOT_ID}" \
-        --grep 'f:[1-9][0-9]* st:'
+        --grep 'f:[1-9][0-9]*'
 )
 JOURNAL_PID=$!
 
@@ -147,7 +147,9 @@ while (( SECONDS < deadline )); do
     IFS= read -r -t "$POLL_INTERVAL" -u "$JOURNAL_FD" line || result=$?
     ready=false
     if (( result == 0 )); then
-        [[ "$line" =~ f:[1-9][0-9]*[[:space:]]st: ]] && ready=true
+        if frame="$(game_log_frame "$line")" && [[ "$frame" == *[1-9]* ]]; then
+            ready=true
+        fi
     elif (( result <= 128 )); then
         # Bash read -t : un dépassement rend >128 ; EOF rend 1.
         echo "[pz-ready] Le suivi journald s'est terminé avant la preuve de disponibilité." >&2

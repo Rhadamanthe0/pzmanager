@@ -4,17 +4,17 @@
 # Couvre (data/scripts/install/setupSystem.sh uniquement) :
 #   (0) statique : aucun `ufw --force reset`, détection port SSH, ajout des
 #       seuls manquants, delta avant/après, DRY-RUN PZ_UFW_DRY_RUN.
-#   (A) UFW inactif, SSH 22 : défauts + OpenSSH + 22/tcp + jeu 16261-16262/udp
+#   (A) UFW inactif, SSH 22 : défauts + 22/tcp + jeu 16261-16262/udp
 #       + deny prometheus 9110/tcp, puis enable ; pas de reset.
 #   (B) SSH non standard 2222 (ss + sshd_config) : 2222/tcp autorisé, accès
-#       admin conservé (OpenSSH + 22) ; pas de reset.
+#       admin conservé (+22) ; pas de reset.
 #   (C) UFW déjà actif + règles préexistantes : conservées (dont une règle
 #       custom 8080/tcp), aucun doublon (16261/udp x1), seul le manquant
 #       (16262/udp) ajouté, pas de reset.
 #   (D) DRY-RUN=1 : rien modifié (règles + état inchangés), commandes
 #       journalisées [DRY-RUN].
-#   (E) detect_ssh_port : 2222 via ss ou config (+22 garde-fou) ; défaut 22
-#       sans indice.
+#   (E) SSH : ss prioritaire, sinon sshd -T (Include), erreurs bloquantes ;
+#       accès local admis seulement sans binaire ni configuration SSH.
 #
 # Preuves réelles : vraies fonctions sourcées (garde BASH_SOURCE du script),
 # mock ufw D'ÉTAT (status/allow/deny/enable, reset piégé), ss et sshd_config
@@ -88,6 +88,8 @@ if not rulesfile.exists(): rulesfile.write_text('')
 if not activefile.exists(): activefile.write_text('no')
 with (root/'ufw.log').open('a') as log: log.write('ufw '+' '.join(args)+'\n')
 rules=rulesfile.read_text().splitlines(); active=activefile.read_text().strip()=='yes'
+# Le profil n'est pas livré par UFW : représenter une installation sans OpenSSH.
+if args==['allow','OpenSSH']: sys.exit(23)
 if os.environ.get('MOCK_UFW_FAIL')==(args[1] if args[0]=='--force' else args[0]): sys.exit(23)
 family=lambda row: 6 if '(v6)' in row or '2001:' in row else 4
 rules.sort(key=family)
@@ -133,6 +135,13 @@ cat > "$BIN/ss" <<'MOCKEOF'
 #!/usr/bin/env bash
 cat "${MOCK_DIR}/ss_output" 2>/dev/null || true
 MOCKEOF
+# sshd boundary for ordinary cases; native Include case below bypasses it.
+cat > "$BIN/sshd" <<'MOCKEOF'
+#!/usr/bin/env bash
+[[ "${MOCK_SSHD_FAIL:-0}" == 0 ]] || exit 23
+[[ "$1" == -T && "$2" == -f ]] || exit 24
+awk 'tolower($1)=="port" { print "port",$2; found=1 } END { if (!found) print "port 22" }' "$3"
+MOCKEOF
 chmod +x "$BIN/"*
 export PATH="$BIN:$PATH"
 
@@ -151,8 +160,10 @@ reset_case() {
     echo "no" > "$MOCK_DIR/ufw.active"
     : > "$MOCK_DIR/ufw.log"
     : > "$MOCK_DIR/ss_output"
-    unset PZ_SSHD_CONFIG MOCK_UFW_FAIL MOCK_UFW_FRENCH PZ_PROMETHEUS_PORT 2>/dev/null || true
+    unset PZ_SSHD_CONFIG MOCK_SSHD_FAIL MOCK_UFW_FAIL MOCK_UFW_FRENCH PZ_PROMETHEUS_PORT 2>/dev/null || true
     rm -f "$MOCK_DIR/ufw.ipv6"
+    printf 'Port 22\n' > "$S/sshd_config"
+    export PZ_SSHD_CONFIG="$S/sshd_config"
 }
 rules_count() { grep -cF "$1" "$MOCK_DIR/ufw.rules" || true; }
 
@@ -174,7 +185,7 @@ grep -q 'RESET_CALLED\|--force reset' "$MOCK_DIR/ufw.log" \
 [[ "$(cat "$MOCK_DIR/ufw.active")" == "yes" ]] \
     && ok "A : UFW activé (enable sans reset)" \
     || ko "A : UFW non activé"
-for r in "OpenSSH" "22/tcp" "16261/udp" "16262/udp"; do
+for r in "22/tcp" "16261/udp" "16262/udp"; do
     grep -qF "$r" "$MOCK_DIR/ufw.rules" \
         && ok "A : règle $r présente" \
         || ko "A : règle $r absente -- $(cat "$MOCK_DIR/ufw.rules")"
@@ -210,9 +221,9 @@ grep -q 'RESET_CALLED' "$MOCK_DIR/ufw.log" \
 grep -qF "2222/tcp" "$MOCK_DIR/ufw.rules" \
     && ok "B : port SSH détecté 2222/tcp autorisé" \
     || ko "B : 2222/tcp absent (lock-out admin !)"
-grep -qF "OpenSSH" "$MOCK_DIR/ufw.rules" \
-    && ok "B : OpenSSH conservé (accès admin)" \
-    || ko "B : OpenSSH absent"
+grep -qF "22/tcp" "$MOCK_DIR/ufw.rules" \
+    && ok "B : garde-fou22 conservé sans profil OpenSSH" \
+    || ko "B : garde-fou22 absent"
 for r in "16261/udp" "16262/udp"; do
     grep -qF "$r" "$MOCK_DIR/ufw.rules" \
         && ok "B : règle jeu $r présente" \
@@ -297,12 +308,77 @@ grep -qx '2222' <<< "$E1" \
 grep -qx '22' <<< "$E1" \
     && ok "E1 : 22 garde-fou inclus" \
     || ko "E1 : 22 absent (got: $E1)"
-: > "$MOCK_DIR/ss_output"
+reset_case
 export PZ_SSHD_CONFIG="$S/sshd_config_absent"
-E2="$(detect_ssh_port)"
-[[ "$E2" == "22" ]] \
-    && ok "E2 : défaut 22 sans indice" \
-    || ko "E2 : inattendu (got: $E2)"
+if (configure_firewall) > "$S/missing-config.log" 2>&1; then ko 'config SSH absente acceptée avec sshd installé'; else ok 'config SSH absente : refus explicite'; fi
+[[ ! -s "$MOCK_DIR/ufw.log" ]] && ok 'config SSH absente : aucune commande UFW' || ko 'UFW invoqué malgré config absente'
+reset_case
+export MOCK_SSHD_FAIL=1
+if (configure_firewall) > "$S/failed-config.log" 2>&1; then ko 'échec sshd accepté'; else ok 'échec sshd : refus explicite'; fi
+[[ ! -s "$MOCK_DIR/ufw.log" ]] && ok 'échec sshd : aucune commande UFW' || ko 'UFW invoqué malgré échec sshd'
+unset MOCK_SSHD_FAIL
+
+# Absence prouvée de sshd (résolution seule doublée), installation locale.
+reset_case
+export PZ_SSHD_CONFIG="$S/sshd_config_absent"
+(
+    command() {
+        if [[ "$*" == '-v sshd' || "$*" == '-v /usr/sbin/sshd' ]]; then return 1; fi
+        builtin command "$@"
+    }
+    configure_firewall > "$S/local.log" 2>&1
+) && ok 'sans binaire ni config SSH : installation locale admise' || ko 'installation locale sans SSH refusée'
+grep -q '^ufw allow 22/tcp$' "$MOCK_DIR/ufw.log" && ok 'installation locale : garde-fou22 conservé' || ko 'garde-fou22 perdu'
+reset_case
+(
+    command() {
+        if [[ "$*" == '-v sshd' || "$*" == '-v /usr/sbin/sshd' ]]; then return 1; fi
+        builtin command "$@"
+    }
+    configure_firewall > "$S/missing-binary.log" 2>&1
+) && ko 'config présente sans binaire SSH acceptée' || ok 'config présente sans binaire SSH refusée'
+[[ ! -s "$MOCK_DIR/ufw.log" ]] && ok 'binaire absent avec config : aucune commande UFW' || ko 'UFW invoqué malgré binaire absent'
+reset_case
+export MOCK_SSHD_FAIL=1
+printf 'LISTEN 0 128 0.0.0.0:2222 0.0.0.0:* users:(("sshd",pid=222,fd=3))\n' > "$MOCK_DIR/ss_output"
+[[ "$(detect_ssh_port)" == $'22\n2222' ]] && ok 'ss observé prioritaire même si configuration invalide' || ko 'configuration invalide écrase ss'
+unset MOCK_SSHD_FAIL
+
+# Vraie configuration effective OpenSSH : Include, plusieurs ports et décimal.
+reset_case
+if [[ -x /usr/sbin/sshd ]] && command -v ssh-keygen >/dev/null; then
+    ssh-keygen -q -t ed25519 -N '' -f "$S/hostkey"
+    printf 'Port 02222\nPort 2223\n' > "$S/sshd-included.conf"
+    printf 'HostKey %s\nInclude %s\n' "$S/hostkey" "$S/sshd-included.conf" > "$S/sshd_config"
+    # Le binaire de production est retrouvé par PATH, sans changer son interface.
+    mv "$BIN/sshd" "$BIN/sshd.mock"
+    ln -s /usr/sbin/sshd "$BIN/sshd"
+    if /usr/sbin/sshd -T -f "$S/sshd_config" > "$S/effective.log" 2> "$S/effective.err"; then
+        (
+            command() { [[ "$*" != '-v ss' ]] && builtin command "$@"; }
+            configure_firewall
+        ) > "$S/include.log" 2>&1 || ko 'Include natif : refus inattendu'
+        grep -qx 'ufw allow 2222/tcp' "$MOCK_DIR/ufw.log" && grep -qx 'ufw allow 2223/tcp' "$MOCK_DIR/ufw.log" \
+            && ok 'Include natif : tous ports effectifs autorisés avant enable' || ko 'Include natif : port perdu'
+        if python3 - "$MOCK_DIR/ufw.log" <<'ORDER'
+import sys
+rows=open(sys.argv[1]).read().splitlines()
+assert rows.index('ufw allow 2222/tcp') < rows.index('ufw --force enable')
+assert rows.index('ufw allow 2223/tcp') < rows.index('ufw --force enable')
+ORDER
+        then ok 'Include natif : ordre autorisations avant activation'; else ko 'Include natif : activation prématurée'; fi
+        : > "$MOCK_DIR/ufw.log"
+        export PZ_PROMETHEUS_PORT=2222
+        if (configure_firewall) > "$S/include-collision.log" 2>&1; then ko 'Include natif : collision acceptée'; fi
+        [[ ! -s "$MOCK_DIR/ufw.log" ]] && ok 'Include natif : collision refusée avant UFW' || ko 'Include natif : mutation malgré collision'
+    else
+        echo "[SKIP] sshd -T natif indisponible dans ce banc : $(cat "$S/effective.err")"
+    fi
+    rm "$BIN/sshd"
+    mv "$BIN/sshd.mock" "$BIN/sshd"
+else
+    echo "[SKIP] Include natif : sshd ou ssh-keygen absent du banc."
+fi
 
 # Priorité vraie avec règles persistées masquées quand UFW est inactif.
 for initial in yes no; do

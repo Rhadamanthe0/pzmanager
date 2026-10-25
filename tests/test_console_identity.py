@@ -27,6 +27,27 @@ class Console(unittest.TestCase):
         self.assertEqual(console.response(ECHO.replace('"players"', '"servermsg players"') + 'Message sent.\n', 'players'), '')
         self.assertEqual(console.response(ECHO + 'unrelated game tick\n', 'players'), '')
 
+    def test_native_time_prefix_preserves_exact_players_and_mod_results(self):
+        for clock in ['f:0 t:1,234 st:1\u202f235 at GameServer.main', 'f:0 t:1,234', 'f:0']:
+            with self.subTest(clock=clock):
+                prefix='LOG  : General      '+clock+'> '
+                echo=prefix+'command entered via server console (System.in): "players"\n'
+                self.assertEqual(console.response(echo+prefix+'Players connected (0):\n','players'),'Players connected (0):')
+                mod_echo=echo.replace('"players"','"checkModsNeedUpdate"')
+                result='LOG : Mod '+clock+'> CheckModsNeedUpdate: Mods updated\n'
+                self.assertEqual(console.response(mod_echo+result,'checkModsNeedUpdate'),'CheckModsNeedUpdate: Mods updated')
+    def test_native_time_prefix_never_relaxes_channel_level_or_echo(self):
+        body='command entered via server console (System.in): "players"'
+        for prefix in ['LOG : Lua','WARN : General','ERROR : General']:
+            false=prefix+' f:0 t:1,234 st:1\u202f235> '+body+'\nPlayers connected (0):\n'
+            self.assertFalse(console.command_received(false,'players'))
+            self.assertEqual(console.response(false,'players'),'')
+        echo='LOG : General f:0 t:123 st:456> '+body+'\n'
+        for payload in ['LOG : Lua f:0 t:123 st:456> Players connected (0):',
+                        'WARN : General f:0 t:123 st:456> Players connected (0):',
+                        'LOG : General f:0 t:123 st:456> servermsg Players connected (0): f:42 st:99>']:
+            self.assertEqual(console.response(echo+payload+'\n','players'),'')
+        self.assertFalse(console.command_received(echo.replace('"players"','"servermsg players"'),'players'))
     def test_players_result_must_be_a_native_exact_header(self):
         for false in ['LOG : Lua f:0 st:123> Players connected (0):',
                       'WARN : General f:0 st:123> Players connected (0):',

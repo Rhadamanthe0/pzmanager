@@ -39,7 +39,7 @@ apt_package_available() {
     local pkg="${1:-}" out=""
     [[ -n "$pkg" ]] || return 1
     command -v apt-cache >/dev/null 2>&1 || return 1
-    out="$(apt-cache policy "$pkg" 2>/dev/null || true)"
+    out="$(LC_ALL=C LANGUAGE=C apt-cache policy "$pkg" 2>/dev/null || true)"
     [[ -n "$out" ]] || return 1
     grep -q 'Candidate:' <<<"$out" || return 1
     ! grep -qE 'Candidate:[[:space:]]+\(none\)' <<<"$out"

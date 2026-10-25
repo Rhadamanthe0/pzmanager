@@ -164,6 +164,12 @@ exit 0
 BOUNDARY
     chmod 0755 "/test-bin/$cmd"
 done
+# Sonde SSH simulée : aucun daemon dans le rootfs privé.
+cat > /test-bin/ss <<'BOUNDARY'
+#!/bin/bash
+printf 'LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=123,fd=3))\n'
+BOUNDARY
+chmod 0755 /test-bin/ss
 mkdir -p "$manager_home/pzmanager/data/pzserver"
 touch "$manager_home/pzmanager/data/pzserver/ProjectZomboid64"
 chown -R pzfixture:pzfixture "$manager_home/pzmanager/data/pzserver"

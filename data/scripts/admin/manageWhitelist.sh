@@ -79,6 +79,23 @@ run_console() {
     "${SEND_COMMAND}" "$@"
 }
 
+# Transport success only proves an exchange. Require the native command result
+# AND the effective SQLite postcondition before claiming an access change.
+run_console_confirmed() {
+    local command="$1" steamid="$2" table="$3" expected="$4" pattern="$5"
+    local output observed attempt
+    output="$(run_console "$command" "$steamid")" || die "Résultat indéterminé : commande console en échec."
+    printf '%s\n' "$output"
+    grep -qE "$pattern" <<< "$output" \
+        || die "Résultat indéterminé : aucune confirmation métier de ${command} pour ${steamid}."
+    for attempt in {1..20}; do
+        observed="$(sqlite3 -readonly "$DB_PATH" "SELECT EXISTS(SELECT 1 FROM ${table} WHERE steamid='${steamid}');" 2>/dev/null)" || observed=""
+        [[ "$observed" != "$expected" ]] || return 0
+        sleep 0.1
+    done
+    die "Résultat indéterminé : état SQLite attendu non confirmé pour ${steamid} ; vérifier la liste avant de réessayer."
+}
+
 validate_steamid() {
     local steamid="$1"
 
@@ -161,14 +178,14 @@ Le SteamID64 fait 17 chiffres et commence par 7656119 (https://steamid.xyz/)."
 
     # Déjà autorisé ?
     local already
-    already=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM allowedsteamid WHERE steamid = '$steamid'" 2>/dev/null || echo "0")
+    wl_sql_or_die already "$DB_PATH" "SELECT COUNT(*) FROM allowedsteamid WHERE steamid = '$steamid'"
     if [[ "$already" -ge 1 ]]; then
         echo "ℹ️  SteamID déjà autorisé: $steamid"
         exit 0
     fi
 
     echo "Autorisation du SteamID sur le serveur..."
-    run_console addsteamid "$steamid"
+    run_console_confirmed addsteamid "$steamid" allowedsteamid 1 "^SteamID ${steamid} added to allowed SteamIDs$"
 
     echo ""
     echo "✓ SteamID autorisé: $steamid${label:+  (joueur: $label)}"
@@ -220,20 +237,34 @@ Exemple: ${CMD} remove \"76561198012345678\" --ban"
     if ! is_steamid64 "$identifier"; then
         reject_name_for_remove "$identifier"
     fi
-    local steamid="$identifier" username=""
+    local steamid="$identifier" username="" banned=0
     validate_steamid "$steamid"
 
     require_server_running
 
+    if [[ "$do_ban" == true ]]; then
+        wl_sql_or_die banned "$DB_PATH" "SELECT COUNT(*) FROM bannedid WHERE steamid='${steamid}'"
+    fi
+
     username=$(sqlite3 "$DB_PATH" "SELECT GROUP_CONCAT(username, ', ') FROM whitelist WHERE steamid = '$(sql_escape "$steamid")'" 2>/dev/null || true)
 
     echo "Retrait de l'autorisation du SteamID: $steamid${username:+  (comptes: $username)}"
-    run_console removesteamid "$steamid"
+    local allowed
+    wl_sql_or_die allowed "$DB_PATH" "SELECT COUNT(*) FROM allowedsteamid WHERE steamid='${steamid}'"
+    if [[ "$allowed" == 0 ]]; then
+        echo "SteamID déjà retiré de la liste blanche: $steamid"
+    else
+        run_console_confirmed removesteamid "$steamid" allowedsteamid 0 "^SteamID ${steamid} removed from allowed SteamIDs$"
+    fi
 
     if [[ "$do_ban" == true ]]; then
         echo ""
         echo "Bannissement définitif du SteamID..."
-        run_console banid "$steamid"
+        if [[ "$banned" == 0 ]]; then
+            run_console_confirmed banid "$steamid" bannedid 1 "^System banned SteamID ${steamid}\([^)]*\).*$"
+        else
+            echo "SteamID déjà banni: $steamid"
+        fi
         echo "✓ SteamID banni: il ne pourra plus revenir, même renommé."
     fi
 
@@ -390,6 +421,7 @@ wl_acquire_write_locks_or_die() {
     if declare -F acquire_world_lock >/dev/null 2>&1; then
         acquire_world_lock --required || die "Une opération monde est déjà en cours. Attends qu'elle se termine."
     fi
+    python3 "${SCRIPT_DIR}/../lib/world_transaction.py" check --world "$PZ_SOURCE_DIR" || exit 1
     acquire_serverctl_lock_or_die "$@"
 }
 wl_assert_stopped_or_die() {

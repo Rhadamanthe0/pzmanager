@@ -119,6 +119,9 @@ apply_env_defaults() {
     : "${PZ_JDK_SOURCE:=debian}"
 
     # --- Sauvegardes ---
+    : "${BACKUP_GFS_HOURLY_HOURS:=12}"
+    : "${BACKUP_GFS_SIXHOURLY_DAYS:=3}"
+    : "${BACKUP_GFS_DAILY_DAYS:=14}"
     : "${BACKUP_DIR:=${PZ_DATA_DIR}/dataBackups}"
     : "${BACKUP_LATEST_LINK:=${BACKUP_DIR}/latest}"
     : "${SYNC_BACKUPS_DIR:=${PZ_DATA_DIR}/fullBackups}"
@@ -144,6 +147,7 @@ apply_env_defaults() {
            PZ_SERVER_NAME PZ_DB_PATH PZ_INI_PATH \
            STEAMCMD_PATH STEAM_APP_ID STEAM_BETA_BRANCH STEAM_LOGIN \
             JAVA_VERSION JAVA_PACKAGE JAVA_PATH PZ_JDK_SOURCE \
+           BACKUP_GFS_HOURLY_HOURS BACKUP_GFS_SIXHOURLY_DAYS BACKUP_GFS_DAILY_DAYS \
            BACKUP_DIR BACKUP_LATEST_LINK SYNC_BACKUPS_DIR \
            LOG_BASE_DIR LOG_ZOMBOID_DIR LOG_MAINTENANCE_DIR LOG_RETENTION_DAYS \
            WHITELIST_PURGE_DAYS WHITELIST_LEDGER
@@ -432,19 +436,30 @@ server_readiness_invocation() {
     printf '%s\n' "$invocation"
 }
 
-# Une frame positive du boot courant prouve que la simulation a démarré.
-# L'inverse est faux : le log utilise IsoWorld.getFrameNo(), distinct du compteur
-# de la boucle serveur. Un serveur vide sain peut rester à f:0 (24/10/2026).
-# Retour : 0 = frame positive, 1 = f:0 seulement, 2 = aucune frame exploitable.
-# Dans les deux derniers cas, wait_for_server_ready sonde la vraie console.
+# DebugLog.formatLogStringForConsole assemble le préfixe avant le premier > :
+# sévérité, canal, f:, t:/st: facultatifs puis site « at ». Le corps est libre.
+# Les timestamps natifs peuvent employer des espaces de groupement Unicode.
+game_log_frame() {
+    local line="$1"
+    local native='^(LOG|WARN|ERROR)[[:space:]]*:[[:space:]]*([A-Za-z]+)[[:space:]]+f:([0-9]+)([[:space:]]+t:[0-9,[:space:]  ]+)?([[:space:]]+st:[0-9,[:space:]  ]+)?([[:space:]]+at[[:space:]]+[^>]*)?>'
+    [[ "$line" =~ $native ]] || return 1
+    printf '%s\n' "${BASH_REMATCH[3]}"
+}
+
+# Retour : 0 = frame native positive, 1 = f:0 seulement, 2 = aucune frame.
+# Le payload d'un message ne peut jamais transformer une frame f:0 en preuve.
 game_loop_started() {
-    local since_epoch="$1" invocation="$2" lines
+    local since_epoch="$1" invocation="$2" lines line frame found=false
     [[ "$invocation" =~ ^[[:xdigit:]]{32}$ ]] || return 2
-    lines="$(journalctl --user --since "@${since_epoch}" -n 400 --no-pager \
-        "INVOCATION_ID=${invocation}" + "_SYSTEMD_INVOCATION_ID=${invocation}" \
-        2>/dev/null | grep -oE 'f:[0-9]+ st:' || true)"
-    [[ -n "$lines" ]] || return 2
-    grep -qE 'f:[1-9][0-9]* st:' <<< "$lines"
+    lines="$(journalctl --user --since "@${since_epoch}" -n 400 --no-pager -o cat \
+        "INVOCATION_ID=${invocation}" + "_SYSTEMD_INVOCATION_ID=${invocation}" 2>/dev/null || true)"
+    while IFS= read -r line; do
+        frame="$(game_log_frame "$line")" || continue
+        found=true
+        [[ "$frame" != *[1-9]* ]] || return 0
+    done <<< "$lines"
+    $found && return 1
+    return 2
 }
 
 # `players` est exécuté dans la boucle principale, après refreshAnimSets.

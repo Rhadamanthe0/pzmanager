@@ -51,10 +51,12 @@ export PATH="$BIN:$PATH"
 cat > "$BIN/apt-cache" <<'MOCKEOF'
 #!/usr/bin/env bash
 pkg="${2:-}"
+label=Candidate
+if [[ "${APT_CACHE_FRENCH:-0}" == 1 && ( "${LC_ALL:-}" != C || "${LANGUAGE:-}" != C ) ]]; then label=Candidat; fi
 if [[ " ${APT_CACHE_AVAILABLE:-} " == *" ${pkg} "* ]]; then
-    printf '%s:\n  Installed: (none)\n  Candidate: 9.9.9-1\n' "$pkg"
+    printf '%s:\n  Installed: (none)\n  %s: 9.9.9-1\n' "$pkg" "$label"
 else
-    printf '%s:\n  Installed: (none)\n  Candidate: (none)\n' "$pkg"
+    printf '%s:\n  Installed: (none)\n  %s: (none)\n' "$pkg" "$label"
 fi
 MOCKEOF
 chmod +x "$BIN/apt-cache"
@@ -157,6 +159,19 @@ LOG2="$(cat "$S/resolve2.log")"
 grep -q 'repli' <<<"$LOG2" \
     && ko "repli annonce a tort alors que 25 dispo" \
     || ok "aucun repli annonce (25 vraiment dispo)"
+
+# APT localisé : vrai résolveur, seul apt-cache est doublé, aucun Java lancé.
+(
+    export LANGUAGE=fr LC_ALL=C.UTF-8 APT_CACHE_FRENCH=1 JAVA_VERSION=25
+    resolve_java_package > "$S/resolve-fr.log" 2>&1 &&
+    [[ "$JAVA_VERSION/$JAVA_PACKAGE" == 25/openjdk-25-jre-headless ]] &&
+    [[ "$LANGUAGE/$LC_ALL" == fr/C.UTF-8 ]]
+) && ok 'candidat JRE25 sous langue FR : sélection et locale parent conservées' \
+  || ko 'candidat JRE25 rejeté sous langue FR'
+(
+    export LANGUAGE=fr LC_ALL=C.UTF-8 APT_CACHE_FRENCH=1 APT_CACHE_AVAILABLE=""
+    apt_package_available openjdk-25-jre-headless
+) && ko 'candidat JRE absent accepté sous langue FR' || ok 'candidat JRE absent refusé sous langue FR'
 
 # --- (3) mismatch java -version -> die ------------------------------------------
 echo "== (3) mismatch =="

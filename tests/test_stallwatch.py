@@ -1,5 +1,6 @@
 """Exécute une copie du détecteur avec journaux et services simulés."""
 import os
+import json
 import fcntl
 from pathlib import Path
 import shutil
@@ -70,6 +71,41 @@ log() { printf '%s\\n' "$*"; }
         state = self.state_dir / 'stallwatch.state'
         state.write_text('123 42 1999 0 ' + 'a' * 32 + ' 123 1000\n')
         return state
+
+    def admin_notification_route(self,conclusive):
+        self.prepare_restart()
+        root=Path(__file__).resolve().parents[1]
+        helper=self.root/'data/scripts/internal';helper.mkdir(parents=True)
+        lib=self.root/'data/scripts/lib';lib.mkdir()
+        shutil.copy2(root/'data/scripts/internal/sendDiscord.sh',helper/'sendDiscord-real.sh')
+        (lib/'common.sh').write_text('source_env() { DISCORD_WEBHOOK="$TEST_PUBLIC_WEBHOOK"; }\n')
+        common=root/'data/scripts/lib/common.sh'
+        source=common.read_text();notify='notify() {'+source.split('notify() {',1)[1].split('\n}',1)[0]+'\n}\n'
+        with (self.root/'scripts/lib/common.sh').open('a') as stream:stream.write(notify)
+        wrapper=helper/'sendDiscord.sh'
+        wrapper.write_text("#!/usr/bin/python3\nimport json,os,pathlib,sys\nroot=pathlib.Path(os.environ['TEST_ROOT'])\nwith (root/'notifications').open('a') as stream:stream.write(json.dumps({'program':'sendDiscord','arguments':sys.argv[1:]})+'\\n')\nos.execv('/bin/bash',['/bin/bash',str(pathlib.Path(__file__).with_name('sendDiscord-real.sh')),*sys.argv[1:]])\n")
+        wrapper.chmod(0o700)
+        curl=self.commands/'curl';curl.write_text('#!/usr/bin/python3\nimport json,os,pathlib,sys\nargs=sys.argv[1:]\nif args[-1].endswith(\'/metrics\'):\n print(\'game{parameter="players"} 1\');raise SystemExit(0)\nfields={}\nfor line in sys.stdin.read().split(\'\\n\'):\n if line.strip():\n  key,_,value=line.partition(\'=\');fields[key.strip()]=json.loads(value.strip())\nwith (pathlib.Path(os.environ[\'TEST_ROOT\'])/\'notifications\').open(\'a\') as stream:stream.write(json.dumps({\'program\':\'curl\',\'arguments\':args,\'target\':fields[\'url\']})+\'\\n\')\nprint(\'204\',end=\'\')\n')
+        curl.chmod(0o700)
+        self.env.update(PZ_MANAGER_ROOT=str(self.root),TEST_PUBLIC_WEBHOOK='https://discord.invalid/PUBLIC-TOKEN',
+                        DISCORD_ADMIN_WEBHOOK='https://discord.invalid/ADMIN-TOKEN',STALL_AUTO_RESTART='0')
+        if not conclusive:
+            jcmd=self.commands/'jcmd';jcmd.write_text('#!/usr/bin/python3\nprint(\'"main" cpu=100ms elapsed=10s waiting\')\n');jcmd.chmod(0o700)
+        result=self.run_watch();self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        records=[json.loads(line) for line in (self.root/'notifications').read_text().splitlines()]
+        expected=['https://discord.invalid/PUBLIC-TOKEN','https://discord.invalid/ADMIN-TOKEN'] if conclusive else ['https://discord.invalid/ADMIN-TOKEN']
+        self.assertEqual([entry['target'] for entry in records if entry['program']=='curl'],expected)
+        for entry in records:
+            arguments=json.dumps(entry['arguments'])
+            self.assertNotIn('ADMIN-TOKEN',arguments)
+            self.assertNotIn('PUBLIC-TOKEN',arguments)
+        self.assertNotIn('ADMIN-TOKEN',result.stdout+result.stderr)
+
+    def test_conclusive_admin_notification_uses_private_environment(self):
+        self.admin_notification_route(True)
+
+    def test_nonconclusive_admin_notification_uses_private_environment(self):
+        self.admin_notification_route(False)
 
     def test_world_contention_retries_without_wasted_dump(self):
         state = self.prepare_restart()
@@ -147,14 +183,15 @@ log() { printf '%s\\n' "$*"; }
         function = source.split('shutdown_server() {', 1)[1].split('\n}', 1)[0]
         harness = ('shutdown_server() {' + function + '\n}\n' +
                    'try_acquire_maintenance_lock() { :; }\n'
-                   'server_is_active() { return 0; }\n'
-                   'wait_for_server_ready() { return 1; }\n'
+                   'shutdown_server_state() { echo active; }\n'
+                   'wait_for_server_ready() { echo called > "$TEST_ROOT/readiness-attempt"; return 1; }\n'
                    'log() { :; }\n'
                    'systemctl() { echo unexpected-systemctl; }\n'
                    'shutdown_server stop\n')
-        result = subprocess.run(['bash', '-eu', '-c', harness],
+        result = subprocess.run(['bash', '-eu', '-c', harness],env=self.env,
                                 capture_output=True, text=True, timeout=5)
         self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual((self.root/'readiness-attempt').read_text(),'called\n')
         self.assertNotIn('unexpected-systemctl', result.stdout)
         self.assertEqual(result.stderr, '')
 

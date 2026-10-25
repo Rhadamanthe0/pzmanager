@@ -18,6 +18,15 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
 source_env
 
+# Join the same authenticated WORLD admission as Writing/purge. The worker
+# proves the inherited OFD and clean journal before even creating the INI dir.
+if [[ "${1:-}" != --admitted-worker ]]; then
+    lock_path="$(python3 "${SCRIPT_DIR}/writing_start_admission.py" path)" || exit 1
+    exec python3 "${SCRIPT_DIR}/writing_start_admission.py" run \
+        --lock-path "$lock_path" --unit "$PZ_SERVICE_NAME" -- bash "$0" --admitted-worker
+fi
+python3 "${SCRIPT_DIR}/../lib/account_safety.py" verify-worker || exit 1
+
 : "${PZ_INI_PATH:=${PZ_SOURCE_DIR}/Server/${PZ_SERVER_NAME}.ini}"
 ini_dir="$(dirname "$PZ_INI_PATH")"
 mkdir -p "$ini_dir" || die "Dossier ini inaccessible (${ini_dir}) : serveur non démarré (fail-closed)."

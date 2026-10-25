@@ -46,6 +46,10 @@ if '-n' in args:
  if mode=='previous-frame':
   if not any(arg.endswith('='+'b'*32) for arg in args):print('LOG : General f:42 st:1> previous invocation')
   print('LOG : General f:0 st:2> current invocation')
+ elif mode=='payload-frame':
+  print('LOG : General f:0 st:123> command entered via server console (System.in): "servermsg f:42 st: f:19 st:"')
+ elif mode=='native-frame-with-payload':
+  print('LOG  : General      f:42 t:1,234 st:1\u202f234 at GameServer.main> servermsg f:0 st:999> loading')
  elif mode=='replaced-frame':
   print('LOG : General f:42 st:1> ready');(root/'boot-changed').touch()
  elif mode in ('invalid-invocation','identity-error'):print('LOG : General f:42 st:1> ready')
@@ -53,8 +57,10 @@ if '-n' in args:
  else: print('LOG : General f:'+('42' if mode=='frame' else '0')+' st:123> tick')
 elif '--grep' in args: print('LOG : Lua f:0 st:1> LuaNet: Initialization [DONE]')
 else:
- print('LOG : General f:0 st:123> command entered via server console (System.in): "players"')
- if mode in ('zero','restart'): print('LOG : General f:0 st:124> Players connected (0):')
+ if mode=='zero-with-time': print('LOG : General f:0 t:1,234 st:1\\u202f235> command entered via server console (System.in): "players"')
+ else: print('LOG : General f:0 st:123> command entered via server console (System.in): "players"')
+ if mode=='zero-with-time': print('LOG : General f:0 t:1,234 st:1\\u202f236> Players connected (0):')
+ elif mode in ('zero','restart'): print('LOG : General f:0 st:124> Players connected (0):')
  elif mode=='players': print('Players connected (2):\\n-alice\\n-bob')
  elif mode=='lua': print('LOG : Lua f:0 st:124> Players connected (0):')
  elif mode=='malformed': print('not Players connected (0):')
@@ -78,6 +84,15 @@ else:
         with self.assertRaises(BlockingIOError):
             os.read(self.fd, 100)
 
+    def test_frame_tokens_in_console_payload_do_not_prove_readiness(self):
+        result=self.run_ready('payload-frame', timeout=3)
+        self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+        self.assertIn('fin de boot toujours non signalée',result.stderr)
+        self.assertEqual(os.read(self.fd,100),b'players\n')
+    def test_native_frame_prefix_wins_over_zero_payload_and_grouped_time(self):
+        result=self.run_ready('native-frame-with-payload')
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        with self.assertRaises(BlockingIOError):os.read(self.fd,100)
     def test_previous_invocation_frame_in_same_second_is_refused(self):
         result=self.run_ready('previous-frame')
         self.assertEqual(result.returncode,1,result.stdout+result.stderr)
@@ -113,6 +128,10 @@ else:
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(os.read(self.fd, 100), b'players\n')
 
+    def test_idle_players_with_native_time_prefix_is_ready(self):
+        result=self.run_ready('zero-with-time',timeout=3)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual(os.read(self.fd,100),b'players\n')
     def test_native_positive_players_is_ready(self):
         result = self.run_ready('players', timeout=3)
         self.assertEqual(result.returncode, 0, result.stderr)

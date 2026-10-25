@@ -24,7 +24,11 @@ list_dir() {
         # nullglob : un motif sans correspondance donne un tableau vide plutôt
         # que le motif littéral. Le glob doit rester non quoté pour s'expanser.
         shopt -s nullglob
-        candidates=( "${dir}"/${pattern} )
+        local candidate
+        for candidate in "${dir}"/${pattern}; do
+            [[ "$candidate" != *.tmp ]] || continue
+            candidates+=("$candidate")
+        done
         shopt -u nullglob
     fi
 
@@ -40,7 +44,7 @@ list_dir() {
     printf '%s\n' "${sorted[@]:0:$limit}"
 }
 
-echo "=== Backups incrémentiaux (rétention GFS : ${BACKUP_GFS_HOURLY_HOURS:-24}h horaires / ${BACKUP_GFS_SIXHOURLY_DAYS:-7}j@6h / ${BACKUP_GFS_DAILY_DAYS:-30}j daily) ==="
+echo "=== Backups incrémentiaux (rétention GFS : ${BACKUP_GFS_HOURLY_HOURS}h horaires / ${BACKUP_GFS_SIXHOURLY_DAYS}j@6h / ${BACKUP_GFS_DAILY_DAYS}j daily) ==="
 list_dir "${BACKUP_DIR}" "backup_*" 20
 
 echo ""

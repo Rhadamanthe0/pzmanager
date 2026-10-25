@@ -194,6 +194,28 @@ warn_players() {
     sleep 5
 }
 
+# Observer l'état complet : un bus indisponible ne vaut jamais « arrêté ».
+# Une activation peut seulement être attendue, pas interrompue avant readiness.
+shutdown_server_state() {
+    python3 - "${SCRIPT_DIR}/../lib" "$PZ_SERVICE_NAME" <<'PYSTOPSTATE'
+import sys
+sys.path.insert(0, sys.argv[1])
+from snapshot_consistency import probe, stopped
+state = probe(sys.argv[2])
+if stopped(state):
+    print('inactive')
+elif (state.get('ok') and state.get('LoadState') == 'loaded'
+      and str(state.get('MainPID', '')).isdigit()
+      and str(state.get('ControlPID', '')).isdigit()
+      and ((state.get('ActiveState') == 'active' and int(state['MainPID']) > 0
+            and state['ControlPID'] == '0') or state.get('ActiveState') == 'activating')):
+    print(state['ActiveState'])
+else:
+    print('État serveur non prouvé pour un arrêt sûr.', file=sys.stderr)
+    raise SystemExit(1)
+PYSTOPSTATE
+}
+
 shutdown_server() {
     local action="$1"
     try_acquire_maintenance_lock || true
@@ -202,7 +224,15 @@ shutdown_server() {
     # pendant le boot fait planter B42 (NPE IsoMetaGrid.save, grid=null) ->
     # crash-loop. On attend la fin du boot courant AVANT préavis, comptage et
     # arrêt. Cas normal (serveur déjà prêt) : retour immédiat.
-    if server_is_active && ! wait_for_server_ready; then
+    local state boot_deadline=$((SECONDS + 300)) remaining
+    state="$(shutdown_server_state)" || return 1
+    while [[ "$state" == activating ]]; do
+        (( SECONDS < boot_deadline )) || { log "Arrêt annulé : activation toujours en cours."; return 1; }
+        sleep 1
+        state="$(shutdown_server_state)" || return 1
+    done
+    remaining=$((boot_deadline - SECONDS))
+    if [[ "$state" == active ]] && ! wait_for_server_ready "$remaining"; then
         log "AVERTISSEMENT : la boucle de jeu n'a toujours pas démarré (timeout)."
         log "  Le serveur charge encore, ou son chargement est bloqué (cas du 02/09/2026)."
         log "  Arrêt annulé : aucune preuve que le serveur peut sauvegarder."
@@ -268,11 +298,18 @@ shutdown_server() {
         warn_players "$action"
     fi
 
-    if server_is_active; then
-        echo "Arrêt du service..."
-        systemctl --user stop "${PZ_SERVICE_NAME}"
-        sleep 5
-    fi
+    state="$(shutdown_server_state)" || return 1
+    case "$state" in
+        active)
+            echo "Arrêt du service..."
+            systemctl --user stop "${PZ_SERVICE_NAME}"
+            sleep 5
+            ;;
+        inactive) ;;
+        *) log "Arrêt annulé : état serveur en transition."; return 1 ;;
+    esac
+    state="$(shutdown_server_state)" || return 1
+    [[ "$state" == inactive ]] || { log "Arrêt non prouvé après la commande stop."; return 1; }
 
     echo "Sauvegarde..."
     "${SCRIPT_DIR}/../backup/dataBackup.sh"

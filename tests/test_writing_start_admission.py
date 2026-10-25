@@ -1,5 +1,6 @@
 """WORLD start admission: disposable state, mocked bus and real Linux flock/SCM_RIGHTS."""
 import fcntl
+from contextlib import closing
 import importlib.util
 import json
 import os
@@ -96,6 +97,81 @@ while [[ ! -f "$6" ]]; do sleep .02 201>&-; done
         self.processes.append(process);self.wait_file(ready,process)
         self.original_marker=json.loads((self.private/admission.MARKER).read_text())
         return process,release
+
+    def closure_fixture(self):
+        # Real shell entrypoints, admission and clean world; only bus is simulated.
+        self.private.rename(self.root/'pzmanager');self.private=self.root/'pzmanager'
+        self.lock=self.private/'world.lock'
+        self.env['XDG_RUNTIME_DIR']=str(self.root)
+        repo=self.root/'repository';shutil.copytree(ROOT/'data/scripts',repo/'data/scripts')
+        world=self.root/'world';(world/'Server').mkdir(parents=True)
+        ini=world/'Server/servertest.ini';ini.write_text('Open=true\nMods=\n')
+        import shlex,sqlite3
+        install=self.root/'pzserver';install.mkdir()
+        (world/'db').mkdir();database=world/'db/servertest.db'
+        with closing(sqlite3.connect(database)) as db:
+            db.executescript("CREATE TABLE whitelist(id INTEGER PRIMARY KEY,username TEXT,steamid TEXT,lastConnection TEXT); CREATE TABLE allowedsteamid(steamid TEXT); INSERT INTO whitelist VALUES(1,'old',NULL,'2000-01-01');")
+        values=dict(PZ_INSTALL_DIR=str(install),PZ_DB_PATH=str(database),PZ_SOURCE_DIR=str(world),PZ_HOME=str(self.root),PZ_SERVICE_NAME='probe.service',PZ_INI_PATH=str(ini))
+        (repo/'.env').write_text('\n'.join(k+'='+shlex.quote(v) for k,v in values.items())+'\n')
+        self.env.update(values)
+        return repo,world,ini
+    def test_closure_and_writing_share_one_real_startup_broker(self):
+        repo,world,ini=self.closure_fixture()
+        owner,release=self.prepare_owner()
+        self.set_state('activating','start-pre',0,os.getpid())
+        for name in ('prepareWorldStart.sh',):
+            result=subprocess.run(['bash',str(repo/'data/scripts/internal'/name)],env=self.env,capture_output=True,text=True,timeout=12)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            self.assertTrue(self.busy(),'worker released parent WORLD')
+            self.assertIn('ProjectWriting restart cleanup policy: disabled',result.stdout)
+            self.assertIn('Purge terminée : 1 compte(s)',result.stdout)
+        self.assertIn('Open=false',ini.read_text())
+        release.touch();owner.wait(timeout=5)
+        self.assertFalse(self.busy())
+    def test_closure_pending_preserves_tree_and_recovery(self):
+        repo,world,ini=self.closure_fixture()
+        staged=self.root/'staged';shutil.copytree(world,staged)
+        helper=repo/'data/scripts/lib/world_transaction.py'
+        def transaction(*args):
+            return subprocess.run([sys.executable,str(helper),*args,'--world',str(world)],env=self.env,capture_output=True,text=True,timeout=8)
+        result=transaction('begin','--kind','fixture','--recovery',str(self.root/'recovery'),'--after-tree',str(staged))
+        self.assertEqual(result.returncode,0,result.stderr)
+        before=ini.read_bytes()
+        owner,release=self.prepare_owner();self.set_state('activating','start-pre',0,os.getpid())
+        closed=subprocess.run(['bash',str(repo/'data/scripts/internal/enforceClosedServer.sh')],env=self.env,capture_output=True,text=True,timeout=8)
+        self.assertNotEqual(closed.returncode,0,closed.stdout+closed.stderr)
+        self.assertIn('unfinished',closed.stderr)
+        self.assertEqual(ini.read_bytes(),before);self.assertTrue(self.busy())
+        reverted=transaction('finish','--token',result.stdout.strip(),'--state','reverted')
+        self.assertEqual(reverted.returncode,0,reverted.stderr)
+        release.touch();owner.wait(timeout=5)
+    def test_closure_autonomous_and_forged_worker(self):
+        repo,world,ini=self.closure_fixture()
+        script=repo/'data/scripts/internal/enforceClosedServer.sh'
+        for name in ('enforceClosedServer.sh','configureWritingTextOnly.sh','prepareWorldStart.sh'):
+            forged=subprocess.run(['bash',str(repo/'data/scripts/internal'/name),'--admitted-worker'],env=self.env,capture_output=True,text=True,timeout=8)
+            self.assertNotEqual(forged.returncode,0,forged.stdout+forged.stderr)
+            self.assertEqual(ini.read_text(),'Open=true\nMods=\n')
+        result=subprocess.run(['bash',str(script)],env=self.env,capture_output=True,text=True,timeout=8)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('Open=false',ini.read_text());self.assertFalse(self.busy())
+
+    def test_startup_writing_failure_blocks_purge_after_closure(self):
+        repo,world,ini=self.closure_fixture();(self.root/'pzserver').rmdir()
+        result=subprocess.run(['bash',str(repo/'data/scripts/internal/prepareWorldStart.sh')],env=self.env,capture_output=True,text=True,timeout=8)
+        self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('Open=false',ini.read_text())
+        self.assertNotIn('Purge terminée',result.stdout)
+    def test_startup_purge_failure_remains_nonblocking(self):
+        repo,world,ini=self.closure_fixture()
+        import sqlite3
+        with closing(sqlite3.connect(world/'db/servertest.db')) as db:
+            db.execute("CREATE TRIGGER refuse BEFORE DELETE ON whitelist BEGIN SELECT RAISE(ABORT,'fixture refusal'); END");db.commit()
+        result=subprocess.run(['bash',str(repo/'data/scripts/internal/prepareWorldStart.sh')],env=self.env,capture_output=True,text=True,timeout=8)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('Open=false',ini.read_text())
+        self.assertIn('ProjectWriting restart cleanup policy: disabled',result.stdout)
+        self.assertIn('purge des accès non effectuée',result.stdout)
 
     def test_inactive_offline_command_runs_with_real_world_fd(self):
         done=self.root/'done'

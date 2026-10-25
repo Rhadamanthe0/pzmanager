@@ -55,6 +55,8 @@ trap 'exit 143' TERM
 SECRET_DIR="$(mktemp -d)" || die "Répertoire temporaire privé indisponible."
 KEY_FILE="${SECRET_DIR}/account.json"
 KEY_PEM="${SECRET_DIR}/private.pem"
+JWT_FILE="${SECRET_DIR}/assertion.jwt"
+AUTH_HEADER_FILE="${SECRET_DIR}/authorization.header"
 printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON_B64" | base64 -d > "$KEY_FILE" \
     || die "GOOGLE_SERVICE_ACCOUNT_JSON_B64 n'est pas du base64 valide."
 jq -e '.client_email and .private_key' "$KEY_FILE" >/dev/null 2>&1 \
@@ -66,7 +68,7 @@ jq -r '.private_key' "$KEY_FILE" > "$KEY_PEM" \
 b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
 
 get_access_token() {
-    local email now exp header claim signing_input sig jwt resp tok
+    local email now exp header claim signing_input sig resp tok
     email="$(jq -r '.client_email' "$KEY_FILE")"
     now="$(date +%s)"; exp="$((now + 3600))"
     header='{"alg":"RS256","typ":"JWT"}'
@@ -75,12 +77,14 @@ get_access_token() {
     signing_input="$(printf '%s' "$header" | b64url).$(printf '%s' "$claim" | b64url)"
     sig="$(printf '%s' "$signing_input" | openssl dgst -sha256 -sign "$KEY_PEM" -binary | b64url)" \
         || return $?
-    jwt="${signing_input}.${sig}"
+    # Les valeurs secrètes restent hors argv, y compris pendant curl.
+    printf '%s' "${signing_input}.${sig}" > "$JWT_FILE" || return $?
 
     resp="$(api_request '(.access_token | text) and .token_type == "Bearer" and (.expires_in | type == "number" and . > 0)' \
         -X POST https://oauth2.googleapis.com/token \
         --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer" \
-        --data-urlencode "assertion=${jwt}")" || die "Échec auth Google."
+        --data-urlencode "assertion@${JWT_FILE}")" || die "Échec auth Google."
+    rm -f -- "$JWT_FILE" || return $?
     tok="$(printf '%s' "$resp" | jq -r '.access_token')"
     printf '%s' "$tok"
 }
@@ -106,14 +110,14 @@ api_request() {  # $1 = contrat jq, suite = arguments curl
 }
 api_get() {  # $1 = querystring (ex: ?fields=...)
     api_request '(.sheets | type == "array") and all(.sheets[]; .properties | (.sheetId | count) and (.title | text) and (.index | count) and ((has("hidden") | not) or (.hidden | type == "boolean")))' \
-        -H "Authorization: Bearer ${TOKEN}" \
+        -H "@${AUTH_HEADER_FILE}" \
         "https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}${1:-}"
 }
 api_batch() {  # $1 = JSON {requests:[...]}
     local count
     count="$(jq '.requests | length' <<< "$1")"
     printf '%s' "$1" | api_request '.spreadsheetId == $id and (.replies | type == "array" and length == '"$count"')' \
-        -X POST -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+        -X POST -H "@${AUTH_HEADER_FILE}" -H "Content-Type: application/json" \
         "https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}:batchUpdate" \
         --data-binary @-
 }
@@ -121,13 +125,13 @@ api_batch() {  # $1 = JSON {requests:[...]}
 # Lecture de valeurs : une plage vide valide omet le champ values.
 api_values_get() {
     api_request '(.range | text) and ((has("values") | not) or (.values | type == "array" and all(.[]; type == "array")))' \
-        -H "Authorization: Bearer ${TOKEN}" \
+        -H "@${AUTH_HEADER_FILE}" \
         "https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/$(jq -rn --arg v "$1" '$v|@uri')"
 }
 # Écriture d'une valeur brute : $1 = range A1 (une cellule), $2 = texte
 api_values_put() {
     api_request '.spreadsheetId == $id and (.updatedRange | text) and (.updatedCells | count)' \
-        -X PUT -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+        -X PUT -H "@${AUTH_HEADER_FILE}" -H "Content-Type: application/json" \
         "https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/$(jq -rn --arg v "$1" '$v|@uri')?valueInputOption=RAW" \
         -d "$(jq -nc --arg v "$2" '{values:[[$v]]}')"
 }
@@ -269,6 +273,8 @@ cmd_load() {
 [[ $# -ge 1 ]] || die "Usage: $0 {list|new [N]|hide-old|show <tab> [range]|setcell <tab> <cell> <texte>|load <tab> <fichier.tsv>}"
 action="$1"; shift || true
 TOKEN="$(get_access_token)"
+printf 'Authorization: Bearer %s\n' "$TOKEN" > "$AUTH_HEADER_FILE"
+unset TOKEN
 case "$action" in
     list)     cmd_list ;;
     new)      cmd_new "${1:-}" ;;

@@ -39,10 +39,39 @@ if sys.argv[1]=='dgst':
   while not (root/'sign-release').exists():time.sleep(.02)
 sys.stdout.buffer.write(base64.b64encode(payload) if sys.argv[1]=='base64' else b'fixture-signature')
 ''')
-        self.command(commands / 'curl', '''import copy,json,os,pathlib,sys
+        self.command(commands / 'curl', '''import base64,copy,hashlib,json,os,pathlib,sys,time
 args=sys.argv[1:]; url=next(arg for arg in args if arg.startswith('https://')); method=args[args.index('-X')+1] if '-X' in args else 'GET'
 operation=('token' if 'oauth2' in url else 'clear' if url.endswith(':clear') else 'put' if method=='PUT' else 'batch' if ':batchUpdate' in url else 'values' if '/values/' in url else 'get')
 with pathlib.Path(os.environ['FIXTURE_CALLS']).open('a') as log: log.write(operation+'\\n')
+root=pathlib.Path(os.environ['FIXTURE_ROOT'])
+credential_path=None;valid=False
+if operation=='token':
+ argument=next(args[i+1] for i,arg in enumerate(args) if arg=='--data-urlencode' and args[i+1].startswith('assertion'))
+ if argument.startswith('assertion@'):
+  credential_path=pathlib.Path(argument[len('assertion@'):]);jwt=credential_path.read_text();(root/'jwt-path').write_text(str(credential_path))
+ else:jwt=argument.partition('=')[2]
+ header,claim,signature=jwt.split('.')
+ claims=json.loads(base64.urlsafe_b64decode(claim+'='*(-len(claim)%4)))
+ valid=(claims['iss']=='fixture@example.invalid' and claims['aud']=='https://oauth2.googleapis.com/token' and
+        base64.urlsafe_b64decode(signature+'='*(-len(signature)%4))==b'fixture-signature')
+else:
+ headers=[]
+ for i,arg in enumerate(args):
+  if arg!='-H':continue
+  value=args[i+1]
+  if value.startswith('@'):
+   credential_path=pathlib.Path(value[1:]);headers.extend(credential_path.read_text().splitlines())
+  else:headers.append(value)
+ valid='Authorization: Bearer fixture-token-not-real' in headers
+record={'operation':operation,'credential_valid':valid,'file':str(credential_path) if credential_path else None}
+if credential_path:
+ record.update(mode=credential_path.stat().st_mode & 0o777,directory_mode=credential_path.parent.stat().st_mode & 0o777)
+if operation!='token':record['jwt_removed']=not (root/'jwt-path').exists() or not pathlib.Path((root/'jwt-path').read_text()).exists()
+with (root/'transport.jsonl').open('a') as stream:stream.write(json.dumps(record)+'\\n')
+if not valid:raise SystemExit(22)
+if os.environ.get('FIXTURE_CURL_BLOCK')==operation:
+ (root/'transport-ready').touch()
+ while not (root/'transport-release').exists():time.sleep(.02)
 mode=os.environ.get('FIXTURE_MODE','ok'); target=os.environ.get('FIXTURE_TARGET','clear')
 data_flag=next((flag for flag in ('-d','--data-binary') if flag in args),None)
 payload=args[args.index(data_flag)+1] if data_flag else '{}'
@@ -99,17 +128,59 @@ responses={
 print(json.dumps(responses[operation]))
 ''')
         self.env = dict(os.environ, PATH=str(commands) + ':' + os.environ['PATH'], FIXTURE_CALLS=str(self.calls),FIXTURE_ROOT=str(self.root),TMPDIR=str(self.secrets))
+        self.command(commands / 'jq', 'os.execv("/usr/bin/jq",["/usr/bin/jq",*sys.argv[1:]])\n')
         self.tsv = self.root / 'input.tsv'
         self.tsv.write_text('fixture\n')
 
     def command(self, path, source):
-        path.write_text('#!/usr/bin/python3\n' + source)
+        path.write_text('#!/usr/bin/python3\n' +
+                        'import json,os,pathlib,sys\n' +
+                        'with (pathlib.Path(os.environ["FIXTURE_ROOT"])/"argv.jsonl").open("a") as stream: stream.write(json.dumps({"command":pathlib.Path(sys.argv[0]).name,"arguments":sys.argv[1:]})+"\\n")\n' + source)
         path.chmod(0o700)
 
     def run_sheet(self, target, mode, *args):
         self.calls.unlink(missing_ok=True)
         return subprocess.run(['bash', str(self.script), *args], env=dict(self.env, FIXTURE_TARGET=target, FIXTURE_MODE=mode),
                               capture_output=True, text=True, timeout=8)
+
+    def test_all_commands_deliver_credentials_privately_without_argv_or_log_exposure(self):
+        for args in (('list',),('new','2'),('hide-old',),('show','V1'),('setcell','V1','A1','fixture'),('load','V1',str(self.tsv))):
+            with self.subTest(args=args):
+                for name in ('argv.jsonl','transport.jsonl','jwt-path'):(self.root/name).unlink(missing_ok=True)
+                result=self.run_sheet('none','ok',*args)
+                self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                argv=(self.root/'argv.jsonl').read_text()
+                for forbidden in ('fixture-token-not-real','fixture-key-not-real','Authorization: Bearer','assertion='):
+                    self.assertNotIn(forbidden,argv)
+                    self.assertNotIn(forbidden,result.stdout+result.stderr)
+                self.assertNotRegex(argv,r'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+')
+                transports=[json.loads(line) for line in (self.root/'transport.jsonl').read_text().splitlines()]
+                self.assertEqual(transports[0]['operation'],'token')
+                for entry in transports:
+                    self.assertTrue(entry['credential_valid'])
+                    self.assertEqual(entry.get('mode'),0o600)
+                    self.assertEqual(entry.get('directory_mode'),0o700)
+                    self.assertTrue(Path(entry['file']).is_relative_to(self.secrets))
+                    if entry['operation']!='token':self.assertTrue(entry['jwt_removed'])
+                self.assertEqual(list(self.secrets.iterdir()),[])
+
+    def test_signals_during_oauth_transport_clean_all_private_credentials(self):
+        for operation,signum,status in (('token',signal.SIGTERM,143),('get',signal.SIGINT,130)):
+            with self.subTest(operation=operation):
+                (self.root/'transport-ready').unlink(missing_ok=True)
+                env=dict(self.env,FIXTURE_CURL_BLOCK=operation)
+                proc=subprocess.Popen(['bash',str(self.script),'list'],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)
+                try:
+                    deadline=time.monotonic()+5
+                    while not (self.root/'transport-ready').exists() and proc.poll() is None and time.monotonic()<deadline:time.sleep(.01)
+                    self.assertTrue((self.root/'transport-ready').exists())
+                    os.killpg(proc.pid,signum);output,error=proc.communicate(timeout=5)
+                    self.assertEqual(proc.returncode,status,output+error)
+                    self.assertEqual(list(self.secrets.iterdir()),[])
+                    self.assertNotIn('fixture-token-not-real',output+error)
+                finally:
+                    if proc.poll() is None:os.killpg(proc.pid,signal.SIGKILL)
+                    proc.communicate()
 
     def stateful(self):
         state={'rows':300,'columns':30,'cells':{'0,0':{'value':'old','format':'bold'},

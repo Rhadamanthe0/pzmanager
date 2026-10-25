@@ -433,6 +433,7 @@ main() {
     maint_set_state "STOPPED"
     MAINT_STOP_ATTEMPTED=true
     stop_server
+    maint_recovery_allowed true || die "Arrêt non prouvé — phases système et Steam refusées."
     SERVER_STOPPED_BY_MAINTENANCE=true
     maint_set_state "SYSTEM"
     update_system
