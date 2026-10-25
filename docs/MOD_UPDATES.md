@@ -22,7 +22,7 @@ Three rules make the difference between an agent that helps and one that takes t
 server down:
 
 - **Follow every step, every time, in order.** Steps 3 and 5 (pre-download and
-  in-game check) are the ones that get skipped and the ones that cost an outage.
+  server verification) are the ones that get skipped and the ones that cost an outage.
 - **Never conclude from a failed page fetch.** See [Pitfalls](#pitfalls) — the
   common failure mode is an agent confidently reporting a mod as deleted when it
   is fine. When a fetch is unclear, stop and ask the operator to paste the page.
@@ -43,7 +43,7 @@ code) via `.gitignore`:
 | File | Content |
 |------|---------|
 | `V[N].txt` | One file per version: the exact `Mods=` / `WorkshopItems=` / `Map=` lines, a table of what changed, and a full numbered table of every mod in the version |
-| `Mods bugués à intégrer plus tard.csv` | Mods parked after failing the in-game check, with the observed symptom |
+| `Mods bugués à intégrer plus tard.csv` | Mods parked with the observed issue or reason for removal |
 
 `V[N].txt` is what makes a rollback a copy-paste instead of an investigation, so
 it is written **before** the deploy, not after. Keep the format identical across
@@ -106,7 +106,8 @@ Un script chargé sans origine identifiable dans les items/entities produit
 `historical_missing` also lists item/entity references to absent mods. Those alone
 do not prove a client loading failure and are advisory. Passing the check does
 not prove removal is harmless: dependencies, map tiles, inventories and Lua data
-still require review and the normal in-game verification.
+still require review, and known removal impacts must be reported alongside the
+server verification.
 
 **Do not edit `servertest.ini` until each new Workshop ID is on disk.** A mod
 never downloaded before is the one that crash-loops the server:
@@ -143,15 +144,16 @@ grep -iE "not found|error|missing" "$(ls -t logs/zomboid/*.log | head -1)"
 
 `required mod X not found` means a missing dependency or a wrong load order.
 
-### 5. Verify in game
+### 5. Verify the server
 
-Log in as admin — the log being clean is not enough:
-
-- **Esc → Mods**: no mod flagged `[ERRORS]`. If one is, remove it, and record it
-  in the parked-mods CSV with the symptom.
-- **Esc → Admin → Item List**: the menu must open without crashing. A crash with
-  `attempted index: toString of non-table: null` in `ISItemsListTable.lua` is a
-  broken mod; bisect the new entries to find it.
+- Wait for the game readiness marker, `LuaNet: Initialization [DONE]`; a running
+  systemd service alone does not prove the world has finished loading.
+- Run `pzm rcon players` and confirm the game console responds.
+- Confirm the service remains running without a restart loop. Review the startup
+  log after about two minutes and compare errors with the previous boot; resolve
+  new blocking errors before recording a successful deployment.
+- Report known effects on existing objects or saved data. These server checks
+  do not establish that every gameplay feature works.
 
 ### 6. Record
 
@@ -306,8 +308,9 @@ and its dependent **Black Powder Gunsmithing** (`BlackPowderGunsmithing`,
 the framework showed **`[ERRORS]` in the in-game Mods menu**, matching its known
 "unable to load on Linux dedicated Server" discussion.
 
-**A clean server-side boot log is not proof a mod works.** The in-game
-`Esc → Mods` check for `[ERRORS]` (step 5 of the procedure above) is the real gate.
+**A clean server-side boot log is not proof every mod feature works.** Record
+reported gameplay failures in the parked-mods CSV with their observed symptoms;
+deployment verification follows the server checks in step 5.
 
 ### "Removed from the community" is a lie
 
