@@ -110,7 +110,6 @@ MONITORING_CSV_DAYS = max(1, int(os.environ.get("DISCORD_BOT_MONITORING_CSV_DAYS
 # la mesure au niveau de la carte réseau. Vide = non exposé -> on retombe sur le NIC.
 PZ_PROMETHEUS_PORT = os.environ.get("PZ_PROMETHEUS_PORT", "").strip()
 PROMETHEUS_URL = f"http://127.0.0.1:{PZ_PROMETHEUS_PORT}/metrics" if PZ_PROMETHEUS_PORT else ""
-_PZ_XMX_RAW = os.environ.get("PZ_XMX_GB", "").strip()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -128,7 +127,7 @@ bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
 
 # Commandes pzm reconnues en tête de ligne d'un batch (évite de réagir au bavardage).
-KNOWN_CMDS = {"server", "backup", "whitelist", "admin", "install", "map",
+KNOWN_CMDS = {"server", "backup", "whitelist", "admin", "install", "map", "mods",
               "rcon", "discord", "help", "--help", "-h"}
 
 # Un seul pzm à la fois (un `server stop 2m` tient le process plusieurs minutes).
@@ -168,41 +167,51 @@ def _result_header(label: str, code: int, mention: str | None = None) -> str:
             else f"❌ `{label}` (exit={code}){tail}")
 
 
+def _bounded_content(text: str) -> str:
+    """Borne le rendu, y compris les emoji (deux unités UTF-16 sur Discord)."""
+    text = text.replace("\0", "\\0")
+    encoded = text.encode("utf-16-le")
+    if len(encoded) <= DISCORD_MAX * 2:
+        return text
+    # Repartir dans un bloc fermé : une coupure au milieu des backticks d'un
+    # argument ne doit pas exposer son Markdown ou ses mentions au salon.
+    literal = text.replace("`", "`\u200b").encode("utf-16-le")
+    shortened = literal[:(DISCORD_MAX - 10) * 2].decode("utf-16-le", errors="ignore")
+    return f"```\n{shortened}…\n```"
+
+
 async def _send_chunked(send, header: str, output: str):
-    """Repli quand la pièce jointe est refusée (permission « Joindre des fichiers »
-    absente) : poste l'en-tête puis la sortie en blocs de code < 2000 caractères.
-    Ne requiert que « Envoyer des messages »."""
-    await send(header)
-    budget = DISCORD_MAX - len("```\n\n```") - 1
-    for i in range(0, len(output), budget):
-        await send(f"```\n{output[i:i + budget]}\n```")
+    """Repli sans pièce jointe : chaque bloc tient même avec 900 emoji."""
+    await send(_bounded_content(header))
+    rendered = output.replace("\0", "\\0").replace("`", "`\u200b")
+    for i in range(0, len(rendered), 900):
+        await send(f"```\n{rendered[i:i + 900]}\n```")
 
 
 async def deliver(send, header: str, output: str, *, filename: str = "pzm-output.txt"):
-    """Envoie statut + sortie en UN SEUL message via le callable `send`.
-    Si tout tient dans un bloc de code -> inline ; sinon -> pièce jointe (Discord
-    ne fait pas ce repli automatiquement via l'API). Si l'envoi du fichier est
-    refusé (permission « Joindre des fichiers » manquante), repli en messages
-    découpés plutôt que de planter sans rien répondre."""
-    output = output.rstrip() or "(aucune sortie)"
-    inline_limit = DISCORD_MAX - len(header) - len("\n```\n\n```") - 1
-    if len(output) <= inline_limit:
-        await send(f"{header}\n```\n{output}\n```")
+    """Borne le message et conserve en fichier tout en-tête abrégé et la sortie.
+    Une pièce jointe refusée est remplacée par des messages découpés."""
+    output = output or "(aucune sortie)"
+    shown_header = _bounded_content(header)
+    full_output = f"{header}\n\n{output}" if shown_header != header else output
+    inline = f"{shown_header}\n```\n{output}\n```"
+    if (shown_header == header and len(inline.encode("utf-16-le")) <= DISCORD_MAX * 2
+            and "```" not in output and "\0" not in output):
+        await send(inline)
         return
-    file = discord.File(io.BytesIO(output.encode("utf-8")), filename=filename)
+    file = discord.File(io.BytesIO(full_output.encode("utf-8")), filename=filename)
     try:
-        await send(header, file=file)
+        await send(shown_header, file=file)
     except discord.Forbidden:
-        log.warning("Envoi en pièce jointe refusé (permission « Joindre des fichiers » "
-                    "manquante) -> repli en messages découpés")
-        await _send_chunked(send, header, output)
+        log.warning("Envoi en pièce jointe refusé -> repli en messages découpés")
+        await _send_chunked(send, shown_header, full_output)
 
 
 # Délai gracieux entre SIGTERM et SIGKILL du groupe (voir _kill_tree).
 _TERM_GRACE = 5.0
 
 
-async def _kill_tree(proc) -> None:
+async def _kill_tree(proc, communication):
     """Arrête le groupe de `proc`, y compris ses descendants encore actifs
     après la sortie du parent (lancé avec start_new_session=True)."""
     pgid = proc.pid  # start_new_session=True : PGID stable même si le parent sort
@@ -213,7 +222,7 @@ async def _kill_tree(proc) -> None:
     try:
         # wait() seul peut réussir dès la mort du parent et laisser un enfant
         # qui ignore TERM et garde stdout ouvert. Attend aussi la fermeture du pipe.
-        await asyncio.wait_for(proc.communicate(), timeout=_TERM_GRACE)
+        await asyncio.wait_for(asyncio.shield(communication), timeout=_TERM_GRACE)
     except asyncio.TimeoutError:
         pass
     # Toujours sonder le groupe : la sortie du parent ne prouve pas qu'un
@@ -222,7 +231,7 @@ async def _kill_tree(proc) -> None:
         os.killpg(pgid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):
         pass
-    await proc.communicate()
+    return await communication
 
 
 async def run_pzm(args: list[str]) -> tuple[int, str]:
@@ -239,13 +248,18 @@ async def run_pzm(args: list[str]) -> tuple[int, str]:
         cwd=PZ_MANAGER_DIR or None,
         start_new_session=True,
     )
+    # Une seule lecture du pipe, protégée de l'annulation de wait_for : une
+    # seconde communicate() perdrait les octets déjà consommés avant le délai.
+    communication = asyncio.create_task(proc.communicate())
     try:
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=CMD_TIMEOUT)
+        stdout, _ = await asyncio.wait_for(asyncio.shield(communication), timeout=CMD_TIMEOUT)
     except asyncio.TimeoutError:
-        await _kill_tree(proc)
-        return 124, f"⏱️ Commande interrompue après {CMD_TIMEOUT}s (timeout)."
+        stdout, _ = await _kill_tree(proc, communication)
+        partial = stdout.decode("utf-8", errors="replace")
+        return 124, (f"⏱️ Commande interrompue après {CMD_TIMEOUT}s (timeout). "
+                     "Sortie partielle ; les opérations déjà effectuées peuvent subsister.\n" + partial)
     except asyncio.CancelledError:
-        await _kill_tree(proc)
+        await _kill_tree(proc, communication)
         raise
     return proc.returncode, stdout.decode("utf-8", errors="replace")
 
@@ -343,8 +357,6 @@ async def reject_batch(message: discord.Message, bad: list[tuple[int, str]]):
     header = (f"⛔ Commande non reconnue ({author.mention}){note} — rien n'a été exécuté.\n"
               f"Ligne(s) invalide(s) (attendu `pzm <commande> …`) :\n```\n{detail}\n```\n"
               f"Voir l'aide `pzm help` en pièce jointe.")
-    if len(header) > DISCORD_MAX:
-        header = header[:DISCORD_MAX - 1] + "…"
     _, help_out = await run_pzm(["help"])
     # deliver() gère la pièce jointe (ou le repli en messages découpés si la
     # permission « Joindre des fichiers » manque).
@@ -363,10 +375,10 @@ async def _dispatch_pasted(message: discord.Message, label: str, work):
 
     # Si un pzm tourne déjà, on met en file d'attente (lock FIFO) au lieu de refuser :
     # le statut l'indique puis bascule sur « en cours… » quand c'est son tour.
-    running = f"▶️ {label} en cours… (demandé par {author.mention}){note}"
+    running = _bounded_content(f"▶️ {label} en cours… (demandé par {author.mention}){note}")
     queued = run_lock.locked()
     status = await channel.send(
-        f"⏳ {label} en file d'attente… (demandé par {author.mention}){note}"
+        _bounded_content(f"⏳ {label} en file d'attente… (demandé par {author.mention}){note}")
         if queued else running)
     try:
         async with run_lock:
@@ -701,6 +713,7 @@ class _Tail:
         self._path: Optional[str] = None
         self._offset = 0
         self._buffer = b""
+        self.available = False
 
     @property
     def path(self) -> Optional[str]:
@@ -719,8 +732,10 @@ class _Tail:
         return [ln.decode("utf-8", "replace") for ln in lines]
 
     def read(self) -> list[str]:
+        self.available = False
         newest = self._newest()
         if newest is None:
+            self._path = None
             return []
         if newest != self._path:               # boot ou rotation -> relire tout
             self._path, self._buffer = newest, b""
@@ -728,23 +743,26 @@ class _Tail:
                 with open(newest, "rb") as f:
                     data = f.read()
             except OSError:
-                data = b""
+                self._path = None
+                return []
+            self.available = True
             self._offset = len(data)
             return self._decode(data)
         try:
             fsize = os.path.getsize(self._path)
         except OSError:
+            self._path = None
             return []
         if fsize < self._offset:               # tronqué/remplacé en place
             self._offset, self._buffer = 0, b""
-        if fsize <= self._offset:
-            return []
         try:
             with open(self._path, "rb") as f:
                 f.seek(self._offset)
                 data = f.read()
         except OSError:
+            self._path = None
             return []
+        self.available = True
         self._offset += len(data)
         return self._decode(data)
 
@@ -993,29 +1011,20 @@ def _recent_heapdump():
 # Capacité max du heap telle que la JVM la journalise elle-même au démarrage
 # ET à chaque GC ("Max Capacity: 20480M"). Le négatif-lookbehind écarte la ligne
 # "Soft Max Capacity", qui peut différer (SoftMaxHeapSize).
-_GC_MAXCAP_RE = re.compile(r"(?<!Soft )Max Capacity: (\d+)M")
+_GC_MAXCAP_RE = re.compile(r"(?<!Soft )Max Capacity: (\d+)([MG])\b")
 
 
-def _xmx_gb() -> float:
-    """Plafond du heap EN VIGUEUR, en Go.
+def _xmx_gb() -> float | None:
+    """Capacité observée dans le fragment GC courant, sinon inconnue.
 
-    Source de vérité : gc.log, écrit par la JVM en cours d'exécution. .env n'est
-    qu'un repli, car il décrit le PROCHAIN démarrage, pas celui qui tourne : le
-    19/07/2026, PZ_XMX_GB avait été passé de 9 à 8 mais la JVM tournait toujours
-    en 9g (le JSON n'est relu qu'au lancement, et le restart avait été différé
-    pour ne pas éjecter 29 joueurs). Pendant ces heures-là, l'embed aurait
-    affiché « 8,7 / 8 Go » — un dénominateur faux, précisément la nuit où on
-    surveillait la mémoire. Les pourcentages, eux, viennent déjà de la JVM.
+    La RAM hôte et PZ_XMX_GB décrivent une configuration possible, sans prouver
+    le plafond de la JVM qui tourne. Ne pas reconstruire ce plafond ici.
     """
-    txt = _tail_text(GC_LOG_PATH)
-    if txt:
-        caps = _GC_MAXCAP_RE.findall(txt)
-        if caps:
-            return int(caps[-1]) / 1024
-    if _PZ_XMX_RAW.isdigit():
-        return float(_PZ_XMX_RAW)
-    total = _meminfo().get("MemTotal", 0)
-    return float(max(2, total // 1024 // 1024 // 2))
+    caps = _GC_MAXCAP_RE.findall(_tail_text(GC_LOG_PATH))
+    if caps:
+        value, unit = caps[-1]
+        return (int(value) / 1024 if unit == "M" else float(value)) or None
+    return None
 
 
 def _default_iface():
@@ -1047,26 +1056,15 @@ def _net_counters(iface):
     return None
 
 
-def _server_ini_path(prev: dict):
-    """Chemin du .ini serveur (servertest.ini par défaut), mis en cache dans prev."""
-    if "ini_path" in prev:
-        return prev["ini_path"]
-    # PZ_INI_PATH est exporté par source_env (run-bot.sh source le .env) pour que
-    # personne n'ait à recomposer le nom du monde ; on ne recompose qu'à défaut.
-    path = ""
+def _server_ini_path():
+    """Chemin canonique exporté par common.sh, même avant création du fichier."""
     env_ini = os.environ.get("PZ_INI_PATH", "")
-    if env_ini and os.path.isfile(env_ini):
-        prev["ini_path"] = env_ini
+    if env_ini:
         return env_ini
     if PZ_SOURCE_DIR:
-        cand = f"{PZ_SOURCE_DIR}/Server/servertest.ini"
-        if os.path.isfile(cand):
-            path = cand
-        else:
-            inis = glob.glob(f"{PZ_SOURCE_DIR}/Server/*.ini")
-            path = inis[0] if inis else ""
-    prev["ini_path"] = path
-    return path
+        name = os.environ.get("PZ_SERVER_NAME") or "servertest"
+        return f"{PZ_SOURCE_DIR}/Server/{name}.ini"
+    return ""
 
 
 def _ini_ints(path, keys):
@@ -1095,9 +1093,10 @@ def _ini_ints(path, keys):
 def _prom_val(line: str):
     """Dernier champ (valeur) d'une ligne exposition Prometheus, en float."""
     try:
-        return float(line.rsplit(" ", 1)[1])
+        value = float(line.rsplit(" ", 1)[1])
+        return value if 0 <= value < float("inf") else None
     except (ValueError, IndexError):
-        return 0.0
+        return None
 
 
 def _prom_snapshot():
@@ -1112,7 +1111,7 @@ def _prom_snapshot():
             text = r.read().decode("utf-8", "replace")
     except Exception:
         return None
-    out = {"send_c": 0.0, "recv_c": 0.0, "send_b": 0.0, "recv_b": 0.0,
+    out = {"send_c": None, "recv_c": None, "send_b": None, "recv_b": None,
            "fps": None, "ploss": None, "voip_s": None, "voip_r": None,
            # compteur reçu CUMULÉ par client : MaxPacketsPerSecond est un anti-flood
            # PAR CLIENT sur l'ENTRANT (PacketsCache.isLimitExceeded) -> on suit chaque
@@ -1121,18 +1120,21 @@ def _prom_snapshot():
     for line in text.splitlines():
         if not line or line[0] == "#":
             continue
+        value = _prom_val(line)
+        if value is None:
+            continue
         if line.startswith("packet_send_bytes_count"):
-            out["send_c"] += _prom_val(line)
+            out["send_c"] = (out["send_c"] or 0.0) + value
         elif line.startswith("packet_send_bytes_sum"):
-            out["send_b"] += _prom_val(line)
+            out["send_b"] = (out["send_b"] or 0.0) + value
         elif line.startswith("packet_receive_bytes_count"):
-            v = _prom_val(line)
-            out["recv_c"] += v
+            v = value
+            out["recv_c"] = (out["recv_c"] or 0.0) + v
             m = re.search(r'client="([^"]*)"', line)
             cl = m.group(1) if m else ""
             out["recv_by_client"][cl] = out["recv_by_client"].get(cl, 0.0) + v
         elif line.startswith("packet_receive_bytes_sum"):
-            out["recv_b"] += _prom_val(line)
+            out["recv_b"] = (out["recv_b"] or 0.0) + value
         elif line.startswith('performance{parameter="fps"}'):
             # B42 : ce compteur au nom historique fps expose la période du tick
             # en ms (PerformanceStatistic), pas sa fréquence.
@@ -1153,13 +1155,16 @@ def collect_stats(prev: dict) -> dict:
     now = time.monotonic()
     s = jvm_status(PZ_SERVICE_NAME)
     if prev.get("invocation") != s["invocation"]:
-        prev.pop("jif", None)
+        for key in ("jif", "prom_ctr", "prom_ts", "prom_rbc",
+                    "user_tail", "online", "user_path"):
+            prev.pop(key, None)
     prev["invocation"] = s["invocation"]
     s["mem"] = _meminfo()
     st = _proc_status(s["pid"]) if s["pid"] else {}
     s["rss_kb"], s["hwm_kb"], s["pswap_kb"] = st.get("VmRSS"), st.get("VmHWM"), st.get("VmSwap")
     s.update(_service_memory())
     s["uptime"] = _proc_uptime_seconds(s["pid"]) if s["pid"] else None
+    boot = time.time() - s["uptime"] if s["uptime"] is not None else None
     s["cpu_pct"] = None
     if s["pid"]:
         jif = _proc_cpu_jiffies(s["pid"])
@@ -1192,7 +1197,14 @@ def collect_stats(prev: dict) -> dict:
     except OSError:
         s["disk"] = None
     s["heapdump"] = _recent_heapdump()
-    s["players"] = _online_players(prev)
+    s["players"] = None
+    if s["service_state"] == "inactive":
+        for key in ("user_tail", "online", "user_path"):
+            prev.pop(key, None)
+        s["players"] = 0
+    elif (s["service_state"] == "active" and s["invocation"]
+          and s["uptime"] is not None and 0 <= s["uptime"] < float("inf")):
+        s["players"] = _online_players(prev, since=boot)
     # Débit réseau sur l'interface de la route par défaut (delta entre cycles).
     # C'est le REPLI : PZ expose ses propres compteurs via son exporteur Prometheus
     # (lu plus bas, et préféré par l'embed) ; le NIC ne sert que si l'exporteur
@@ -1225,38 +1237,43 @@ def collect_stats(prev: dict) -> dict:
         pp, ppts = prev.get("prom_ctr"), prev.get("prom_ts")
         if pp and ppts is not None and now - ppts > 0:
             dt = now - ppts
-            s["game_net"] = {
-                "pps_sent": max(0.0, ps["send_c"] - pp[0]) / dt,
-                "pps_recv": max(0.0, ps["recv_c"] - pp[1]) / dt,
-                "kbs_sent": max(0.0, ps["send_b"] - pp[2]) / dt / 1024,
-                "kbs_recv": max(0.0, ps["recv_b"] - pp[3]) / dt / 1024,
-            }
-            # paquets/s ENTRANTS du client le plus actif (+ son nom) -> à comparer à
-            # MaxPacketsPerSecond (cap anti-flood par client). Un client absent du
-            # relevé précédent -> delta 0 (pas de faux pic à la connexion).
-            prc = prev.get("prom_rbc") or {}
-            best_cl, best_rate = None, 0.0
-            for cl, c in ps["recv_by_client"].items():
-                r = (c - prc.get(cl, c)) / dt
-                if r > best_rate:
-                    best_rate, best_cl = r, cl
-            s["game_net"]["recv_pps_max_client"] = best_rate
-            # client="" = trafic pré-auth/serveur, pas un joueur -> pas de nom affiché
-            s["game_net"]["recv_pps_max_name"] = best_cl or None
+            # Un delta exige deux observations du même compteur. L'absence
+            # d'une série ne vaut jamais zéro, même si les autres sont présentes.
+            rates = {}
+            for key, index, scale in (("pps_sent", 0, 1), ("pps_recv", 1, 1),
+                                      ("kbs_sent", 2, 1024), ("kbs_recv", 3, 1024)):
+                current = ps[("send_c", "recv_c", "send_b", "recv_b")[index]]
+                rates[key] = (max(0.0, current - pp[index]) / dt / scale
+                              if current is not None and pp[index] is not None else None)
+            if any(value is not None for value in rates.values()):
+                s["game_net"] = rates
+                # Un nouveau client n'a pas encore de référence ; attendre sa
+                # deuxième observation plutôt que publier un faux débit nul.
+                prc = prev.get("prom_rbc") or {}
+                best_cl, best_rate = None, None
+                for cl, count in ps["recv_by_client"].items():
+                    if cl not in prc:
+                        continue
+                    rate = max(0.0, count - prc[cl]) / dt
+                    if best_rate is None or rate > best_rate:
+                        best_rate, best_cl = rate, cl
+                rates["recv_pps_max_client"] = best_rate
+                rates["recv_pps_max_name"] = best_cl or None
         prev["prom_ctr"] = (ps["send_c"], ps["recv_c"], ps["send_b"], ps["recv_b"])
         prev["prom_rbc"] = ps["recv_by_client"]
         prev["prom_ts"] = now
-    # Plafonds configurés (servertest.ini) pour les ratios « par rapport au max ».
-    caps = _ini_ints(_server_ini_path(prev), ("MaxPlayers", "MaxPacketsPerSecond"))
+    # Plafonds de l'INI canonique pour les ratios « par rapport au max ».
+    caps = _ini_ints(_server_ini_path(), ("MaxPlayers", "MaxPacketsPerSecond"))
     s["max_players"] = caps.get("MaxPlayers")
     s["max_pps"] = caps.get("MaxPacketsPerSecond")
     return s
 
 
-def _online_players(prev: dict):
+def _online_players(prev: dict, *, since=None):
     """Nombre de joueurs connectés, sans RCON : on rejoue user.txt (connexions/
     déconnexions) via un _Tail dédié. État porté par `prev` entre les cycles.
-    None si le dossier de logs est inconnu. Remis à zéro sur rotation de session."""
+    None si la source manque ou précède le boot JVM `since`.
+    Remis à zéro sur rotation de session."""
     if not PZ_LOGS_DIR:
         return None
     tail = prev.get("user_tail")
@@ -1270,6 +1287,23 @@ def _online_players(prev: dict):
     # glob + max(getmtime) : les deux devaient rester d'accord, sans quoi le set
     # des connectés était vidé au mauvais cycle.
     lines = tail.read()
+    if tail.available and since is not None:
+        # Le mtime peut être rafraîchi sur un ancien journal. La création Linux
+        # doit appartenir à cette JVM ; sans birth time, garder la mesure inconnue.
+        try:
+            born = int(subprocess.check_output(
+                ["stat", "-c", "%W", "--", tail.path], text=True,
+                stderr=subprocess.DEVNULL, timeout=2).strip())
+            current = 0 < since <= born <= time.time()
+        except (OSError, ValueError, subprocess.SubprocessError):
+            current = False
+        if not current:
+            prev.pop("user_tail", None)  # Rejouer si la source redevient attribuable.
+            tail.available = False
+    if not tail.available:
+        online.clear()
+        prev["user_path"] = None
+        return None
     if tail.path != prev["user_path"]:
         online.clear()
         prev["user_path"] = tail.path
@@ -1304,8 +1338,8 @@ def _status(s):
     """(couleur, [alertes]) — évalue les prédicteurs de crash."""
     alerts, warn = [], False
     mem = s["mem"]
-    total, avail = mem.get("MemTotal", 0), mem.get("MemAvailable", 0)
-    avail_mb = avail / 1024
+    total, avail = mem.get("MemTotal"), mem.get("MemAvailable")
+    avail_mb = avail / 1024 if avail is not None else None
     gc = s["gc"]
     live = gc[2] if gc and gc[2] is not None else None      # plancher live-set (majeure)
     crit = False
@@ -1327,10 +1361,10 @@ def _status(s):
     elif live is not None and live >= HEAP_RESTART_PERCENT - 15:
         alerts.append(f"🟠 Heap live-set {live}% — montée vers le seuil ({HEAP_RESTART_PERCENT}%)")
         warn = True
-    if total and avail_mb < 600:
+    if avail_mb is not None and avail_mb < 600:
         alerts.append(f"🔴 RAM système dispo {avail_mb/1024:.1f} Go — risque d'OOM-kill OS")
         crit = True
-    elif total and (1 - avail / total) * 100 >= 90:
+    elif total and avail is not None and (1 - avail / total) * 100 >= 90:
         alerts.append(f"🟠 RAM système util {(1 - avail / total) * 100:.0f}% — marge basse")
         warn = True
     if s["pswap_kb"]:
@@ -1359,9 +1393,9 @@ def _status(s):
 def _monitoring_embed(s: dict) -> discord.Embed:
     color, alerts = _status(s)
     mem = s["mem"]
-    total = mem.get("MemTotal", 0)
-    avail = mem.get("MemAvailable", 0)
-    used_pct = (1 - avail / total) * 100 if total else 0
+    total = mem.get("MemTotal")
+    avail = mem.get("MemAvailable")
+    used_pct = (1 - avail / total) * 100 if total and avail is not None else None
     xmx = _xmx_gb()
     gc = s["gc"]
 
@@ -1379,7 +1413,9 @@ def _monitoring_embed(s: dict) -> discord.Embed:
     # émis↑ / reçus↓, tous clients) ; repli sur la mesure NIC (proxy) sinon.
     gnet, net = s.get("game_net"), s.get("net")
     if gnet:
-        net_txt = f" · 📡 **{gnet['pps_sent']:.0f}**↑/**{gnet['pps_recv']:.0f}**↓ paq/s"
+        sent = f"{gnet['pps_sent']:.0f}" if gnet.get("pps_sent") is not None else "—"
+        received = f"{gnet['pps_recv']:.0f}" if gnet.get("pps_recv") is not None else "—"
+        net_txt = f" · 📡 **{sent}**↑/**{received}**↓ paq/s"
         # % du cap = client entrant le plus actif vs MaxPacketsPerSecond (par client).
         mc, max_pps = gnet.get("recv_pps_max_client"), s.get("max_pps")
         if mc is not None and max_pps:
@@ -1390,9 +1426,7 @@ def _monitoring_embed(s: dict) -> discord.Embed:
             who = f"**{discord.utils.escape_markdown(str(name))[:64]}** " if name else "client "
             net_txt += f" ({who}max **{mc / max_pps * 100:.0f}%** du cap)"
     elif net:
-        max_pps = s.get("max_pps")
-        ratio = f" ({net['pps'] / max_pps * 100:.0f}% du max)" if max_pps else ""
-        net_txt = f" · 📡 **{net['pps']:.0f}** paq/s (NIC){ratio}"
+        net_txt = f" · 📡 **{net['pps']:.0f}** paq/s (NIC proxy)"
     else:
         net_txt = ""
     fps = s.get("srv_fps")
@@ -1408,7 +1442,8 @@ def _monitoring_embed(s: dict) -> discord.Embed:
     # Le heap inclut des pages shmem non assimilables au cache disque.
     if gc:
         used_g, pct = gc[0] / 1024, gc[1]
-        heap_line = f"Jeu (heap) **{used_g:.1f} / {xmx:g} Go** · **{pct}%**"
+        capacity = f"{xmx:g}" if xmx is not None else "—"
+        heap_line = f"Jeu (heap) **{used_g:.1f} / {capacity} Go** · **{pct}%**"
     else:
         heap_line = "Jeu (heap) —"
     noncache_bytes = s.get("memory_noncache_bytes")
@@ -1434,9 +1469,13 @@ def _monitoring_embed(s: dict) -> discord.Embed:
     # « dispo » = MemAvailable (inclut déjà tout le cache réellement récupérable).
     # On n'affiche PAS le « cache » brut : il contient la shmem = le heap ZGC de
     # PZ, qui n'est pas récupérable — l'inclure induisait en erreur.
+    used_txt = f"**{used_pct:.0f}%**" if used_pct is not None else "—"
+    bar_txt = f" `{_bar(used_pct)}`" if used_pct is not None else ""
+    avail_txt = f"**{avail/1048576:.1f} Go**" if avail is not None else "— Go"
+    total_txt = f"{total/1048576:.1f}" if total is not None else "—"
     embed.add_field(
         name="🖥️ RAM de la machine",
-        value=f"**{used_pct:.0f}%** utilisée (cache récupérable exclu) `{_bar(used_pct)}` · **{avail/1048576:.1f} Go** dispo / {total/1048576:.1f}",
+        value=f"{used_txt} utilisée (cache récupérable exclu){bar_txt} · {avail_txt} dispo / {total_txt}",
         inline=False)
 
     # Températures (le mobile initial : chauffe du mini-PC), sur 2 lignes :
@@ -1519,8 +1558,8 @@ def _csv_row(s: dict) -> list:
         return f"{x:.{nd}f}" if isinstance(x, float) else str(x)
 
     mem = s.get("mem") or {}
-    total_kb, avail_kb = mem.get("MemTotal") or 0, mem.get("MemAvailable")
-    ram_used_pct = 100.0 * (1 - avail_kb / total_kb) if (avail_kb and total_kb) else None
+    total_kb, avail_kb = mem.get("MemTotal"), mem.get("MemAvailable")
+    ram_used_pct = 100.0 * (1 - avail_kb / total_kb) if total_kb and avail_kb is not None else None
     gc = s.get("gc")                        # (used, pct, maj_pct, maj_used, pause, cycle)
     net = s.get("net") or {}
     gnet = s.get("game_net") or {}
@@ -1537,13 +1576,13 @@ def _csv_row(s: dict) -> list:
         f(players), f(maxp),
         f(100.0 * players / maxp) if players is not None and maxp else "",
         f(pps, 0), f(maxpps),
-        f(100.0 * pps / maxpps) if pps is not None and maxpps else "",
+        "",  # pps_pct conservée : le débit NIC ne se compare pas au cap entrant par client.
         f(net.get("rx_kbs")), f(net.get("tx_kbs")),
         f(gc[0]) if gc else "", f(gc[1]) if gc and gc[1] is not None else "",
         f(gc[2]) if gc and gc[2] is not None else "",
         f(gc[4], 3) if gc and gc[4] is not None else "",
         f(s["rss_kb"] / 1024, 0) if s.get("rss_kb") else "",
-        f(avail_kb / 1024, 0) if avail_kb else "",
+        f(avail_kb / 1024, 0) if avail_kb is not None else "",
         f(ram_used_pct),
         f(s["pswap_kb"] / 1024, 0) if s.get("pswap_kb") is not None else "",
         f(s.get("cpu_pct")), f(cpu_sys),

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # setupSystem.sh - Configuration système initiale
 # Installation attendue : /usr/local/libexec/pzmanager/ root:root 0755.
-# (Lance depuis le clone par install.sh en dev : l'avertissement ci-dessous est
-# donc non bloquant.) Helper root : ne jamais charger le .env (modifiable par
+# Helpers et ancêtres doivent appartenir à root, sans écriture pour un tiers.
+# Helper root : ne jamais charger le .env (modifiable par
 # PZ_USER) par execution shell ; parsing declaratif via lib/env_parse.sh.
 # Crée l'utilisateur, installe les paquets requis et configure le pare-feu.
 # Usage: sudo ./setupSystem.sh [nom_utilisateur] [chemin_du_.env]
@@ -13,13 +13,43 @@
 set -euo pipefail
 trap 'on_error $LINENO' ERR
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-readonly PZ_USER="${1:-pzuser}"
-# PZ_USER alimente useradd et un sed/sudoers sans échappement (cf. install_sudoers)
-# : refuse toute valeur hors regex avant usage, comme install.sh.
-[[ "$PZ_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || { echo "[ERROR] Invalid PZ_USER '${PZ_USER}' (attendu ^[a-z_][a-z0-9_-]{0,31}$)" >&2; exit 1; }
-readonly PZ_HOME="/home/${PZ_USER}"
-readonly ENV_FILE="${2:-${PZ_HOME}/pzmanager/.env}"
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
+# Même frontière que configurationInitiale : aucun code manager-owned en root.
+if [[ "${EUID:-0}" -eq 0 ]]; then
+    _trusted="$(realpath -e "$SCRIPT_DIR")"
+    while [[ "$_trusted" != / ]]; do
+        [[ "$(stat -c %u "$_trusted")" == 0 && $(( 8#$(stat -c %a "$_trusted") & 0022 )) == 0 ]] \
+            || { echo "[ERROR] Chemin helper root non fiable : $_trusted" >&2; exit 1; }
+        _trusted="$(dirname "$_trusted")"
+    done
+    [[ -z "$(find "$SCRIPT_DIR" "${SCRIPT_DIR}/../lib" "${SCRIPT_DIR}/../../setupTemplates" \( -type l -o ! -uid 0 -o -perm /0022 \) -print -quit)" ]] \
+        || { echo "[ERROR] Helpers root modifiables par un tiers." >&2; exit 1; }
+    unset _trusted
+fi
+SETUP_MANAGER_ROOT=""
+if [[ "${1:-}" == --manager-root ]]; then
+    [[ "${2:-}" == /* && "${2:-}" != *..* && "${2:-}" != *$'\n'* ]] \
+        || { echo "[ERROR] Racine manager absolue requise." >&2; exit 1; }
+    SETUP_MANAGER_ROOT="$2"
+    shift 2
+    _manager_uid="$(stat -c %u "$SETUP_MANAGER_ROOT")"
+    [[ "$_manager_uid" != 0 ]] || { echo "[ERROR] Installation manager non root requise." >&2; exit 1; }
+    _manager_user="$(getent passwd "$_manager_uid" | cut -d: -f1)"
+    _manager_home="$(getent passwd "$_manager_uid" | cut -d: -f6)"
+else
+    _manager_user="${1:-pzuser}"
+    _manager_home="/home/${_manager_user}"
+fi
+readonly PZ_USER="$_manager_user"
+[[ "$PZ_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ && "$_manager_home" == /* ]] \
+    || { echo "[ERROR] Invalid PZ_USER '${PZ_USER}'" >&2; exit 1; }
+readonly PZ_HOME="$_manager_home"
+if [[ -n "$SETUP_MANAGER_ROOT" ]]; then
+    readonly ENV_FILE="${SETUP_MANAGER_ROOT}/.env"
+else
+    readonly ENV_FILE="${2:-${PZ_HOME}/pzmanager/.env}"
+fi
+unset _manager_uid _manager_user _manager_home
 
 on_error() {
     local lineno=${1:-?}
@@ -57,42 +87,26 @@ create_user() {
     echo "[INFO] Utilisateur $target_user créé"
 }
 
-# C17 (split-users) : crée le compte jeu (JVM seule) quand il diffère du
-# compte admin, plus le groupe "pzgame" dont le manager est membre pour une
-# FIFO/socket de contrôle restreinte. No-op en mono-user (compat totale).
-# Idempotent : chaque étape vérifie avant d'agir.
-ensure_split_users() {
-    if [[ "${PZ_GAME_USER:-$PZ_USER}" == "${PZ_MANAGER_USER:-$PZ_USER}" ]]; then
-        echo "[INFO] Mode mono-user (${PZ_MANAGER_USER:-$PZ_USER}) : pas de séparation des comptes"
-        return 0
-    fi
-    create_user "$PZ_MANAGER_USER"
-    create_user "$PZ_GAME_USER"
-    if ! getent group pzgame >/dev/null 2>&1; then
-        groupadd pzgame
-        echo "[INFO] Groupe pzgame créé"
-    fi
-    if ! id -nG "$PZ_MANAGER_USER" 2>/dev/null | tr ' ' '\n' | grep -qx pzgame; then
-        usermod -aG pzgame "$PZ_MANAGER_USER"
-        echo "[INFO] $PZ_MANAGER_USER ajouté au groupe pzgame"
-    fi
+# Toute écriture du home s'effectue avec les droits du manager : même un
+# remplacement concurrent par un lien ne donne aucun droit sur une cible root.
+as_manager() {
+    if [[ "$(id -un)" == "$PZ_USER" ]]; then "$@"; else sudo -u "$PZ_USER" "$@"; fi
 }
 
-# C17 : resserre les secrets du manager (home 0750, .env 0600, .ssh 0700).
-# Ne fait QUE resserrer : aucun secret n'est donné en lecture au compte jeu.
 harden_manager_secrets() {
-    local mgr_home="${PZ_MANAGER_HOME:-$PZ_HOME}"
-    local secrets_file="${ENV_FILE}"
+    local mgr_home="${PZ_MANAGER_HOME:-$PZ_HOME}" secrets_file="$ENV_FILE"
     local ssh_dir="${mgr_home}/.ssh"
-    if [[ -d "$mgr_home" ]]; then
-        chmod 0750 "$mgr_home"
-    fi
-    if [[ -f "$secrets_file" ]]; then
-        chmod 0600 "$secrets_file"
+    [[ ! -L "$secrets_file" && ! -L "$ssh_dir" ]] \
+        || { echo "[ERROR] Secret manager symbolique refusé." >&2; return 1; }
+    [[ ! -d "$mgr_home" ]] || as_manager chmod 0750 "$mgr_home"
+    # Le clone privé de l'installateur contient déjà un .env root 0600 avant
+    # création du home ; on ne le confie pas au compte nouvellement créé.
+    if [[ "$secrets_file" == "$mgr_home/"* || -n "$SETUP_MANAGER_ROOT" ]]; then
+        [[ ! -f "$secrets_file" ]] || as_manager chmod 0600 "$secrets_file"
     fi
     if [[ -d "$ssh_dir" ]]; then
-        chmod 0700 "$ssh_dir"
-        chmod 0600 "$ssh_dir"/* 2>/dev/null || true
+        as_manager chmod 0700 "$ssh_dir"
+        as_manager bash -c 'for file in "$1"/*; do [[ ! -f "$file" ]] || chmod 0600 "$file" || exit; done' _ "$ssh_dir"
     fi
 }
 
@@ -142,25 +156,21 @@ read_ports_from_env() {
 load_ports_from_env() {
     local env_file="$1"
     local lib1="${SCRIPT_DIR}/../lib/env_parse.sh"
-    local lib2="/usr/local/libexec/pzmanager/env_parse.sh"
-    if [[ -f "$lib1" ]]; then
-        # shellcheck disable=SC1090
-        . "$lib1"
-    elif [[ -f "$lib2" ]]; then
-        # shellcheck disable=SC1090
-        . "$lib2"
+    # shellcheck disable=SC1090
+    . "$lib1"
+    if [[ -n "$SETUP_MANAGER_ROOT" ]]; then
+        local declared_user
+        declared_user="$(bash -c 'source "$1"; unset PZ_USER; parse_env_declarative "$2"; printf "%s" "${PZ_USER:-}"' _ "$lib1" "$env_file")"
+        [[ -z "$declared_user" || "$declared_user" == "$PZ_USER" ]] \
+            || { echo "[ERROR] Identité .env incompatible avec le propriétaire manager." >&2; exit 1; }
     fi
     if declare -F parse_env_declarative >/dev/null 2>&1; then
-        parse_env_declarative "$env_file" || true
+        # L'identité et le home sont les arguments administrateur readonly,
+        # jamais des affectations venant du fichier manager.
+        parse_env_declarative <(grep -E '^[[:space:]]*(export[[:space:]]+)?(PZ_PORT_GAME|PZ_PORT_GAME2|PZ_PROMETHEUS_PORT|PZ_GAME_USER|PZ_MANAGER_USER)=' "$env_file")
     else
         read_ports_from_env "$env_file"
     fi
-}
-
-# Règle ufw déjà présente ? Motif fixe (ex. "16261/udp", "OpenSSH").
-# Lecture seule (sonde) : sûre en contexte `if`, jamais de modification.
-ufw_has_rule() {
-    ufw status numbered 2>/dev/null | grep -qF "$1"
 }
 
 # Exécute ufw, sauf en DRY-RUN (PZ_UFW_DRY_RUN=1, tests) où la commande est
@@ -174,30 +184,56 @@ ufw_run() {
     ufw "$@"
 }
 
-# Port(s) SSH réel(s) (C12) : écoute sshd observée d'abord
-# (`ss -lntp | grep sshd`, mockable via PATH), sinon directive Port de
-# ${PZ_SSHD_CONFIG:-/etc/ssh/sshd_config} (surchargeable pour les tests),
-# sinon 22. Imprime un port par ligne, 22 toujours inclus (garde-fou admin :
-# on ne se lock-out jamais en oubliant le port standard).
+# Ports SSH observés en priorité ; sinon configuration effective (Include inclus).
+# Sans binaire NI configuration, installation locale sans SSH : garde-fou 22.
+# Une configuration indéterminée refuse toute mutation du pare-feu.
 detect_ssh_port() {
-    local sshd_config="${PZ_SSHD_CONFIG:-/etc/ssh/sshd_config}" ports=""
-    if command -v ss >/dev/null 2>&1; then
-        # Sonde lecture seule : le `|| true` absorbe le grep sans match.
-        ports="$(ss -lntp 2>/dev/null | grep -i sshd | grep -oE ':[0-9]+' | tr -d ':' | sort -nu || true)"
-    fi
-    if [[ -z "$ports" && -f "$sshd_config" ]]; then
-        # Sonde lecture seule : idem ci-dessus.
-        ports="$(grep -iE '^[[:space:]]*Port[[:space:]]+[0-9]+' "$sshd_config" | grep -oE '[0-9]+' | sort -nu || true)"
-    fi
-    [[ -n "$ports" ]] || ports="22"
-    if ! grep -qx '22' <<< "$ports"; then
-        ports="$(printf '%s\n%s' "22" "$ports" | sort -nu)"
-    fi
-    printf '%s\n' "$ports"
+    python3 "${SCRIPT_DIR}/../lib/ssh_listener_authority.py" \
+        --config "${PZ_SSHD_CONFIG:-/etc/ssh/sshd_config}"
+}
+
+# UFW compare les doublons sans tenir compte d'action/log/comment : prepend
+# peut sinon ignorer un DENY s'il reste un ALLOW exact au même endpoint.
+# Parser la sortie numérotée C, jamais les ACL partielles/interfaces/ranges.
+prometheus_rules() {
+    python3 -c '
+import ipaddress,re,sys
+port,mode=sys.argv[1:]
+exact=re.compile(re.escape(port)+r"/tcp(?: \(v6\))? (ALLOW|DENY|REJECT|LIMIT) IN Anywhere(?: \(v6\))?(?: \(log(?:-all)?\))?$")
+rows=[]
+for line in sys.stdin:
+    match=re.match(r"^\s*\[\s*(\d+)\]\s*(.*)$",line)
+    if not match: continue
+    number,body=int(match[1])," ".join(match[2].split("#",1)[0].split())
+    family=6 if "(v6)" in body else 4
+    for token in body.split():
+        try: family=max(family,ipaddress.ip_network(token,strict=False).version)
+        except ValueError: pass
+    parsed=re.match(r"^.*? (ALLOW|DENY|REJECT|LIMIT) (IN|OUT|FWD) .*",body)
+    if not parsed: raise ValueError("État UFW non reconnu : "+body)
+    rows.append((number,body,family,parsed[2]))
+if mode=="indices":
+    print("\n".join(str(n) for n,b,f,d in reversed(rows) if exact.fullmatch(b)))
+else:
+    first={}
+    for n,b,f,d in rows:
+        if d=="IN": first.setdefault(f,b)
+    if 4 not in first or any(not exact.fullmatch(b) or exact.fullmatch(b)[1]!="DENY" for b in first.values()):
+        raise ValueError("Refus Prometheus prioritaire non prouvé")
+' "$1" "$2"
 }
 
 configure_firewall() {
     require_command ufw
+    local prom_port="${PZ_PROMETHEUS_PORT:-9110}" ssh_ports
+    [[ "$prom_port" =~ ^[0-9]{1,5}$ ]] && (( 10#$prom_port >= 1 && 10#$prom_port <= 65535 )) \
+        || { echo "[ERROR] Port métriques invalide." >&2; return 1; }
+    prom_port="$((10#$prom_port))"
+    ssh_ports="$(detect_ssh_port)" || return 1
+    if grep -qx "$prom_port" <<< "$ssh_ports"; then
+        echo "[ERROR] Port métriques $prom_port en conflit avec SSH : aucune règle modifiée." >&2
+        return 1
+    fi
 
     # Charger les ports depuis .env si disponible, sinon utiliser les défauts
     local port_game="${PZ_PORT_GAME:-16261}"
@@ -216,73 +252,75 @@ configure_firewall() {
     # noms, ce qui compensait l'erreur, et tout .env correct la révélait.
     local -a rules=("${port_game}/udp" "${port_game2}/udp")
 
-    # Delta avant/après (C12) : photographie avant toute modification.
-    # Sonde lecture seule : le `|| true` absorbe un status en échec.
+    # Delta avant/après (C12) : photographie stricte avant toute modification.
     local ufw_before
-    ufw_before="$(ufw status numbered 2>/dev/null || true)"
+    ufw_before="$(LC_ALL=C LANGUAGE=C ufw status numbered)" || { echo "[ERROR] Lecture UFW impossible." >&2; return 1; }
     echo "[INFO] UFW avant :"
     echo "$ufw_before"
 
-    local ufw_active=false
-    if grep -q "Status: active" <<< "$ufw_before"; then
-        ufw_active=true
-    fi
+    local ufw_active=false persisted="" missing_access
+    case "${ufw_before%%$'\n'*}" in
+        'Status: active') ufw_active=true ;;
+        'Status: inactive')
+            # status hides saved ACLs while disabled; inspect them before allow
+            # can replace a saved DENY or widen a restricted source.
+            persisted="$(LC_ALL=C LANGUAGE=C ufw show added)" || return 1 ;;
+        *) echo "[ERROR] Statut UFW inconnu : aucune règle modifiée." >&2; return 1 ;;
+    esac
+    local -a requested=()
+    local p r
+    while IFS= read -r p; do
+        [[ -z "$p" ]] || requested+=("${p}/tcp")
+    done <<< "$ssh_ports"
+    requested+=("${rules[@]}")
+    # The reader requires explicit IPV6=yes/no from UFW's own configuration;
+    # absent IPv6 ACLs never prove that the backend is IPv4-only.
+    missing_access="$(printf '%s\n--PERSISTED--\n%s' "$ufw_before" "$persisted" | \
+        python3 "${SCRIPT_DIR}/../lib/ufw_access.py" "${requested[@]}")" || return 1
 
     # JAMAIS de `ufw --force reset` (C12) : destructeur, il effaçait les règles
     # existantes (dont un SSH non standard => lock-out admin). UFW actif : on
     # n'ajoute que les manquants. UFW inactif : défauts + SSH + jeu, puis
     # enable — toujours sans reset.
     local -a added=()
-    local p r
     if [[ "$ufw_active" != true ]]; then
-        ufw_run default deny incoming
-        ufw_run default allow outgoing
+        ufw_run default deny incoming || return 1
+        ufw_run default allow outgoing || return 1
     fi
-    # Accès admin conservé : OpenSSH + chaque port sshd détecté.
-    if ! ufw_has_rule "OpenSSH"; then
-        ufw_run allow OpenSSH
-        added+=("OpenSSH")
-    fi
-    while IFS= read -r p; do
-        [[ -n "$p" ]] || continue
-        if ! ufw_has_rule "${p}/tcp"; then
-            ufw_run allow "${p}/tcp"
-            added+=("${p}/tcp")
-        fi
-    done < <(detect_ssh_port)
-    # Jeu : uniquement les règles manquantes (jamais de doublon).
-    for r in "${rules[@]}"; do
-        if ! ufw_has_rule "$r"; then
-            ufw_run allow "$r"
-            added+=("$r")
-        fi
-    done
+    while IFS= read -r r; do
+        [[ -n "$r" ]] || continue
+        ufw_run allow "$r" || return 1
+        added+=("$r")
+    done <<< "$missing_access"
     echo "[INFO] Ports ouverts: ${rules[*]}"
 
-    # Exporteur de métriques interne de PZ (Prometheus, cf. PZ_PROMETHEUS_PORT) :
-    # le serveur le binde sur 0.0.0.0 et il expose des données sensibles (positions
-    # joueurs) ; le bot le scrape en localhost. On refuse explicitement l'accès
-    # externe — redondant avec le « deny incoming » par défaut mais explicite et
-    # maintenu ; UFW laisse toujours passer la loopback, donc le bot n'est pas gêné.
-    local prom_port="${PZ_PROMETHEUS_PORT:-9110}"
-    if ufw status numbered 2>/dev/null | grep -F "$prom_port" | grep -qi deny; then
-        : # refus déjà en place, on le conserve tel quel
-    else
-        ufw_run deny "${prom_port}/tcp"
-        added+=("deny ${prom_port}/tcp")
-    fi
-    echo "[INFO] Port métriques ${prom_port}/tcp restreint à localhost"
-
+    # Inactif : les anciennes règles restent enregistrées mais status ne les
+    # affiche pas. Activer seulement après préparation de tous les accès SSH.
+    # L'état initial inactif exposait déjà le port ; ne jamais annoncer le
+    # refus tant que sa priorité n'est pas prouvée après correction.
     if [[ "$ufw_active" != true ]]; then
-        ufw_run --force enable
+        ufw_run --force enable || return 1
         echo "[INFO] UFW activé avec règles par défaut"
     else
-        echo "[INFO] UFW déjà actif : règles existantes préservées, seuls les manquants ajoutés"
+        echo "[INFO] UFW déjà actif : règles existantes préservées"
     fi
-
-    # Sonde lecture seule : le `|| true` absorbe un status en échec.
-    local ufw_after
-    ufw_after="$(ufw status numbered 2>/dev/null || true)"
+    local snapshot indices index ufw_after
+    snapshot="$(LC_ALL=C LANGUAGE=C ufw status numbered)" || return 1
+    if [[ "${PZ_UFW_DRY_RUN:-0}" == 1 ]] || ! prometheus_rules "$prom_port" verify <<< "$snapshot" 2>/dev/null; then
+        indices="$(prometheus_rules "$prom_port" indices <<< "$snapshot")" || return 1
+        while IFS= read -r index; do
+            [[ -z "$index" ]] || ufw_run --force delete "$index" || return 1
+        done <<< "$indices"
+        ufw_run prepend deny in proto tcp from any to any port "$prom_port" || return 1
+        added+=("deny ${prom_port}/tcp prioritaire")
+    fi
+    ufw_after="$(LC_ALL=C LANGUAGE=C ufw status numbered)" || return 1
+    if [[ "${PZ_UFW_DRY_RUN:-0}" == 1 ]]; then
+        echo "[DRY-RUN] Restriction métriques planifiée, non vérifiée."
+    else
+        prometheus_rules "$prom_port" verify <<< "$ufw_after" || return 1
+        echo "[INFO] Port métriques ${prom_port}/tcp restreint à localhost"
+    fi
     echo "[INFO] UFW après :"
     echo "$ufw_after"
     if (( ${#added[@]} > 0 )); then
@@ -299,18 +337,15 @@ configure_path() {
         return
     fi
 
-    if grep -q "PATH.*pzmanager" "$bashrc"; then
+    if as_manager grep -q "PATH.*pzmanager" "$bashrc"; then
         echo "[INFO] PATH déjà configuré pour pzmanager"
         return
     fi
 
-    cat >> "$bashrc" << PATHEOF
+    [[ ! -L "$bashrc" ]] || { echo "[ERROR] .bashrc symbolique refusé." >&2; return 1; }
+    printf '\n# pzmanager PATH\nexport PATH="%s/pzmanager:${PATH}"\n' "$PZ_HOME" \
+        | as_manager tee -a -- "$bashrc" >/dev/null
 
-# pzmanager PATH
-export PATH="${PZ_HOME}/pzmanager:\${PATH}"
-PATHEOF
-
-    chown "${PZ_USER}:${PZ_USER}" "$bashrc"
     echo "[INFO] PATH configuré pour inclure pzmanager"
 }
 
@@ -321,25 +356,26 @@ install_sudoers() {
     local dest="/etc/sudoers.d/${PZ_USER}"
 
     if [[ ! -f "$template" ]]; then
-        echo "[WARN] Template sudoers introuvable: $template"
-        return
+        echo "[ERROR] Template sudoers introuvable: $template" >&2
+        return 1
     fi
 
-    # Générer le sudoers avec les bonnes valeurs. mktemp et non un
-    # /tmp/<user>-sudoers prévisible : ce fichier est écrit par root, donc un lien
-    # symbolique déposé d'avance à ce chemin connu ferait écrire root à la place
-    # visée par le lien.
+    # Temporaire privé sur le même FS : validation et permissions précèdent la
+    # publication atomique, sans altérer le sudoers précédent en cas d'échec.
     local staged
-    staged="$(mktemp)"
+    staged="$(mktemp "$(dirname "$dest")/.${PZ_USER}-sudoers.XXXXXX")" || return 1
     # shellcheck disable=SC2064
     trap "rm -f '${staged}'" RETURN
-    sed -e "s|__PZ_USER__|${PZ_USER}|g" -e "s|__PZ_HOME__|${PZ_HOME}|g" "$template" > "$staged"
+    sed -e "s|__PZ_USER__|${PZ_USER}|g" -e "s|__PZ_HOME__|${PZ_HOME}|g" "$template" > "$staged" || return 1
 
     if visudo -cf "$staged"; then
-        install -o root -g root -m 440 "$staged" "$dest"
+        chown root:root -- "$staged" || return 1
+        chmod 440 -- "$staged" || return 1
+        mv -fT -- "$staged" "$dest" || return 1
         echo "[INFO] Sudoers installé: $dest"
     else
         echo "[ERROR] Fichier sudoers invalide, installation annulée" >&2
+        return 1
     fi
 }
 
@@ -366,16 +402,15 @@ main() {
     # déclaratif ci-dessus ; défaut = PZ_USER pour les deux (mono-user inchangé).
     : "${PZ_GAME_USER:=${PZ_USER}}"
     : "${PZ_MANAGER_USER:=${PZ_USER}}"
-    : "${PZ_GAME_HOME:=/home/${PZ_GAME_USER}}"
-    : "${PZ_MANAGER_HOME:=/home/${PZ_MANAGER_USER}}"
+    : "${PZ_GAME_HOME:=$PZ_HOME}"
+    : "${PZ_MANAGER_HOME:=$PZ_HOME}"
 
     [[ "$PZ_GAME_USER" == "$PZ_MANAGER_USER" ]] \
         || { echo "[FATAL] Budget PZ partagé incompatible avec split multi-UID ; aucun compte modifié." >&2; exit 1; }
 
     create_user
-    ensure_split_users
-    harden_manager_secrets
     install_packages
+    harden_manager_secrets
     configure_firewall
     configure_path
     install_sudoers

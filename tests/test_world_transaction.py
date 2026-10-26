@@ -1,5 +1,7 @@
 """Crash admission and durable intent on real private Linux files."""
 import json
+import contextlib
+import io
 import os
 from pathlib import Path
 import signal
@@ -48,6 +50,23 @@ class WorldTransaction(unittest.TestCase):
         with patch.object(txn.os,'fsync',side_effect=OSError('storage error')):
             with self.assertRaises(OSError):txn.finish(self.world,token,'reverted')
         with self.assertRaises(ValueError):txn.check_clean(self.world)
+
+    def test_targeted_file_sync_persists_only_selected_content_and_rejects_escape(self):
+        synced=[];original=txn.os.fsync
+        def sync(fd):
+            synced.append(os.readlink('/proc/self/fd/'+str(fd)));original(fd)
+        def command(name):
+            with patch.object(sys,'argv',['world_transaction.py','sync','--world',str(self.world),'--file',name]),contextlib.redirect_stderr(io.StringIO()):
+                return txn.main()
+        with patch.object(txn.os,'fsync',sync):
+            self.assertEqual(command('a'),0)
+        self.assertIn(str(self.world/'a'),synced)
+        self.assertIn(str(self.world),synced)
+        self.assertNotIn(str(self.world/'b'),synced)
+        (self.world/'linked').symlink_to(self.recovery,target_is_directory=True)
+        (self.recovery/'outside').write_bytes(b'outside')
+        for name in ('../recovery/outside',str(self.recovery/'outside'),'linked/outside','missing'):
+            with self.subTest(name=name):self.assertNotEqual(command(name),0)
     def test_symlink_and_public_state_directory_refused(self):
         state=txn.location(self.world)[1];state.symlink_to(self.recovery)
         with self.assertRaises((OSError,ValueError)):self.begin()
@@ -89,6 +108,23 @@ class WorldTransaction(unittest.TestCase):
         txn.finish(self.world,token,'complete');txn.check_clean(self.world)
         self.assertEqual((self.world/'a').read_bytes(),b'old-a')
         self.assertEqual((self.recovery/'Saves/old').read_bytes(),b'old')
+
+    def test_dangling_selected_root_cannot_complete_absent_reversion(self):
+        staged=self.root/'staged';(staged/'Lua').mkdir(parents=True)
+        token=txn.begin(self.world,'full',self.recovery,after_tree=staged,trees=['Lua'])
+        (self.world/'Lua').symlink_to(self.root/'absent-target',target_is_directory=True)
+        with self.assertRaisesRegex(ValueError,'symlink'):
+            txn.finish(self.world,token,'reverted')
+        record=json.loads((txn.location(self.world)[1]/(token+'.json')).read_text())
+        self.assertEqual(record['state'],'prepared')
+        with self.assertRaisesRegex(ValueError,'unfinished'):txn.check_clean(self.world)
+
+    def test_internal_symlinks_remain_part_of_tree_fingerprint(self):
+        directory=self.world/'Lua';directory.mkdir()
+        link=directory/'cache';link.symlink_to(self.root/'absent-target')
+        before=txn.tree_digest(directory)
+        link.unlink();link.symlink_to(self.root/'another-target')
+        self.assertNotEqual(txn.tree_digest(directory),before)
 
     def test_directory_plan_refuses_unplanned_paths_and_mixed_record(self):
         for paths in (['../escape'],['Saves','Saves'],[],['Logs']):

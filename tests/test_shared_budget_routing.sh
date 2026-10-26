@@ -6,6 +6,7 @@ FIXTURE="$(mktemp -d "${TMPDIR:-/tmp}/pz-route-test.XXXXXX")"
 trap 'rm -rf -- "$FIXTURE"' EXIT
 mkdir -p "$FIXTURE/bin" "$FIXTURE/lib"
 cp "$ROOT/data/scripts/lib/run_in_pz_slice.sh" "$FIXTURE/lib/"
+cp "$ROOT/data/scripts/lib/systemd_scope.sh" "$FIXTURE/lib/"
 cat > "$FIXTURE/bin/python3" <<'MOCK'
 #!/usr/bin/env bash
 case "${2:-}" in
@@ -25,6 +26,7 @@ printf '%s\n' "$@" >> "$MOCK_CALLS"
 MOCK
 cat > "$FIXTURE/bin/systemd-run" <<'MOCK'
 #!/usr/bin/env bash
+if [[ "${1:-}" == --help ]]; then printf '%s\n' --scope --expand-environment=BOOL; exit; fi
 printf '%s\n' "$@" >> "$MOCK_CALLS"
 [[ " $* " == *" --slice=pz.slice "* ]] || exit 99
 while [[ "${1:-}" != /bin/bash ]]; do shift; done
@@ -65,6 +67,7 @@ grep -qx -- '--slice=pz.slice' "$MOCK_CALLS"
 mkdir -p "$FIXTURE/project/data/scripts/core" "$FIXTURE/project/data/scripts/lib"
 cp "$ROOT/data/scripts/lib/common.sh" "$FIXTURE/project/data/scripts/lib/"
 cp "$ROOT/data/scripts/lib/run_in_pz_slice.sh" "$FIXTURE/project/data/scripts/lib/"
+cp "$ROOT/data/scripts/lib/systemd_scope.sh" "$FIXTURE/project/data/scripts/lib/"
 cat > "$FIXTURE/project/data/scripts/core/probe.sh" <<'PROBE'
 #!/usr/bin/env bash
 set -euo pipefail

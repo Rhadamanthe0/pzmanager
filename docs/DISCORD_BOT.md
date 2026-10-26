@@ -89,8 +89,9 @@ export DISCORD_BOT_MONITORING_INTERVAL=60           # monitoring cadence (second
 pzm install discord
 ```
 
-This creates the Python venv (`data/scripts/discord/.venv`), installs `discord.py`,
-and enables/starts `pz-discord-bot.service`. It requires the `python3-venv`
+This creates the Python venv (`data/scripts/discord/.venv`), upgrades pip inside
+it, installs the dependencies declared in `requirements.txt`, and enables/starts
+`pz-discord-bot.service`. It requires the `python3-venv`
 package (already part of `pzm install system`; if missing, run
 `sudo apt install python3-venv` as root).
 
@@ -141,8 +142,9 @@ and wait until it is stopped, then repeat with `appliquer` true. Use `monde`
 when several multiplayer worlds exist. Restart with `/pzm server start` after
 success. Only the selected tiles, including all basement and upper levels,
 constructions and container contents, return to the snapshot. Neighbouring tiles
-in the same chunk are preserved. Partial chunks require a compatible JDK on the
-server; if native validation fails, the operation refuses before changing the world.
+in the same chunk are preserved. Every application requires a compatible JDK on
+the server; preview also needs it when dictionaries differ. Native validation
+failure refuses the operation before changing the world.
 
 See [the full restore procedure and limits](USAGE.md#restore-a-map-zone-build-42),
 including rollback and compatibility checks.
@@ -218,7 +220,8 @@ At `http://127.0.0.1:<port>/metrics` you get:
 The console command `statistic` exists but is **not** wired to the FIFO console
 (`Unknown command`), so scraping `/metrics` is the only route. The bot scrapes it
 each monitoring cycle and **falls back to the NIC proxy** if the exporter is not
-exposed. `watchServerStall.sh` uses the same counters to detect a frozen main loop.
+exposed. [Stall diagnostics](TROUBLESHOOTING.md#monitoring-zgc-and-tick-frequency)
+use separate evidence.
 
 > ⚠️ **Security.** The exporter binds `0.0.0.0` — PZ offers no localhost-bind
 > option — and the metrics include **player coordinates**. `setupSystem.sh`
@@ -234,30 +237,31 @@ keeps a per-client counter and logs `Packets limit has exceeded for <client>`.
 
 It does **not** cap outgoing (server → client) traffic and it is **not** global.
 So the honest "% of cap" is the busiest client's *received* pps ÷
-`MaxPacketsPerSecond` — which is what the bot shows (`recv_cap_pct`), not the
-aggregate.
+`MaxPacketsPerSecond` — which is what the bot shows, rather than an aggregate
+ratio. The host-wide fallback is labelled `(NIC proxy)` without a cap percentage.
+CSV columns stay stable: `pps_pct` is empty; `recv_cap_pct` records the valid
+per-client ratio above.
 
 
 Optional. Set `DISCORD_BOT_MONITORING_CHANNEL_ID` and the bot posts a **health
 embed every minute** (`DISCORD_BOT_MONITORING_INTERVAL`, default 60s) to that
 channel — a rolling **black box** so that when the server crashes you can scroll
-back and see exactly what led up to it. Everything is read straight from `/proc`
-and `/sys` (no extra Python dependency, no RCON, no load on the game).
+back and see exactly what led up to it. Host measurements come from `/proc` and
+`/sys`; game metrics also use its logs and the Prometheus exporter described
+above. Monitoring sends no console command.
 
 Each embed carries:
 
-- **Server** — active/inactive, **online players**, uptime since the last
-  (re)start, JVM PID. The player count is derived by replaying the connect /
+- **Server** — service state, **online players** and uptime since the last
+  (re)start. The player count is derived by replaying the connect /
   disconnect lines in `*_user.txt` (no RCON, no game load).
-- **🧠 Heap Java** — used MB / `Xmx` and % (from `gc.log`), the **live-set floor**
-  (last major-GC %, the number that drives the auto-restart) vs
-  `HEAP_RESTART_PERCENT`. This is the Java-heap-OOM story.
 - **🧠 RAM de PZ** — cache-excluded cgroup memory
   (`memory.current - (memory.stat.file - memory.stat.shmem) -
   memory.stat.slab_reclaimable`) / the confirmed 20 GiB hard limit, with a
   cache-excluded usage bar. The `shmem` backing ZGC is retained **once**.
   A second line shows cache-excluded resident process memory
-  (sum of `RssAnon + RssShmem` over the PZ slice), followed by the JVM heap.
+  (sum of `RssAnon + RssShmem` over the PZ slice), followed by JVM heap usage
+  and percentage against `Xmx`, read from `gc.log`.
   Historical raw peaks (`MemoryPeak`/`VmHWM`) are omitted because they may
   include caches. When cache-excluded metrics cannot be read, the bot shows
   a dash rather than falling back to raw memory.
@@ -269,11 +273,13 @@ Each embed carries:
   threshold is unchanged. Process swap should stay 0.
 - **🖥️ System RAM** — used % and **available** GiB based on
   `MemAvailable`, excluding its estimate of reclaimable caches;
-  no raw cache is included in the used-memory value.
+  no raw cache is included in the used-memory value. Missing measurements render
+  as `—`, not as zero or an invented usage percentage.
 - **🌡️ Temperatures** — CPU (`k10temp`), NVMe, GPU, RAM DIMM (the mini-PC
   thermal angle).
-- **⚙️ CPU** — load over 1 min and 5 min, as a **percentage of available cores**,
-  plus the JVM's own CPU %.
+- **⚙️ CPU** — mean core utilization and the busiest core over the monitoring
+  interval; fallback to one-minute load divided by available cores if core
+  measurements are unavailable.
 - **🗄️ Disk** — free space on the world filesystem, plus the last major GC's
   duration.
 - **⚠️ Alerts** — only when something is off: heap near the restart threshold,

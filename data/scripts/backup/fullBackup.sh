@@ -20,13 +20,13 @@
 #
 # Rétention : OFFSITE_BACKUP_COUNT derniers ZIP (.env, défaut 7).
 #
-# C16 : chiffrement age avant sync hors-site. AGE_RECIPIENT (singulier) ou
-# AGE_RECIPIENTS (pluriel, virgule = rotation multi-destinataires ; le pluriel
-# gagne s'il est non vide). Destinataires résolus AVANT toute publication
-# (fail-fast : RECIPIENT sans binaire `age` meurt avant même de zipper).
-# Sans destinataire : WARNING + ZIP clair local seul (jamais de backup clair
-# hors-site silencieux). Le ZIP clair ne passe jamais par le dossier
-# synchronisé sous son nom final : seul le .age 0600 y est publié.
+# Par défaut, sans destinataire AGE : ZIP clair 0600 dans le dossier synchronisé,
+# transféré hors-site sans chiffrement. AGE_RECIPIENT (singulier) ou
+# AGE_RECIPIENTS (pluriel, virgules pour plusieurs destinataires ; le pluriel
+# gagne s'il est non vide) active explicitement le chiffrement age.
+# Les destinataires sont résolus avant publication ; age absent fait échouer
+# ce mode. Le ZIP clair reste alors dans WORK privé hors synchronisation et
+# seul le .age 0600 est publié dans le dossier synchronisé.
 # ------------------------------------------------------------------------------
 
 set -euo pipefail
@@ -51,10 +51,10 @@ fi
 readonly TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
 readonly ARCHIVE_NAME="${TIMESTAMP}-$$.zip"
 readonly FINAL_ARCHIVE="${SYNC_BACKUPS_DIR}/${ARCHIVE_NAME}"
-# On construit dans un .partial du MÊME dossier que la cible : le mv final est
-# alors un rename atomique (même système de fichiers), donc Syncthing ne voit
-# jamais un ZIP en cours d'écriture — il n'apparaît qu'entier.
-readonly TMP_ARCHIVE="${SYNC_BACKUPS_DIR}/.${ARCHIVE_NAME}.partial"
+# Le clair est préparé sous WORK pour le chiffrement ; seul le staging chiffré
+# doit partager le système de fichiers de la destination publiée.
+TMP_ARCHIVE=""
+readonly TMP_ENCRYPTED="${SYNC_BACKUPS_DIR}/.${ARCHIVE_NAME}.age.partial"
 
 # Config à sauvegarder (petits fichiers, non reconstructibles). rsync -aR conserve
 # le chemin absolu de chaque entrée, ce qui vaut aussi bien pour un fichier que pour
@@ -93,7 +93,14 @@ PINNED_GAME_DIR=""
 # Staging des petits fichiers de config HORS du dossier synchronisé (le gros des
 # données de jeu n'est pas copié : zip le lit à la volée via un symlink).
 readonly WORK="$(mktemp -d)"
-trap 'rm -rf "${WORK}" "${TMP_ARCHIVE}" 2>/dev/null || true' EXIT
+trap 'rm -rf "${WORK}" "${TMP_ARCHIVE}" "${TMP_ENCRYPTED}" 2>/dev/null || true' EXIT
+trap 'exit 143' INT TERM
+# TMPDIR peut être configuré dans la zone synchronisée : refuser ce placement
+# avant de copier la moindre configuration secrète.
+ensure_directory "${SYNC_BACKUPS_DIR}"
+work_real="$(readlink -f -- "$WORK")"
+sync_real="$(readlink -f -- "$SYNC_BACKUPS_DIR")"
+[[ "$work_real" != "$sync_real" && "$work_real" != "${sync_real%/}/"* ]] || die "Répertoire de préparation dans la zone synchronisée : sauvegarde refusée."
 trap 'echo -e "\033[0;31m[ERROR]\033[0m Line $LINENO: $BASH_COMMAND failed." >&2' ERR
 
 stage_config() {
@@ -180,14 +187,13 @@ build_archive() {
         rm -f -- "${TMP_ARCHIVE}"
         die "ZIP invalide (${TMP_ARCHIVE}, unzip -t en échec) : rien n'est publié."
     fi
-    # C16 : avec destinataires, seul le .age est publié (le clair ne porte
-    # jamais son nom final) ; sinon ZIP clair historique (WARNING déjà émis).
+    # ZIP clair dans le dossier synchronisé par défaut ; avec destinataires
+    # explicites, seul le .age y est publié (clair préparé hors synchronisation).
     if (( ${#C16_AGE_ARGS[@]} > 0 )); then
         publish_encrypted_archive
         return 0
     fi
-    mv -f "${TMP_ARCHIVE}" "${FINAL_ARCHIVE}"
-    chmod 600 "${FINAL_ARCHIVE}" || die "chmod 600 impossible sur ${FINAL_ARCHIVE}."
+    publish_durable_archive "$TMP_ARCHIVE" "$FINAL_ARCHIVE"
     [[ "$(stat -c %a "${FINAL_ARCHIVE}" 2>/dev/null || echo ?)" == "600" ]] \
         || die "Permissions inattendues sur ${FINAL_ARCHIVE} (attendu 600)."
     log "ZIP prêt : ${FINAL_ARCHIVE} ($(du -h "${FINAL_ARCHIVE}" | cut -f1))"
@@ -202,7 +208,7 @@ resolve_age_recipients() {
     C16_AGE_ARGS=()
     local recipients="${AGE_RECIPIENTS:-${AGE_RECIPIENT:-}}"
     if [[ -z "${recipients//[[:space:],]/}" ]]; then
-        echo "[WARNING] AGE_RECIPIENT(S) vide : ZIP clair local seul, pas de chiffrement hors-site." >&2
+        echo "[WARNING] AGE_RECIPIENT(S) vide : ZIP clair dans le répertoire synchronisé ; transferts hors-site sans chiffrement." >&2
         return 0
     fi
     command -v age &>/dev/null || die "AGE_RECIPIENT défini mais binaire 'age' absent : pas de backup clair hors-site silencieux."
@@ -216,18 +222,27 @@ resolve_age_recipients() {
     (( ${#C16_AGE_ARGS[@]} > 0 )) || die "AGE_RECIPIENT(S) sans destinataire exploitable : pas de backup clair hors-site silencieux."
 }
 
-# C16 : publie SEUL le .age chiffré (rename atomique, 0600) depuis le .partial
-# clair, qui est ensuite supprimé : le clair ne porte jamais son nom final
-# dans le dossier synchronisé. Échec -> .partial supprimés, RIEN publié.
+# Publish only durable contents, then persist the name before retention can
+# remove an earlier recovery. A failed barrier leaves previous archives intact.
+publish_durable_archive() {
+    local staging="$1" final="$2"
+    python3 "${SCRIPT_DIR}/../lib/world_transaction.py" sync \
+        --world "$SYNC_BACKUPS_DIR" --file "$(basename -- "$staging")"
+    mv -f -- "$staging" "$final"
+    python3 "${SCRIPT_DIR}/../lib/world_transaction.py" sync \
+        --world "$SYNC_BACKUPS_DIR" --directory-only
+}
+
+# Seul le ciphertext passe par le dossier synchronisé, en 0600 dès sa
+# création, puis publication par rename sur le même système de fichiers.
 publish_encrypted_archive() {
-    age "${C16_AGE_ARGS[@]}" -o "${TMP_ARCHIVE}.age" "${TMP_ARCHIVE}" \
-        || { rm -f -- "${TMP_ARCHIVE}" "${TMP_ARCHIVE}.age"; die "Chiffrement age en échec : rien n'est publié."; }
-    chmod 600 "${TMP_ARCHIVE}.age" || { rm -f -- "${TMP_ARCHIVE}" "${TMP_ARCHIVE}.age"; die "chmod 600 impossible sur ${TMP_ARCHIVE}.age."; }
-    mv -f "${TMP_ARCHIVE}.age" "${FINAL_ARCHIVE}.age"
-    chmod 600 "${FINAL_ARCHIVE}.age" || die "chmod 600 impossible sur ${FINAL_ARCHIVE}.age."
+    age "${C16_AGE_ARGS[@]}" -o "$TMP_ENCRYPTED" "$TMP_ARCHIVE" \
+        || die "Chiffrement age en échec : rien n'est publié."
+    chmod 600 "$TMP_ENCRYPTED" || die "chmod 600 impossible sur ${TMP_ENCRYPTED}."
+    publish_durable_archive "$TMP_ENCRYPTED" "${FINAL_ARCHIVE}.age"
     [[ "$(stat -c %a "${FINAL_ARCHIVE}.age" 2>/dev/null || echo ?)" == "600" ]] \
         || die "Permissions inattendues sur ${FINAL_ARCHIVE}.age (attendu 600)."
-    rm -f -- "${TMP_ARCHIVE}"
+    rm -f -- "$TMP_ARCHIVE"
     log "Archive chiffrée : ${FINAL_ARCHIVE}.age (ZIP clair jamais publié hors-site)."
 }
 
@@ -274,6 +289,14 @@ cleanup_old_backups() {
 stage_config
 stage_game_data
 resolve_age_recipients
+if (( ${#C16_AGE_ARGS[@]} > 0 )); then
+    TMP_ARCHIVE="${WORK}/${ARCHIVE_NAME}"
+else
+    # Mode par défaut : staging clair dans le même dossier que le ZIP final,
+    # pour une publication par rename atomique même si WORK est sur un autre FS.
+    TMP_ARCHIVE="${SYNC_BACKUPS_DIR}/.${ARCHIVE_NAME}.partial"
+fi
+readonly TMP_ARCHIVE
 build_archive
 cleanup_old_backups
 

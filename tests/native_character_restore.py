@@ -27,6 +27,7 @@ def main():
     for label,script,bad,expected in [('before-truncated',a.before_script,True,True),('after-truncated',repository/'data/scripts/backup/restoreCharacter.sh',True,False),('after-complete',repository/'data/scripts/backup/restoreCharacter.sh',False,True)]:
         case=root/label;case.mkdir();scripts=case/'repo/data/scripts';(scripts/'backup').mkdir(parents=True)
         shutil.copytree(repository/'data/scripts/lib',scripts/'lib');shutil.copy2(script,scripts/'backup/restoreCharacter.sh')
+        shutil.copytree(repository/'data/scripts/internal',scripts/'internal')
         (scripts/'lib/common.sh').write_text('''source_env() { :; }
 require_sqlite() { :; }
 die() { echo "$*" >&2; exit 1; }

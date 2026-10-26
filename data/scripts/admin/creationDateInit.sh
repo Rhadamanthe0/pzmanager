@@ -33,13 +33,47 @@ source "${SCRIPT_DIR}/../lib/common.sh"
 source_env
 
 readonly DB_PATH="${PZ_DB_PATH}"
-readonly LEDGER="${WHITELIST_LEDGER}"
+# La sentinelle protège les LF appartenant au nom contre $(...) ; retirer
+# seulement le séparateur de readlink, après avoir vérifié son statut.
+if ! LEDGER="$(readlink -m -- "${WHITELIST_LEDGER}" && printf '.')"; then
+    die "Chemin du registre impossible à résoudre : registre inchangé."
+fi
+LEDGER="${LEDGER%.}"
+LEDGER="${LEDGER%$'\n'}"
+readonly LEDGER
 
 main() {
     require_sqlite
+    python3 "${SCRIPT_DIR}/../lib/account_safety.py" validate-db --db "$DB_PATH" --missing-ok || exit 1
     [[ -f "$DB_PATH" ]] || { log "Base de données introuvable: $DB_PATH (registre inchangé)"; exit 0; }
 
-    ensure_directory "$(dirname "$LEDGER")"
+    # Capture le statut du lecteur lui-même avant toute création/écriture.
+    # Les champs SQLite sont lus typés ; seules des lignes CSV représentables
+    # sont émises (LF, CR, NUL et points-virgules sont refusés dans les champs).
+    local records now
+    now="$(date '+%F %T')"
+    if ! records="$(python3 "${SCRIPT_DIR}/../lib/account_safety.py" ledger-rows --db "$DB_PATH" --now "$now")"; then
+        log "Base illisible pour l'instant (verrou ?) — registre inchangé."
+        exit 1
+    fi
+
+    local ledger_parent="${LEDGER%/*}"
+    [[ -n "$ledger_parent" ]] || ledger_parent=/
+    ensure_directory "$ledger_parent"
+    # Ancré au registre physique, indépendant du runtime timer/CLI et PrivateTmp.
+    # WORLD/SERVERCTL, si déjà détenus par la purge, précèdent toujours ce verrou.
+    local lock_name lock_file ledger_lock_fd
+    lock_name="$(printf '%s' "$LEDGER" | sha256sum)"
+    lock_file="$(XDG_RUNTIME_DIR="$ledger_parent" private_state_path "ledger-${lock_name%% *}.lock")" \
+        || die "Verrou du registre non sûr : registre inchangé."
+    # Deux noms de hardlink auraient des verrous distincts ; refuser cet alias
+    # avant écriture plutôt que prétendre sérialiser par un chemin canonique.
+    if [[ -e "$LEDGER" ]] && { [[ ! -f "$LEDGER" ]] || [[ "$(stat -c %h -- "$LEDGER")" != 1 ]]; }; then
+        die "Verrou du registre : fichier non régulier ou liens multiples, registre inchangé."
+    fi
+    umask 077
+    try_lock "$lock_file" ledger_lock_fd \
+        || die "Verrou du registre occupé ou inaccessible : registre inchangé. Réessayer après l'opération en cours."
     if [[ ! -f "$LEDGER" ]]; then
         printf '# username;steamid;created_at (ne jamais modifier une ligne existante)\n' > "$LEDGER"
         chmod 600 "$LEDGER"
@@ -55,44 +89,15 @@ main() {
         known["$user"]=1
     done < "$LEDGER"
 
-    # Lecture seule : sur une base tenue ouverte par le jeu, un SQLITE_BUSY est
-    # possible — on abandonne proprement, le prochain passage rattrapera.
-    local -a rows=()
-# Séparateur : caractère de contrôle US (0x1f), jamais un | .
-# Un joueur s'appelle littéralement « MabEira | Hannibal » (constaté le
-# 19/08/2026) : avec -separator '|' ses champs débordaient les uns sur les
-# autres, ce qui a produit une ligne de registre corrompue (pseudo tronqué à
-# « MabEira », steamid « Hannibal », date = un SteamID). Un pseudo ne peut pas
-# contenir 0x1f.
-    if ! mapfile -t rows < <(sqlite3 -separator $'\x1f' "$DB_PATH" \
-        "SELECT username, COALESCE(steamid,''), COALESCE(lastConnection,'') FROM whitelist;" 2>/dev/null); then
-        log "Base illisible pour l'instant (verrou ?) — registre inchangé."
-        exit 0
-    fi
-
-    local added=0 uname sid lastconn created now
-    now="$(date '+%F %T')"
-    for line in "${rows[@]}"; do
-        IFS=$'\x1f' read -r uname sid lastconn <<< "$line"
-        [[ -n "$uname" ]] || continue
-        [[ -n "${known[$uname]:-}" ]] && continue
-
-        # Un pseudo contenant le séparateur casserait le registre : on le refuse
-        # plutôt que d'écrire une ligne qu'on relira de travers.
-        if [[ "$uname" == *";"* ]]; then
-            log "AVERTISSEMENT: pseudo contenant ';' ignoré au registre: $uname"
-            continue
-        fi
-
-        # Date de création inconnue : on prend la dernière connexion quand elle
-        # existe (le compte existait forcément à ce moment-là), sinon l'instant
-        # présent. Les deux sous-estiment l'ancienneté réelle, donc retardent une
-        # éventuelle purge — l'erreur va dans le sens sûr.
-        created="${lastconn:-$now}"
-        printf '%s;%s;%s\n' "$uname" "$sid" "$created" >> "$LEDGER"
-        known["$uname"]=1
+    local added=0
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        user="${line%%;*}"
+        [[ -n "${known[$user]:-}" ]] && continue
+        printf '%s\n' "$line" >> "$LEDGER"
+        known["$user"]=1
         added=$(( added + 1 ))
-    done
+    done <<< "$records"
 
     if (( added > 0 )); then
         log "Registre des dates de création : ${added} compte(s) ajouté(s) (total suivi : $(( ${#known[@]} )))."

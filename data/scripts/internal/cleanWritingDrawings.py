@@ -671,17 +671,19 @@ def atomic_file(path, data, mode=0o600):
         if os.path.exists(temp): os.unlink(temp)
 
 
-def world_files(world):
+def world_files(world, include_dictionary=False):
     # No symlink traversal, and refuse unknown dirty binary paths rather than
     # silently leaving a drawing that might be loaded later.
-    for root, dirs, files in os.walk(world, followlinks=False):
+    def refuse(error):
+        raise error
+    for root, dirs, files in os.walk(world, followlinks=False, onerror=refuse):
         for name in dirs:
             if (Path(root)/name).is_symlink(): raise CleanupError("World directory symlink refused")
         for name in files:
             path = Path(root)/name
             if path.is_symlink(): raise CleanupError("World file symlink refused")
             rel = path.relative_to(world)
-            if name.endswith(".bin") and name != "WorldDictionary.bin": yield rel
+            if name.endswith(".bin") and (include_dictionary or name != "WorldDictionary.bin"): yield rel
 
 
 def file_identity(info):
@@ -919,7 +921,7 @@ def cleanup(world_dir, backup_dir, dry_run=False, validator=None, scripts_dir=No
         return {"files":0,"players":0,"version":VERSION,"dry_run":dry_run}
     world = safe_root(world_path); backups = Path(os.path.abspath(backup_dir))
     if not (world/"WorldDictionaryReadable.lua").exists():
-        saved=any(world.rglob("*.bin"))
+        saved=any(world_files(world,include_dictionary=True))
         db=world/"players.db"
         if db.exists():
             check_database_files(world);read_file(db)

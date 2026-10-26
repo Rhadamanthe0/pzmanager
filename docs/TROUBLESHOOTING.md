@@ -103,22 +103,19 @@ nc -vuz YOUR_SERVER_IP 16261
 
 ## Stop ends in `Failed with result 'timeout'`
 
-The server did not exit on its own and systemd SIGKILLed it after
-`TimeoutStopSec` (120 s). **The usual cause is not a slow save — it is a `quit`
-that was never read.**
+The server did not exit before `TimeoutStopSec` (120 s), so systemd killed it.
+The timeout alone does not distinguish an unprocessed `quit` from a slow shutdown.
 
 Server control is a FIFO: `ExecStop` writes `quit` into
 `data/pzserver/zomboid.control` and the game's console thread reads it.
 `KillSignal=SIGCONT` is deliberate — systemd never sends SIGTERM, so if that
 `quit` is not processed there is **nothing else** that will stop the server, and
-the 120 s wait always ends in a SIGKILL. Raising `TimeoutStopSec` does not help;
-it only makes the wait longer.
+the wait can end in a SIGKILL. A longer deadline helps only when diagnostics
+establish shutdown progress; it cannot unblock an unprocessed command.
 
-Note that writing to the FIFO **succeeds** even when nobody is reading: a pipe
-accepts data into its 64 KB buffer regardless. So "the command was sent" tells you
-nothing.
+A successful FIFO write proves submission, not execution.
 
-### Telling the two apart
+### Inspecting the stop
 
 ```bash
 # Did the game acknowledge ANY console command during the stop?
@@ -126,16 +123,12 @@ journalctl --user -u zomboid.service --since "<stop>" --until "<sigkill>" \
   | grep -c 'command entered via server console'
 ```
 
-- **≥ 1, plus `QueuedQuit` / `Shutdown handling finished`** → the quit *was*
-  received and the save genuinely ran long. That is the case where a longer
-  timeout would help.
-- **0, and no game output at all** → the console reader was not consuming the
-  FIFO. The stop was never going to work.
+Match the stop's own request and completion within the current invocation.
+An unrelated command echo does not prove that `quit` ran. Correlate logs with
+thread dumps; `logs/zomboid/monitoring.csv` supplies resource context, not proof
+that the console or main loop completed a command.
 
-Cross-check the black box (`logs/zomboid/monitoring.csv`): a real save burns CPU
-and logs; a dead console shows an idle process writing nothing.
-
-### Third case: the server never finished booting
+### A server that never finished booting
 
 A positive log frame `f:` proves that the simulation has started. Its absence
 is inconclusive: a healthy empty server can remain at `f:0` for hours. On
@@ -169,22 +162,8 @@ has not been demonstrated; a longer wait does not make a forced stop safe.
 The historical stuck boot of 2026-09-02 is described in
 [INCIDENTS.md](INCIDENTS.md#2026-09-02--a-stop-that-could-not-be-executed).
 
-### A mute console and a frozen game loop are not the same failure
-
-The game echoes `command entered via server console` from its **console thread**,
-which keeps running while the main loop is stuck. So a probe that gets no answer
-has two very different causes, and the echo tells them apart:
-
-| Echo present? | Result returned? | Diagnosis |
-|---|---|---|
-| no | no | the console is not reading the FIFO — a genuinely dead console |
-| **yes** | no | the console reads fine; the **game loop** is frozen and never executes the command |
-
-Both end the same way — the `quit` is not executed and systemd SIGKILLs at 120 s —
-but they point at different things to investigate. On 2026-09-03 at 19:08 it was
-the second case: the `quit` *was* acknowledged, while the frame counter had been
-pinned at `f:88543` since 18:59. `pzm server stop|restart` now names whichever it
-actually is, and prints the frozen frame number.
+See [console responses and slow shutdown](#réponse-console-et-fermeture-lente)
+for the timeout contract and diagnostic captures.
 
 ### Catching it before you need the stop
 
@@ -315,7 +294,8 @@ ls -la ~/pzmanager/data/dataBackups/
 du -sh ~/pzmanager/data/dataBackups/*
 ```
 
-If too large, shorten the GFS daily tier (`BACKUP_GFS_DAILY_DAYS`, default 30) or the off-site ZIP count (`OFFSITE_BACKUP_COUNT`, default 7) in `.env`.
+If too large, adjust the GFS daily tier or off-site ZIP count in `.env`; see
+[retention settings and defaults](CONFIGURATION.md#backups).
 
 ## Restore Zomboid Data
 
@@ -327,11 +307,14 @@ If too large, shorten the GFS daily tier (`BACKUP_GFS_DAILY_DAYS`, default 30) o
 # List available backups
 ./data/scripts/backup/restoreZomboidData.sh
 
-# Restore specific backup
-./data/scripts/backup/restoreZomboidData.sh data/dataBackups/backup_2026-01-11_14h15m00s
+# Stop and wait for a proven stopped server before applying
+pzm server stop 2m --reason "World restoration"
 
-# Restore latest backup
-./data/scripts/backup/restoreZomboidData.sh data/dataBackups/latest
+# Restore specific backup
+pzm backup restore data/dataBackups/backup_2026-01-11_14h15m00s
+
+# Or restore latest backup (server must also be stopped)
+pzm backup restore data/dataBackups/latest
 ```
 
 **How it works**:
@@ -341,9 +324,9 @@ If too large, shorten the GFS daily tier (`BACKUP_GFS_DAILY_DAYS`, default 30) o
   puts them back
 - Preserves system configuration and scripts
 
-**Apply**:
+**After a successful restore**:
 ```bash
-pzm server restart 2m
+pzm server start
 ```
 
 ### Complete Restoration (system + data)
@@ -353,12 +336,25 @@ pzm server restart 2m
 ```bash
 # List complete backups (one ZIP per backup)
 ls -lt ~/pzmanager/data/fullBackups/
-
-# Restore everything (pass the .zip; older dir-format backups still work too)
-sudo ./data/scripts/install/configurationInitiale.sh restore ~/pzmanager/data/fullBackups/2026-01-11_04-30.zip
 ```
 
-**Restores**: Sudoers, SSH, systemd services/timers, scripts, .env, Zomboid data.
+Complete system restoration requires the root installation helper from a
+root-owned, non-replaceable checkout, never a `sudo` script under the manager's
+writable home. Pass the full-backup ZIP (legacy directory backups are also
+accepted). SSH restoration requires explicit `--restore-ssh`; it is off by default.
+
+After installing the trusted helpers, replace `UTILISATEUR` with the manager account:
+
+```bash
+sudo /usr/local/libexec/pzmanager/install/configurationInitiale.sh \
+  --manager-root /home/UTILISATEUR/pzmanager restore /chemin/backup.zip
+```
+
+Optional flags are `--force` and `--restore-ssh`. Start the server only after
+restoration succeeds.
+
+**Restores**: Sudoers, systemd services/timers, scripts, .env and Zomboid data;
+SSH only with `--restore-ssh`.
 
 ### Comparison
 
@@ -411,10 +407,9 @@ chmod 600 ~/.ssh/* 2>/dev/null
 ### Invalid Sudoers
 
 ```bash
-# Check file
-# Le sudoers est maintenant installé automatiquement par setupSystem.sh
-# Pour réinstaller manuellement :
-sudo ~/pzmanager/data/scripts/install/setupSystem.sh $USER
+# Reinstall through the trusted root helper; replace UTILISATEUR
+sudo /usr/local/libexec/pzmanager/install/setupSystem.sh \
+  --manager-root /home/UTILISATEUR/pzmanager
 ```
 
 ## Insufficient Disk Space
@@ -525,6 +520,12 @@ milliseconds despite its name. The monitor converts a positive finite period
 with `1000 / period_ms`; 103 ms means about 9.7 ticks/s, while 617 ms means
 about 1.6 ticks/s. An old gauge alone cannot prove that the game still responds:
 check fresh frame progression and a console response.
+
+`watchServerStall.sh` compares native log frames and record timestamps within
+the same invocation. With connected players, newer records carrying an unchanged
+positive frame trigger thread dumps. Automatic recovery requires the main thread
+to remain RUNNABLE and burn CPU across the captures. A startup frame `f:0`, no
+players or an inconclusive CPU profile does not justify a forced restart.
 
 ZGC's `Major Collection` summary reports the duration of its concurrent cycle,
 not a stop-the-world pause. The monitor keeps that cycle duration separate and

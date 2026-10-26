@@ -37,13 +37,9 @@ cleanup_old_logs() {
 }
 
 capture_logs() {
-    # L'unité a Restart=always et peut donc démarrer avant que zomboid.service ne
-    # soit actif : systemctl renvoie alors un InvocationID VIDE. Non quotée, la
-    # ligne journalctl devenait « INVOCATION_ID= + _SYSTEMD_INVOCATION_ID= »,
-    # rejetée par journalctl -> sortie en erreur -> redémarrage toutes les 5 s,
-    # en boucle et sans capturer un seul log. On attend l'ID au lieu de partir en
-    # vrille (le service est de toute façon lancé par zomboid.service).
-    local iid start_time timestamp waited=0
+    # Le logger peut précéder l'activation : attendre l'identité du boot pour
+    # ne jamais suivre un filtre d'invocation vide.
+    local iid start_time timestamp="" log_file waited=0
     while (( waited < 60 )); do
         iid="$(systemctl --user show -p InvocationID --value "${PZ_SERVICE_NAME}" 2>/dev/null || true)"
         [[ -n "$iid" ]] && break
@@ -51,14 +47,21 @@ capture_logs() {
         waited=$(( waited + 2 ))
     done
     [[ -n "$iid" ]] || die "InvocationID de ${PZ_SERVICE_NAME} indisponible après ${waited}s (service non démarré ?)"
+    [[ "$iid" =~ ^[0-9a-fA-F]{32}$ ]] || die "InvocationID de ${PZ_SERVICE_NAME} invalide"
 
     start_time="$(systemctl --user show -p ActiveEnterTimestamp --value "${PZ_SERVICE_NAME}" 2>/dev/null || true)"
-    # date -d "" renverrait la date du jour à 00:00 et écraserait le log de la
-    # veille : on retombe sur l'instant présent, qui est la vraie approximation.
-    timestamp="$(date -d "$start_time" +"%Y-%m-%d_%Hh%Mm%S" 2>/dev/null || date +"%Y-%m-%d_%Hh%Mm%S")"
+    # Avant activation, l'horodatage peut manquer : ne pas interpréter le vide
+    # comme minuit. L'instant présent est alors une approximation explicite.
+    if [[ -n "$start_time" ]]; then
+        timestamp="$(date -d "$start_time" +"%Y-%m-%d_%Hh%Mm%S" 2>/dev/null || true)"
+    fi
+    [[ -n "$timestamp" ]] || timestamp="$(date +"%Y-%m-%d_%Hh%Mm%S")"
+    # Deux boots rapprochés ou le redémarrage du logger ne doivent jamais
+    # tronquer une capture existante. mktemp crée la nouvelle capture en 0600.
+    log_file="$(mktemp "${LOG_ZOMBOID_DIR}/zomboid_${timestamp}_${iid}_XXXXXX.log")"
 
     journalctl -n all -f "INVOCATION_ID=${iid}" + "_SYSTEMD_INVOCATION_ID=${iid}" \
-        > "${LOG_ZOMBOID_DIR}/zomboid_${timestamp}.log"
+        > "$log_file"
 }
 
 ensure_directory "${LOG_ZOMBOID_DIR}"

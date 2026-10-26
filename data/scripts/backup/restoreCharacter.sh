@@ -12,7 +12,7 @@
 #
 # Comportement : ÉCRASE toujours le perso live existant du joueur par celui du
 # backup. Pas de sauvegarde de sécurité ici : `pzm server stop` fait déjà une
-# sauvegarde complète juste avant l'arrêt (et le serveur doit être arrêté).
+# sauvegarde après arrêt du serveur (qui doit être prouvé arrêté).
 #
 # Usage: ./restoreCharacter.sh <pseudo> <backup> [--dry-run]
 #   <pseudo>   Username du joueur (table networkPlayers)
@@ -82,10 +82,19 @@ _same_file() {
 # Meurt (die) avant toute modification si le schéma est incompatible.
 REQUIRED_PLAYER_COLS="world username playerIndex name steamid x y z worldversion data isDead"
 assert_players_schema() {
-    local db="$1" label="$2" tbl cols c
+    local db="$1" label="$2" tbl cols c indexes
     tbl="$(sqlite3 -readonly "$db" "SELECT name FROM sqlite_master WHERE type='table' AND name='networkPlayers';" 2>/dev/null || true)"
     [[ "$tbl" == "networkPlayers" ]] || die "Schéma incompatible (${label}) : table 'networkPlayers' absente dans ${db}."
     cols="$(sqlite3 -readonly "$db" "PRAGMA table_info(networkPlayers);" 2>/dev/null || true)"
+    # INSERT omits id: require the native rowid alias, not merely a column
+    # called id. DESC/composite/WITHOUT ROWID keys have a separate PK index.
+    awk -F'|' '$6 > 0 { keys++; if ($2 == "id" && toupper($3) == "INTEGER" && $6 == 1) native=1 }
+        END { exit !(keys == 1 && native) }' <<<"$cols" \
+        || die "Schéma incompatible (${label}) : id INTEGER PRIMARY KEY généré requis."
+    indexes="$(sqlite3 -readonly "$db" "PRAGMA index_list(networkPlayers);" 2>/dev/null)" \
+        || die "Schéma incompatible (${label}) : clé primaire non vérifiable."
+    awk -F'|' '$4 == "pk" { bad=1 } END { exit bad }' <<<"$indexes" \
+        || die "Schéma incompatible (${label}) : id doit être la clé native INTEGER PRIMARY KEY générée."
     for c in $REQUIRED_PLAYER_COLS; do
         awk -F'|' -v want="$c" '$2 == want { found=1 } END { exit !found }' <<<"$cols" \
             || die "Schéma incompatible (${label}) : colonne '${c}' absente dans ${db} (attendu : ${REQUIRED_PLAYER_COLS})."
@@ -152,6 +161,7 @@ if [[ "$DRY_RUN" != true ]]; then
     # ne porte aucun `2>/dev/null`, seul le `flock -n` sonde est masqué) —
     # aucune sauvegarde/restauration de fd n'est nécessaire ici.
     acquire_world_lock --required || exit 1
+    python3 "${SCRIPT_DIR}/../lib/world_transaction.py" check --world "$PZ_SOURCE_DIR" || exit 1
     if declare -F assert_server_stopped_proven >/dev/null 2>&1; then
         assert_server_stopped_proven "Restauration personnage"
     else
@@ -179,6 +189,10 @@ LIVE_DB="$(find_players_db_strict "${PZ_SOURCE_DIR}")" || die "players.db live i
 if _same_file "$LIVE_DB" "$BK_DB"; then
     die "Source et destination identiques (${LIVE_DB}) : refuse de restaurer un monde sur lui-même. Rien n'a été modifié."
 fi
+# Validate every live ancestor and SQLite alias before even a schema read.
+# Backup roots may be `latest` links and snapshot files may share hardlinks.
+python3 "${SCRIPT_DIR}/../lib/account_safety.py" validate-db --db "$LIVE_DB" \
+    || die "Destination SQLite non sûre : restauration refusée avant toute ouverture."
 # Preview/schema queries must not recover a destination journal or create SHM.
 for suffix in -wal -shm -journal; do
     [[ ! -e "${LIVE_DB}${suffix}" && ! -L "${LIVE_DB}${suffix}" ]] \

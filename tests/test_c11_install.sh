@@ -53,9 +53,8 @@ echo "== (0) statique =="
 grep -q 'PZ_MANAGER_USER' "$CONF_INIT" \
     && ok "compte du service (PZ_MANAGER_USER) référencé" \
     || ko "PZ_MANAGER_USER absent"
-grep -q 'chown "\$owner:\$owner" "\$password_file"' "$CONF_INIT" \
-    && ok "chown owner:owner du .admin_password présent" \
-    || ko "chown du .admin_password absent"
+grep -q 'as_manager install -m 600 /dev/null "\$password_file"' "$CONF_INIT" \
+    && ok "création du secret sous manager en 0600" || ko "création manager du secret absente"
 grep -q 'chmod 600 "\$password_file"' "$CONF_INIT" \
     && ok "chmod 600 du .admin_password présent" \
     || ko "chmod 600 du .admin_password absent"
@@ -165,9 +164,8 @@ generate_admin_password >"$S/run1.log" 2>&1 \
 [[ -s "$PW_FILE" ]] \
     && ok "run 1 : .admin_password créé non vide" \
     || ko "run 1 : .admin_password absent ou vide"
-grep -qF "chown pzmgr:pzmgr $PW_FILE" "$MOCK_DIR/calls.log" \
-    && ok "run 1 : chown pzmgr:pzmgr émis (compte du service)" \
-    || ko "run 1 : chown vers le compte du service non émis -- $(cat "$MOCK_DIR/calls.log")"
+! grep -qF "chown " "$MOCK_DIR/calls.log" \
+    && ok "run 1 : aucun chown root sur le secret manager" || ko "chown sur secret manager"
 grep -qF "chmod 600 $PW_FILE" "$MOCK_DIR/calls.log" \
     && ok "run 1 : chmod 600 émis" \
     || ko "run 1 : chmod 600 non émis"
@@ -258,7 +256,21 @@ echo "== (C2) daemon-reload en échec sous set -e (prod) =="
 : > "$MOCK_DIR/calls.log"
 # set -e ACTIF ici (hérité) : prouve que `|| fail_on_error` meurt avec message
 # même sous errexit (un `cmd; fail_on_error $?` serait inatteignable en prod).
-( MOCK_FAIL_DAEMON_RELOAD=1 PATH="$BIN:$PATH" enable_zomboid_service >"$S/fail-errexit.log" 2>&1 ) || RC=$?
+# Le parent recueille le statut sans mettre la commande enfant dans ||/if.
+# La fonction exportée est exécutée par un nouveau Bash -e indépendant.
+export -f enable_zomboid_service ensure_runtime_dir user_systemctl_strict fail_on_error die as_manager
+export CONF_INIT MOCK_DIR RT
+set +e
+MOCK_FAIL_DAEMON_RELOAD=1 PATH="$BIN:$PATH" bash -e -c 'enable_zomboid_service' >"$S/fail-errexit.log" 2>&1
+RC=$?
+set -e
+# Témoin du wrapper : false doit interrompre le shell avant le printf.
+set +e
+bash -e -c 'false; printf "errexit-disabled\n"' > "$S/errexit-control.log"
+CONTROL_RC=$?
+set -e
+[[ "$CONTROL_RC" != 0 && ! -s "$S/errexit-control.log" ]] \
+    && ok "wrapper child Bash -e : arrêt réel avant printf" || ko "wrapper errexit désactivé"
 [[ "$RC" != "0" ]] \
     && ok "errexit : exit $RC (!= 0)" \
     || ko "errexit : exit 0 (échec masqué sous set -e)"
@@ -274,6 +286,17 @@ for f in "$CONF_INIT" "$0"; do
     bash -n "$f" || { ko "bash -n : $f"; }
 done
 ok "bash -n : scripts OK"
+
+# Le secret bootstrap doit rester hors index même avec git add --all.
+git_fixture="$SANDBOX/gitignore"
+mkdir "$git_fixture"
+git -C "$git_fixture" init -q
+cp "$ROOT/.gitignore" "$git_fixture/.gitignore"
+printf 'fixture-not-a-credential\n' > "$git_fixture/.admin_password"
+chmod 0600 "$git_fixture/.admin_password"
+if git -C "$git_fixture" check-ignore -q .admin_password; then ok 'secret bootstrap ignoré par Git'; else ko 'secret bootstrap non ignoré'; fi
+git -C "$git_fixture" add --all
+if [[ -z "$(git -C "$git_fixture" ls-files -- .admin_password)" ]]; then ok 'git add --all ne publie pas le secret'; else ko 'secret bootstrap ajouté à l’index'; fi
 
 # --- Bilan -------------------------------------------------------------------------
 echo ""

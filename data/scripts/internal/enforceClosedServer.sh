@@ -18,25 +18,12 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
 source_env
 
-: "${PZ_INI_PATH:=${PZ_SOURCE_DIR}/Server/${PZ_SERVER_NAME}.ini}"
-ini_dir="$(dirname "$PZ_INI_PATH")"
-mkdir -p "$ini_dir" || die "Dossier ini inaccessible (${ini_dir}) : serveur non démarré (fail-closed)."
-if [[ ! -f "$PZ_INI_PATH" ]]; then
-    # Primo-démarrage : le jeu complète les clés manquantes, il ne touche pas
-    # celles déjà posées — pré-ensemencer Open=false est sûr.
-    printf 'Open=false\n' > "$PZ_INI_PATH" \
-        || die "ini inaccessible (${PZ_INI_PATH}) : serveur non démarré (fail-closed)."
-    log "Open=false pré-ensemencé (${PZ_INI_PATH})."
-elif grep -q '^Open=false$' "$PZ_INI_PATH"; then
-    : # déjà fermé
-elif grep -qE '^[[:space:]]*Open[[:space:]]*=' "$PZ_INI_PATH"; then
-    sed -i -E 's/^[[:space:]]*Open[[:space:]]*=.*/Open=false/' "$PZ_INI_PATH" \
-        || die "ini non réinscriptible (${PZ_INI_PATH}) : serveur non démarré (fail-closed)."
-    log "Open=false réparé (${PZ_INI_PATH}) — le serveur était ouvert."
-else
-    printf 'Open=false\n' >> "$PZ_INI_PATH" \
-        || die "ini non réinscriptible (${PZ_INI_PATH}) : serveur non démarré (fail-closed)."
-    log "Open=false ajouté (${PZ_INI_PATH})."
+# Join the same authenticated WORLD admission as Writing/purge. The worker
+# proves the inherited OFD and clean journal before even creating the INI dir.
+if [[ "${1:-}" != --admitted-worker ]]; then
+    lock_path="$(python3 "${SCRIPT_DIR}/writing_start_admission.py" path)" || exit 1
+    exec python3 "${SCRIPT_DIR}/writing_start_admission.py" run \
+        --lock-path "$lock_path" --unit "$PZ_SERVICE_NAME" -- bash "$0" --admitted-worker
 fi
-grep -q '^Open=false$' "$PZ_INI_PATH" \
-    || die "Vérification Open=false impossible (${PZ_INI_PATH}) : serveur non démarré (fail-closed)."
+# The editor independently re-proves the inherited FD and clean journal.
+exec python3 "${SCRIPT_DIR}/enforceClosedServer.py"

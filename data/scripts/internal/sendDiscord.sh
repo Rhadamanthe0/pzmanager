@@ -5,6 +5,9 @@
 set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Capturer le canal interne avant que .env ne réexporte sa configuration.
+readonly private_webhook_set="${PZ_DISCORD_WEBHOOK_OVERRIDE+x}"
+readonly private_webhook="${PZ_DISCORD_WEBHOOK_OVERRIDE-}"
 source "${SCRIPT_DIR}/../lib/common.sh"
 source_env
 
@@ -33,7 +36,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-$webhook_set || webhook="${DISCORD_WEBHOOK:-}"
+if ! $webhook_set; then
+    if [[ "$private_webhook_set" == x ]]; then
+        webhook="$private_webhook"
+    else
+        webhook="${DISCORD_WEBHOOK:-}"
+    fi
+fi
 if [[ -z "$webhook" ]]; then
     if $strict; then
         echo "[pz-discord] Webhook non configuré : envoi impossible." >&2
@@ -47,11 +56,21 @@ if [[ -z "$message" ]]; then
     exit 1
 fi
 
-# Python est déjà requis par common.sh/source_env ; son encodeur JSON gère
-# aussi les retours ligne, les tabulations, les contrôles et les caractères UTF-8.
-# L'échappement sed précédent produisait du JSON invalide pour les multilignes.
-if ! payload="$(python3 -c 'import json, sys; print(json.dumps({"content": sys.argv[1]}, ensure_ascii=False))' "$message")"; then
-    echo "[pz-discord] Impossible de générer le JSON de notification." >&2
+# URL et message entrent par stdin : aucun secret n'est interpolé dans les
+# arguments de Python/curl. Le quoting suit les échappements de curl config,
+# distincts de JSON ; le JSON du message est ensuite conservé littéralement.
+if ! config="$(printf '%s\0%s' "$webhook" "$message" | python3 -c '
+import json, sys
+url, message = sys.stdin.buffer.read().decode("utf-8").split("\0", 1)
+def quote(value):
+    value = value.replace("\\", "\\\\").replace("\"", "\\\"")
+    for char, escaped in (("\t", "\\t"), ("\n", "\\n"), ("\r", "\\r"), ("\v", "\\v")):
+        value = value.replace(char, escaped)
+    return "\"" + value + "\""
+print("url = " + quote(url))
+print("data = " + quote(json.dumps({"content": message}, ensure_ascii=False)))
+' 2>/dev/null)"; then
+    echo "[pz-discord] Impossible de générer la notification." >&2
     if $strict; then exit 1; else exit 0; fi
 fi
 
@@ -60,7 +79,7 @@ fi
 curl_rc=0
 http_code="$(curl --silent --connect-timeout 5 --max-time 10 \
     --output /dev/null --write-out '%{http_code}' \
-    -H "Content-Type: application/json" -d "$payload" "$webhook" 2>/dev/null)" || curl_rc=$?
+    -H "Content-Type: application/json" --config - <<< "$config" 2>/dev/null)" || curl_rc=$?
 if (( curl_rc != 0 )) || [[ ! "$http_code" =~ ^2[0-9][0-9]$ ]]; then
     echo "[pz-discord] Échec d'envoi (curl=${curl_rc}, HTTP=${http_code:-inconnu})." >&2
     if $strict; then exit 1; else exit 0; fi

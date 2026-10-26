@@ -44,12 +44,15 @@ ko() { FAIL=$(( FAIL + 1 )); echo "[FAIL] $*" >&2; }
 
 REPO_ENV="${ROOT}/.env"
 ENV_BACKUP="${SANDBOX}/env.orig"
+ENV_STUBBED=false
 
 cleanup() {
-    if [[ -f "$ENV_BACKUP" ]]; then
-        cp -p "$ENV_BACKUP" "$REPO_ENV"
-    else
-        rm -f "$REPO_ENV"
+    if [[ "$ENV_STUBBED" == true ]]; then
+        if [[ -f "$ENV_BACKUP" ]]; then
+            cp -p "$ENV_BACKUP" "$REPO_ENV"
+        else
+            rm -f "$REPO_ENV"
+        fi
     fi
     rm -rf "$SANDBOX"
 }
@@ -83,13 +86,14 @@ fi
 rm -f "$probe"
 export XDG_RUNTIME_DIR="${SANDBOX}/rt"
 if ! [[ "${PZ_WORLD_LOCK_DEPTH:-0}" =~ ^[1-9][0-9]*$ ]] || [[ -z "${PZ_WORLD_LOCK_FD:-}" ]] \
-    || ! { : >&"${PZ_WORLD_LOCK_FD}" 2>/dev/null; }; then
+    || ! { : 1>&"${PZ_WORLD_LOCK_FD}" 2>/dev/null; }; then
     PZ_WORLD_LOCK_DEPTH=0; PZ_WORLD_LOCK_FD=""
     export PZ_WORLD_LOCK_DEPTH PZ_WORLD_LOCK_FD
 fi
 if [[ -f "$REPO_ENV" ]]; then
     cp -p "$REPO_ENV" "$ENV_BACKUP"
 fi
+ENV_STUBBED=true
 printf '# stub test C6 (restauré en fin de test)\n' > "$REPO_ENV"
 
 # --- Mocks -------------------------------------------------------------------

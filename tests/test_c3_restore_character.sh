@@ -48,16 +48,19 @@ ko() { FAIL=$(( FAIL + 1 )); echo "[FAIL] $*" >&2; }
 
 REPO_ENV="${ROOT}/.env"
 ENV_BACKUP="${SANDBOX}/env.orig"
+ENV_STUBBED=false
 USE_SHIM=0
 
 cleanup() {
     # `local rc=$?` + `exit` : sans cela, le statut du dernier `rm` du trap
     # EXIT écraserait le statut réel du test (un ÉCHEC sortirait en 0).
     local rc=$?
-    if [[ -f "$ENV_BACKUP" ]]; then
-        cp -p "$ENV_BACKUP" "$REPO_ENV"
-    else
-        rm -f "$REPO_ENV"
+    if [[ "$ENV_STUBBED" == true ]]; then
+        if [[ -f "$ENV_BACKUP" ]]; then
+            cp -p "$ENV_BACKUP" "$REPO_ENV"
+        else
+            rm -f "$REPO_ENV"
+        fi
     fi
     rm -rf "$SANDBOX"
     exit "$rc"
@@ -83,7 +86,7 @@ rm -rf "$SANDBOX"
 mkdir -p "${SANDBOX}/rt" "$BIN"
 export XDG_RUNTIME_DIR="${SANDBOX}/rt"
 if ! [[ "${PZ_WORLD_LOCK_DEPTH:-0}" =~ ^[1-9][0-9]*$ ]] || [[ -z "${PZ_WORLD_LOCK_FD:-}" ]] \
-    || ! { : >&"${PZ_WORLD_LOCK_FD}" 2>/dev/null; }; then
+    || ! { : 1>&"${PZ_WORLD_LOCK_FD}" 2>/dev/null; }; then
     PZ_WORLD_LOCK_DEPTH=0; PZ_WORLD_LOCK_FD=""
     export PZ_WORLD_LOCK_DEPTH PZ_WORLD_LOCK_FD
 fi
@@ -92,6 +95,7 @@ fi
 if [[ -f "$REPO_ENV" ]]; then
     cp -p "$REPO_ENV" "$ENV_BACKUP"
 fi
+ENV_STUBBED=true
 printf '# stub test C3 (restauré en fin de test)\n' > "$REPO_ENV"
 
 # --- Mock systemctl (état serveur piloté) -------------------------------------
@@ -136,31 +140,14 @@ import sqlite3
 
 
 def split_sql(text):
-    stmts, cur, in_str = [], [], False
-    i, n = 0, len(text)
-    while i < n:
-        ch = text[i]
-        if in_str:
-            cur.append(ch)
-            if ch == "'":
-                if i + 1 < n and text[i + 1] == "'":
-                    cur.append("'")
-                    i += 2
-                    continue
-                in_str = False
-        else:
-            if ch == "'":
-                in_str = True
-                cur.append(ch)
-            elif ch == ';':
-                cur.append(ch)
-                s = ''.join(cur).strip()
-                if s.strip(';').strip():
-                    stmts.append(s)
-                cur = []
-            else:
-                cur.append(ch)
-        i += 1
+    stmts, cur = [], []
+    for ch in text:
+        cur.append(ch)
+        if ch == ';' and sqlite3.complete_statement(''.join(cur)):
+            stmt = ''.join(cur).strip()
+            if stmt.strip(';').strip():
+                stmts.append(stmt)
+            cur = []
     tail = ''.join(cur).strip()
     if tail.strip(';').strip():
         stmts.append(tail)
@@ -213,13 +200,10 @@ for stmt in split_sql('\n'.join(body_lines)):
     if not s:
         continue
     try:
-        head = s.lstrip(';').strip()[:6].upper()
-        if head in ('SELECT', 'PRAGMA', 'EXPLAI', 'WITH'):
-            cur.execute(s)
+        cur.execute(s)
+        if cur.description is not None:
             for row in cur.fetchall():
                 print('|'.join(fmt(v) for v in row))
-        else:
-            cur.execute(s)
     except sqlite3.Error as ex:
         print('Error: %s' % ex, file=sys.stderr)
         if bail:

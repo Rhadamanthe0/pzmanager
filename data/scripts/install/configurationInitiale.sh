@@ -7,7 +7,7 @@
 # shell en root ; parsing declaratif via lib/env_parse.sh + defauts surs. Les
 # sous-commandes en sudo -u PZ_USER peuvent ensuite charger le .env normalement.
 # ------------------------------------------------------------------------------
-# Usage: ./configurationInitiale.sh <restore|zomboid> [--force] [--restore-ssh]
+# Usage: ./configurationInitiale.sh --manager-root /home/USER/pzmanager <restore|zomboid> [--force] [--restore-ssh]
 #
 # Commandes:
 #   restore PATH   - Restaurer depuis une sauvegarde
@@ -18,31 +18,42 @@
 #
 # Nécessite: root
 # Note: Pour setup système, utilisez setupSystem.sh
-# Note: Crée automatiquement un utilisateur 'admin' avec mot de passe aléatoire
-# Note: PZ_USER et tous les chemins sont lus depuis .env
+# Note: Prépare le secret admin utilisé au premier démarrage du jeu
+# Note: identité/home du propriétaire NSS ; configuration .env déclarative.
 # ------------------------------------------------------------------------------
 
 set -euo pipefail
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
+INSTALL_MANAGER_ROOT=""
+if [[ "${1:-}" == --manager-root ]]; then
+    [[ "${2:-}" == /* && "${2:-}" != *$'\n'* && "${2:-}" != *..* ]] \
+        || { echo "Racine manager absolue requise." >&2; exit 1; }
+    INSTALL_MANAGER_ROOT="$2"
+    shift 2
+fi
 
-# C15 : garde AVANT tout sourcing. common.sh vit dans le même arbre que ce
-# script : après le chown PZ_USER de l'install, root sourcerait du code
-# modifiable par PZ_USER. En root, exige des helpers owned root (posés par le
-# stage install.sh vers /usr/local/libexec/pzmanager/) ; sinon die
-# (fail-closed). Sans die() ici (common.sh pas encore chargé) : echo + exit.
-# Les bits group/other sur DrvFs/NTFS (777 d'affichage) ne sont pas probants :
-# seul l'owner est discriminant (un owner non-root réécrit à volonté).
+# Chaque composant du chemin et chaque bibliothèque doit être protégé :
+# un fichier root-owned dans un répertoire remplaçable n'est pas fiable.
 if [[ "${EUID:-0}" -eq 0 ]]; then
-    _c15_owner="$(stat -c %U "${SCRIPT_DIR}/../lib/common.sh" 2>/dev/null || echo unknown)"
-    _c15_self="$(stat -c %U "${BASH_SOURCE[0]:-$0}" 2>/dev/null || echo unknown)"
-    if [[ "${_c15_owner}" != "root" || "${_c15_self}" != "root" ]]; then
-        echo "ERREUR: helper root non owned root (common.sh owner=${_c15_owner}, self owner=${_c15_self}) ; attendu /usr/local/libexec/pzmanager/ root:root." >&2
-        exit 1
-    fi
-    unset _c15_owner _c15_self
+    for _trusted in "$SCRIPT_DIR" "${SCRIPT_DIR}/../lib"; do
+        _trusted="$(realpath -e "$_trusted")"
+        while [[ "$_trusted" != / ]]; do
+            [[ "$(stat -c %u "$_trusted")" == 0 && $(( 8#$(stat -c %a "$_trusted") & 0022 )) == 0 ]] \
+                || { echo "ERREUR: chemin helper root non fiable : $_trusted" >&2; exit 1; }
+            _trusted="$(dirname "$_trusted")"
+        done
+    done
+    [[ -z "$(find "$SCRIPT_DIR" "${SCRIPT_DIR}/../lib" "${SCRIPT_DIR}/../../setupTemplates" \( -type l -o ! -uid 0 -o -perm /0022 \) -print -quit)" ]] \
+        || { echo "ERREUR: helpers root modifiables par un tiers." >&2; exit 1; }
+    unset _trusted
 fi
 source "${SCRIPT_DIR}/../lib/common.sh"
+# common déduit la racine du CODE ; ce helper administre une installation
+# distincte, explicitement désignée (jamais déduite de /usr/local).
+if [[ -n "$INSTALL_MANAGER_ROOT" ]]; then
+    PZ_MANAGER_ROOT="$INSTALL_MANAGER_ROOT"
+fi
 
 # Refus fail-closed en root (C15) : un helper non owned root exécuté en root
 # meurt au lieu d'avertir. Hors root (dev/test), simple avertissement.
@@ -63,22 +74,41 @@ warn_if_not_root_owned() {
 load_root_env_declarative() {
     local env_file="${PZ_MANAGER_ROOT:-}/.env"
     [[ -n "${PZ_MANAGER_ROOT:-}" ]] || env_file="/home/pzuser/pzmanager/.env"
+    # Seed declarative path references from NSS, then validate declarations
+    # against the same identity below. Never derive a manager home from root.
+    local manager_uid manager_name manager_home
+    if [[ -n "$INSTALL_MANAGER_ROOT" ]]; then
+        manager_uid="$(stat -c %u "$INSTALL_MANAGER_ROOT")" || die "Installation absente."
+        [[ "$manager_uid" != 0 ]] || die "L'installation doit appartenir au manager non root."
+        manager_name="$(getent passwd "$manager_uid" | cut -d: -f1)"
+        manager_home="$(getent passwd "$manager_uid" | cut -d: -f6)"
+        [[ "$manager_name" =~ ^[a-z_][a-z0-9_-]{0,31}$ && "$manager_home" == /* ]] \
+            || die "Identité manager introuvable."
+        : "${PZ_USER:=$manager_name}" "${PZ_HOME:=$manager_home}"
+    fi
     if [[ -f "$env_file" ]]; then
         if grep -qE '\$\(|`|;' "$env_file" 2>/dev/null; then
             echo "[WARN] $env_file contient '\$()' / backtick / ';' : contenu non execute, valeurs validees uniquement." >&2
         fi
     fi
     local lib1="${SCRIPT_DIR}/../lib/env_parse.sh"
-    local lib2="/usr/local/libexec/pzmanager/env_parse.sh"
-    if [[ -f "$lib1" ]]; then
-        # shellcheck disable=SC1090
-        . "$lib1"
-    elif [[ -f "$lib2" ]]; then
-        # shellcheck disable=SC1090
-        . "$lib2"
-    fi
+    # shellcheck disable=SC1090
+    . "$lib1"
     if declare -F parse_env_declarative >/dev/null 2>&1; then
-        [[ -f "$env_file" ]] && parse_env_declarative "$env_file" || true
+        if [[ -f "$env_file" ]]; then
+            parse_env_declarative "$env_file" || die "Profil déclaratif invalide : restauration/installation refusée."
+        fi
+    fi
+    if [[ -n "$INSTALL_MANAGER_ROOT" ]]; then
+        [[ "${PZ_USER:-$manager_name}" == "$manager_name" && "${PZ_HOME:-$manager_home}" == "$manager_home" ]] \
+            || die "Identité/home déclarés incompatibles avec le propriétaire de l'installation."
+        [[ "${PZ_MANAGER_USER:-$manager_name}" == "$manager_name" && "${PZ_GAME_USER:-$manager_name}" == "$manager_name" ]] \
+            || die "Les identités jeu/manager doivent correspondre au propriétaire de l'installation."
+        [[ "$(realpath -e -- "${PZ_MANAGER_DIR:-$INSTALL_MANAGER_ROOT}")" == "$(realpath -e -- "$INSTALL_MANAGER_ROOT")" ]] \
+            || die "Alias PZ_MANAGER_DIR contradictoire avec la racine explicite."
+        PZ_USER="$manager_name"
+        PZ_HOME="$manager_home"
+        PZ_MANAGER_DIR="$(realpath -e -- "$INSTALL_MANAGER_ROOT")"
     fi
     : "${PZ_USER:=pzuser}"
     : "${PZ_HOME:=/home/${PZ_USER}}"
@@ -87,13 +117,25 @@ load_root_env_declarative() {
     : "${PZ_MANAGER_USER:=${PZ_USER}}"
     : "${PZ_GAME_HOME:=/home/${PZ_GAME_USER}}"
     : "${PZ_MANAGER_HOME:=/home/${PZ_MANAGER_USER}}"
-    : "${PZ_MANAGER_DIR:=${PZ_HOME}/pzmanager}"
+    : "${PZ_MANAGER_DIR:=${INSTALL_MANAGER_ROOT:-${PZ_HOME}/pzmanager}}"
     : "${PZ_DATA_DIR:=${PZ_MANAGER_DIR}/data}"
     : "${PZ_INSTALL_DIR:=${PZ_DATA_DIR}/pzserver}"
     : "${PZ_SOURCE_DIR:=${PZ_MANAGER_DIR}/Zomboid}"
     : "${PZ_SERVER_NAME:=servertest}"
-    : "${PZ_DB_PATH:=${PZ_SOURCE_DIR}/db/${PZ_SERVER_NAME}.db}"
-    : "${PZ_INI_PATH:=${PZ_SOURCE_DIR}/Server/${PZ_SERVER_NAME}.ini}"
+    : "${PZ_SERVICE_NAME:=zomboid.service}"
+    local profile_path
+    for profile_path in PZ_DATA_DIR PZ_INSTALL_DIR PZ_SOURCE_DIR; do
+        [[ "${!profile_path}" == /* && "${!profile_path}" != *'..'* && "${!profile_path}" != *$'\n'* ]] \
+            || die "Chemin métier absolu requis : $profile_path."
+    done
+    [[ "$PZ_SERVICE_NAME" =~ ^[A-Za-z0-9_.@:-]+\.service$ && "$PZ_SERVICE_NAME" != -* \
+       && "$PZ_SERVER_NAME" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || die "Unité ou nom de monde invalide."
+    local expected_db="${PZ_SOURCE_DIR}/db/${PZ_SERVER_NAME}.db"
+    local expected_ini="${PZ_SOURCE_DIR}/Server/${PZ_SERVER_NAME}.ini"
+    [[ "${PZ_DB_PATH:-$expected_db}" == "$expected_db" && "${PZ_INI_PATH:-$expected_ini}" == "$expected_ini" ]] \
+        || die "PZ_DB_PATH/PZ_INI_PATH contradictoires avec le monde configuré : supprimer ces anciennes surcharges."
+    PZ_DB_PATH="$expected_db"
+    PZ_INI_PATH="$expected_ini"
     : "${STEAMCMD_PATH:=/usr/games/steamcmd}"
     : "${STEAM_APP_ID:=380870}"
     : "${STEAM_BETA_BRANCH:=}"
@@ -105,7 +147,7 @@ load_root_env_declarative() {
     : "${BACKUP_DIR:=${PZ_DATA_DIR}/dataBackups}"
     : "${SYNC_BACKUPS_DIR:=${PZ_DATA_DIR}/fullBackups}"
     export PZ_USER PZ_GAME_USER PZ_MANAGER_USER PZ_GAME_HOME PZ_MANAGER_HOME PZ_HOME PZ_MANAGER_DIR PZ_DATA_DIR PZ_INSTALL_DIR PZ_SOURCE_DIR \
-        PZ_SERVER_NAME PZ_DB_PATH PZ_INI_PATH \
+        PZ_SERVER_NAME PZ_SERVICE_NAME PZ_DB_PATH PZ_INI_PATH \
         STEAMCMD_PATH STEAM_APP_ID STEAM_BETA_BRANCH STEAM_LOGIN \
         JAVA_VERSION JAVA_PACKAGE JAVA_PATH PZ_JDK_SOURCE \
         BACKUP_DIR SYNC_BACKUPS_DIR
@@ -140,6 +182,12 @@ readonly AUTOMATION_TIMERS=(
     pz-stallwatch.timer
 )
 
+# Après le premier changement d'UID, exécuter directement : sudo fermerait
+# les descripteurs WORLD/SERVERCTL hérités par les helpers et leurs descendants.
+as_manager() {
+    if [[ "$(id -un)" == "$PZ_USER" ]]; then "$@"; else sudo -u "$PZ_USER" "$@"; fi
+}
+
 # Le service tourne en --user : sans session ouverte, XDG_RUNTIME_DIR n'existe
 # pas et systemctl --user échoue. Renvoie le chemin sur stdout.
 ensure_runtime_dir() {
@@ -163,14 +211,14 @@ ensure_runtime_dir() {
 # fail_on_error ci-dessous et MEURENT sur échec (C11).
 user_systemctl() {
     local runtime_dir="$1"; shift
-    sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user "$@" || true
+    as_manager env XDG_RUNTIME_DIR="$runtime_dir" systemctl --user "$@" || true
 }
 
 # Variante stricte pour les étapes critiques : ne masque rien, le code retour
 # réel est renvoyé à l'appelant qui le vérifie via fail_on_error (C11).
 user_systemctl_strict() {
     local runtime_dir="$1"; shift
-    sudo -u "$PZ_USER" XDG_RUNTIME_DIR="$runtime_dir" systemctl --user "$@"
+    as_manager env XDG_RUNTIME_DIR="$runtime_dir" systemctl --user "$@"
 }
 
 # Meurt si l'étape critique précédente a échoué : une installation partielle
@@ -223,15 +271,19 @@ show_summary() {
 restore_directory() {
     local src="$1" dest="$2" owner="${3:-}"
     [[ -d "$src" ]] || return 0
-    mkdir -p "$dest"
-    rsync -a "$src/" "$dest/"
-    [[ -n "$owner" ]] && chown -R "$owner:$owner" "$dest"
+    if [[ -n "$owner" ]]; then
+        sudo -u "$owner" mkdir -p "$dest"
+        sudo -u "$owner" rsync -a "$src/" "$dest/"
+    else
+        mkdir -p "$dest"
+        rsync -a "$src/" "$dest/"
+    fi
 }
 
 restore_scripts() {
     local src="$1" dest="$2" owner="${3:-}"
     restore_directory "$src" "$dest" "$owner"
-    chmod +x "$dest"/*.sh 2>/dev/null || true
+    sudo -u "${owner:-$PZ_USER}" chmod +x "$dest"/*.sh 2>/dev/null || true
 }
 
 # C16 : le sudoers de l'archive n'est JAMAIS installé (même syntaxiquement
@@ -254,25 +306,26 @@ install_sudoers() {
     local dest="${PZ_SUDOERS_DEST:-/etc/sudoers.d/${PZ_USER}}"
 
     if [[ ! -f "$template" ]]; then
-        echo "[WARN] Template sudoers introuvable: $template"
-        return 0
+        echo "[ERROR] Template sudoers introuvable: $template" >&2
+        return 1
     fi
 
-    # Générer le sudoers avec les bonnes valeurs. mktemp et non un
-    # /tmp/<user>-sudoers prévisible : ce fichier est écrit par root, donc un lien
-    # symbolique déposé d'avance à ce chemin connu ferait écrire root à la place
-    # visée par le lien.
+    # Temporaire privé sur le même FS : validation et permissions précèdent la
+    # publication atomique, sans altérer le sudoers précédent en cas d'échec.
     local staged
-    staged="$(mktemp)"
+    staged="$(mktemp "$(dirname "$dest")/.${PZ_USER}-sudoers.XXXXXX")" || return 1
     # shellcheck disable=SC2064
     trap "rm -f '${staged}'" RETURN
-    sed -e "s|__PZ_USER__|${PZ_USER}|g" -e "s|__PZ_HOME__|${PZ_HOME}|g" "$template" > "$staged"
+    sed -e "s|__PZ_USER__|${PZ_USER}|g" -e "s|__PZ_HOME__|${PZ_HOME}|g" "$template" > "$staged" || return 1
 
     if visudo -cf "$staged"; then
-        install -o root -g root -m 440 "$staged" "$dest"
+        chown root:root -- "$staged" || return 1
+        chmod 440 -- "$staged" || return 1
+        mv -fT -- "$staged" "$dest" || return 1
         echo "[INFO] Sudoers installé: $dest"
     else
         echo "[ERROR] Fichier sudoers invalide, installation annulée" >&2
+        return 1
     fi
 }
 
@@ -338,8 +391,8 @@ restore_ssh_opt_in() {
     validate_ssh_tree "$src"
     restore_directory "$src" "$PZ_HOME/.ssh" "$PZ_USER"
     if [[ -d "$PZ_HOME/.ssh" ]]; then
-        chmod 700 "$PZ_HOME/.ssh"
-        chmod 600 "$PZ_HOME/.ssh"/* 2>/dev/null || true
+        as_manager chmod 700 "$PZ_HOME/.ssh"
+        as_manager chmod 600 "$PZ_HOME/.ssh"/* 2>/dev/null || true
     fi
     echo "[INFO] .ssh restauré et validé."
 }
@@ -377,7 +430,15 @@ validate_restore_archive() {
             || die "Symlink dangereux dans l'archive : rien n'est restauré."
 import sys, zipfile, stat
 z = zipfile.ZipFile(sys.argv[1])
-bad = [i.filename for i in z.infolist() if stat.S_ISLNK(i.external_attr >> 16)]
+import pathlib
+bad = []
+for i in z.infolist():
+    p = pathlib.PurePosixPath(i.filename)
+    mode = i.external_attr >> 16
+    if (p.is_absolute() or '..' in p.parts or not p.parts
+            or p.parts[0] not in ('config', 'zomboid') or '\\' in i.filename
+            or stat.S_ISLNK(mode) or stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR)):
+        bad.append(i.filename)
 if bad:
     print("symlinks refuses: %s" % ", ".join(bad))
     sys.exit(1)
@@ -387,7 +448,64 @@ PYEOF
     fi
 }
 
-restore_zomboid_data() {
+# Les métadonnées systemd précèdent le routage dans pz.slice, jamais les
+# données/config de l'archive. L'absence doit être prouvée sur un bus joignable.
+restore_service_load_state() {
+    local runtime="$1" output key value probe
+    local -A fields=()
+    output="$(as_manager env XDG_RUNTIME_DIR="$runtime" systemctl --user show \
+        "${PZ_SERVICE_NAME:-zomboid.service}" -p LoadState,ActiveState,SubState,MainPID,ControlPID)" \
+        || die "Serveur non prouvé arrêté : lecture du bus refusée."
+    [[ -n "$output" ]] || die "Serveur non prouvé arrêté : bus indisponible."
+    while IFS='=' read -r key value; do
+        case "$key" in LoadState|ActiveState|SubState|MainPID|ControlPID) ;; *) die "Serveur non prouvé arrêté : état systemd incomplet." ;; esac
+        [[ ! -v "fields[$key]" ]] || die "Serveur non prouvé arrêté : état systemd ambigu."
+        fields[$key]="$value"
+    done <<< "$output"
+    [[ "${fields[ActiveState]:-}" == inactive && "${fields[SubState]:-}" == dead \
+        && "${fields[MainPID]:-}" == 0 && "${fields[ControlPID]:-}" == 0 ]] \
+        || die "Serveur non prouvé arrêté : restauration refusée (état ${fields[ActiveState]:-inconnu})."
+    case "${fields[LoadState]:-}" in
+        loaded) ;;
+        not-found)
+            probe="$(as_manager env XDG_RUNTIME_DIR="$runtime" systemctl --user show -p Version)" \
+                || die "Bus utilisateur indisponible : restauration refusée."
+            [[ "$probe" == Version=?* && "$probe" != *$'\n'* ]] \
+                || die "Bus utilisateur non prouvé joignable : restauration refusée."
+            ;;
+        *) die "Unité serveur non vérifiable : restauration refusée." ;;
+    esac
+    printf '%s\n' "${fields[LoadState]}"
+}
+
+prepare_restore_units() {
+    local runtime load slice_load templates="${SCRIPT_DIR}/../../setupTemplates"
+    local destination="$PZ_HOME/.config/systemd/user"
+    runtime="$(ensure_runtime_dir)"
+    load="$(restore_service_load_state "$runtime")" || return 1
+    slice_load="$(as_manager env XDG_RUNTIME_DIR="$runtime" systemctl --user show pz.slice -p LoadState --value)" \
+        || die "Lecture pz.slice refusée."
+    case "$slice_load" in
+        loaded|not-found) ;;
+        *) die "État pz.slice ambigu : restauration refusée." ;;
+    esac
+    if [[ "$load" == not-found || "$slice_load" == not-found ]]; then
+        as_manager mkdir -p "$destination" || die "Création du répertoire des unités impossible."
+        if [[ "$load" == not-found ]]; then
+            # Ne pas installer/activer la socket, le logger ou les timers ici.
+            as_manager cp "$templates/zomboid.service" "$destination/zomboid.service" || die "Préparation unité serveur impossible."
+        fi
+        if [[ "$slice_load" == not-found ]]; then
+            as_manager cp "$templates/pz.slice" "$destination/pz.slice" || die "Préparation pz.slice impossible."
+        fi
+        as_manager env XDG_RUNTIME_DIR="$runtime" systemctl --user daemon-reload \
+            || die "Rechargement des unités de restauration impossible."
+        [[ "$(restore_service_load_state "$runtime")" == loaded ]] \
+            || die "Unité serveur non chargée après préparation : restauration refusée."
+    fi
+}
+
+prepare_restore_game_source() {
     # $1 = racine de config du backup ; $2 (optionnel) = dossier des données de jeu
     # déjà extraites (nouveau format ZIP : zomboid/ = Saves/db/Server/Lua). Si $2 est
     # vide, on retombe sur l'ancien format (zip interne Zomboid_Latest_Full.zip).
@@ -399,12 +517,29 @@ restore_zomboid_data() {
     else
         local zip_file="$cfg_root$PZ_HOME/Zomboid_Latest_Full.zip"
         [[ -f "$zip_file" ]] || return 0
-        mkdir -p "$BACKUP_DIR"
-        unzip -o -q "$zip_file" -d "$BACKUP_DIR/"
-        [[ -d "$BACKUP_DIR/latest" ]] && src="$BACKUP_DIR/latest"
-        chown -R "$PZ_USER:$PZ_USER" "$BACKUP_DIR"
+        # L'ancien ZIP est lui aussi extrait uniquement en staging privé.
+        src="$(mktemp -d "$cfg_root/.legacy-world-XXXXXXXX")" || die "Staging de l'ancien ZIP impossible."
+        python3 - "$zip_file" "$src" <<'PYZIP' || die "Ancienne archive invalide."
+import pathlib, stat, sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as archive:
+    for entry in archive.infolist():
+        path = pathlib.PurePosixPath(entry.filename)
+        mode = entry.external_attr >> 16
+        if (path.is_absolute() or '..' in path.parts or '\\' in entry.filename
+                or not path.parts or path.parts[0] != 'latest'
+                or stat.S_ISLNK(mode) or (stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR))):
+            raise ValueError('Chemin ancien ZIP refusé: ' + entry.filename)
+    archive.extractall(sys.argv[2])
+PYZIP
+        src="$src/latest"
     fi
 
+    [[ -n "$src" && -d "$src" ]] || return 0
+    printf '%s\n' "$src"
+}
+
+restore_zomboid_data() {
+    local src="${2:-}"
     [[ -n "$src" && -d "$src" ]] || return 0
 
     if [[ -d "$PZ_SOURCE_DIR" ]]; then
@@ -417,11 +552,30 @@ restore_zomboid_data() {
         fi
     fi
 
-    echo "Restauration des données Zomboid..."
-    mkdir -p "$PZ_SOURCE_DIR"
-    rsync -a "$src/" "$PZ_SOURCE_DIR/"
-    chown -R "$PZ_USER:$PZ_USER" "$PZ_SOURCE_DIR"
-    echo "Données Zomboid restaurées vers $PZ_SOURCE_DIR"
+    echo "Restauration transactionnelle des données Zomboid..."
+    # Figer le code AVANT restore_scripts. Seul le manager exécute cette copie ;
+    # le .env est un snapshot déclaratif, jamais le shell archivé.
+    local runtime_root key
+    runtime_root="$(mktemp -d /tmp/pzmanager-restore-runtime-XXXXXXXX)" || die "Staging du métier impossible."
+    mkdir -m 0700 "$runtime_root/data" || die "Répertoire du métier impossible."
+    cp -a "${SCRIPT_DIR}/.." "$runtime_root/data/scripts" || die "Copie du métier impossible."
+    : > "$runtime_root/.env"
+    for key in PZ_USER PZ_HOME PZ_MANAGER_DIR PZ_DATA_DIR PZ_SOURCE_DIR PZ_INSTALL_DIR \
+        PZ_SERVER_NAME PZ_SERVICE_NAME PZ_DB_PATH PZ_INI_PATH PZ_GAME_USER PZ_MANAGER_USER PZ_GAME_HOME PZ_MANAGER_HOME; do
+        [[ -v "$key" ]] || continue
+        printf 'export %s=%q\n' "$key" "${!key}" >> "$runtime_root/.env"
+    done
+    cp -a -- "$src" "$runtime_root/source" || die "Copie de la source impossible."
+    src="$runtime_root/source"
+    chown -R "$PZ_USER:$PZ_USER" "$runtime_root" || die "Identité du staging impossible."
+    chmod -R u+rwX,go-rwx "$runtime_root" || die "Protection du staging impossible."
+    local status=0
+    # Un cwd root privé (/root, par exemple) empêche find de revenir à son
+    # répertoire initial après le changement d'UID.
+    (cd / && as_manager env XDG_RUNTIME_DIR="$(ensure_runtime_dir)" \
+        bash "$runtime_root/data/scripts/backup/restoreZomboidData.sh" "$src") || status=$?
+    rm -rf -- "$runtime_root"
+    (( status == 0 )) || die "Restauration transactionnelle refusée (code $status)."
 }
 
 restore_backup() {
@@ -443,15 +597,18 @@ restore_backup() {
         # extraction (C16), extrait vers un staging tmp (jamais vers /, /home,
         # /etc directement), puis install contrôlée (voir validate ci-dessus).
         validate_restore_archive "$backup_path"
-        tmp_extract="$(mktemp -d)"
-        trap 'rm -rf "$tmp_extract" 2>/dev/null || true' RETURN
+        tmp_extract="$(mktemp -d /tmp/pzmanager-restore-XXXXXXXX)" || die "Staging de restauration impossible."
+        trap 'rm -rf -- "${tmp_extract:-}" 2>/dev/null || true' RETURN EXIT
         echo "Extraction de l'archive : $backup_path ..."
-        unzip -o -q "$backup_path" -d "$tmp_extract"
+        unzip -o -q "$backup_path" -d "$tmp_extract" || die "Extraction de restauration impossible."
         cfg_root="$tmp_extract/config"
         [[ -d "$tmp_extract/zomboid" ]] && game_root="$tmp_extract/zomboid"
     elif [[ -d "$backup_path" ]]; then
         # Ancien format : dossier fullBackups/<ts>/ (config en vrac + zip interne).
-        cfg_root="$backup_path"
+        tmp_extract="$(mktemp -d /tmp/pzmanager-restore-XXXXXXXX)" || die "Staging de restauration impossible."
+        trap 'rm -rf -- "${tmp_extract:-}" 2>/dev/null || true' RETURN EXIT
+        cp -a -- "$backup_path/." "$tmp_extract/" || die "Copie de restauration impossible."
+        cfg_root="$tmp_extract"
     else
         echo "Usage: $0 restore ${SYNC_BACKUPS_DIR}/YYYY-MM-DD_HH-MM-SS-<pid>.zip [--force] [--restore-ssh]"
         echo -e "\nSauvegardes disponibles :"
@@ -459,8 +616,24 @@ restore_backup() {
         exit 1
     fi
 
+    # Aucun lien ni fichier spécial n'atteint les copies privilégiées.
+    if [[ -n "$(find "$cfg_root" ! -type d ! -type f -print -quit 2>/dev/null)" ]]; then
+        die "Arbre de restauration non régulier : aucun fichier restauré."
+    fi
     echo "=== Restauration : $backup_path ==="
 
+    if [[ "$RESTORE_SSH" == true && -d "$cfg_root$PZ_HOME/.ssh" ]]; then
+        validate_ssh_tree "$cfg_root$PZ_HOME/.ssh"
+    fi
+    game_root="$(prepare_restore_game_source "$cfg_root" "$game_root")" \
+        || die "Source de restauration refusée avant préparation des unités."
+    prepare_restore_units || die "Préflight restauration refusé avant mutation du monde."
+    # Le métier doit réussir avant tout remplacement de code/configuration.
+    restore_zomboid_data "$cfg_root" "$game_root"
+
+    # Les copies vers le home se font sans privilège, y compris pour des
+    # archives dont les fichiers ont des modes privés.
+    chown -R "$PZ_USER:$PZ_USER" "$tmp_extract"
     restore_ssh_opt_in "$cfg_root"
 
     refuse_systemd_units_from_backup "$cfg_root"
@@ -468,7 +641,6 @@ restore_backup() {
     restore_scripts "$cfg_root$PZ_HOME/pzmanager" "$PZ_HOME/pzmanager" "$PZ_USER"
     refuse_sudoers_from_backup "$cfg_root"
     install_sudoers
-    restore_zomboid_data "$cfg_root" "$game_root"
 
     local runtime_dir
     runtime_dir="$(ensure_runtime_dir)"
@@ -485,83 +657,20 @@ restore_backup() {
 
 # === Install Functions ===
 
-# C17 : copie idempotente d'un arbre vers le compte jeu (rsync -a + chown),
-# puis bascule le chemin historique vers un lien symbolique. Ne supprime JAMAIS
-# le monde : l'original est conservé sous <chemin>.pre-split-bak.
-# Usage: migrate_item_to_split <chemin> <destination> <propriétaire>.
-# Retour 0 = migré ou déjà migré, 1 = migration ignorée (avertissement affiché).
-migrate_item_to_split() {
-    local src="$1" dst="$2" owner="$3"
-    [[ -e "$src" || -L "$src" ]] || return 0
-    if [[ -L "$src" ]]; then
-        echo "[INFO] Déjà migré : $src"
-        return 0
-    fi
-    if [[ ! -d "$dst" ]] || [[ -z "$(ls -A "$dst" 2>/dev/null)" ]]; then
-        mkdir -p "$dst"
-        rsync -a "$src/" "$dst/" || { echo "[WARN] Copie $src -> $dst impossible, migration ignorée" >&2; return 1; }
-    fi
-    chown -R "${owner}:${owner}" "$dst" || { echo "[WARN] chown $dst impossible, migration ignorée" >&2; return 1; }
-    local bak="${src}.pre-split-bak"
-    if [[ -e "$bak" || -L "$bak" ]]; then
-        echo "[WARN] Sauvegarde $bak déjà présente, $src laissé en place" >&2
-        return 1
-    fi
-    mv "$src" "$bak"
-    # Si le lien échoue, on restaure l'original : les chemins historiques
-    # doivent rester valides pour que l'installation continue sans dommage.
-    if ! ln -s "$dst" "$src"; then
-        mv "$bak" "$src" || true
-        echo "[WARN] Lien $src -> $dst impossible, original restauré" >&2
-        return 1
-    fi
-    echo "[INFO] Migré vers le compte jeu : $src -> $dst (original conservé : $bak)"
-}
-
-# C17 (split-users) : migration idempotente mono-user -> split (compte jeu
-# pour la JVM, compte admin pour le reste). No-op en mono-user
-# (PZ_GAME_USER == PZ_MANAGER_USER) ou si le compte jeu est absent.
-# Déplace monde + serveur vers le compte jeu sans rien supprimer, resserre les
-# secrets du manager. Les échecs partiels restent des avertissements : les
-# chemins historiques restent valides et l'installation continue.
-migrate_single_to_split() {
-    local game_user="${PZ_GAME_USER:-$PZ_USER}"
-    local manager_user="${PZ_MANAGER_USER:-$PZ_USER}"
-    [[ "$game_user" == "$manager_user" ]] && return 0
-    if ! id -u "$game_user" >/dev/null 2>&1; then
-        echo "[WARN] Compte jeu $game_user absent : migration split ignorée (lancez setupSystem.sh d'abord)" >&2
-        return 0
-    fi
-    local game_home="${PZ_GAME_HOME:-/home/${game_user}}"
-    local dst_world="${game_home}/pzmanager/Zomboid"
-    local dst_server="${game_home}/pzmanager/data/pzserver"
-    migrate_item_to_split "$PZ_SOURCE_DIR" "$dst_world" "$game_user" || true
-    migrate_item_to_split "$PZ_INSTALL_DIR" "$dst_server" "$game_user" || true
-    local manager_dotenv="${PZ_MANAGER_DIR}/.env"
-    local manager_ssh="${PZ_MANAGER_HOME:-$PZ_HOME}/.ssh"
-    [[ -f "$manager_dotenv" ]] && chmod 0600 "$manager_dotenv" || true
-    if [[ -d "$manager_ssh" ]]; then
-        chmod 0700 "$manager_ssh"
-        chmod 0600 "$manager_ssh"/* 2>/dev/null || true
-    fi
-    return 0
-}
-
 install_zomboid_dependencies() {
     echo "Installation des dépendances..."
     # C14 (matrice OS/JDK) : ne jamais supposer que JAVA_VERSION existe dans
     # les depots de l'OS — resolve le triple effectif (avec repli loggue),
     # puis controle le binaire EFFECTIF apres install (die si mismatch).
-    local jdk_lib="${SCRIPT_DIR}/../lib/jdk_matrix.sh"
-    if [[ -f "$jdk_lib" ]]; then
-        # shellcheck disable=SC1090
-        . "$jdk_lib"
-    fi
-    if declare -F resolve_java_package >/dev/null 2>&1; then
-        resolve_java_package
-    fi
+    source "${SCRIPT_DIR}/../lib/jdk_matrix.sh"
     dpkg --add-architecture i386
     apt-get update -qq
+    resolve_java_package
+    # steamcmd n'est pas dans les dépôts de base : ne pas modifier les sources
+    # APT automatiquement, expliquer le prérequis avant toute installation.
+    if ! LC_ALL=C apt-cache policy steamcmd | awk '$1 == "Candidate:" && $2 != "(none)" { found=1 } END { exit !found }'; then
+        die "Paquet steamcmd indisponible : activer manuellement non-free sur Debian ou multiverse sur Ubuntu, puis actualiser APT."
+    fi
 
     # Accept Steam license automatically
     echo steam steam/question select "I AGREE" | debconf-set-selections
@@ -577,8 +686,7 @@ install_zomboid_dependencies() {
 
 download_zomboid_server() {
     echo "Téléchargement du serveur via SteamCMD..."
-    mkdir -p "$PZ_INSTALL_DIR"
-    chown "$PZ_USER:$PZ_USER" "$PZ_INSTALL_DIR"
+    as_manager mkdir -p "$PZ_INSTALL_DIR"
 
     # -beta TOUJOURS explicite, y compris "public" : omettre l'option laisse la
     # BetaKey précédente figée dans le manifeste, ce qui avait provoqué la boucle
@@ -593,52 +701,118 @@ download_zomboid_server() {
     # lieu d'être écrits en dur ici seulement.
     # Login hors argv : runscript 0600 confié à PZ_USER puis exécuté sous son
     # identité (ce script tourne en root, steamcmd sous PZ_USER).
-    STEAMCMD_AS_USER="$PZ_USER" steamcmd_runscript "${STEAM_LOGIN:-anonymous}" \
+    steamcmd_runscript "${STEAM_LOGIN:-anonymous}" \
         "force_install_dir \"${PZ_INSTALL_DIR}\"" \
         "login \"${STEAM_LOGIN:-anonymous}\"" \
         "app_update \"${STEAM_APP_ID:-380870}\" -beta \"${branch}\" validate"
 }
 
+# Un code retour Steam réussi ne garantit pas un téléchargement utilisable.
+# Inspection de fichiers seulement : aucune JVM ni lanceur n'est exécuté ici.
+validate_zomboid_payload() {
+    local file
+    [[ -d "$PZ_INSTALL_DIR/jre64" && ! -L "$PZ_INSTALL_DIR/jre64" && \
+       -d "$PZ_INSTALL_DIR/jre64/bin" && ! -L "$PZ_INSTALL_DIR/jre64/bin" ]] \
+        || die "Payload Steam incomplet ou invalide : JRE stock absent ou symbolique."
+    for file in ProjectZomboid64 start-server.sh jre64/bin/java; do
+        [[ -f "$PZ_INSTALL_DIR/$file" && ! -L "$PZ_INSTALL_DIR/$file" && -x "$PZ_INSTALL_DIR/$file" ]] \
+            || die "Payload Steam incomplet ou invalide : exécutable $file absent ou non régulier."
+    done
+    python3 - "$PZ_INSTALL_DIR/ProjectZomboid64.json" <<'PAYLOAD'
+import json, pathlib, sys, zipfile
+try:
+    path = pathlib.Path(sys.argv[1])
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("JSON absent ou non régulier")
+    data = json.loads(path.read_text())
+    if not isinstance(data, dict) or not isinstance(data.get("mainClass"), str) or not data["mainClass"]:
+        raise ValueError("mainClass absent ou invalide")
+    for key in ("classpath", "vmArgs"):
+        if not isinstance(data.get(key), list) or any(not isinstance(value, str) for value in data[key]):
+            raise ValueError(key + " doit être une liste de chaînes")
+    if not data["classpath"] or any(not entry for entry in data["classpath"]):
+        raise ValueError("classpath vide")
+    # Le lanceur est exécuté depuis l'installation. Chercher le point
+    # d'entrée déclaré, sans imposer l'existence des entrées facultatives.
+    # Présence seulement : ni bytecode ni dépendances transitives validés.
+    main = data["mainClass"].replace(".", "/") + ".class"
+    if any(not part for part in main.split("/")) or "\\" in main:
+        raise ValueError("mainClass invalide")
+
+    def contains_main(entry):
+        try:
+            if entry.is_dir():
+                target = entry / main
+                if target.is_file():
+                    with target.open("rb") as stream:
+                        return bool(stream.read(1))
+            elif entry.is_file():
+                with zipfile.ZipFile(entry) as archive:
+                    with archive.open(main) as stream:
+                        return bool(stream.read(1))
+        except (OSError, ValueError, KeyError, zipfile.BadZipFile, RuntimeError, NotImplementedError):
+            pass
+        return False
+
+    found = False
+    for value in data["classpath"]:
+        entry = path.parent / value
+        if entry.name == "*":
+            # Wildcard Java : JAR directs seulement, expansion vide autorisée.
+            try:
+                candidates = [item for item in entry.parent.iterdir() if item.suffix in (".jar", ".JAR")]
+            except OSError:
+                candidates = []
+        else:
+            candidates = [entry]
+        if any(contains_main(candidate) for candidate in candidates):
+            found = True
+            break
+    if not found:
+        raise ValueError("classe d'entrée introuvable ou vide dans le classpath : " + data["mainClass"])
+except (OSError, ValueError) as error:
+    print("Payload Steam incomplet ou invalide : " + str(error), file=sys.stderr)
+    raise SystemExit(1)
+PAYLOAD
+}
+
 configure_zomboid_jvm() {
     # Tuning JVM partagé avec la maintenance (steamcmd validate restaure le
     # JSON vanilla à chaque update, le script est donc réappliqué chaque nuit)
-    sudo -u "$PZ_USER" "${SCRIPT_DIR}/../internal/configureJvm.sh"
+    as_manager "${PZ_MANAGER_DIR}/data/scripts/internal/configureJvm.sh"
 }
 
 configure_user_environment() {
     local bashrc="$PZ_HOME/.bashrc"
-    sudo -u "$PZ_USER" grep -q "XDG_RUNTIME_DIR" "$bashrc" 2>/dev/null && return 0
+    as_manager grep -q "XDG_RUNTIME_DIR" "$bashrc" 2>/dev/null && return 0
 
     echo "Configuration environnement utilisateur..."
     printf '%s\n' 'export XDG_RUNTIME_DIR=/run/user/$(id -u)' \
-        | sudo -u "$PZ_USER" tee -a -- "$bashrc" >/dev/null
+        | as_manager tee -a -- "$bashrc" >/dev/null
 }
 
 install_systemd_services() {
     local systemd_dir="$PZ_HOME/.config/systemd/user"
-    local templates_dir="$PZ_MANAGER_DIR/data/setupTemplates"
+    local templates_dir="${SCRIPT_DIR}/../../setupTemplates"
 
     echo "Installation des services systemd..."
-    mkdir -p "$systemd_dir"
-    chown -R "$PZ_USER:$PZ_USER" "$PZ_HOME/.config"
+    as_manager mkdir -p "$systemd_dir"
 
     # Un plafond --user ne peut pas agréger deux UID distincts.
     [[ "${PZ_GAME_USER:-$PZ_USER}" == "${PZ_MANAGER_USER:-$PZ_USER}" ]] \
         || die "Budget PZ partagé : mode split multi-UID non pris en charge."
-    cp "$templates_dir/pz.slice" "$systemd_dir/pz.slice"
-    chown "$PZ_USER:$PZ_USER" "$systemd_dir/pz.slice"
+    as_manager cp "$templates_dir/pz.slice" "$systemd_dir/pz.slice"
 
     # Outside Zomboid so that a full restore cannot move the pending intent.
     # Create under the manager identity, with the same trusted-path checks as
     # maintenance; never repair a public or foreign directory by chmod/chown.
-    sudo -u "$PZ_USER" python3 "${PZ_MANAGER_DIR}/data/scripts/lib/world_transaction.py" \
+    as_manager python3 "${PZ_MANAGER_DIR}/data/scripts/lib/world_transaction.py" \
         init --world "$PZ_SOURCE_DIR" || die "Journal de récupération indisponible."
 
     # Server services
     for service_file in zomboid.service zomboid.socket zomboid_logger.service; do
         if [[ -f "$templates_dir/$service_file" ]]; then
-            cp "$templates_dir/$service_file" "$systemd_dir/$service_file"
-            chown "$PZ_USER:$PZ_USER" "$systemd_dir/$service_file"
+            as_manager cp "$templates_dir/$service_file" "$systemd_dir/$service_file"
             echo "  - $service_file installé"
         else
             echo "  [WARN] Template introuvable: $service_file"
@@ -657,8 +831,7 @@ install_systemd_services() {
     done
     for unit_file in "${automation_units[@]}"; do
         if [[ -f "$templates_dir/$unit_file" ]]; then
-            cp "$templates_dir/$unit_file" "$systemd_dir/$unit_file"
-            chown "$PZ_USER:$PZ_USER" "$systemd_dir/$unit_file"
+            as_manager cp "$templates_dir/$unit_file" "$systemd_dir/$unit_file"
             echo "  - $unit_file installé"
         else
             echo "  [WARN] Template introuvable: $unit_file"
@@ -699,10 +872,9 @@ generate_admin_password() {
     # suivi d'un chmod le laisse lisible par tous (umask 022) le temps de
     # l'écriture.
     local owner="${PZ_MANAGER_USER:-${PZ_USER:-pzuser}}"
-    install -m 600 /dev/null "$password_file"
-    echo "$password" > "$password_file"
-    chown "$owner:$owner" "$password_file"
-    chmod 600 "$password_file"
+    as_manager install -m 600 /dev/null "$password_file"
+    printf '%s\n' "$password" | as_manager tee "$password_file" >/dev/null
+    as_manager chmod 600 "$password_file"
 
     echo ""
     echo "  ╔════════════════════════════════════════════════════════╗"
@@ -714,70 +886,74 @@ generate_admin_password() {
     echo ""
 }
 
+# Tous les chemins ReadWritePaths stricts doivent exister avant enable.
+prepare_server_directories() {
+    local directory
+    for directory in "$PZ_INSTALL_DIR" "$PZ_SOURCE_DIR" "$PZ_MANAGER_DIR/logs" \
+        "$PZ_MANAGER_DIR/logs/zomboid" "$BACKUP_DIR"; do
+        as_manager mkdir -p "$directory"
+        as_manager chmod 0700 "$directory"
+    done
+}
+
+install_zomboid_manager() {
+    local download_server="$1"
+    [[ "$(id -un)" == "$PZ_USER" && "$EUID" != 0 ]] || die "Phase d'installation réservée au manager."
+    acquire_world_lock --required || die "Installation : verrou monde indisponible."
+    acquire_serverctl_lock_or_die
+    prepare_restore_units || die "Installation : arrêt serveur non prouvé."
+    if ! python3 "${SCRIPT_DIR}/../lib/shared_memory_budget.py" inside; then
+        exec bash "${SCRIPT_DIR}/../lib/run_in_pz_slice.sh" /bin/bash -c \
+            'source "$1" --manager-root "$2"; source_env; install_zomboid_manager "$3"' \
+            _ "${SCRIPT_DIR}/configurationInitiale.sh" "$PZ_MANAGER_DIR" "$download_server"
+    fi
+    python3 "${SCRIPT_DIR}/../lib/shared_memory_budget.py" check
+    [[ "$(restore_service_load_state "$XDG_RUNTIME_DIR")" == loaded ]] || die "Unité serveur non chargée."
+    python3 "${SCRIPT_DIR}/../lib/world_transaction.py" check --world "$PZ_SOURCE_DIR"
+
+    if [[ "$download_server" == true ]]; then
+        # source_env recharge la préférence utilisateur ; recalculer le triple
+        # effectif dans ce processus, sans modifier son .env.
+        source "${SCRIPT_DIR}/../lib/jdk_matrix.sh"
+        resolve_java_package
+        # validate ne doit jamais suivre le lien vers un JRE externe.
+        "${PZ_MANAGER_DIR}/data/scripts/internal/linkJvm.sh" --stock
+        [[ ! -L "${PZ_INSTALL_DIR}/jre64" ]] || die "JRE stock non rétabli : validate interdit."
+        unset STEAMCMD_AS_USER
+        download_zomboid_server
+        validate_zomboid_payload || die "Payload Steam incomplet ou invalide : installation refusée."
+        configure_zomboid_jvm
+    fi
+    prepare_server_directories
+    configure_user_environment
+    install_systemd_services
+    generate_admin_password
+    enable_zomboid_service
+    echo "=== Installation terminée ==="
+}
+
 install_zomboid() {
     [[ "${PZ_GAME_USER:-$PZ_USER}" == "${PZ_MANAGER_USER:-$PZ_USER}" ]] \
         || die "Budget PZ partagé : split multi-UID non pris en charge, aucun fichier modifié."
+    local do_server_install=true runtime_dir
     echo "=== Installation serveur Project Zomboid (utilisateur: $PZ_USER) ==="
-
-    local do_server_install=true
-    local do_zomboid_init=true
-
-    # Check existing server installation
-    if [[ -d "$PZ_INSTALL_DIR" ]] && [[ -f "$PZ_INSTALL_DIR/ProjectZomboid64" ]]; then
-        echo ""
-        echo "ℹ️  Serveur déjà installé dans $PZ_INSTALL_DIR"
-        if ! confirm_action "Voulez-vous réinstaller/mettre à jour ?"; then
-            skip_step "Installation serveur PZ"
-            do_server_install=false
-        fi
+    if [[ -f "$PZ_INSTALL_DIR/ProjectZomboid64" ]] && ! confirm_action "Réinstaller/mettre à jour le serveur ?"; then
+        do_server_install=false
     fi
-
-    # Check existing Zomboid data
-    if [[ -d "$PZ_SOURCE_DIR" ]]; then
-        echo ""
-        echo "⚠️  ATTENTION: Le dossier de données Zomboid existe déjà"
-        echo "   Chemin: $PZ_SOURCE_DIR"
-        if ! confirm_action "Voulez-vous l'écraser ?"; then
-            skip_step "Initialisation données Zomboid"
-            do_zomboid_init=false
-        fi
-    fi
-
-    # Execute steps based on user choices
+    # Seuls les prérequis système s'exécutent en root, depuis le code pristine.
     loginctl enable-linger "$PZ_USER"
-
-    # Installer le parent avant les helpers utilisateur (configureJvm).
-    install_systemd_services
-    local runtime_dir
     runtime_dir="$(ensure_runtime_dir)"
-    user_systemctl_strict "$runtime_dir" daemon-reload \
-        || fail_on_error $? "installation du budget partagé PZ"
-
     if [[ "$do_server_install" == true ]]; then
-        migrate_single_to_split
         install_zomboid_dependencies
-        download_zomboid_server
-        configure_zomboid_jvm
     fi
-
-    configure_user_environment
-    install_systemd_services
-    enable_zomboid_service
-    generate_admin_password
-
-    echo ""
-    echo "=== Installation terminée ==="
-    show_summary
-
-    echo ""
-    echo "Prochaines étapes :"
-    echo "  1. Démarrer le serveur : sudo -u $PZ_USER pzm server start"
-    echo "  2. Configurer le serveur : ${PZ_INI_PATH}"
+    (cd / && as_manager env HOME="$PZ_HOME" TMPDIR=/tmp XDG_RUNTIME_DIR="$runtime_dir" /bin/bash -c \
+        'source "$1" --manager-root "$2"; source_env; FORCE_MODE="$3"; install_zomboid_manager "$4"' \
+        _ "${SCRIPT_DIR}/configurationInitiale.sh" "$PZ_MANAGER_DIR" "$FORCE_MODE" "$do_server_install")
 }
 
 show_help() {
     cat <<HELPEOF
-Usage: $0 <commande> [--force]
+Usage: $0 --manager-root /home/UTILISATEUR/pzmanager <commande> [--force]
 
 Commandes :
   restore PATH [--force] [--restore-ssh]  Restaurer (sudoers régénéré depuis
@@ -798,6 +974,9 @@ HELPEOF
 # exécuter le dispatch principal.
 if [[ "${BASH_SOURCE[0]:-}" == "$0" ]]; then
 [[ $EUID -eq 0 ]] || die "Exécution root requise"
+if [[ "${1:-}" == restore || "${1:-}" == zomboid ]]; then
+    [[ -n "$INSTALL_MANAGER_ROOT" ]] || die "--manager-root CHEMIN est requis avant la commande."
+fi
 
 # Parse --force / --restore-ssh flags
 for arg in "$@"; do

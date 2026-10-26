@@ -242,13 +242,23 @@ trigger_maintenance() {
 }
 
 # Vrai au plus une fois par SERVER_UPDATE_CHECK_INTERVAL (défaut 1 h). Le marqueur
-# n'est touché que si le délai est écoulé : un échec de steamcmd ne fait donc pas
-# perdre le créneau suivant.
-readonly SERVER_UPDATE_MARKER="/tmp/pzmanager-server-update-check-$(id -un).stamp"
+# est réarmé au passage dû ; les passages intermédiaires ne le rafraîchissent
+# pas et ne prolongent donc pas l'intervalle.
 readonly SERVER_UPDATE_CHECK_INTERVAL="${SERVER_UPDATE_CHECK_INTERVAL:-3600}"
 server_update_check_due() {
-    (( $(marker_age_seconds "$SERVER_UPDATE_MARKER") < SERVER_UPDATE_CHECK_INTERVAL )) && return 1
-    touch "$SERVER_UPDATE_MARKER"
+    local marker age
+    marker="$(private_state_path server-update-check.stamp)" || {
+        log_event "ERROR: Unsafe server update marker - skipping build check"
+        return 1
+    }
+    age="$(marker_age_seconds "$marker")"
+    # Une date future (horloge corrigée) ne doit pas bloquer indéfiniment les
+    # contrôles : réarmer ce marqueur privé, sans toucher aux entrées adverses.
+    (( age >= 0 && age < SERVER_UPDATE_CHECK_INTERVAL )) && return 1
+    (umask 077; touch -- "$marker") || {
+        log_event "ERROR: Cannot update private server update marker"
+        return 1
+    }
     return 0
 }
 

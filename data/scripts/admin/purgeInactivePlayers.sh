@@ -2,8 +2,7 @@
 # ------------------------------------------------------------------------------
 # purgeInactivePlayers.sh - Purge AUTOMATIQUE des accès inactifs
 # ------------------------------------------------------------------------------
-# Pour chaque compte inactif depuis >= WHITELIST_PURGE_DAYS jours, retire SES
-# ACCÈS au serveur :
+# Seuil strict WHITELIST_PURGE_DAYS : retire les ACCÈS des comptes sélectionnés :
 #   - l'autorisation SteamID (servertest.db: allowedsteamid) -- seulement si
 #     aucun autre compte encore présent ne partage ce SteamID ;
 #   - le compte de la liste blanche (servertest.db: whitelist).
@@ -21,10 +20,10 @@
 # démarrage (boot, pzm server start/restart, socket-activation). Elle n'est plus
 # appelée par la maintenance nocturne, qui redémarrait le serveur juste après et
 # la rejouait donc pour rien. En ExecStartPre l'unité est "activating" : le
-# garde-fou ci-dessous passe de lui-même, sans --force.
+# courtier prouve l’identité de notre start-pre et transmet le FD WORLD.
 #
 # Usage: ./purgeInactivePlayers.sh [--force] [--dry-run] [--days N]
-#   --force    Ne pas refuser même si le service zomboid est actif
+#   --force    Permet seulement l’aperçu --dry-run quand le service est actif
 #   --dry-run  Affiche le plan (dont le sort de chaque SteamID) sans rien modifier
 #   --days N   Seuil d'inactivité en jours ; prime sur WHITELIST_PURGE_DAYS (.env)
 #
@@ -39,12 +38,16 @@ source "${SCRIPT_DIR}/../lib/common.sh"
 source_env
 
 readonly DB_PATH="${PZ_DB_PATH}"
+readonly ACCOUNT_HELPER="${SCRIPT_DIR}/../lib/account_safety.py"
 
+ORIGINAL_ARGS=("$@")
+ADMITTED_WORKER=false
 FORCE=false
 DRY_RUN=false
 DAYS_OVERRIDE=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --admitted-worker) ADMITTED_WORKER=true ;;
         --force)   FORCE=true ;;
         --dry-run) DRY_RUN=true ;;
         --days)    DAYS_OVERRIDE="${2:-}"; shift ;;
@@ -59,6 +62,7 @@ if [[ -n "$DAYS_OVERRIDE" ]]; then
 fi
 
 require_sqlite
+python3 "$ACCOUNT_HELPER" validate-db --db "$DB_PATH" --missing-ok || exit 1
 [[ -f "$DB_PATH" ]] || { log "Base introuvable: $DB_PATH (purge ignorée)"; exit 0; }
 
 # C4 (fail-closed) : toute lecture qui décide d'une suppression passe par ici.
@@ -77,71 +81,40 @@ sql_or_die() {
     if [[ "${1:-}" == "--sep" ]]; then sep="${2:-|}"; sql="${3:-}"; else sql="${1:-}"; fi
     [[ -n "${__var:-}" && -n "${sql:-}" ]] || die "sql_or_die : usage interne invalide (erreur de code)"
     out=""; rc=0
-    out="$(sqlite3 -separator "$sep" "$DB_PATH" "$sql")" || rc=$?
+    if [[ "$DRY_RUN" == true ]]; then
+        out="$(python3 "$ACCOUNT_HELPER" read-sql --db "$DB_PATH" --sql "$sql" -- -separator "$sep")" || rc=$?
+    else
+        out="$(sqlite3 -separator "$sep" "$DB_PATH" "$sql")" || rc=$?
+    fi
     if (( rc != 0 )); then
         die "Lecture SQLite impossible (sqlite exit=${rc}) — purge annulée, aucune suppression (fail-closed)."
     fi
     printf -v "$__var" '%s' "$out"
 }
 
-# C1 : verrou monde autour de toute la section critique (plan -> snapshot ->
-# suppressions), sans le relâcher au milieu. Cas particulier ExecStartPre de
-# zomboid.service : le démarreur (`pzm server start`...) tient déjà le verrou
-# (processus systemd séparé, pas d'héritage) et l'unité est en « activating » —
-# on procède alors SOUS SA COUVERTURE, sans le prendre (sinon la purge ne
-# tournerait plus jamais au démarrage). Hors activation, verrou occupé =
-# vraie concurrence -> refus.
-# C4 : vérifié dans lib/world_lock.sh — son `exec {fd}>…` ne porte aucun
-# `2>/dev/null` (seul le `flock -n` sonde est masqué) : la prise du verrou ne
-# redirige jamais la stderr de ce shell, aucune sauvegarde de fd n'est requise
-# et les erreurs fail-closed ci-dessous restent visibles au journal.
-# _PZ_PURGE_HOLDS_LOCK : vrai si CETTE purge détient le verrou monde (snapshot
-# --required + release en fin) ; faux sous couverture du démarreur (ExecStartPre
-# : le verrou est tenu par un autre processus, --required y est impossible).
-_PZ_PURGE_HOLDS_LOCK=false
-if acquire_world_lock --try; then
-    _PZ_PURGE_HOLDS_LOCK=true
-else
-    _PZ_PURGE_STATE="unknown"
-    # Lib d'état absente = on reste sur « unknown », refusé hors activation.
-    if declare -F server_state >/dev/null 2>&1; then
-        _PZ_PURGE_STATE="$(server_state)"
-    fi
-    if [[ "$_PZ_PURGE_STATE" == "activating" || "$_PZ_PURGE_STATE" == "deactivating" ]]; then
-        log "Verrou monde tenu par le démarreur (état ${_PZ_PURGE_STATE}) : purge sous sa couverture."
-    else
-        die "Une opération monde est déjà en cours (état '${_PZ_PURGE_STATE}') : purge annulée."
-    fi
-    unset _PZ_PURGE_STATE
+# Toute mutation passe par le courtier existant. Un drapeau worker n'est
+# jamais une preuve : le worker revérifie lui-même FD, état et journal.
+readonly ADMISSION_HELPER="${SCRIPT_DIR}/../internal/writing_start_admission.py"
+if [[ "$DRY_RUN" != true && "$ADMITTED_WORKER" != true ]]; then
+    _purge_lock="$(python3 "$ADMISSION_HELPER" path)" || exit 1
+    exec python3 "$ADMISSION_HELPER" run --lock-path "$_purge_lock" --unit "$PZ_SERVICE_NAME" -- \
+        bash "$0" --admitted-worker "${ORIGINAL_ARGS[@]}"
 fi
-
-# C1 (fail-closed) : bus systemd injoignable != serveur arrêté. Sauf --force
-# (qui assume l'incertitude explicitement), un état indéterminé refuse la purge.
-if [[ "$FORCE" != true ]] && declare -F server_state >/dev/null 2>&1; then
-    _PZ_PURGE_STATE="$(server_state)"
-    case "$_PZ_PURGE_STATE" in
-        inactive|activating|deactivating|failed) ;;
-        *) die "État serveur indéterminé ('${_PZ_PURGE_STATE}') : purge refusée sans preuve d'arrêt (fail-closed)." ;;
-    esac
-    unset _PZ_PURGE_STATE
-fi
-
-# Refuser si le serveur tourne (écriture DB live dangereuse), sauf --force.
-# (sql_escape et server_is_active viennent de lib/common.sh)
-if [[ "$FORCE" != true ]] && server_is_active; then
-    die "Le serveur est actif : la purge écrit dans la base du monde et doit se faire serveur arrêté.
-Elle tourne d'elle-même au prochain démarrage (ExecStartPre de zomboid.service).
-Pour la voir sans rien modifier : $0 --force --dry-run"
+if [[ "$ADMITTED_WORKER" == true ]]; then
+    python3 "$ACCOUNT_HELPER" verify-worker || exit 1
+elif [[ "$FORCE" != true ]]; then
+    require_server_stopped "Aperçu purge (utiliser --force --dry-run si actif)"
 fi
 
 # C4 : sorties anticipées (die, liste vide, dry-run) et interruption (INT/TERM) :
-# le verrou monde est toujours relâché et le fichier SQL tmp toujours retiré.
+# le fichier SQL tmp est retiré ; seul notre FD est fermé à la sortie.
 # La transaction SQLite elle-même est atomique : tuée avant COMMIT, la connexion
 # meurt sans valider et SQLite annule tout — aucun état partiel n'est un succès.
 SQL_TMP=""
 purge_cleanup() {
     if [[ -n "${SQL_TMP:-}" ]]; then rm -f -- "$SQL_TMP" 2>/dev/null || true; fi
-    release_world_lock 2>/dev/null || true
+    # Le FD admis partage l’OFD du courtier : jamais de flock -u.
+    # La sortie du processus ferme seulement sa copie du descripteur.
 }
 trap purge_cleanup EXIT
 trap 'purge_cleanup; exit 143' INT TERM
@@ -151,7 +124,9 @@ trap 'purge_cleanup; exit 143' INT TERM
 # timer de minuit, doit y figurer sinon il serait jugé sur une ancienneté qu'on
 # ne connaît pas. Non bloquant : sans registre, les comptes jamais connectés sont
 # simplement épargnés.
-"${SCRIPT_DIR}/creationDateInit.sh" || log "AVERTISSEMENT: registre des dates non mis à jour."
+if [[ "$DRY_RUN" != true ]]; then
+    "${SCRIPT_DIR}/creationDateInit.sh" || log "AVERTISSEMENT: registre des dates non mis à jour."
+fi
 
 # --days l'emporte sur .env : sans ça, le seuil n'est testable qu'en éditant .env.
 readonly DAYS="${DAYS_OVERRIDE:-${WHITELIST_PURGE_DAYS:-90}}"
@@ -159,15 +134,15 @@ readonly DAYS="${DAYS_OVERRIDE:-${WHITELIST_PURGE_DAYS:-90}}"
 # Comptes inactifs (prédicat partagé avec la purge interactive — cf. common.sh).
 WHERE="$(inactive_where_clause "$DAYS")"
 
-log "=== Purge des accès inactifs (>= ${DAYS} jours) ==="
+log "=== Purge des accès inactifs (seuil : ${DAYS} jours) ==="
 
 # Récupérer les victimes : id|username|steamid
 # Séparateur : caractère de contrôle US (0x1f), jamais un | .
 # Un joueur s'appelle littéralement « MabEira | Hannibal » (constaté le
 # 19/08/2026) : avec -separator '|' ses champs débordaient les uns sur les
 # autres, ce qui a produit une ligne de registre corrompue (pseudo tronqué à
-# « MabEira », steamid « Hannibal », date = un SteamID). Un pseudo ne peut pas
-# contenir 0x1f.
+# « MabEira », steamid « Hannibal », date = un SteamID). Les gardes ci-dessous
+# rejettent les lignes dont le cadrage reste ambigu.
 # C4 : erreur SELECT -> die (fail-closed), jamais « vide ». Liste complète des
 # victimes calculée AVANT toute écriture (aucun DELETE n'a encore eu lieu).
 sql_or_die VICTIMS_RAW --sep $'\x1f' \
@@ -255,67 +230,11 @@ if [[ "$DRY_RUN" == true ]]; then
     exit 0
 fi
 
-# Filet de sécurité avant suppression : un snapshot NORMAL (backup_<ts>, visible dans
-# `pzm backup list` et purgé par le timer horaire) plutôt qu'un fichier .db à part.
-# --snapshot-only => pas de save in-game (serveur arrêté / en cours de boot en
-# ExecStartPre) ni de prune.
-# C4 (fail-closed, C2 --required) : un snapshot impossible ou sauté ANNULE la purge,
-# aucune suppression n'a encore eu lieu. Sous couverture du démarreur (ExecStartPre)
-# --required est impossible (verrou tenu par un autre processus) : on exige alors
-# un snapshot RÉEL — tout échec ou saut (BACKUP_SKIPPED_LOCK) annule la purge,
-# SAUF le saut sous unité « activating » (couverture du démarreur, C1×C2×C4) :
-# la purge ne modifie que PZ_DB_PATH, donc une copie du fichier vérifiée
-# (taille > 0 + integrity_check) suffit comme filet local, et la purge poursuit.
-DATABACKUP_BIN="${PZ_DATABACKUP_BIN:-${SCRIPT_DIR}/../backup/dataBackup.sh}"
-if [[ "$_PZ_PURGE_HOLDS_LOCK" == true ]]; then
-    if ! "$DATABACKUP_BIN" --snapshot-only --required; then
-        die "Snapshot de sécurité impossible — purge annulée, aucune suppression (fail-closed)."
-    fi
-else
-    _PZ_PURGE_SNAP_OUT=""; _PZ_PURGE_SNAP_RC=0
-    _PZ_PURGE_SNAP_OUT="$("$DATABACKUP_BIN" --snapshot-only 2>&1)" || _PZ_PURGE_SNAP_RC=$?
-    if (( _PZ_PURGE_SNAP_RC != 0 )) || grep -q 'BACKUP_SKIPPED_LOCK' <<< "$_PZ_PURGE_SNAP_OUT"; then
-        # C1×C2×C4 : sous couverture du démarreur (ExecStartPre, unité en
-        # « activating », verrou monde tenu par `pzm server start` dans un
-        # processus distinct non hérité), dataBackup --snapshot-only (sans
-        # --required, impossible ici) rend BACKUP_SKIPPED_LOCK exit 0. Mourir
-        # là-dessus = ne plus jamais démarrer dès qu'il y a des victimes.
-        _PZ_PURGE_STATE="unknown"
-        if declare -F server_state >/dev/null 2>&1; then
-            _PZ_PURGE_STATE="$(server_state)"
-        fi
-        if (( _PZ_PURGE_SNAP_RC == 0 )) \
-            && grep -q 'BACKUP_SKIPPED_LOCK' <<< "$_PZ_PURGE_SNAP_OUT" \
-            && [[ "$_PZ_PURGE_STATE" == "activating" ]]; then
-            printf '%s\n' "$_PZ_PURGE_SNAP_OUT"
-            _PZ_PURGE_TS="$(date +'%Y-%m-%d_%Hh%Mm%Ss')"
-            _PZ_PURGE_FB="${DB_PATH}.pre-purge-${_PZ_PURGE_TS}"
-            cp -a -- "$DB_PATH" "$_PZ_PURGE_FB" \
-                || die "Filet local impossible (cp) — purge annulée, aucune suppression (fail-closed)."
-            [[ -s "$_PZ_PURGE_FB" ]] \
-                || { rm -f -- "$_PZ_PURGE_FB" 2>/dev/null || true; die "Filet local vide — purge annulée, aucune suppression (fail-closed)."; }
-            _PZ_PURGE_FB_RC=0; _PZ_PURGE_FB_CHECK=""
-            _PZ_PURGE_FB_CHECK="$(sqlite3 "$_PZ_PURGE_FB" 'PRAGMA integrity_check;')" || _PZ_PURGE_FB_RC=$?
-            if (( _PZ_PURGE_FB_RC != 0 )); then
-                rm -f -- "$_PZ_PURGE_FB" 2>/dev/null || true
-                die "Filet local illisible (sqlite exit=${_PZ_PURGE_FB_RC}) — purge annulée, aucune suppression (fail-closed)."
-            fi
-            if [[ "$_PZ_PURGE_FB_CHECK" != "ok" ]]; then
-                rm -f -- "$_PZ_PURGE_FB" 2>/dev/null || true
-                die "Filet local corrompu (integrity_check='${_PZ_PURGE_FB_CHECK}') — purge annulée, aucune suppression (fail-closed)."
-            fi
-            log "Snapshot dataBackup sauté (verrou du démarreur, unité activating) : filet local ${_PZ_PURGE_FB} (integrity_check=ok) — la purge poursuit."
-            # _PZ_PURGE_FB est CONSERVÉ (pas unset) : log + rotation après COMMIT réussi.
-            unset _PZ_PURGE_TS _PZ_PURGE_FB_RC _PZ_PURGE_FB_CHECK
-        else
-            printf '%s\n' "$_PZ_PURGE_SNAP_OUT"
-            die "Snapshot de sécurité impossible ou sauté — purge annulée, aucune suppression (fail-closed)."
-        fi
-        unset _PZ_PURGE_STATE
-    fi
-    printf '%s\n' "$_PZ_PURGE_SNAP_OUT"
-    unset _PZ_PURGE_SNAP_OUT _PZ_PURGE_SNAP_RC
-fi
+# SQLite.backup inclut les pages WAL et publie une image privée vérifiée,
+# fsync fichier + parent, avant tout DELETE. Aucun skip snapshot n'est accepté.
+_PZ_PURGE_FB="$(python3 "$ACCOUNT_HELPER" backup --db "$DB_PATH")" \
+    || die "Sauvegarde SQLite impossible — purge annulée avant suppression."
+log "Filet local durable : $_PZ_PURGE_FB"
 
 # C4 : UNE SEULE transaction SQLite par base (une seule ici : PZ_DB_PATH, donc
 # prévalidation totale par construction — le plan ci-dessus est déjà complet) :
@@ -339,8 +258,10 @@ SQL_TMP="$(mktemp "${TMPDIR:-/tmp}/pz-purge-XXXXXX.sql")" || die "Impossible de 
         done
         printf 'DELETE FROM allowedsteamid WHERE steamid IN (%s) AND NOT EXISTS (SELECT 1 FROM whitelist w WHERE w.steamid = allowedsteamid.steamid);\n' "$_pz_orphan_list"
         unset _pz_orphan_list _pz_sid _pz_esc
+        printf "SELECT 'PURGE_STEAMIDS=' || changes();\n"
+    else
+        printf "SELECT 'PURGE_STEAMIDS=0';\n"
     fi
-    printf "SELECT 'PURGE_STEAMIDS=' || changes();\n"
     printf 'COMMIT;\n'
 } > "$SQL_TMP"
 
@@ -350,6 +271,7 @@ if [[ "${PZ_PURGE_TEST_SLEEP:-0}" =~ ^[0-9]+$ ]] && (( ${PZ_PURGE_TEST_SLEEP:-0}
     sleep "$PZ_PURGE_TEST_SLEEP"
 fi
 
+python3 "$ACCOUNT_HELPER" verify-worker || exit 1
 _TX_OUT=""; _TX_RC=0
 _TX_OUT="$(sqlite3 -bail "$DB_PATH" < "$SQL_TMP")" || _TX_RC=$?
 if (( _TX_RC != 0 )); then
@@ -394,5 +316,4 @@ if [[ "$removed_accounts" -gt 0 ]]; then
     done
 fi
 
-# C1 : fin de section critique (no-op si on procédait sous couverture du démarreur).
-release_world_lock
+# Le courtier conserve son verrou ; la sortie ferme seulement notre FD hérité.

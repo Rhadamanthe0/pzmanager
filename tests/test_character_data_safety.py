@@ -27,6 +27,13 @@ class CharacterDataSafety(unittest.TestCase):
         script.parent.mkdir(parents=True)
         shutil.copy2(os.environ.get('PZ_CHARACTER_RESTORE_SCRIPT', ROOT/'data/scripts/backup/restoreCharacter.sh'), script)
         lib = script.parent.parent/'lib'; lib.mkdir()
+        # Execute the real transaction guard and its real path/ownership reader.
+        shutil.copy2(ROOT/'data/scripts/lib/world_transaction.py',lib/'world_transaction.py')
+        shutil.copy2(ROOT/'data/scripts/lib/account_safety.py',lib/'account_safety.py')
+        shutil.copy2(ROOT/'data/scripts/lib/native_identity.py',lib/'native_identity.py')
+        internal=script.parent.parent/'internal';internal.mkdir()
+        shutil.copy2(ROOT/'data/scripts/internal/configureWritingTextOnly.py',internal/'configureWritingTextOnly.py')
+        shutil.copy2(ROOT/'data/scripts/internal/writing_start_admission.py',internal/'writing_start_admission.py')
         (lib/'common.sh').write_text("""
 source_env() { :; }
 require_sqlite() { :; }
@@ -57,6 +64,22 @@ sql_escape() { printf '%s' "$1" | sed "s/'/''/g"; }
     def run_restore(self, *args):
         return subprocess.run(['bash',str(self.script),'selected',str(self.source),*args],env=self.env,capture_output=True,text=True,timeout=10)
 
+    def test_prepared_transaction_refuses_before_delete_and_can_revert(self):
+        self.database(self.source);self.database(self.live)
+        world=self.root/'live';staged=self.root/'staged';shutil.copytree(world,staged)
+        helper=self.script.parent.parent/'lib/world_transaction.py'
+        def transaction(*args):
+            return subprocess.run(['python3',str(helper),*args,'--world',str(world)],env=self.env,capture_output=True,text=True,timeout=10)
+        prepared=transaction('begin','--kind','fixture','--recovery',str(self.root/'recovery'),'--after-tree',str(staged))
+        self.assertEqual(prepared.returncode,0,prepared.stderr)
+        before=self.live.read_bytes();source=self.source.read_bytes()
+        result=self.run_restore()
+        self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('unfinished',result.stderr)
+        self.assertEqual(self.live.read_bytes(),before);self.assertEqual(self.source.read_bytes(),source)
+        reverted=transaction('finish','--token',prepared.stdout.strip(),'--state','reverted')
+        self.assertEqual(reverted.returncode,0,reverted.stderr)
+
     def test_native_refusal_precedes_delete_and_leaves_all_rows_intact(self):
         self.database(self.source);self.database(self.live)
         self.env['CHARACTER_NATIVE_DOUBLE_FAILURE']='1'
@@ -82,6 +105,31 @@ sql_escape() { printf '%s' "$1" | sed "s/'/''/g"; }
         result=self.run_restore()
         self.assertNotEqual(result.returncode,0,result.stdout)
         self.assertEqual(self.live.read_bytes(),before)
+
+    def test_native_integer_key_required_in_source_and_destination(self):
+        for target in ('source','live'):
+            for declaration,ending in (('', ''), ('id INTEGER, ', ''), ('id TEXT PRIMARY KEY, ', ''),
+                                       ('id INTEGER PRIMARY KEY DESC, ', ''),
+                                       ('id INTEGER, ', ', PRIMARY KEY(id, username)'),
+                                       ('id INTEGER PRIMARY KEY, ', ' WITHOUT ROWID')):
+                with self.subTest(target=target, declaration=declaration,ending=ending):
+                    self.source.unlink(missing_ok=True);self.live.unlink(missing_ok=True)
+                    self.database(self.source);self.database(self.live)
+                    path=getattr(self,target);path.unlink()
+                    schema=declaration+COLS.split(', ',1)[1]
+                    without_rowid=ending==' WITHOUT ROWID'
+                    with connection(path) as db:
+                        db.execute('CREATE TABLE networkPlayers ('+schema+('' if without_rowid else ending)+')'+(ending if without_rowid else ''))
+                        if without_rowid:
+                            db.execute("INSERT INTO networkPlayers(id,world,username,data,worldversion) VALUES(1,'test','selected',x'ff',249)")
+                        else:
+                            db.execute("INSERT INTO networkPlayers(world,username,data,worldversion) VALUES('test','selected',x'ff',249)")
+                    before=self.live.read_bytes();source=self.source.read_bytes()
+                    result=self.run_restore()
+                    self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                    self.assertIn('Schéma incompatible',result.stderr)
+                    self.assertEqual(self.live.read_bytes(),before)
+                    self.assertEqual(self.source.read_bytes(),source)
 
     def test_source_sidecars_refused_without_opening_or_mutating_source(self):
         self.database(self.source);self.database(self.live)

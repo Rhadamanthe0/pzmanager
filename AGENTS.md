@@ -8,6 +8,9 @@ de paquet ni désactiver le nettoyage pour faire passer une validation.
 
 Exécuter les tests dans une copie Linux jetable : ils peuvent modifier
 `/tmp` et `.env`, et ne doivent pas tourner sur une installation active.
+Utiliser `tests/run-isolated.py` : une copie seule ne neutralise pas le
+routage vers `pz.slice`. Tout autre banc doit isoler ou simuler le budget
+et les appels système avant d'exécuter un script opérationnel.
 Chaque scénario doit rétablir ses doubles de commande et son état simulé ;
 un refus du bus systemd ne constitue pas une preuve de rejet d'une entrée SQL.
 
@@ -25,3 +28,7 @@ sans fusion ou si le directeur a explicitement confirmé leur abandon.
 Vérifier la pointe locale et la PR avant suppression : tout commit ajouté
 après la PR et toute modification locale de worktree doivent être préservés
 ou explicitement abandonnés. Conserver et signaler les cas non établis.
+
+Lire [le référentiel validé](docs/REFERENTIEL_PROJET.md) avant toute
+modification. Toute évolution de ce référentiel exige l’accord explicite
+du directeur sur les changements précis proposés.

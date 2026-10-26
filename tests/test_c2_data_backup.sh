@@ -43,6 +43,7 @@ ko() { FAIL=$(( FAIL + 1 )); echo "[FAIL] $*" >&2; }
 
 REPO_ENV="${ROOT}/.env"
 ENV_BACKUP="${SANDBOX}/env.orig"
+ENV_STUBBED=false
 HOLDER_PID=""
 
 cleanup() {
@@ -53,10 +54,12 @@ cleanup() {
     # Orphelin éventuel du test SIGTERM (sleep du mock rsync) : best-effort.
     pkill -P $$ sleep 2>/dev/null || true
     # Restaure le .env préexistant (ou retire le stub posé par le test).
-    if [[ -f "$ENV_BACKUP" ]]; then
-        cp -p "$ENV_BACKUP" "$REPO_ENV"
-    else
-        rm -f "$REPO_ENV"
+    if [[ "$ENV_STUBBED" == true ]]; then
+        if [[ -f "$ENV_BACKUP" ]]; then
+            cp -p "$ENV_BACKUP" "$REPO_ENV"
+        else
+            rm -f "$REPO_ENV"
+        fi
     fi
     rm -rf "$SANDBOX"
 }
@@ -77,7 +80,7 @@ rm -rf "$SANDBOX"
 mkdir -p "${SANDBOX}/rt" "$BIN"
 export XDG_RUNTIME_DIR="${SANDBOX}/rt"
 if ! [[ "${PZ_WORLD_LOCK_DEPTH:-0}" =~ ^[1-9][0-9]*$ ]] || [[ -z "${PZ_WORLD_LOCK_FD:-}" ]] \
-    || ! { : >&"${PZ_WORLD_LOCK_FD}" 2>/dev/null; }; then
+    || ! { : 1>&"${PZ_WORLD_LOCK_FD}" 2>/dev/null; }; then
     PZ_WORLD_LOCK_DEPTH=0; PZ_WORLD_LOCK_FD=""
     export PZ_WORLD_LOCK_DEPTH PZ_WORLD_LOCK_FD
 fi
@@ -86,6 +89,7 @@ fi
 if [[ -f "$REPO_ENV" ]]; then
     cp -p "$REPO_ENV" "$ENV_BACKUP"
 fi
+ENV_STUBBED=true
 printf '# stub test C2 (restauré en fin de test)\n' > "$REPO_ENV"
 
 # --- Mocks -------------------------------------------------------------------
@@ -150,6 +154,13 @@ fi
 MOCKEOF
 cat > "${BIN}/systemd-run" <<'MOCKEOF'
 #!/usr/bin/env bash
+if [[ "${1:-}" == --help ]]; then
+    [[ "${MOCK_SCOPE_HELP_FAIL:-0}" == 0 ]] || exit 7
+    printf '%s\n' --scope
+    if (( ${MOCK_SCOPE_VERSION:-257} >= 254 )); then printf '%s\n' --expand-environment=BOOL; fi
+    exit 0
+fi
+if (( ${MOCK_SCOPE_VERSION:-257} < 254 )) && [[ " $* " == *' --expand-environment=no '* ]]; then exit 64; fi
 [[ -z "${MOCK_SCOPE_LOG:-}" ]] || printf '%s\n' "$*" >> "$MOCK_SCOPE_LOG"
 [[ "${MOCK_SCOPE_FAIL:-0}" == "0" ]] || exit 1
 # La scope doit conserver le FD du verrou monde, même après un fork/exec.
@@ -182,6 +193,7 @@ fresh_case() {
     export BACKUP_WARN_DELAY=0 RSYNC_RETRY_DELAY=0 BACKUP_PRUNE_DRY_RUN=1
     unset MOCK_RSYNC_EXIT MOCK_RSYNC_SLEEP MOCK_RSYNC_EMPTY MOCK_LN_FAIL MOCK_MV_FAIL
     unset MOCK_CPU_STATE MOCK_CPU_SUBSTATE MOCK_CPU_MAINPID MOCK_SCOPE_LOG MOCK_SCOPE_FAIL
+    unset MOCK_SCOPE_VERSION MOCK_SCOPE_HELP_FAIL
     unset MOCK_CPU_PIN_FAIL
     unset MOCK_RSYNC_READY MOCK_COPY_REAL MOCK_DRIFT_FILE MOCK_FIFO_STOP_FILE
 }
@@ -475,6 +487,28 @@ fi
 unset PZ_WORLD_LOCK_RETRIES PZ_WORLD_LOCK_RETRY_DELAY
 
 # --- Budgets CPU et héritage des verrous ---------------------------------------
+for version in 249 252 254 257; do
+    fresh_case "scope-version-$version"
+    export MOCK_SCOPE_VERSION="$version" MOCK_SCOPE_LOG="${SANDBOX}/scope-version-$version.log"
+    if run_backup --snapshot-only --required; then
+        ok "systemd $version : scope de backup et FD hérités"
+    else
+        ko "systemd $version : scope de backup refusée"; show_out
+    fi
+    if (( version >= 254 )); then
+        grep -q -- '--expand-environment=no' "$MOCK_SCOPE_LOG" \
+            && ok "systemd $version : expansion explicitement désactivée" \
+            || ko "systemd $version : option de protection absente"
+    elif grep -q -- '--expand-environment=' "$MOCK_SCOPE_LOG"; then
+        ko "systemd $version : option inconnue transmise"
+    else
+        ok "systemd $version : scope historique sans option inconnue"
+    fi
+done
+fresh_case scope-help-failed
+export MOCK_SCOPE_HELP_FAIL=7
+if run_backup; then ko "aide scope refusée : succès à tort"; else ok "aide scope refusée : aucun repli"; fi
+(( $(final_count "$BKP") == 0 )) && ok "aide scope refusée : rien publié" || ko "aide scope refusée : snapshot publié"
 for policy in active inactive startup loading failed error; do
     fresh_case "cpu-$policy"
     export MOCK_SCOPE_LOG="${SANDBOX}/scope-$policy.log" BACKUP_CPU_LIST=7,15
@@ -634,6 +668,9 @@ for scenario in inactive failed activating deactivating error missing-pid; do
 done
 
 # Arrêt entre le préavis et save : la seconde observation doit supprimer save.
+only_warning_attempted() {
+    grep -q servermsg "$1" && [[ "$(wc -l < "$1")" -eq 1 ]]
+}
 fresh_case normal-fifo-stop-after-warning
 export MOCK_FIFO_ATTEMPT_LOG="${SANDBOX}/stop-after-warning-fifo.log"
 export MOCK_FIFO_STOP_FILE="${SANDBOX}/stopped-after-warning"
@@ -641,14 +678,30 @@ export BACKUP_WARN_DELAY=1
 mkfifo "$PZ_CONTROL_PIPE"
 rc=0; run_backup || rc=$?
 if (( rc == 0 && $(final_count "$BKP") == 1 )) \
-    && grep -q servermsg "$MOCK_FIFO_ATTEMPT_LOG" \
-    && ! grep -q "echo 'save'" "$MOCK_FIFO_ATTEMPT_LOG"; then
+    && only_warning_attempted "$MOCK_FIFO_ATTEMPT_LOG"; then
     ok "arrêt après préavis : save ignoré sans réveil du serveur"
 else
     ko "arrêt après préavis : save tenté ou snapshot refusé (rc=$rc)"; show_out
 fi
+# Prove the same assertion rejects an additional real save transport, recorded
+# by the existing timeout double without opening the FIFO or changing product.
+save_transport="$(sed -n 's/^[[:space:]]*elif \(timeout .*bash -c .*\) 2>\/dev\/null; then$/\1/p' "$SCRIPT")"
+if [[ -n "$save_transport" ]]; then
+    witness_log="${MOCK_FIFO_ATTEMPT_LOG}.with-save"
+    cp "$MOCK_FIFO_ATTEMPT_LOG" "$witness_log"
+    transport_status=0
+    MOCK_FIFO_ATTEMPT_LOG="$witness_log" bash -c "$save_transport" || transport_status=$?
+    if (( transport_status == 124 )) && ! only_warning_attempted "$witness_log"; then
+        ok "témoin arrêt après préavis : transport save supplémentaire détecté"
+    else
+        ko "témoin arrêt après préavis : transport save supplémentaire accepté"
+    fi
+else
+    ko "témoin arrêt après préavis : transport save du produit introuvable"
+fi
+unset -f only_warning_attempted
 rm -f "${BIN}/timeout"
-unset MOCK_FIFO_ATTEMPT_LOG
+unset MOCK_FIFO_ATTEMPT_LOG MOCK_FIFO_STOP_FILE
 
 # --- Bilan -------------------------------------------------------------------------
 echo ""

@@ -63,18 +63,37 @@ vanilla var of its `VERSION` (6).
 
 ### Important Parameters
 
+Set the world name through [`PZ_SERVER_NAME`](CONFIGURATION.md#world-name),
+passed to the game as `-servername`, rather than an INI `ServerName` key.
+
 ```ini
 # servertest.ini
-ServerName=MyServer           # Internal name
 PublicName=My Public Name     # Browser display name
-Password=                     # Password (empty = public)
-AdminPassword=CHANGEME        # RCON password (⚠️ CHANGE IT!)
+Password=                     # Shared join password (empty = no password)
 MaxPlayers=32                # Maximum players
 PauseEmpty=true              # Pause if empty (saves CPU)
 SaveWorldEveryMinutes=30     # Auto-save frequency
 ```
 
-⚠️ **Security**: Always change `AdminPassword`!
+### Administrator credentials
+
+The installer generates and displays the initial `admin` password. Save it
+before the first start. It writes the same secret to the manager-owned
+`.admin_password` file with mode `0600`. The service supplies it through
+`-adminpassword`, which sets the game's admin account password, and truncates
+the file before launching the JVM. Consumption failure blocks startup; the empty
+`0600` file remains, so later starts do not reapply the password.
+The native `-adminpassword` argument can expose this secret to other local
+accounts through the process list while that JVM runs.
+
+There is no `AdminPassword` INI setting. `Password` controls the shared server
+join password; it does not grant admin rights or replace SteamID admission.
+`RCONPassword` belongs to the separate TCP RCON interface. PZManager's
+`pzm rcon` uses the local control FIFO and does not use that password.
+
+For an existing account, `pzm whitelist resetpassword <name>` clears its stored
+password while the server is stopped; the account chooses a new password on
+its next connection. See [account operations](USAGE.md#steamid-vs-account).
 
 ### Whitelist Management
 
@@ -82,7 +101,8 @@ SaveWorldEveryMinutes=30     # Auto-save frequency
 
 Manage users authorized to connect to the server.
 
-**Admin user**: Created automatically during installation with a random password. Never deleted by purge.
+For the initial `admin` account, see [Administrator credentials](#administrator-credentials).
+Purge exclusions are documented with [whitelist operations](USAGE.md#whitelist).
 
 **View whitelist**:
 ```bash
@@ -94,10 +114,13 @@ pzm whitelist list
 pzm whitelist add "76561198012345678" "PlayerName"
 ```
 
-**Remove player**:
+**Remove SteamID access** (keeps the character):
 ```bash
-pzm whitelist remove "PlayerName"
+pzm whitelist remove "76561198012345678"
 ```
+
+To remove an account instead, stop the server and use
+`pzm whitelist remove-account "PlayerName"`; this also keeps the character.
 
 **Purge inactive accounts**:
 ```bash
@@ -136,9 +159,10 @@ Default ports (automatically configured by pzmanager):
 - **16261/UDP** - Main game
 - **16262/UDP** - Secondary game
 
-These are the only two ports PZ B42 listens on, and the only two `setupSystem.sh`
-opens. The old 8766 (RCON) and 27015 (Steam query) entries were B41 leftovers: no
-socket uses them in B42, so they are deliberately left closed.
+These are the game ports managed by the installer. Native TCP RCON is a separate
+opt-in interface configured with `RCONPort`/`RCONPassword`; enabling it does not
+open its firewall port automatically. `pzm rcon` uses the local FIFO instead
+and needs no TCP RCON listener.
 
 Modification (only if conflict):
 ```ini

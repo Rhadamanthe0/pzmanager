@@ -45,7 +45,6 @@ done
 
 # Valider répertoires
 validate_directory "${PZ_SOURCE_DIR}" "Répertoire source Zomboid"
-ensure_directory "${BACKUP_DIR}"
 
 # C1 : verrou monde AVANT le verrou backup (ordre WORLD -> spécifique,
 # réentrant : les snapshots --snapshot-only appelés PAR une opération qui
@@ -85,6 +84,13 @@ elif ! acquire_world_lock --try; then
     fi
 fi
 
+# A forensic best-effort copy remains available during recovery. Only a
+# consistent recovery point requires a clean journal, under the WORLD lock.
+if [[ "$CONSISTENT" == 1 ]]; then
+    python3 "${SCRIPT_DIR}/../lib/world_transaction.py" check --world "$PZ_SOURCE_DIR" || exit 1
+fi
+ensure_directory "${BACKUP_DIR}"
+
 # Le verrou monde est acquis AVANT de choisir l'affinité : aucun start concurrent
 # ne peut libérer les cœurs réservés pendant que la JVM tourne. Une scope
 # hérite des FD (dont WORLD/SERVERCTL), contrairement à une nouvelle service.
@@ -104,8 +110,11 @@ if [[ "${PZ_BACKUP_CPU_SCOPED:-0}" != "1" ]]; then
         cpu_list="" # Pas de confinement au cœur réservé quand la JVM est absente.
     fi
     cpu_scope="pz-backup-cpu-$$.scope"
-    scope_args=(--user --scope --slice=pz.slice --quiet --collect --expand-environment=no
+    source "${SCRIPT_DIR}/../lib/systemd_scope.sh"
+    scope_noexpand="$(pz_scope_noexpand_arg)" || die "Options de la scope de sauvegarde non vérifiées."
+    scope_args=(--user --scope --slice=pz.slice --quiet --collect
         --unit="$cpu_scope" --property="CPUQuota=${cpu_quota}%" --property=CPUWeight=10)
+    [[ -z "$scope_noexpand" ]] || scope_args+=("$scope_noexpand")
     [[ -z "$cpu_list" ]] || scope_args+=(--property="AllowedCPUs=${cpu_list}")
     # Le timeout/stop du service horaire doit aussi arrêter sa scope enfant.
     if [[ "$(cat /proc/self/cgroup)" == *"/pz-backup.service" ]]; then
@@ -242,7 +251,7 @@ if [[ "$SNAPSHOT_ONLY" != "1" && "$CONSISTENT" != "1" && -p "${PZ_CONTROL_PIPE}"
 
     if ! backup_server_running; then
         echo "BACKUP_SAVE_SKIPPED — JVM absente ou état indéterminé après le préavis ; aucune écriture FIFO."
-    elif timeout 10 bash -c "echo 'save' > '${PZ_CONTROL_PIPE}'" 2>/dev/null; then
+    elif timeout 10 bash -c 'printf "%s\n" save > "$1"' _ "$PZ_CONTROL_PIPE" 2>/dev/null; then
         sleep 60
     else
         echo "Warning: Could not send save command (pipe timeout or server not responding)"
@@ -346,9 +355,16 @@ consistency="$(python3 "${SCRIPT_DIR}/../lib/snapshot_consistency.py" write --un
 echo "BACKUP_CONSISTENCY $consistency"
 [[ "$consistency" == stopped ]] || echo "Sauvegarde à chaud : cohérence applicative non garantie."
 
+# Un snapshot complet n'est pas encore durable : forcer les contenus et les
+# répertoires avant de l'annoncer aux opérations destructrices.
+python3 "${SCRIPT_DIR}/../lib/world_transaction.py" sync --world "$STAGING_PATH" \
+    || die "Synchronisation durable du staging impossible : rien n'est publié."
+
 # Publication atomique : le final n'apparaît que complet. Si la destination
 # existe déjà (collision de timestamp), mv échoue et on refuse (fail-closed).
 mv -T "${STAGING_PATH}" "${BACKUP_PATH}" || die "Impossible de publier ${STAGING_PATH} vers ${BACKUP_PATH}."
+python3 "${SCRIPT_DIR}/../lib/world_transaction.py" sync --directory-only --world "$BACKUP_DIR" \
+    || die "Publication du snapshot non durable : snapshot exigé refusé."
 
 # latest atomique : lien tmp puis rename (jamais de rm -rf sur latest).
 # Un répertoire RÉEL nommé latest = anomalie : on refuse sans rien supprimer.
@@ -357,6 +373,8 @@ if [[ -d "${BACKUP_LATEST_LINK}" && ! -L "${BACKUP_LATEST_LINK}" ]]; then
 fi
 ln -sfnT "${BACKUP_PATH}" "${LATEST_TMP}" || die "Impossible de préparer le lien latest (${LATEST_TMP})."
 mv -Tf "${LATEST_TMP}" "${BACKUP_LATEST_LINK}" || { rm -f -- "${LATEST_TMP}" 2>/dev/null || true; die "Impossible de basculer latest vers ${BACKUP_PATH}."; }
+python3 "${SCRIPT_DIR}/../lib/world_transaction.py" sync --directory-only --world "$(dirname -- "$BACKUP_LATEST_LINK")" \
+    || die "Publication de latest non durable : snapshot exigé refusé."
 
 # Rétention grand-père/père/fils (GFS). Remplace l'ancienne rotation plate à N
 # jours. Chaque snapshot étant complet et indépendant (hardlinks --link-dest),
@@ -369,9 +387,15 @@ mv -Tf "${LATEST_TMP}" "${BACKUP_LATEST_LINK}" || { rm -f -- "${LATEST_TMP}" 2>/
 # (= le plus récent de la fenêtre). BACKUP_PRUNE_DRY_RUN=1 => plan seul, sans rien
 # supprimer (pour inspecter la rétention sur un serveur vivant).
 prune_gfs() {
-    local hourly_h="${BACKUP_GFS_HOURLY_HOURS:-12}"
-    local sixh_d="${BACKUP_GFS_SIXHOURLY_DAYS:-3}"
-    local daily_d="${BACKUP_GFS_DAILY_DAYS:-14}"
+    # Forensic snapshots may continue during recovery; their retention must not
+    # remove the snapshot named by an unfinished (or unreadable) journal.
+    if ! python3 "${SCRIPT_DIR}/../lib/world_transaction.py" check --world "$PZ_SOURCE_DIR"; then
+        echo "Rétention GFS différée : récupération du monde à vérifier."
+        return 0
+    fi
+    local hourly_h="${BACKUP_GFS_HOURLY_HOURS}"
+    local sixh_d="${BACKUP_GFS_SIXHOURLY_DAYS}"
+    local daily_d="${BACKUP_GFS_DAILY_DAYS}"
     local dry="${BACKUP_PRUNE_DRY_RUN:-0}"
     # Plafond de suppressions par run (0 = illimité). Supprimer un snapshot hardlinké
     # = des centaines de milliers d'unlink() ; cela reste coûteux en métadonnées. On borne

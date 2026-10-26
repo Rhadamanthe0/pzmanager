@@ -92,6 +92,49 @@ class PrivateCreationTests(unittest.TestCase):
             if scenario in {'absent', 'unsafe-parent'}:
                 self.assertFalse(state.exists())
 
+    def test_private_state_preserves_newline_ancestors_and_trailing_slashes(self):
+        for nested,unsafe,alternate in ((False,False,True),(True,False,False),(True,True,True)):
+            with self.subTest(nested=nested,unsafe=unsafe), tempfile.TemporaryDirectory(prefix='pz-private-path-',dir='/tmp') as tmp:
+                base=Path(tmp);actual=base/'parent\n';actual.mkdir(mode=0o700)
+                sibling=base/'parent'
+                if alternate:sibling.mkdir(mode=0o700)
+                runtime=actual/'inner' if nested else actual
+                runtime.mkdir(mode=0o700,exist_ok=True)
+                if unsafe:actual.chmod(0o777)
+                result=self.invoke('private_state_path',runtime)
+                if unsafe:
+                    self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                    self.assertFalse((runtime/'pzmanager').exists())
+                else:
+                    self.assertEqual(result.returncode,0,result.stderr)
+                    self.assertEqual(result.stdout,str(runtime/'pzmanager/marker')+'\n')
+                    script=self.functions['private_state_path']+'\nprivate_state_path marker'
+                    result=subprocess.run(['/bin/bash','-e','-u','-o','pipefail','-c',script],
+                                          env=dict(PATH='/usr/bin:/bin',XDG_RUNTIME_DIR=str(runtime)+'///'),
+                                          text=True,capture_output=True,timeout=10)
+                    self.assertEqual(result.returncode,0,result.stderr)
+                    self.assertEqual(result.stdout,str(runtime/'pzmanager/marker')+'\n')
+                self.assertFalse((sibling/'pzmanager').exists())
+
+    def test_private_state_repeated_slashes_do_not_hide_symlink_ancestor(self):
+        with tempfile.TemporaryDirectory(prefix='pz-private-slashes-',dir='/tmp') as tmp:
+            base=Path(tmp);real=base/'real';real.mkdir(mode=0o700)
+            (real/'inner').mkdir(mode=0o700)
+            alias=base/'alias';alias.symlink_to(real)
+            script=self.functions['private_state_path']+'\nprivate_state_path marker'
+            result=subprocess.run(['/bin/bash','-e','-u','-o','pipefail','-c',script],
+                                  env=dict(PATH='/usr/bin:/bin',XDG_RUNTIME_DIR=str(alias)+'///inner'),
+                                  text=True,capture_output=True,timeout=10)
+            self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+            self.assertFalse((real/'inner/pzmanager').exists())
+
+    def test_private_state_root_terminates_without_mutation(self):
+        # Do not create or chmod /pzmanager, including in a root test process.
+        result=self.invoke('private_state_path',Path('/'),
+                           'mkdir() { return 1; }; chmod() { return 1; }')
+        self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual(result.stdout,'')
+
     def test_creation_normale(self):
         for name in FUNCTIONS:
             with self.subTest(function=name):

@@ -8,7 +8,10 @@ set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
-source_env
+case "${1:-}" in
+    stop|status) source_env --stop ;;
+    *) source_env ;;
+esac
 
 readonly ACTION="${1:-}"
 SILENT_MODE=false
@@ -91,8 +94,14 @@ console_echoed_recently() {
 
 # Dernière frame connue du log de jeu (vide si aucune).
 last_game_frame() {
-    journalctl --user -u "${PZ_SERVICE_NAME}" -n 400 --no-pager 2>/dev/null \
-        | grep -oE 'f:[0-9]+ st:' | tail -1 | sed -E 's/^f:([0-9]+) st:$/\1/'
+    local line frame latest=""
+    while IFS= read -r line; do
+        frame="$(game_log_frame "$line")" || continue
+        latest="$frame"
+    done < <(journalctl --user -u "${PZ_SERVICE_NAME}" -n 400 --no-pager -o cat 2>/dev/null || true)
+    [[ -z "$latest" ]] || printf '%s\n' "$latest"
+    # Absence de frame = diagnostic inconnu, jamais un motif d'abandon d'arrêt.
+    return 0
 }
 
 # Nombre de joueurs actuellement connectés.
@@ -194,6 +203,28 @@ warn_players() {
     sleep 5
 }
 
+# Observer l'état complet : un bus indisponible ne vaut jamais « arrêté ».
+# Une activation peut seulement être attendue, pas interrompue avant readiness.
+shutdown_server_state() {
+    python3 - "${SCRIPT_DIR}/../lib" "$PZ_SERVICE_NAME" <<'PYSTOPSTATE'
+import sys
+sys.path.insert(0, sys.argv[1])
+from snapshot_consistency import probe, stopped
+state = probe(sys.argv[2])
+if stopped(state):
+    print('inactive')
+elif (state.get('ok') and state.get('LoadState') == 'loaded'
+      and str(state.get('MainPID', '')).isdigit()
+      and str(state.get('ControlPID', '')).isdigit()
+      and ((state.get('ActiveState') == 'active' and int(state['MainPID']) > 0
+            and state['ControlPID'] == '0') or state.get('ActiveState') == 'activating')):
+    print(state['ActiveState'])
+else:
+    print('État serveur non prouvé pour un arrêt sûr.', file=sys.stderr)
+    raise SystemExit(1)
+PYSTOPSTATE
+}
+
 shutdown_server() {
     local action="$1"
     try_acquire_maintenance_lock || true
@@ -202,7 +233,15 @@ shutdown_server() {
     # pendant le boot fait planter B42 (NPE IsoMetaGrid.save, grid=null) ->
     # crash-loop. On attend la fin du boot courant AVANT préavis, comptage et
     # arrêt. Cas normal (serveur déjà prêt) : retour immédiat.
-    if server_is_active && ! wait_for_server_ready; then
+    local state boot_deadline=$((SECONDS + 300)) remaining
+    state="$(shutdown_server_state)" || return 1
+    while [[ "$state" == activating ]]; do
+        (( SECONDS < boot_deadline )) || { log "Arrêt annulé : activation toujours en cours."; return 1; }
+        sleep 1
+        state="$(shutdown_server_state)" || return 1
+    done
+    remaining=$((boot_deadline - SECONDS))
+    if [[ "$state" == active ]] && ! wait_for_server_ready "$remaining"; then
         log "AVERTISSEMENT : la boucle de jeu n'a toujours pas démarré (timeout)."
         log "  Le serveur charge encore, ou son chargement est bloqué (cas du 02/09/2026)."
         log "  Arrêt annulé : aucune preuve que le serveur peut sauvegarder."
@@ -268,14 +307,24 @@ shutdown_server() {
         warn_players "$action"
     fi
 
-    if server_is_active; then
-        echo "Arrêt du service..."
-        systemctl --user stop "${PZ_SERVICE_NAME}"
-        sleep 5
-    fi
+    state="$(shutdown_server_state)" || return 1
+    case "$state" in
+        active)
+            echo "Arrêt du service..."
+            systemctl --user stop "${PZ_SERVICE_NAME}"
+            sleep 5
+            ;;
+        inactive) ;;
+        *) log "Arrêt annulé : état serveur en transition."; return 1 ;;
+    esac
+    state="$(shutdown_server_state)" || return 1
+    [[ "$state" == inactive ]] || { log "Arrêt non prouvé après la commande stop."; return 1; }
 
     echo "Sauvegarde..."
-    "${SCRIPT_DIR}/../backup/dataBackup.sh"
+    if ! "${SCRIPT_DIR}/../backup/dataBackup.sh"; then
+        log "Serveur arrêté, mais sauvegarde non effectuée : vérifier la configuration et le diagnostic ci-dessus."
+        return 1
+    fi
 }
 
 # systemd cannot inherit our WORLD FD. A private one-shot broker transfers the
@@ -293,9 +342,11 @@ start_with_writing_admission() {
     python3 "${SCRIPT_DIR}/../lib/world_transaction.py" check --world "$PZ_SOURCE_DIR" \
         || die "Une opération monde inachevée exige une récupération explicite."
     local start_owner_pid="$BASHPID"
+    local -a ready_options=()
+    [[ "$SILENT_MODE" == true ]] && ready_options+=(--quiet-ready)
     PZ_WRITING_START_LOCK="$(world_lock_path)"
     PZ_WRITING_START_TOKEN="$(python3 "${SCRIPT_DIR}/../internal/writing_start_admission.py" prepare \
-        --lock-path "$PZ_WRITING_START_LOCK" --pid "$start_owner_pid" --fd "$PZ_WORLD_LOCK_FD" --unit "$PZ_SERVICE_NAME")"
+        --lock-path "$PZ_WRITING_START_LOCK" --pid "$start_owner_pid" --fd "$PZ_WORLD_LOCK_FD" --unit "$PZ_SERVICE_NAME" "${ready_options[@]}")"
     trap clear_writing_start_admission EXIT
     systemctl --user start "${PZ_SERVICE_NAME}"
     clear_writing_start_admission
@@ -345,15 +396,27 @@ do_status() {
     echo "=== Project Zomboid Server Status ==="
     echo ""
 
-    if server_is_active; then
-        echo "Status: RUNNING"
-        echo "Active since: $(systemctl --user show "${PZ_SERVICE_NAME}" -p ActiveEnterTimestamp --value)"
-        [[ -p "${PZ_CONTROL_PIPE}" ]] && echo "Control pipe: Available" || echo "Control pipe: Not available"
-    else
-        echo "Status: STOPPED"
-        local result; result="$(systemctl --user show "${PZ_SERVICE_NAME}" -p Result --value)"
-        [[ "$result" != "success" ]] && echo "Last exit: $result"
-    fi
+    local state; state="$(server_state)"
+    case "$state" in
+        active)
+            echo "Status: RUNNING"
+            echo "Active since: $(systemctl --user show "${PZ_SERVICE_NAME}" -p ActiveEnterTimestamp --value)"
+            [[ -p "${PZ_CONTROL_PIPE}" ]] && echo "Control pipe: Available" || echo "Control pipe: Not available"
+            ;;
+        inactive|failed)
+            [[ "$state" == inactive ]] && echo "Status: STOPPED" || echo "Status: FAILED"
+            local result; result="$(systemctl --user show "${PZ_SERVICE_NAME}" -p Result --value)"
+            [[ "$result" != "success" ]] && echo "Last exit: $result"
+            ;;
+        activating) echo "Status: ACTIVATING" ;;
+        deactivating) echo "Status: DEACTIVATING" ;;
+        error)
+            echo "Status: UNKNOWN"
+            echo "ERREUR: état systemd de ${PZ_SERVICE_NAME} indisponible (systemctl --user)." >&2
+            return 1
+            ;;
+        *) echo "Status: UNKNOWN" ;;
+    esac
 
     [[ -L "${BACKUP_LATEST_LINK}" ]] && echo "Last backup: $(stat -c %y "${BACKUP_LATEST_LINK}" | cut -d. -f1)"
 

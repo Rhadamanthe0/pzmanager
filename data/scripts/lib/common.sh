@@ -25,15 +25,19 @@ if [[ -f "${_PZ_LIB_DIR}/server_state.sh" ]]; then source "${_PZ_LIB_DIR}/server
 unset _PZ_LIB_DIR
 
 # Charge .env avec création automatique depuis .env.example
-# Usage: source_env [racine]   (défaut : PZ_MANAGER_ROOT)
+# Usage: source_env [--read-only|--stop] [racine] (défaut : PZ_MANAGER_ROOT)
 source_env() {
+    local read_only=false
+    local stopping=false
+    if [[ "${1:-}" == --read-only ]]; then read_only=true; shift; fi
+    if [[ "${1:-}" == --stop ]]; then stopping=true; shift; fi
     local root="${1:-$PZ_MANAGER_ROOT}"
     local env_file="${root}/.env"
     local env_example="${root}/data/setupTemplates/.env.example"
 
     python3 "${PZ_MANAGER_ROOT}/data/scripts/lib/shared_memory_budget.py" identity "$env_file" || exit 1
 
-    if [[ ! -f "$env_file" ]] && [[ -f "$env_example" ]]; then
+    if ! "$read_only" && [[ ! -f "$env_file" ]] && [[ -f "$env_example" ]]; then
         # install -m 600 et non `cp` : le .env porte le webhook Discord, le token
         # du bot et la clé privée du compte de service Google (base64). Un `cp`
         # applique l'umask (022 par défaut) et publiait donc ces trois secrets en
@@ -50,12 +54,12 @@ source_env() {
     # Rattrapage pour les installations créées avant le install -m 600 ci-dessus :
     # on resserre un .env trop ouvert au lieu de se contenter de le signaler.
     # Silencieux si on n'en est pas propriétaire (rien à rattraper de toute façon).
-    if [[ -O "$env_file" && "$(stat -c %a "$env_file" 2>/dev/null || echo 600)" != "600" ]]; then
+    if ! "$read_only" && [[ -O "$env_file" && "$(stat -c %a "$env_file" 2>/dev/null || echo 600)" != "600" ]]; then
         chmod 600 "$env_file" 2>/dev/null || true
     fi
 
     source "$env_file"
-    apply_env_defaults
+    apply_env_defaults "$stopping"
 }
 
 # Valeurs par défaut de TOUTE la configuration.
@@ -71,6 +75,7 @@ source_env() {
 # déduite (PZ_MANAGER_ROOT) exactement comme le fait le gabarit. Conséquence utile :
 # .env redevient un fichier de SURCHARGE — `:=` n'écrase jamais une valeur définie.
 apply_env_defaults() {
+    local stopping="${1:-false}"
     # --- Utilisateur et chemins de base ---
     : "${PZ_USER:=$(id -un)}"
     # C17 (split-users) : la JVM tourne sous PZ_GAME_USER, l'admin sous
@@ -97,8 +102,32 @@ apply_env_defaults() {
     : "${PZ_SOURCE_DIR:=${PZ_MANAGER_DIR}/Zomboid}"
     # Nom du monde PZ ; "servertest" est le défaut du jeu. Voir .env.example.
     : "${PZ_SERVER_NAME:=servertest}"
-    : "${PZ_DB_PATH:=${PZ_SOURCE_DIR}/db/${PZ_SERVER_NAME}.db}"
-    : "${PZ_INI_PATH:=${PZ_SOURCE_DIR}/Server/${PZ_SERVER_NAME}.ini}"
+    # Le wrapper du jeu change de cwd ; un chemin relatif n'aurait pas le même
+    # sens pour les commandes CLI et la JVM.
+    local launch_path
+    for launch_path in PZ_SOURCE_DIR PZ_INSTALL_DIR PZ_CONTROL_PIPE; do
+        if [[ "$stopping" != true && "${!launch_path}" != /* ]]; then
+            echo "ERREUR: ${launch_path} doit être un chemin absolu commun au jeu et aux outils." >&2
+            return 1
+        fi
+    done
+    if [[ "$stopping" != true ]]; then
+        python3 "${PZ_MANAGER_ROOT}/data/scripts/lib/native_identity.py" "$PZ_SOURCE_DIR" "$PZ_SERVER_NAME" || return 1
+    fi
+    # Le jeu dérive ces deux fichiers de cachedir/servername : aucun réglage
+    # indépendant ne doit faire écrire les outils dans un autre fichier.
+    local expected_db="${PZ_SOURCE_DIR}/db/${PZ_SERVER_NAME}.db"
+    local expected_ini="${PZ_SOURCE_DIR}/Server/${PZ_SERVER_NAME}.ini"
+    if [[ "$stopping" != true && -n "${PZ_DB_PATH:-}" && "$PZ_DB_PATH" != "$expected_db" ]]; then
+        echo 'ERREUR: PZ_DB_PATH est désormais calculé depuis PZ_SOURCE_DIR et PZ_SERVER_NAME ; supprimer cette ancienne valeur contradictoire du .env ou de l’environnement.' >&2
+        return 1
+    fi
+    if [[ "$stopping" != true && -n "${PZ_INI_PATH:-}" && "$PZ_INI_PATH" != "$expected_ini" ]]; then
+        echo 'ERREUR: PZ_INI_PATH est désormais calculé depuis PZ_SOURCE_DIR et PZ_SERVER_NAME ; supprimer cette ancienne valeur contradictoire du .env ou de l’environnement.' >&2
+        return 1
+    fi
+    PZ_DB_PATH="$expected_db"
+    PZ_INI_PATH="$expected_ini"
 
     # --- SteamCMD ---
     : "${STEAMCMD_PATH:=/usr/games/steamcmd}"
@@ -119,6 +148,9 @@ apply_env_defaults() {
     : "${PZ_JDK_SOURCE:=debian}"
 
     # --- Sauvegardes ---
+    : "${BACKUP_GFS_HOURLY_HOURS:=12}"
+    : "${BACKUP_GFS_SIXHOURLY_DAYS:=3}"
+    : "${BACKUP_GFS_DAILY_DAYS:=14}"
     : "${BACKUP_DIR:=${PZ_DATA_DIR}/dataBackups}"
     : "${BACKUP_LATEST_LINK:=${BACKUP_DIR}/latest}"
     : "${SYNC_BACKUPS_DIR:=${PZ_DATA_DIR}/fullBackups}"
@@ -144,6 +176,7 @@ apply_env_defaults() {
            PZ_SERVER_NAME PZ_DB_PATH PZ_INI_PATH \
            STEAMCMD_PATH STEAM_APP_ID STEAM_BETA_BRANCH STEAM_LOGIN \
             JAVA_VERSION JAVA_PACKAGE JAVA_PATH PZ_JDK_SOURCE \
+           BACKUP_GFS_HOURLY_HOURS BACKUP_GFS_SIXHOURLY_DAYS BACKUP_GFS_DAILY_DAYS \
            BACKUP_DIR BACKUP_LATEST_LINK SYNC_BACKUPS_DIR \
            LOG_BASE_DIR LOG_ZOMBOID_DIR LOG_MAINTENANCE_DIR LOG_RETENTION_DAYS \
            WHITELIST_PURGE_DAYS WHITELIST_LEDGER
@@ -264,34 +297,53 @@ is_steamid64() { [[ "$1" =~ ^7656119[0-9]{10}$ ]]; }
 # jamais supprimée, y compris après une purge — si le joueur revient, il retrouve
 # son ancienneté réelle.
 
-# Pseudos des comptes JAMAIS CONNECTÉS dont le registre dit qu'ils datent de plus
-# de <days> jours. Comparaison lexicographique : le format ISO se trie comme une
-# date, donc pas d'arithmétique d'époques.
-ledger_stale_usernames() {
-    local days="$1" cutoff
-    cutoff="$(date -d "-${days} days" '+%F %T')"
-    [[ -f "${WHITELIST_LEDGER}" ]] || return 0
-    awk -F';' -v cutoff="$cutoff" '
-        /^#/ { next }
-        NF >= 3 && $3 != "" && $3 < cutoff { print $1 }
-    ' "${WHITELIST_LEDGER}"
+# Expression SQLite commune au registre et à lastConnection. Formats natifs
+# date ou datetime seulement ; +0 days normalise aussi les jours impossibles
+# (SQLite accepte sinon le 30 février). Aucune date invalide ne prouve un âge.
+account_date_valid_sql() {
+    local value="$1" digits='[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+    echo "((${value} GLOB '${digits}' OR
+        (${value} GLOB '${digits} [0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
+         AND substr(${value},12,2) < '24'
+         AND substr(${value},15,2) < '60'
+         AND substr(${value},18,2) < '60'))
+        AND date(substr(${value},1,10), '+0 days') = substr(${value},1,10))"
 }
 
-# Clause SQL WHERE identifiant les comptes `whitelist` inactifs depuis >= <days>
-# jours, le compte interne 'admin' toujours exclu. Deux cas réunis :
-#   - dernière connexion antérieure à <days> jours ;
-#   - JAMAIS connecté ET inscrit au registre depuis plus de <days> jours.
+# Pseudos des comptes JAMAIS CONNECTÉS dont le registre porte une vraie date
+# antérieure au seuil. Les valeurs sont des littéraux SQL échappés ; le même
+# validateur protège les deux sources, sans modifier le CSV ni la base.
+ledger_stale_usernames() {
+    local days="$1" cutoff rows valid
+    cutoff="$(date -d "-${days} days" '+%F %T')" || return 1
+    [[ -f "${WHITELIST_LEDGER}" ]] || return 0
+    rows="$(awk -F';' '
+        BEGIN { print "(NULL, NULL)" }
+        /^#/ { next }
+        NF == 3 {
+            gsub(/\047/, "\047\047", $1)
+            gsub(/\047/, "\047\047", $3)
+            printf ", (\047%s\047, \047%s\047)\n", $1, $3
+        }
+    ' "${WHITELIST_LEDGER}")" || return 1
+    valid="$(account_date_valid_sql created_at)"
+    printf '%s\n' "WITH ledger(username, created_at) AS (VALUES ${rows})
+        SELECT username FROM ledger WHERE ${valid} AND created_at < '${cutoff}';" | sqlite3 ':memory:'
+}
+
+# Clause SQL WHERE de purge : seuil strict de <days> jours, 'admin' exclu.
+#   - dernière connexion antérieure à la date limite UTC ;
+#   - JAMAIS connecté et date du registre antérieure au seuil horodaté local.
 # Partagée par la purge auto (purgeInactivePlayers.sh) et la purge interactive
 # (manageWhitelist.sh) pour qu'elles ciblent EXACTEMENT les mêmes comptes — ce
 # prédicat ne doit exister qu'à un seul endroit.
 #
 # Un compte jamais connecté ET absent du registre n'est JAMAIS purgé : on ignore
-# son âge, donc on s'abstient. C'est ce qui manquait avant le 18/08/2026, où la
-# clause déclarait inactif tout compte sans lastConnection quel que soit son âge —
-# un joueur inscrit le jour même perdait son accès au démarrage suivant.
+# son âge, donc on s'abstient.
 inactive_where_clause() {
     local days="$1"
-    local clause="(lastConnection < date('now', '-${days} days') AND lastConnection IS NOT NULL AND lastConnection <> '')"
+    local valid; valid="$(account_date_valid_sql lastConnection)"
+    local clause="(${valid} AND lastConnection < date('now', '-${days} days'))"
 
     local -a stale=()
     local u
@@ -395,40 +447,45 @@ die_server_active() {
 Arrête-le puis relance la commande :  pzm server stop 2m --reason \"${context}\""
 }
 
-# Marqueur journald de fin d'initialisation Lua, antérieur à la boucle de jeu.
-#
-# ⚠️ Il est émis à `f:0`, donc AVANT le premier tour de boucle : il ne prouve pas
-# à lui seul qu'un `quit` est sûr. Il était présent dès 13:32:13 le 02/09/2026
-# dans la session de 13:31 dont la boucle n'a jamais démarré, 3 joueurs connectés
-# et 0 frame en 15 min — c'est exactement la fenêtre où le `quit` fait planter
-# B42. Ne pas s'en servir seul : utiliser game_loop_started() ci-dessous.
-#
-readonly SERVER_READY_MARKER="LuaNet: Initialization [DONE]"
-
-# Une frame positive du boot courant prouve que la simulation a démarré.
-# L'inverse est faux : le log utilise IsoWorld.getFrameNo(), distinct du compteur
-# de la boucle serveur. Un serveur vide sain peut rester à f:0 (24/10/2026).
-# Retour : 0 = frame positive, 1 = f:0 seulement, 2 = aucune frame exploitable.
-# Dans les deux derniers cas, wait_for_server_ready sonde la vraie console.
-game_loop_started() {
-    local since_epoch="$1" lines
-    lines="$(journalctl --user -u "${PZ_SERVICE_NAME}" --since "@${since_epoch}" \
-        -n 400 --no-pager 2>/dev/null | grep -oE 'f:[0-9]+ st:' || true)"
-    [[ -n "$lines" ]] || return 2
-    grep -qE 'f:[1-9][0-9]* st:' <<< "$lines"
+# Identité active utilisée pour attribuer puis revérifier une preuve de boot.
+server_readiness_invocation() {
+    local properties key value state="" invocation=""
+    properties="$(systemctl --user show "${PZ_SERVICE_NAME}" \
+        -p ActiveState -p InvocationID --no-pager 2>/dev/null)" || return 1
+    while IFS='=' read -r key value; do
+        case "$key" in
+            ActiveState) state="$value" ;;
+            InvocationID) invocation="$value" ;;
+        esac
+    done <<< "$properties"
+    [[ "$state" == active && "$invocation" =~ ^[[:xdigit:]]{32}$ ]] || return 1
+    printf '%s\n' "$invocation"
 }
 
-# Le marqueur de fin d'init Lua est-il présent depuis l'instant donné (epoch) ?
-# Filtrage par journald (--grep), pas par un `-n N | grep` : le marqueur tombe au
-# DÉBUT du boot et sortait donc du tampon des N dernières lignes dès que le
-# serveur avait un peu écrit. `--grep` est une regex -> on cherche la partie sans
-# crochets ([DONE] serait une classe de caractères) puis on confirme en littéral.
-marker_seen_since() {
-    local since_epoch="$1" hits
-    hits="$(journalctl --user -u "${PZ_SERVICE_NAME}" --since "@${since_epoch}" \
-        --grep 'LuaNet: Initialization' -n 1 --no-pager 2>/dev/null \
-        | grep -cF "$SERVER_READY_MARKER" || true)"
-    (( hits > 0 ))
+# DebugLog.formatLogStringForConsole assemble le préfixe avant le premier > :
+# sévérité, canal, f:, t:/st: facultatifs puis site « at ». Le corps est libre.
+# Les timestamps natifs peuvent employer des espaces de groupement Unicode.
+game_log_frame() {
+    local line="$1"
+    local native='^(LOG|WARN|ERROR)[[:space:]]*:[[:space:]]*([A-Za-z]+)[[:space:]]+f:([0-9]+)([[:space:]]+t:[0-9,[:space:]  ]+)?([[:space:]]+st:[0-9,[:space:]  ]+)?([[:space:]]+at[[:space:]]+[^>]*)?>'
+    [[ "$line" =~ $native ]] || return 1
+    printf '%s\n' "${BASH_REMATCH[3]}"
+}
+
+# Retour : 0 = frame native positive, 1 = f:0 seulement, 2 = aucune frame.
+# Le payload d'un message ne peut jamais transformer une frame f:0 en preuve.
+game_loop_started() {
+    local since_epoch="$1" invocation="$2" lines line frame found=false
+    [[ "$invocation" =~ ^[[:xdigit:]]{32}$ ]] || return 2
+    lines="$(journalctl --user --since "@${since_epoch}" -n 400 --no-pager -o cat \
+        "INVOCATION_ID=${invocation}" + "_SYSTEMD_INVOCATION_ID=${invocation}" 2>/dev/null || true)"
+    while IFS= read -r line; do
+        frame="$(game_log_frame "$line")" || continue
+        found=true
+        [[ "$frame" != *[1-9]* ]] || return 0
+    done <<< "$lines"
+    $found && return 1
+    return 2
 }
 
 # `players` est exécuté dans la boucle principale, après refreshAnimSets.
@@ -454,20 +511,27 @@ console_players_responded() {
 # Retour 0 dès que le boot courant est terminé (ou si le serveur n'est pas actif :
 # rien à attendre). Retour 1 sur timeout (actif mais fin de boot jamais signalée)
 # -> pz.sh refuse l'arrêt : un timeout ne prouve pas qu'un SIGKILL est sûr.
-# On ne scanne QUE le boot courant (depuis
-# ActiveEnterTimestamp) pour ne pas confondre avec le marqueur d'un boot antérieur.
+# Les preuves sont filtrées par InvocationID puis l'identité est revérifiée :
+# deux boots dans la même seconde ne doivent jamais partager une preuve.
 # Usage: wait_for_server_ready [timeout_seconds]
 wait_for_server_ready() {
     local timeout="${1:-300}"
     server_is_active || return 0
 
-    local since_ts since_epoch
+    local since_ts since_epoch invocation current_invocation
     since_ts="$(systemctl --user show "${PZ_SERVICE_NAME}" -p ActiveEnterTimestamp --value 2>/dev/null)"
     since_epoch="$(date -d "$since_ts" +%s 2>/dev/null || echo 0)"
-    # Si l'horodatage de boot est illisible, on ne peut pas cibler le boot courant
-    # sans risquer de matcher un marqueur ancien -> on dégrade au comportement
-    # historique (pas d'attente) plutôt que de bloquer ou de fausser la détection.
-    (( since_epoch > 0 )) || return 0
+    # Sans horodatage exploitable, aucune ligne du journal ne prouve le boot
+    # courant. Une absence de preuve ne doit jamais autoriser un arrêt.
+    if [[ -z "$since_ts" ]] || (( since_epoch <= 0 )); then
+        echo "AVERTISSEMENT : horodatage du boot illisible ; disponibilité non prouvée." >&2
+        return 1
+    fi
+
+    invocation="$(server_readiness_invocation)" || {
+        echo "AVERTISSEMENT : invocation active illisible ; disponibilité non prouvée." >&2
+        return 1
+    }
 
     # Feedback : le chemin rapide (marqueur déjà présent) reste MUET. On n'affiche
     # quelque chose que si on doit réellement patienter, pour qu'un stop/restart
@@ -487,8 +551,12 @@ wait_for_server_ready() {
         # l'uptime, donc utilisable aussi bien sur un serveur qui vient de démarrer
         # que sur un qui tourne depuis des jours.
         local probe=0
-        game_loop_started "$since_epoch" || probe=$?
+        game_loop_started "$since_epoch" "$invocation" || probe=$?
         if (( probe == 0 )); then
+            current_invocation="$(server_readiness_invocation)" && [[ "$current_invocation" == "$invocation" ]] || {
+                echo "AVERTISSEMENT : invocation remplacée ou illisible ; disponibilité non prouvée." >&2
+                return 1
+            }
             $announced && echo "Boucle de jeu démarrée — poursuite de l'opération."
             return 0
         fi
@@ -502,6 +570,10 @@ wait_for_server_ready() {
         budget=$remaining
         (( budget <= 8 )) || budget=8
         if console_players_responded "$budget"; then
+            current_invocation="$(server_readiness_invocation)" && [[ "$current_invocation" == "$invocation" ]] || {
+                echo "AVERTISSEMENT : invocation remplacée ou illisible ; disponibilité non prouvée." >&2
+                return 1
+            }
             $announced && echo "La boucle de jeu répond — poursuite de l'opération."
             return 0
         fi
@@ -541,6 +613,8 @@ private_state_path() {
     user="$(id -un 2>/dev/null || echo unknown)"
     runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u 2>/dev/null || echo 0)}"
     [[ "$runtime" == /* ]] || return 1
+    # Garder les LF des noms ; les expansions évitent le retrait de LF par $(...).
+    while [[ "$runtime" != / && "$runtime" == */ ]]; do runtime="${runtime%/}"; done
     if [[ -e "$runtime" || -L "$runtime" ]]; then
         # Refuser une racine runtime détournée ou possédée par un autre UID.
         [[ -d "$runtime" && ! -L "$runtime" && -O "$runtime" ]] || return 1
@@ -552,8 +626,10 @@ private_state_path() {
 
     # Un répertoire final en 0700 ne suffit pas si son parent est remplaçable.
     # Seul /tmp root:sticky peut être ouvert en écriture à d'autres utilisateurs.
-    parent="$(dirname -- "$dir")"
+    parent="${dir%/*}"
+    [[ -n "$parent" ]] || parent=/
     while :; do
+        while [[ "$parent" != / && "$parent" == */ ]]; do parent="${parent%/}"; done
         [[ -d "$parent" && ! -L "$parent" ]] || return 1
         owner="$(stat -c %u -- "$parent" 2>/dev/null)" || return 1
         mode="$(stat -c %a -- "$parent" 2>/dev/null)" || return 1
@@ -562,7 +638,8 @@ private_state_path() {
             [[ "$owner" == 0 && -k "$parent" ]] || return 1
         fi
         [[ "$parent" == / ]] && break
-        parent="$(dirname -- "$parent")"
+        parent="${parent%/*}"
+        [[ -n "$parent" ]] || parent=/
     done
 
     if [[ -e "$dir" || -L "$dir" ]]; then
@@ -607,15 +684,15 @@ private_state_path() {
 # les numéros 200/201 étaient écrits en clair dans trois fichiers, et un appelant
 # qui devinait « 200 » se retrouvait à déverrouiller dans le vide le jour où il
 # changeait (la maintenance suivante se croyait alors déjà en cours et s'auto-ignorait).
-readonly MAINTENANCE_LOCK_FILE="/tmp/pzmanager-maintenance-$(id -un).lock"
+MAINTENANCE_LOCK_FILE=""
 MAINTENANCE_LOCK_FD=""
 
 # Verrou de cycle de vie partagé par les commandes `pzm server` et les écritures
 # directes dans les bases du monde. Une commande qui exige un serveur arrêté le
 # conserve de sa vérification jusqu'à sa dernière écriture : `pzm server start`
 # ne peut donc pas s'intercaler entre les deux.
-SERVERCTL_LOCK_FILE=""
-SERVERCTL_LOCK_FD=""
+: "${SERVERCTL_LOCK_FILE:=}"
+: "${SERVERCTL_LOCK_FD:=}"
 
 # Le chemin partagé prévisible permettait à un autre utilisateur de tenir
 # un flock adverse. Résoudre seulement à l'acquisition : common.sh sert aussi
@@ -685,14 +762,33 @@ acquire_serverctl_lock_or_die() {
     [[ -n "$message" ]] || message="Une opération serveur ou une écriture dans le monde est déjà en cours. Attends qu'elle se termine."
     SERVERCTL_LOCK_FILE="$(serverctl_lock_path)" \
         || die "Répertoire ou fichier du verrou serverctl non sûr : opération refusée."
+    if [[ -n "$SERVERCTL_LOCK_FD" ]]; then
+        # Une variable héritée ne prouve rien : vérifier l'inode ET l'OFD qui
+        # porte encore un verrou FLOCK exclusif avant toute réentrance.
+        local line held=0
+        local exclusive='^lock:[[:space:]]+[0-9]+:[[:space:]]+FLOCK[[:space:]]+ADVISORY[[:space:]]+WRITE[[:space:]]'
+        if [[ "$SERVERCTL_LOCK_FD" =~ ^[0-9]+$ && "$SERVERCTL_LOCK_FILE" -ef "/proc/self/fd/$SERVERCTL_LOCK_FD" ]]; then
+            while IFS= read -r line; do
+                if [[ "$line" =~ $exclusive ]]; then held=1; break; fi
+            done 2>/dev/null < "/proc/self/fdinfo/$SERVERCTL_LOCK_FD" || held=0
+        fi
+        (( held )) || die "Réentrance serverctl non prouvée."
+        return 0
+    fi
     try_lock "$SERVERCTL_LOCK_FILE" SERVERCTL_LOCK_FD || die "$message"
+    export SERVERCTL_LOCK_FILE SERVERCTL_LOCK_FD
 }
 
 # Verrou de maintenance, partagé par pz.sh / modcheck / performFullMaintenance.
 # Usage: try_acquire_maintenance_lock [lock_file]
 # Returns: 0 si acquis, 1 s'il est déjà tenu.
 try_acquire_maintenance_lock() {
-    try_lock "${1:-$MAINTENANCE_LOCK_FILE}" MAINTENANCE_LOCK_FD
+    if [[ -n "${1:-}" ]]; then
+        MAINTENANCE_LOCK_FILE="$1"
+    else
+        MAINTENANCE_LOCK_FILE="$(private_state_path maintenance.lock)" || return 1
+    fi
+    try_lock "$MAINTENANCE_LOCK_FILE" MAINTENANCE_LOCK_FD
 }
 
 # Libère le verrou pris par try_acquire_maintenance_lock. Passe par ici plutôt que
@@ -726,7 +822,8 @@ case "$_pz_caller" in
     "${_pz_guard_root}"/data/scripts/core/*.sh|"${_pz_guard_root}"/data/scripts/admin/*.sh|"${_pz_guard_root}"/data/scripts/backup/*.sh|"${_pz_guard_root}"/data/scripts/internal/*.sh|"${_pz_guard_root}"/data/scripts/discord/*.sh)
         if [[ "$(readlink -f -- "$0")" == "$(readlink -f -- "$_pz_caller")" ]] \
             && ! { [[ "$_pz_caller" == */core/pz.sh && "${1:-}" == status ]] \
-                || [[ "$_pz_caller" == */internal/checkDocsDuplication.sh ]]; }; then
+                || [[ "$_pz_caller" == */internal/checkDocsDuplication.sh ]] \
+                || [[ "$_pz_caller" == */internal/startServer.sh && "${1:-}" == --check ]]; }; then
             if ! python3 "${PZ_MANAGER_ROOT}/data/scripts/lib/shared_memory_budget.py" inside; then
                 exec bash "${PZ_MANAGER_ROOT}/data/scripts/lib/run_in_pz_slice.sh" /bin/bash "$0" "$@"
             fi

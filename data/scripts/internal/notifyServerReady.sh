@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Annonce Discord uniquement après la première frame de la boucle de jeu.
+# Annonce Discord après preuve attribuable de disponibilité de la boucle de jeu.
 # Le marqueur "*** SERVER STARTED ****" (f:0) ne suffit pas en B42.
 set -euo pipefail
 
@@ -92,17 +92,29 @@ fi
 # Après authentification de l'invocation et acquisition du verrou, un
 # démarrage silencieux est marqué comme consommé. Une seconde exécution pour la
 # même invocation ne doit pas envoyer une annonce après consommation du drapeau.
+readonly INVOCATION_SILENT_FLAG="${LOCK_FILE%.lock}.silent"
+quiet_current_boot=false
+if [[ -e "$INVOCATION_SILENT_FLAG" || -L "$INVOCATION_SILENT_FLAG" ]]; then
+    if [[ ! -f "$INVOCATION_SILENT_FLAG" || -L "$INVOCATION_SILENT_FLAG" || ! -O "$INVOCATION_SILENT_FLAG" ]] ||
+       [[ "$(stat -c '%a:%h' -- "$INVOCATION_SILENT_FLAG" 2>/dev/null)" != 600:1 ]]; then
+        echo "[pz-ready] Marqueur silencieux invalide." >&2
+        exit 1
+    fi
+    rm -- "$INVOCATION_SILENT_FLAG"
+    quiet_current_boot=true
+fi
 if [[ -f "$SILENT_FLAG" ]]; then
     rm -f -- "$SILENT_FLAG"
     if [[ -f "$LEGACY_SILENT_FLAG" ]]; then
         : > "$LEGACY_CONSUMED_FLAG"
     fi
-    printf '%s\n' "$BOOT_ID" > "$LOCK_FILE"
-    exit 0
-fi
-if [[ -f "$LEGACY_SILENT_FLAG" && ! -f "$LEGACY_CONSUMED_FLAG" ]]; then
+    quiet_current_boot=true
+elif [[ -f "$LEGACY_SILENT_FLAG" && ! -f "$LEGACY_CONSUMED_FLAG" ]]; then
     : > "$LEGACY_CONSUMED_FLAG"
     echo "[pz-ready] Ancien marqueur de maintenance consommé une fois (nettoyage hors sandbox requis)." >&2
+    quiet_current_boot=true
+fi
+if $quiet_current_boot; then
     printf '%s\n' "$BOOT_ID" > "$LOCK_FILE"
     exit 0
 fi
@@ -131,7 +143,7 @@ exec {JOURNAL_FD}< <(
     # L'ID reste celui du démarrage courant, pas une fenêtre horodatée.
     journalctl -n all --follow --no-pager -o cat \
         "INVOCATION_ID=${BOOT_ID}" + "_SYSTEMD_INVOCATION_ID=${BOOT_ID}" \
-        --grep 'f:[1-9][0-9]* st:'
+        --grep 'f:[1-9][0-9]*'
 )
 JOURNAL_PID=$!
 
@@ -145,8 +157,28 @@ while (( SECONDS < deadline )); do
     result=0
     line=""
     IFS= read -r -t "$POLL_INTERVAL" -u "$JOURNAL_FD" line || result=$?
+    ready=false
     if (( result == 0 )); then
-        [[ "$line" =~ f:[1-9][0-9]*[[:space:]]st: ]] || continue
+        if frame="$(game_log_frame "$line")" && [[ "$frame" == *[1-9]* ]]; then
+            ready=true
+        fi
+    elif (( result <= 128 )); then
+        # Bash read -t : un dépassement rend >128 ; EOF rend 1.
+        echo "[pz-ready] Le suivi journald s'est terminé avant la preuve de disponibilité." >&2
+        exit 1
+    fi
+
+    # PauseEmpty peut laisser un serveur vide sain à f:0. Réutiliser la preuve
+    # native de common.sh : réponse players liée à cette commande/invocation,
+    # jamais un écho console ni un marqueur Lua ressemblant à la réponse.
+    if ! $ready; then
+        budget=$(( deadline - SECONDS ))
+        (( budget > 8 )) && budget=8
+        if (( budget > 0 )) && console_players_responded "$budget"; then
+            ready=true
+        fi
+    fi
+    if $ready; then
         if ! same_running_boot; then
             echo "[pz-ready] Démarrage remplacé avant l'annonce : abandon." >&2
             exit 0
@@ -160,12 +192,7 @@ while (( SECONDS < deadline )); do
         echo "[pz-ready] Échec de la notification Discord de disponibilité." >&2
         exit 1
     fi
-    # Bash read -t : un dépassement d'attente rend >128 ; EOF rend 1.
-    if (( result <= 128 )); then
-        echo "[pz-ready] Le suivi journald s'est terminé avant la première frame." >&2
-        exit 1
-    fi
 done
 
-echo "[pz-ready] Aucune frame après ${READY_TIMEOUT}s : annonce abandonnée." >&2
+echo "[pz-ready] Aucune frame ni réponse console attribuable après ${READY_TIMEOUT}s : annonce abandonnée." >&2
 exit 1

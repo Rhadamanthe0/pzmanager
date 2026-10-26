@@ -16,7 +16,8 @@ def game_line(line):
     """Retirer seulement un préfixe connu du journal du jeu, sans texte arbitraire."""
     prefix = re.fullmatch(
         r"(LOG|WARN|ERROR)\s*:\s*([A-Za-z]+)\s+"
-        r"(?:f:[0-9]+\s+st:[0-9,\s]+|,\s*[0-9]+)>\s*(.*)", line)
+        r"(?:f:[0-9]+(?:\s+t:[0-9,\s]+)?(?:\s+st:[0-9,\s]+)?"
+        r"(?:\s+at\s+[^>]*)?|,\s*[0-9]+)>\s*(.*)", line)
     return (prefix[3], prefix[1], prefix[2]) if prefix else (line, None, None)
 
 

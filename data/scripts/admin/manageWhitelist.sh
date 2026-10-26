@@ -7,9 +7,9 @@
 # Modèle B42 (>= 42.13.2) : le serveur tourne en Open=false et autorise les
 # joueurs via une LISTE BLANCHE DE STEAMID (table `allowedsteamid`). Le joueur
 # se connecte ensuite avec son pseudo et CHOISIT lui-même son mot de passe
-# (hashé en bcrypt par le serveur). On ne touche donc plus au mot de passe en
-# base : add/remove pilotent la console du serveur (addsteamid/removesteamid/
-# banid) via sendCommand.sh. Le serveur DOIT être démarré pour add/remove.
+# (hashé en bcrypt par le serveur). add/remove pilotent la console
+# du serveur (addsteamid/removesteamid/banid) via sendCommand.sh.
+# Le serveur DOIT être démarré pour add/remove.
 #
 # Deux niveaux distincts, à ne pas confondre — d'où le suffixe -account :
 #   - remove          agit sur le STEAMID : retire l'autorisation, donc TOUS les
@@ -32,9 +32,9 @@
 #   resetpassword <username>      - Reset le mot de passe d'un joueur
 #   purge [delay] [--delete]      - Lister/supprimer les comptes inactifs
 #
-# add/remove/resetpassword passent par la console -> SERVEUR DÉMARRÉ.
-# remove-account/rename-account/purge --delete écrivent en base -> SERVEUR
-# ARRÊTÉ (refus explicite sinon). Pas de snapshot dédié : le serveur est déjà
+# add/remove passent par la console -> SERVEUR DÉMARRÉ.
+# remove-account/rename-account/resetpassword/purge --delete écrivent en base
+# -> SERVEUR ARRÊTÉ (refus explicite sinon). Pas de snapshot dédié : le serveur est déjà
 # arrêté (donc le backup fait à l'arrêt couvre l'état) et les backups horaires
 # GFS (pzm backup list) sont là -> restauration via pzm backup restore.
 #
@@ -65,6 +65,7 @@ readonly SEND_COMMAND="${SCRIPT_DIR}/../internal/sendCommand.sh"
 readonly ACTION="${1:-}"
 
 check_database() {
+    python3 "${SCRIPT_DIR}/../lib/account_safety.py" validate-db --db "$DB_PATH" || exit 1
     [[ -f "$DB_PATH" ]] || die "Base de données introuvable: $DB_PATH"
 }
 
@@ -77,6 +78,23 @@ Lancer le serveur: pzm server start"
 
 run_console() {
     "${SEND_COMMAND}" "$@"
+}
+
+# Transport success only proves an exchange. Require the native command result
+# AND the effective SQLite postcondition before claiming an access change.
+run_console_confirmed() {
+    local command="$1" steamid="$2" table="$3" expected="$4" pattern="$5"
+    local output observed attempt
+    output="$(run_console "$command" "$steamid")" || die "Résultat indéterminé : commande console en échec."
+    printf '%s\n' "$output"
+    grep -qE "$pattern" <<< "$output" \
+        || die "Résultat indéterminé : aucune confirmation métier de ${command} pour ${steamid}."
+    for attempt in {1..20}; do
+        observed="$(sqlite3 -readonly "$DB_PATH" "SELECT EXISTS(SELECT 1 FROM ${table} WHERE steamid='${steamid}');" 2>/dev/null)" || observed=""
+        [[ "$observed" != "$expected" ]] || return 0
+        sleep 0.1
+    done
+    die "Résultat indéterminé : état SQLite attendu non confirmé pour ${steamid} ; vérifier la liste avant de réessayer."
 }
 
 validate_steamid() {
@@ -106,37 +124,39 @@ list_whitelist() {
     # comptes/SteamID) -> on REGROUPE par SteamID (GROUP BY) et on concatène les
     # pseudos, sinon le LEFT JOIN démultiplie les lignes et le nombre affiché ne
     # correspond plus au total d'autorisations.
-    if ! sqlite3 -header -column "$DB_PATH" \
+    local results allowed_count count banned_table banned_count
+    wl_sql_or_die results "$DB_PATH" \
         "SELECT a.steamid AS steamid,
                 COALESCE(GROUP_CONCAT(w.username, ', '), '(jamais connecté)') AS comptes,
                 MAX(w.lastConnection) AS derniere_connexion
          FROM allowedsteamid a
          LEFT JOIN whitelist w ON w.steamid = a.steamid
          GROUP BY a.steamid
-         ORDER BY derniere_connexion DESC" 2>/dev/null; then
-        echo "(table allowedsteamid illisible)"
-    fi
-    local allowed_count
-    allowed_count=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM allowedsteamid" 2>/dev/null || echo "0")
+         ORDER BY derniere_connexion DESC" -header -column
+    [[ -z "$results" ]] || echo "$results"
+    wl_sql_or_die allowed_count "$DB_PATH" "SELECT COUNT(*) FROM allowedsteamid"
     echo ""
     echo "Total: $allowed_count SteamID autorisé(s)"
 
     echo ""
     echo "=== Comptes enregistrés (table whitelist) ==="
     echo ""
-    sqlite3 -header -column "$DB_PATH" "SELECT $WHITELIST_COLUMNS FROM whitelist ORDER BY lastConnection DESC" 2>/dev/null || true
-    local count
-    count=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist" 2>/dev/null || echo "0")
+    wl_sql_or_die results "$DB_PATH" "SELECT $WHITELIST_COLUMNS FROM whitelist ORDER BY lastConnection DESC" -header -column
+    [[ -z "$results" ]] || echo "$results"
+    wl_sql_or_die count "$DB_PATH" "SELECT COUNT(*) FROM whitelist"
     echo ""
     echo "Total: $count compte(s)"
 
-    local banned_count
-    banned_count=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM bannedid" 2>/dev/null || echo "0")
+    # La table optionnelle peut manquer ; une lecture échouée ne prouve pas son absence.
+    wl_sql_or_die banned_table "$DB_PATH" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='bannedid'"
+    [[ "$banned_table" -gt 0 ]] || return 0
+    wl_sql_or_die banned_count "$DB_PATH" "SELECT COUNT(*) FROM bannedid"
     if [[ "$banned_count" -gt 0 ]]; then
         echo ""
         echo "=== SteamID bannis ($banned_count) ==="
         echo ""
-        sqlite3 -header -column "$DB_PATH" "SELECT steamid, reason FROM bannedid" 2>/dev/null || true
+        wl_sql_or_die results "$DB_PATH" "SELECT steamid, reason FROM bannedid" -header -column
+        echo "$results"
     fi
 }
 
@@ -161,14 +181,14 @@ Le SteamID64 fait 17 chiffres et commence par 7656119 (https://steamid.xyz/)."
 
     # Déjà autorisé ?
     local already
-    already=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM allowedsteamid WHERE steamid = '$steamid'" 2>/dev/null || echo "0")
+    wl_sql_or_die already "$DB_PATH" "SELECT COUNT(*) FROM allowedsteamid WHERE steamid = '$steamid'"
     if [[ "$already" -ge 1 ]]; then
         echo "ℹ️  SteamID déjà autorisé: $steamid"
         exit 0
     fi
 
     echo "Autorisation du SteamID sur le serveur..."
-    run_console addsteamid "$steamid"
+    run_console_confirmed addsteamid "$steamid" allowedsteamid 1 "^SteamID ${steamid} added to allowed SteamIDs$"
 
     echo ""
     echo "✓ SteamID autorisé: $steamid${label:+  (joueur: $label)}"
@@ -220,20 +240,34 @@ Exemple: ${CMD} remove \"76561198012345678\" --ban"
     if ! is_steamid64 "$identifier"; then
         reject_name_for_remove "$identifier"
     fi
-    local steamid="$identifier" username=""
+    local steamid="$identifier" username="" banned=0
     validate_steamid "$steamid"
 
     require_server_running
 
+    if [[ "$do_ban" == true ]]; then
+        wl_sql_or_die banned "$DB_PATH" "SELECT COUNT(*) FROM bannedid WHERE steamid='${steamid}'"
+    fi
+
     username=$(sqlite3 "$DB_PATH" "SELECT GROUP_CONCAT(username, ', ') FROM whitelist WHERE steamid = '$(sql_escape "$steamid")'" 2>/dev/null || true)
 
     echo "Retrait de l'autorisation du SteamID: $steamid${username:+  (comptes: $username)}"
-    run_console removesteamid "$steamid"
+    local allowed
+    wl_sql_or_die allowed "$DB_PATH" "SELECT COUNT(*) FROM allowedsteamid WHERE steamid='${steamid}'"
+    if [[ "$allowed" == 0 ]]; then
+        echo "SteamID déjà retiré de la liste blanche: $steamid"
+    else
+        run_console_confirmed removesteamid "$steamid" allowedsteamid 0 "^SteamID ${steamid} removed from allowed SteamIDs$"
+    fi
 
     if [[ "$do_ban" == true ]]; then
         echo ""
         echo "Bannissement définitif du SteamID..."
-        run_console banid "$steamid"
+        if [[ "$banned" == 0 ]]; then
+            run_console_confirmed banid "$steamid" bannedid 1 "^System banned SteamID ${steamid}\([^)]*\).*$"
+        else
+            echo "SteamID déjà banni: $steamid"
+        fi
         echo "✓ SteamID banni: il ne pourra plus revenir, même renommé."
     fi
 
@@ -342,7 +376,8 @@ purge_whitelist() {
     echo "=== $description ==="
     echo ""
 
-    local results=$(sqlite3 -header -column "$DB_PATH" "SELECT $WHITELIST_COLUMNS FROM whitelist WHERE $where_clause ORDER BY lastConnection" 2>/dev/null)
+    local results count
+    wl_sql_or_die results "$DB_PATH" "SELECT $WHITELIST_COLUMNS FROM whitelist WHERE $where_clause ORDER BY lastConnection" -header -column
 
     if [[ -z "$results" ]]; then
         echo "Aucun compte trouvé."
@@ -352,7 +387,7 @@ purge_whitelist() {
     echo "$results"
     echo ""
 
-    local count=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE $where_clause" 2>/dev/null || echo "0")
+    wl_sql_or_die count "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE $where_clause"
     echo "Total: $count compte(s)"
 
     # Suppression si demandée
@@ -383,18 +418,14 @@ purge_whitelist() {
 # elle était recopiée dans quatre scripts avec quatre messages différents, et
 # manquait justement là où on écrivait dans le monde (backup restore, resetpassword).
 
-# --- C5 : prévalidation + transactions (rename/remove whitelist cohérents) ---
-# SQLite ne fait pas de 2PC entre deux fichiers : rename prévalide les deux
-# bases, applique la txn whitelist puis la txn players, et si la 2e échoue il
-# COMPENSE (UPDATE inverse dans whitelist, en txn unique). Compensation fiable
-# car la 1re txn est déjà COMMITée et rejouée à l'identique en sens inverse.
-# Chaque écriture passe par un fichier SQL tmp + `sqlite3 -bail` (stop au 1er
-# échec, pas de COMMIT partiel), en BEGIN IMMEDIATE ... COMMIT unique par base.
+# Les mutations multi-bases utilisent account_safety.py : une connexion SQLite,
+# ATTACH paramétré et un COMMIT commun avec journaux rollback durables.
 wl_acquire_write_locks_or_die() {
     # Ordre global WORLD -> SERVERCTL (cf. lib/world_lock.sh) : jamais l'inverse.
     if declare -F acquire_world_lock >/dev/null 2>&1; then
         acquire_world_lock --required || die "Une opération monde est déjà en cours. Attends qu'elle se termine."
     fi
+    python3 "${SCRIPT_DIR}/../lib/world_transaction.py" check --world "$PZ_SOURCE_DIR" || exit 1
     acquire_serverctl_lock_or_die "$@"
 }
 wl_assert_stopped_or_die() {
@@ -406,10 +437,11 @@ wl_assert_stopped_or_die() {
 }
 # Lecture fail-closed : toute erreur SQLite MEURT au lieu de se lire comme 0
 # ou vide (l'ancien `2>/dev/null || echo 0` transformait une base verrouillée
-# ou un schéma absent en décision). Usage: wl_sql_or_die VAR DB "SELECT ..."
+# ou un schéma absent en décision). Usage: wl_sql_or_die VAR DB "SELECT ..." [options SQLite]
 wl_sql_or_die() {
     local __var="$1" __db="$2" __sql="$3" __out __rc=0
-    __out="$(sqlite3 "$__db" "$__sql")" || __rc=$?
+    shift 3
+    __out="$(python3 "${SCRIPT_DIR}/../lib/account_safety.py" read-sql --db "$__db" --sql "$__sql" -- "$@")" || __rc=$?
     if (( __rc != 0 )); then
         die "Lecture SQLite impossible (sqlite exit=${__rc}) — opération annulée, rien n'a été modifié (fail-closed)."
     fi
@@ -444,145 +476,15 @@ remove_accounts() {
         dry_run=true; refused=true
     fi
 
-    # Construire la liste des id de comptes à supprimer + SteamID orphelins.
-    local -a del_ids=() del_sids=() plan=()
-    local t
-    for t in "${targets[@]}"; do
-        if is_steamid64 "$t"; then
-            local esc_sid; esc_sid="$(sql_escape "$t")"
-            local -a rows=()
-            mapfile -t rows < <(sqlite3 -separator $'\x1f' "$DB_PATH" "SELECT id, username FROM whitelist WHERE steamid='${esc_sid}'" 2>/dev/null)
-            if [[ "${#rows[@]}" -eq 0 ]]; then
-                local exists; exists=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM allowedsteamid WHERE steamid='${esc_sid}'" 2>/dev/null || echo 0)
-                if [[ "$exists" -ge 1 ]]; then
-                    del_sids+=("$t"); plan+=("SteamID ${t} (aucun compte) -> autorisation serait retirée")
-                else
-                    plan+=("SteamID ${t} : introuvable, ignoré")
-                fi
-            else
-                local r rid runame
-                for r in "${rows[@]}"; do
-                    IFS=$'\x1f' read -r rid runame <<< "$r"
-                    [[ "$runame" == "admin" ]] && { plan+=("compte 'admin' : protégé, ignoré"); continue; }
-                    del_ids+=("$rid"); plan+=("compte '${runame}' (id ${rid}, steamid ${t}) -> serait supprimé")
-                done
-            fi
-        else
-            [[ "$t" == "admin" ]] && { plan+=("compte 'admin' : protégé, ignoré"); continue; }
-            local esc_u; esc_u="$(sql_escape "$t")"
-            local -a rows=()
-            mapfile -t rows < <(sqlite3 -separator $'\x1f' "$DB_PATH" "SELECT id, COALESCE(steamid,'') FROM whitelist WHERE username='${esc_u}'" 2>/dev/null)
-            if [[ "${#rows[@]}" -eq 0 ]]; then
-                plan+=("compte '${t}' : introuvable, ignoré"); continue
-            fi
-            local r rid rsid
-            for r in "${rows[@]}"; do
-                IFS=$'\x1f' read -r rid rsid <<< "$r"
-                del_ids+=("$rid"); plan+=("compte '${t}' (id ${rid}, steamid ${rsid:-aucun}) -> serait supprimé")
-            done
-        fi
-    done
-
-    # Conditionnel : ce bloc est une prévision. Au passé (« -> supprimé »),
-    # il se lisait comme un compte rendu d'exécution.
-    echo "=== remove-account : plan ==="
-    local line; for line in "${plan[@]}"; do echo "  - $line"; done
-    echo ""
-
-    if [[ "${#del_ids[@]}" -eq 0 && "${#del_sids[@]}" -eq 0 ]]; then
-        echo "Rien à supprimer."; return 0
+    [[ "$dry_run" == true ]] || wl_assert_stopped_or_die "Nettoyage whitelist"
+    local -a options=()
+    [[ "$dry_run" != true ]] || options+=(--dry-run)
+    if ! python3 "${SCRIPT_DIR}/../lib/account_safety.py" remove --db "$DB_PATH" "${options[@]}" -- "${targets[@]}"; then
+        [[ "$dry_run" != true ]] || die "Aperçu de suppression annulé avant mutation."
+        die "Suppression annulée : transaction ROLLBACK, aucune modification partielle."
     fi
+    [[ "$refused" == false ]] || die_server_active "Nettoyage whitelist"
 
-    if [[ "$dry_run" == true ]]; then
-        [[ "$refused" == false ]] || die_server_active "Nettoyage whitelist"
-        echo "[dry-run] Rien n'a été modifié."; return 0
-    fi
-
-    # Défense supplémentaire contre un démarrage extérieur à `pzm`.
-    # C5 : arrêt PROUVÉ (assert) quand dispo, sinon garde historique.
-    wl_assert_stopped_or_die "Nettoyage whitelist"
-
-    # Mémoriser les SteamID des comptes qu'on s'apprête à supprimer : après le
-    # DELETE ils ne sont plus retrouvables, et ce sont les SEULS dont l'autorisation
-    # peut être devenue orpheline du fait de cette commande.
-    local -a touched_sids=()
-    if [[ "${#del_ids[@]}" -gt 0 ]]; then
-        local id_list; id_list="$(IFS=,; echo "${del_ids[*]}")"
-        local _touched_raw
-        wl_sql_or_die _touched_raw "$DB_PATH" \
-            "SELECT DISTINCT steamid FROM whitelist WHERE id IN (${id_list}) AND steamid IS NOT NULL AND steamid <> '';"
-        if [[ -n "$_touched_raw" ]]; then
-            mapfile -t touched_sids <<< "$_touched_raw"
-        fi
-        unset _touched_raw
-    fi
-
-    # C5 : re-vérification juste avant DELETE : tous les ids existent encore
-    # (détecte une modification concurrente entre le plan et l'écriture).
-    if [[ "${#del_ids[@]}" -gt 0 ]]; then
-        local _recheck
-        wl_sql_or_die _recheck "$DB_PATH" "SELECT id FROM whitelist WHERE id IN (${id_list});"
-        local -a _still=()
-        if [[ -n "$_recheck" ]]; then
-            mapfile -t _still <<< "$_recheck"
-        fi
-        (( "${#_still[@]}" == "${#del_ids[@]}" )) || die "Comptes modifiés par une opération concurrente : remove-account annulé, rien n'a été modifié (fail-closed)."
-        unset _recheck _still
-    fi
-
-    # C5 : UNE SEULE transaction (BEGIN IMMEDIATE ... COMMIT) via fichier tmp +
-    # `sqlite3 -bail` : stop au 1er échec sans COMMIT (aucun partiel). La garde
-    # orphelin est rejouée DANS la transaction (NOT EXISTS après les DELETE
-    # whitelist) : même si le plan était périmé, un SteamID encore partagé survit.
-    #    Corrigé le 2026-08-18 : la requête était globale (`WHERE steamid NOT IN
-    #    (SELECT steamid FROM whitelist)`) et emportait au passage TOUTES les
-    #    autorisations en attente — `pzm whitelist add` ne crée qu'une ligne
-    #    allowedsteamid, la ligne whitelist n'apparaissant qu'à la première
-    #    connexion du joueur. Un seul remove-account désautorisait donc en silence
-    #    tous les joueurs autorisés mais pas encore venus (5 dans la base du 10/08),
-    #    que `list` affiche pourtant comme « (jamais connecté) ».
-    local SQL_TMP _tx_rc=0
-    SQL_TMP="$(mktemp "${TMPDIR:-/tmp}/pz-whitelist-remove-XXXXXX.sql")" || die "Impossible de créer le fichier SQL temporaire."
-    {
-        printf 'BEGIN IMMEDIATE;\n'
-        if [[ "${#del_ids[@]}" -gt 0 ]]; then
-            printf 'DELETE FROM whitelist WHERE id IN (%s);\n' "$id_list"
-        fi
-        if [[ "${#del_sids[@]}" -gt 0 ]]; then
-            local _sid_list="" _s _e
-            for _s in "${del_sids[@]}"; do
-                _e="$(sql_escape "$_s")"
-                [[ -n "$_sid_list" ]] && _sid_list+=","
-                _sid_list+="'${_e}'"
-            done
-            printf 'DELETE FROM allowedsteamid WHERE steamid IN (%s);\n' "$_sid_list"
-            unset _sid_list _s _e
-        fi
-        if [[ "${#touched_sids[@]}" -gt 0 ]]; then
-            local _t_list="" _s _e
-            for _s in "${touched_sids[@]}"; do
-                [[ -n "$_s" ]] || continue
-                _e="$(sql_escape "$_s")"
-                [[ -n "$_t_list" ]] && _t_list+=","
-                _t_list+="'${_e}'"
-            done
-            if [[ -n "$_t_list" ]]; then
-                printf 'DELETE FROM allowedsteamid WHERE steamid IN (%s) AND NOT EXISTS (SELECT 1 FROM whitelist w WHERE w.steamid = allowedsteamid.steamid);\n' "$_t_list"
-            fi
-            unset _t_list _s _e
-        fi
-        printf 'COMMIT;\n'
-    } > "$SQL_TMP"
-    # `||` et non `if !` : sous `if ! cmd`, `$?` vaut le statut INVERSÉ (0 en
-    # cas d'échec) — l'erreur devenait un succès (constaté en test C5 : trigger
-    # ABORT affiché mais exit 0, whitelist partielle annoncée « ✓ »).
-    sqlite3 -bail "$DB_PATH" < "$SQL_TMP" || _tx_rc=$?
-    rm -f -- "$SQL_TMP"
-    (( _tx_rc == 0 )) || die "Écriture SQLite impossible (sqlite exit=${_tx_rc}) — remove-account annulé : transaction annulée (ROLLBACK), aucune suppression partielle (fail-closed)."
-
-    echo ""
-    echo "✓ Suppression effectuée. Personnages (networkPlayers) conservés."
-    echo "  (Les SteamID encore partagés par un compte gardé restent autorisés.)"
 }
 
 # rename-account <ancien_pseudo> <nouveau_pseudo> [--dry-run]
@@ -611,32 +513,21 @@ rename_account() {
         dry_run=true; refused=true
     fi
 
-    local esc_old esc_new
-    esc_old="$(sql_escape "$old")"; esc_new="$(sql_escape "$new")"
+    local esc_new
+    esc_new="$(sql_escape "$new")"
 
-    # C5 : prévalidation TOTALE avant toute écriture (fail-closed : toute
-    # lecture en erreur MEURT au lieu de se lire comme 0). Schéma OK = tables
-    # et colonne username lisibles dans les deux bases.
-    local exists clash _schema
-    wl_sql_or_die _schema "$DB_PATH" "SELECT username FROM whitelist LIMIT 0;"
-    wl_sql_or_die exists "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE username='${esc_old}'"
-    [[ "$exists" =~ ^[0-9]+$ ]] || die "Lecture SQLite inattendue — renommage annulé, rien n'a été modifié (fail-closed)."
-    [[ "$exists" -ge 1 ]] || die "Aucun compte '${old}' dans la whitelist."
-    wl_sql_or_die clash "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE username='${esc_new}'"
-    [[ "$clash" =~ ^[0-9]+$ ]] || die "Lecture SQLite inattendue — renommage annulé, rien n'a été modifié (fail-closed)."
-    [[ "$clash" -eq 0 ]] || die "Un compte '${new}' existe déjà : renommage refusé (collision)."
-
-    local PLAYERS_DB="" char_count=0 new_in_players=0 _pschema=""
-    PLAYERS_DB="$(find_players_db "${PZ_SOURCE_DIR}")"
-    if [[ -n "$PLAYERS_DB" && -f "$PLAYERS_DB" ]]; then
-        wl_sql_or_die _pschema "$PLAYERS_DB" "SELECT username FROM networkPlayers LIMIT 0;"
-        wl_sql_or_die char_count "$PLAYERS_DB" "SELECT COUNT(*) FROM networkPlayers WHERE username='${esc_old}'"
-        [[ "$char_count" =~ ^[0-9]+$ ]] || die "Lecture SQLite inattendue — renommage annulé, rien n'a été modifié (fail-closed)."
-        wl_sql_or_die new_in_players "$PLAYERS_DB" "SELECT COUNT(*) FROM networkPlayers WHERE username='${esc_new}'"
-        [[ "$new_in_players" =~ ^[0-9]+$ ]] || die "Lecture SQLite inattendue — renommage annulé, rien n'a été modifié (fail-closed)."
-        [[ "$new_in_players" -eq 0 ]] || die "Un personnage '${new}' existe déjà dans players.db : renommage refusé (collision)."
-    fi
-    unset _schema _pschema
+    # Select and validate both sources before the helper takes POSIX locks.
+    local PLAYERS_DB="" exists char_count plan
+    PLAYERS_DB="$(python3 "${SCRIPT_DIR}/../lib/account_safety.py" select-players \
+        --world "${PZ_SOURCE_DIR}" --server "${PZ_SERVER_NAME}")" \
+        || die "Sélection du monde ambiguë ou illisible — renommage annulé avant mutation."
+    local -a plan_options=()
+    [[ -z "$PLAYERS_DB" ]] || plan_options+=(--players "$PLAYERS_DB")
+    plan="$(python3 "${SCRIPT_DIR}/../lib/account_safety.py" rename-plan --db "$DB_PATH" "${plan_options[@]}" -- "$old" "$new")" \
+        || die "Lecture SQLite impossible — renommage annulé avant mutation."
+    read -r exists char_count <<< "$plan"
+    [[ "$exists" =~ ^[0-9]+$ && "$char_count" =~ ^[0-9]+$ ]] \
+        || die "Lecture SQLite inattendue — renommage annulé avant mutation."
 
     echo "=== rename-account : plan ('${old}' -> '${new}') ==="
     echo "  whitelist : ${exists} compte(s) seraient renommés (mot de passe conservé)"
@@ -664,44 +555,10 @@ rename_account() {
     fi
     unset _reclash _replayers
 
-    # C5 : prévalidé ci-dessus, on applique whitelist txn puis players txn
-    # (2PC vrai impossible entre deux fichiers SQLite -> compensation ci-dessous).
-    local SQL_TMP="" _tx_rc=0
-    SQL_TMP="$(mktemp "${TMPDIR:-/tmp}/pz-whitelist-rename-XXXXXX.sql")" || die "Impossible de créer le fichier SQL temporaire."
-    {
-        printf 'BEGIN IMMEDIATE;\n'
-        printf "UPDATE whitelist SET username='%s' WHERE username='%s';\n" "$esc_new" "$esc_old"
-        printf 'COMMIT;\n'
-    } > "$SQL_TMP"
-    sqlite3 -bail "$DB_PATH" < "$SQL_TMP" || _tx_rc=$?
-    rm -f -- "$SQL_TMP"
-    (( _tx_rc == 0 )) || die "Échec du renommage dans whitelist (sqlite exit=${_tx_rc}) — rien n'a été modifié (ROLLBACK)."
-    if [[ "$char_count" -gt 0 ]]; then
-        local PLAYERS_TMP="" _p_rc=0
-        PLAYERS_TMP="$(mktemp "${TMPDIR:-/tmp}/pz-players-rename-XXXXXX.sql")" || die "Impossible de créer le fichier SQL temporaire."
-        {
-            printf 'BEGIN IMMEDIATE;\n'
-            printf "UPDATE networkPlayers SET username='%s' WHERE username='%s';\n" "$esc_new" "$esc_old"
-            printf 'COMMIT;\n'
-        } > "$PLAYERS_TMP"
-        sqlite3 -bail "$PLAYERS_DB" < "$PLAYERS_TMP" || _p_rc=$?
-        rm -f -- "$PLAYERS_TMP"
-        if (( _p_rc != 0 )); then
-            # Compensation fiable : la txn whitelist est déjà COMMITée, on la
-            # rejoue en sens inverse en txn unique, puis on MEURT (aucun partiel).
-            local COMP_TMP="" _c_rc=0
-            COMP_TMP="$(mktemp "${TMPDIR:-/tmp}/pz-whitelist-compens-XXXXXX.sql")" || die "Échec du renommage dans networkPlayers (players.db, sqlite exit=${_p_rc}) — COMPENSATION IMPOSSIBLE (fichier tmp illisible) : whitelist restée à '${new}', restaure via backup."
-            {
-                printf 'BEGIN IMMEDIATE;\n'
-                printf "UPDATE whitelist SET username='%s' WHERE username='%s';\n" "$esc_old" "$esc_new"
-                printf 'COMMIT;\n'
-            } > "$COMP_TMP"
-            sqlite3 -bail "$DB_PATH" < "$COMP_TMP" || _c_rc=$?
-            rm -f -- "$COMP_TMP"
-            (( _c_rc == 0 )) || die "Échec du renommage dans networkPlayers (players.db, sqlite exit=${_p_rc}) — COMPENSATION ÉCHOUÉE (sqlite exit=${_c_rc}) : whitelist restée à '${new}', restaure via backup."
-            die "Échec du renommage dans networkPlayers (players.db, sqlite exit=${_p_rc}) — whitelist restaurée vers '${old}' (compensation), aucun état partiel."
-        fi
-    fi
+    local -a options=()
+    [[ -z "$PLAYERS_DB" ]] || options+=(--players "$PLAYERS_DB")
+    python3 "${SCRIPT_DIR}/../lib/account_safety.py" rename --db "$DB_PATH" "${options[@]}" -- "$old" "$new" \
+        || die "Renommage annulé : transaction commune ROLLBACK, aucune modification partielle."
 
     echo "✓ '${old}' renommé en '${new}' (whitelist + personnage)."
 }

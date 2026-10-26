@@ -96,7 +96,7 @@ write_cooldown() {
 # --try. Si elle a changé -> abandon (reset state, exit 0).
 # InvocationID vide (service non démarré, bus partiel) -> repli PID+ActiveEnter.
 read_service_identity() {
-    REQ_INVOCATION=""; REQ_MAINPID=""; REQ_ACTIVE_ENTER=""
+    REQ_INVOCATION=""; REQ_MAINPID=""; REQ_ACTIVE_ENTER=""; REQ_ACTIVE_ENTER_SOURCE=""
     local svc="${PZ_SERVICE_NAME:-zomboid.service}" v
     v="$(systemctl --user show -p InvocationID --value "$svc" 2>/dev/null || true)"
     [[ "$v" =~ ^[0-9a-fA-F]{32}$ ]] && REQ_INVOCATION="$v"
@@ -105,10 +105,13 @@ read_service_identity() {
     v="$(systemctl --user show -p ActiveEnterTimestampMonotonic --value "$svc" 2>/dev/null || true)"
     if [[ "$v" =~ ^[0-9]{1,20}$ ]]; then
         REQ_ACTIVE_ENTER="$v"
+        REQ_ACTIVE_ENTER_SOURCE=monotonic
     else
         v="$(systemctl --user show -p ActiveEnterTimestamp --value "$svc" 2>/dev/null || true)"
         [[ -n "$v" ]] && v="$(date -d "$v" +%s 2>/dev/null || true)"
-        [[ "${v:-}" =~ ^[0-9]{1,18}$ ]] && REQ_ACTIVE_ENTER="$v"
+        if [[ "${v:-}" =~ ^[0-9]{1,18}$ ]]; then
+            REQ_ACTIVE_ENTER="$v"; REQ_ACTIVE_ENTER_SOURCE=epoch
+        fi
     fi
     return 0  # identité partielle/vide = repli, jamais une erreur fatale
 }
@@ -173,15 +176,39 @@ read_service_identity
 # Le discriminant exact n'est donc pas « le log est-il actif ? » mais « le jeu
 # a-t-il écrit une ligne NOUVELLE depuis le relevé précédent, en gardant la même
 # frame ? ». D'où l'horodatage, comparé d'un passage à l'autre.
+# Les champs structurés gardent le timestamp journald séparé du MESSAGE.
+# Parcourir au plus 400 messages du plus récent au plus ancien ; le préfixe du
+# jeu est interprété par le même parseur que la readiness et les notifications.
 read -r frame stamp < <(
-    journalctl --user -u "${PZ_SERVICE_NAME:-zomboid.service}" -n 400 --no-pager -o short-unix 2>/dev/null |
-    awk 'match($0, /f:[0-9]+ st:/) {
-             t = $1; sub(/\..*$/, "", t)
-             f = substr($0, RSTART + 2, RLENGTH - 6)
-             last_f = f; last_t = t
-         }
-         END { if (last_f != "") printf "%s %s\n", last_f, last_t }'
-) || true   # read renvoie 1 sur une dernière ligne sans \n — ne pas tuer le script
+    while IFS=$'\t' read -r stamp message; do
+        frame="$(game_log_frame "$message")" || continue
+        printf '%s %s\n' "$frame" "$stamp"
+        break
+    done < <(
+        journalctl --user -u "${PZ_SERVICE_NAME:-zomboid.service}" -n 400 --no-pager -o json 2>/dev/null |
+        python3 -c '
+import json, os, sys
+records = []
+for line in sys.stdin:
+    try:
+        record = json.loads(line)
+    except ValueError:
+        continue
+    if not isinstance(record, dict):
+        continue
+    stamp = record.get("__REALTIME_TIMESTAMP", "")
+    message = record.get("MESSAGE", "")
+    if (isinstance(stamp, str) and stamp.isascii() and stamp.isdigit()
+            and len(stamp) <= 20 and isinstance(message, str) and message):
+        records.append((str(int(stamp) // 1000000), message.split("\n", 1)[0]))
+try:
+    sys.stdout.write("".join(stamp + "\t" + message + "\n" for stamp, message in reversed(records)))
+    sys.stdout.flush()
+except BrokenPipeError:
+    os._exit(0)
+'
+    )
+) || true   # Aucune preuve exploitable : ne jamais conclure à un gel.
 [[ -n "${frame:-}" && -n "${stamp:-}" ]] || exit 0   # aucune ligne `f:` -> indéterminé
 
 # `f:0` couvre toute l'initialisation, y compris une phase où des joueurs peuvent
@@ -257,6 +284,7 @@ write_state "$pid" "$frame" "$stamp" "$strikes"
 # Identité diagnostiquée : le pré-SIGKILL la comparera au live (restart pendant
 # la capture de ~20 s). Ne pas la réécrire d'ici là.
 DIAG_INV="${REQ_INVOCATION}"; DIAG_MAIN="${REQ_MAINPID}"; DIAG_ENTER="${REQ_ACTIVE_ENTER}"
+DIAG_ENTER_SOURCE="$REQ_ACTIVE_ENTER_SOURCE"
 
 (( strikes >= STALL_SAMPLES )) || exit 0
 
@@ -267,6 +295,20 @@ if (( strikes > STALL_SAMPLES )); then
     log "stallwatch: gel toujours en cours (${strikes} relevés) — dump déjà pris."
     exit 0
 fi
+
+# Une opération monde en cours diffère le diagnostic et le restart. Réarmer
+# le seuil pour le prochain relevé : sinon strikes > STALL_SAMPLES empêchait
+# toute nouvelle tentative après la libération. Ne pas capturer inutilement
+# avant ce refus ; le mode diagnostic seul reste utilisable sans WORLD.
+if [[ "${STALL_AUTO_RESTART:-1}" == 1 ]] && declare -F acquire_world_lock >/dev/null 2>&1; then
+    if ! acquire_world_lock --try; then
+        log "stallwatch: verrou monde occupé — diagnostic et SIGKILL différés."
+        write_state "$pid" "$frame" "$stamp" 0
+        exit 0
+    fi
+fi
+# Le FD reste hérité par le restart enfant ; l'identité sera revérifiée après
+# les captures et juste avant SIGKILL pour ne jamais tuer un nouveau boot.
 
 ts="$(date +%Y-%m-%d_%Hh%Mm%Ss)"
 out="${LOG_ZOMBOID_DIR}/stall_${ts}.txt"
@@ -349,8 +391,8 @@ if (( runnable_count < ${#main_lines[@]} )) || (( burn_pct < BURN_MIN_PCT )); th
     # aurait dit sur QUOI la main loop était bloquée venait d'être effacé.
     log "stallwatch: NON CONCLUANT (main runnable ${runnable_count}/${#main_lines[@]}, CPU brûlé ${burn_pct}% < ${BURN_MIN_PCT}%) — pas de redémarrage ; capture CONSERVÉE dans ${out} ; pause ${FALSE_POSITIVE_COOLDOWN}s."
     if [[ -n "${DISCORD_ADMIN_WEBHOOK:-}" ]]; then
-        notify "⚠️ Boucle principale bloquée ${clients} joueur(s), sans consommer de CPU — pas un gel actif, aucun redémarrage. Dump : \`logs/zomboid/$(basename "$out")\`" \
-            --webhook "${DISCORD_ADMIN_WEBHOOK}"
+        PZ_DISCORD_WEBHOOK_OVERRIDE="$DISCORD_ADMIN_WEBHOOK" \
+            notify "⚠️ Boucle principale bloquée ${clients} joueur(s), sans consommer de CPU — pas un gel actif, aucun redémarrage. Dump : \`logs/zomboid/$(basename "$out")\`"
     fi
     # Réarmer : sans ça, `strikes` continuait de grimper et le script répondait
     # « dump déjà pris » sans plus rien vérifier — 40 min d'aveuglement le 14/08
@@ -372,12 +414,11 @@ fi
 
 # Détail technique (chemin du dump) : réservé à l'admin. Sur
 # DISCORD_ADMIN_WEBHOOK si défini dans .env, sinon journal seul — jamais sur le
-# canal public. Passe par sendDiscord.sh --webhook plutôt que par un jq|curl
-# recopié : celui-ci n'avait pas le repli sans jq du script partagé, donc le
-# message admin disparaissait en silence sur une machine sans jq.
+# canal public. Le helper partagé transmet l'URL via l'environnement privé,
+# jamais argv, et conserve le repli sans jq.
 if [[ -n "${DISCORD_ADMIN_WEBHOOK:-}" ]]; then
-    notify "🧊 Gel confirmé (main RUNNABLE, ${clients} joueur(s), compteur figé ~$(( STALL_SAMPLES + 1 )) min). Thread dump : \`logs/zomboid/stall_${ts}.txt\`" \
-        --webhook "${DISCORD_ADMIN_WEBHOOK}"
+    PZ_DISCORD_WEBHOOK_OVERRIDE="$DISCORD_ADMIN_WEBHOOK" \
+        notify "🧊 Gel confirmé (main RUNNABLE, ${clients} joueur(s), compteur figé ~$(( STALL_SAMPLES + 1 )) min). Thread dump : \`logs/zomboid/stall_${ts}.txt\`"
 fi
 
 # --- Redémarrage automatique --------------------------------------------------
@@ -396,17 +437,7 @@ fi
 # supplémentaire : la boucle empêche déjà toute sauvegarde.
 log "stallwatch: SIGKILL immédiat (le quit ne peut pas aboutir sur un thread bloqué)."
 
-# C13 : revérifier l'invocation diagnostiquée juste avant de tuer.
-# --try (jamais bloquant) : si le monde est déjà opéré (backup, maintenance,
-# restart...), on abandonne plutôt que d'attendre ou de doubler l'opération.
-# Le verrou est conservé jusqu'à la fin (relâché par le noyau à la sortie) :
-# le `pzm server restart` enfant y participe par héritage (PZ_WORLD_LOCK_DEPTH).
-if declare -F acquire_world_lock >/dev/null 2>&1; then
-    if ! acquire_world_lock --try; then
-        log "stallwatch: verrou monde occupé — abandon du SIGKILL (une opération monde est déjà en cours)."
-        exit 0
-    fi
-fi
+# C13 : revérifier sous WORLD l'identité diagnostiquée juste avant de tuer.
 read_service_identity
 if [[ -n "$DIAG_INV" && -n "$REQ_INVOCATION" ]]; then
     if [[ "$DIAG_INV" != "$REQ_INVOCATION" ]]; then
@@ -421,26 +452,70 @@ if [[ -n "$DIAG_INV" && -n "$REQ_INVOCATION" ]]; then
     fi
 else
     # InvocationID indisponible d'un côté ou des deux : repli PID+ActiveEnter.
-    if [[ -z "$DIAG_MAIN" || -z "$REQ_MAINPID" || "$DIAG_MAIN" != "$REQ_MAINPID" ]]; then
-        log "stallwatch: InvocationID indisponible, PID principal changé ou illisible (diag '${DIAG_MAIN:-?}' -> live '${REQ_MAINPID:-?}') — abandon du SIGKILL."
+    if [[ ! "$DIAG_MAIN" =~ ^[0-9]*[1-9][0-9]*$ || "$DIAG_MAIN" != "$REQ_MAINPID" ]]; then
+        log "stallwatch: InvocationID indisponible, PID principal nul, changé ou illisible (diag '${DIAG_MAIN:-?}' -> live '${REQ_MAINPID:-?}') — abandon du SIGKILL."
         write_state "$pid" "$frame" "$stamp" 0
         exit 0
     fi
-    if [[ -n "$DIAG_ENTER" && -n "$REQ_ACTIVE_ENTER" && "$DIAG_ENTER" != "$REQ_ACTIVE_ENTER" ]]; then
-        log "stallwatch: InvocationID indisponible, ActiveEnter changé (même PID réutilisé ?) — abandon du SIGKILL."
+    if [[ ! "$DIAG_ENTER" =~ ^[0-9]*[1-9][0-9]*$ || "$DIAG_ENTER" != "$REQ_ACTIVE_ENTER" ||
+          ! "$DIAG_ENTER_SOURCE" =~ ^(monotonic|epoch)$ || "$DIAG_ENTER_SOURCE" != "$REQ_ACTIVE_ENTER_SOURCE" ]]; then
+        log "stallwatch: InvocationID indisponible, ActiveEnter absent, nul, changé ou de source différente — abandon du SIGKILL."
         write_state "$pid" "$frame" "$stamp" 0
         exit 0
     fi
 fi
-systemctl --user kill --signal=SIGKILL --kill-whom=all "${PZ_SERVICE_NAME}" || true
+if ! systemctl --user kill --signal=SIGKILL --kill-whom=all "${PZ_SERVICE_NAME}"; then
+    log "stallwatch: SIGKILL refusé — aucun démarrage automatique."
+    write_state "$pid" "$frame" "$stamp" 0
+    exit 1
+fi
 
-# Laisser systemd constater la mort : tant qu'il voit le service actif, pz.sh
-# tenterait l'arrêt propre et on aurait rattrapé les 120 s qu'on vient d'éviter.
+# Le chemin d'arrêt ordinaire refuse à raison un service failed : aucune
+# sauvegarde propre n'est prouvée après SIGKILL. Attendre la fin de CETTE
+# invocation puis demander start, sans relancer son arrêt ni viser un autre boot.
+stopped=false
 for _ in $(seq 30); do
-    server_is_active || break
+    properties="$(systemctl --user show "${PZ_SERVICE_NAME}" \
+        -p LoadState -p ActiveState -p MainPID -p ControlPID -p InvocationID \
+        -p ActiveEnterTimestampMonotonic -p ActiveEnterTimestamp --no-pager)" || {
+        log "stallwatch: état post-SIGKILL illisible — aucun démarrage automatique."
+        exit 1
+    }
+    loaded=""; active=""; main=""; control=""; invocation=""; entered=""; entered_date=""
+    while IFS='=' read -r key value; do
+        case "$key" in
+            LoadState) loaded="$value" ;;
+            ActiveState) active="$value" ;;
+            MainPID) main="$value" ;;
+            ControlPID) control="$value" ;;
+            InvocationID) invocation="$value" ;;
+            ActiveEnterTimestampMonotonic) entered="$value" ;;
+            ActiveEnterTimestamp) entered_date="$value" ;;
+        esac
+    done <<< "$properties"
+    entered_source=monotonic
+    if [[ ! "$entered" =~ ^[0-9]{1,20}$ ]]; then
+        entered_source=epoch
+        [[ -n "$entered_date" ]] || { log "stallwatch: identité post-SIGKILL inconnue."; exit 1; }
+        entered="$(date -d "$entered_date" +%s 2>/dev/null || true)"
+    fi
+    if [[ "$loaded" != loaded ]] ||
+       { [[ -n "$DIAG_INV" ]] && [[ "$invocation" != "$DIAG_INV" ]]; } ||
+       { [[ -z "$DIAG_INV" ]] && [[ -n "$invocation" || -z "$DIAG_ENTER" || "$DIAG_ENTER" =~ ^0+$ ||
+           "$entered" != "$DIAG_ENTER" || "$entered_source" != "$DIAG_ENTER_SOURCE" ]]; }; then
+        log "stallwatch: invocation post-SIGKILL remplacée ou non prouvée — aucun démarrage automatique."
+        exit 1
+    fi
+    if [[ "$main" == 0 && "$control" == 0 && ( "$active" == inactive || "$active" == failed ) ]]; then
+        stopped=true
+        break
+    fi
     sleep 1
 done
+$stopped || { log "stallwatch: fin du service non prouvée après SIGKILL — aucun démarrage automatique."; exit 1; }
 
 log "stallwatch: redémarrage automatique du serveur."
-"${PZ_MANAGER_DIR}/pzm" server restart now --silent --reason "Gel du thread principal (redémarrage automatique)" \
-    || log "stallwatch: le redémarrage automatique a échoué — intervention manuelle nécessaire."
+if ! "${PZ_MANAGER_DIR}/pzm" server start --silent --reason "Gel du thread principal (redémarrage automatique)"; then
+    log "stallwatch: le redémarrage automatique a échoué — intervention manuelle nécessaire."
+    exit 1
+fi

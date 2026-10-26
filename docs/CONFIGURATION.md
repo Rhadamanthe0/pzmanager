@@ -49,12 +49,27 @@ PZ names every file of the save after the world: `db/<name>.db`,
 
 ```bash
 export PZ_SERVER_NAME="servertest"
-export PZ_DB_PATH="${PZ_SOURCE_DIR}/db/${PZ_SERVER_NAME}.db"
-export PZ_INI_PATH="${PZ_SOURCE_DIR}/Server/${PZ_SERVER_NAME}.ini"
 ```
 
-`zomboid.service` passes it to the game with `-servername`, so the world's name
-and the paths the scripts read cannot drift apart.
+The game launcher and management tools share `PZ_SOURCE_DIR` and
+`PZ_SERVER_NAME`; INI and SQLite paths are calculated automatically. Remove
+obsolete `PZ_INI_PATH` / `PZ_DB_PATH` definitions if they disagree: commands
+refuse them before accessing the world, instead of selecting another file.
+Stop and status remain available while these obsolete settings are corrected.
+After a successful stop, the automatic backup may still refuse this configuration;
+the command reports that the server stopped but the backup was not performed.
+
+CLI starts also refuse a different resolved launch configuration in the service
+environment. Put shared source, world name, install, control and manager paths in
+`.env`; inherited environment settings remain available to offline tools.
+
+Existing installations must refresh the installed
+[zomboid.service](../data/setupTemplates/zomboid.service) while stopped, then
+run `systemctl --user daemon-reload`. Preserve intentional local settings and
+check drop-ins. Custom source, install and control paths must be absolute;
+adapt the unit's `ReadWritePaths`, `WorkingDirectory` and the socket's
+`ListenFIFO` to match. Keep the manager root read-only; do not widen the sandbox
+to bypass a path error.
 
 > ⚠️ **Changing this on an existing server gives you a blank new world.** PZ
 > creates the `<new name>` save next to the old one; the previous world stays on
@@ -76,21 +91,23 @@ export PZ_PORT_GAME=16261             # DefaultPort in servertest.ini
 export PZ_PORT_GAME2=16262            # UDPPort in servertest.ini
 ```
 
-`PZ_PORT_RCON` and `PZ_PORT_STEAM` were removed: no script read them, and B42
-binds neither port. Note the two names were also **swapped** here relative to
-`.env.example` (8766 is the Steam port, 27015 the RCON one) — an inversion that
-cancelled itself out only because both values were unused.
+`PZ_PORT_RCON` and `PZ_PORT_STEAM` are retired; they configure neither listeners
+nor firewall rules. See [network ports](SERVER_CONFIG.md#network-ports) for the
+separate native TCP RCON interface and PZManager's local FIFO transport.
 
 ### SteamCMD
 
 ```bash
 export STEAMCMD_PATH="/usr/games/steamcmd"
 export STEAM_APP_ID="380870"
-export STEAM_BETA_BRANCH="unstable"
+export STEAM_BETA_BRANCH=""          # Default: public branch
 ```
 
+**Branch selection**: empty uses Steam's `public` branch. Set an explicit branch
+only when required by the deployment.
+
 **Available branches**:
-- `unstable`: Latest B42
+- `unstable`: Explicit opt-in branch
 - See [SteamDB](https://steamdb.info/app/380870/depots/) for other branches
 
 ### Java Runtime
@@ -126,12 +143,12 @@ export BACKUP_PRUNE_MAX_SECONDS=600
 
 Tier thresholds are absolute snapshot ages: 12 hours, then another 60 hours at 6-hour granularity, then another 11 days daily (14 days total).
 
-Local hourly snapshots use **GFS retention** (`prune_gfs` in `dataBackup.sh`), not a flat N-day rotation:
+Local hourly snapshots use **GFS retention** (`prune_gfs` in `dataBackup.sh`), not a flat N-day rotation. Rsync code 23 is always refused; code 24 (vanished files) is accepted only outside strict consistency mode. Consistency requirements are described in [backup usage](USAGE.md#backups):
 
 - **BACKUP_GFS_HOURLY_HOURS**: keep every hourly snapshot for this many hours (default 12)
 - **BACKUP_GFS_SIXHOURLY_DAYS**: then keep 1 per 6h up to this many days (default 3)
 - **BACKUP_GFS_DAILY_DAYS**: then keep 1 per day up to this many days (default 14); older is deleted
-- **BACKUP_CPU_LIST**: optional CPU list used by the backup scope while the game runs (empty by default; e.g. `4,12` on this host). Ignored when the JVM is proven absent.
+- **BACKUP_CPU_LIST**: optional CPU list used by the backup scope while the game runs (empty by default; host policy in [HOST_ENVIRONMENT](HOST_ENVIRONMENT.md)). Ignored when the JVM is proven absent.
 - **BACKUP_PRUNE_MAX_DELETE**: max snapshots deleted per run (default 15; 0 = unlimited). Deleting a hardlinked snapshot is hundreds of thousands of `unlink()`, costly even with hardlink deduplication — bounding it per run lets a large backlog drain over several hourly runs without exceeding `TimeoutStartSec` (2400s). The run is also single-instance (`flock`), so a long prune never overlaps the next hourly trigger.
 
 `BACKUP_PRUNE_DRY_RUN=1 data/scripts/backup/dataBackup.sh` previews what would be pruned without deleting. `BACKUP_RETENTION_DAYS` no longer exists: it was read by nothing once GFS retention landed, and has been dropped from `.env.example`.
@@ -145,9 +162,9 @@ Dry-run plans ignore time.
 
 ### Exact tile restoration
 
-`pzm backup restore-zone` uses a native terrain reader for partially selected
-chunks. It defaults to the game's `jre64/bin/java` and its sibling `javac`, then
-`javac` on PATH. A compatible JDK is required to apply a partial chunk.
+`pzm backup restore-zone` requires a compatible JDK for every application,
+including whole chunks, and for preview when dictionaries differ. It defaults to
+the game's `jre64/bin/java` and its sibling `javac`, then `javac` on PATH.
 
 ```bash
 # Optional overrides; an explicit compiler never silently falls back.
@@ -165,12 +182,26 @@ export SYNC_BACKUPS_DIR="${PZ_DATA_DIR}/fullBackups"
 export OFFSITE_BACKUP_COUNT=7
 ```
 
-Each off-site backup is a **single timestamped ZIP** (`YYYY-MM-DD_HH-MM.zip`) created by `fullBackup.sh`, mirrored off-site by a root **Syncthing** send-only folder. The ZIP holds only the **valuable, non-reconstructible** data — `config/` (`.ssh`, systemd `--user` units, `setupTemplates`, `data/scripts/`, the root `.env`, `sudoers.d/<user>`) and `zomboid/` (the latest `Saves`/`db`/`Server`/`Lua` snapshot) — and **excludes** anything re-downloadable (the SteamCMD install + Workshop mods under `data/pzserver`, the local backups themselves, logs, the Discord venv). **OFFSITE_BACKUP_COUNT** keeps the N most recent ZIPs (retention by count, not days; default 7).
+Each off-site backup is a **single timestamped ZIP** created by `fullBackup.sh`, mirrored off-site by a root **Syncthing** send-only folder. The ZIP holds only the **valuable, non-reconstructible** data — `config/` (`.ssh`, systemd `--user` units, `setupTemplates`, `data/scripts/`, the root `.env`, `sudoers.d/<user>`) and `zomboid/` (the latest `Saves`/`db`/`Server`/`Lua` snapshot) — and **excludes** anything re-downloadable (the SteamCMD install + Workshop mods under `data/pzserver`, the local backups themselves, logs, the Discord venv). **OFFSITE_BACKUP_COUNT** keeps the N most recent ZIPs (retention by count, not days; default 7).
+
+**Default: plaintext, synchronized backups.** Without an AGE recipient, the
+ZIP is staged in `SYNC_BACKUPS_DIR`, validated, then published by same-filesystem
+rename. The warning about absent encryption does not disable synchronization:
+configuration secrets and SSH keys remain readable in both temporary and final
+archives. Atomic final publication does not guarantee that a sync client ignores
+temporary files.
+
+If explicitly configured, `AGE_RECIPIENTS` (comma-separated, preferred over
+`AGE_RECIPIENT`) enables the existing encryption option and requires `age`.
+The plaintext ZIP is then built in private work storage outside the synchronized
+tree; only encrypted staging enters the publication directory, created with
+mode `0600`, before same-filesystem rename publishes `.zip.age`. Encryption
+failure publishes nothing. Decrypt before using a ZIP restore command.
 
 ### Logs
 
 ```bash
-export LOG_BASE_DIR="${PZ_SCRIPTS_DIR}/logs"
+export LOG_BASE_DIR="${PZ_MANAGER_DIR}/logs"
 export LOG_ZOMBOID_DIR="${LOG_BASE_DIR}/zomboid"
 export LOG_MAINTENANCE_DIR="${LOG_BASE_DIR}/maintenance"
 export LOG_RETENTION_DAYS=30
@@ -182,9 +213,8 @@ export LOG_RETENTION_DAYS=30
 export WHITELIST_PURGE_DAYS=90
 ```
 
-**WHITELIST_PURGE_DAYS**: Accounts with no activity for this many days have their
-access (whitelist + SteamID) auto-removed during nightly maintenance. The
-character is kept, and the built-in `admin` account is always spared.
+**WHITELIST_PURGE_DAYS** sets the inactivity threshold for the
+[automatic startup access purge](USAGE.md#automatic-access-purge).
 
 ### Maintenance
 
@@ -198,28 +228,16 @@ export REBOOT_ON_MAINTENANCE=true   # true = reboot machine, false = restart ser
 
 ```bash
 export HEAP_RESTART_PERCENT=95      # restart when post-GC heap reaches this % of -Xmx
-export PZ_RAM_RESTART_GB=18         # restart at this total service memory (GiB, integer 1..19)
+export PZ_RAM_RESTART_GB=18         # restart at this aggregate PZ process RSS (GiB, integer 1..19)
 export HEAP_RESTART_DELAY="5m"      # player warning before the restart
 #export PZ_XMX_GB=16                # integer 2..16; empty = rounded-up half RAM, capped at 16 GiB
 ```
 
-The heap fills with live map cells that nothing can free at runtime, so the
-server restarts itself when the post-major-GC heap (read from
-`logs/zomboid/gc.log`) reaches `HEAP_RESTART_PERCENT`. `PZ_XMX_GB` overrides the
-heap ceiling within **16 GiB**; the remaining **4 GiB** cover all other cgroup
-charges. `Xmx20` together with `MemoryMax20G` is rejected by the blocking,
-read-only startup preflight. It checks the launched JSON and the current
-cgroup limit, including a stricter ancestor limit. Independently, every ~30 seconds the monitor sums process RSS inside the service cgroup
-(including child cgroups) and requests the same clean restart at **18 GiB**, even without
-a GC log. `zomboid.service` sets **`MemoryMax=20G`**, `OOMPolicy=kill` and
-`MemorySwapMax=0`: if usage cannot be reclaimed below 20 GiB, the kernel kills
-the service, possibly during the warning or save. The preventive threshold and Discord total cover process RSS (heap, native
-memory and descendants), excluding reclaimable file and kernel caches. The
-hard cgroup cap includes these caches too; Linux can reclaim them before an
-OOM-kill. Discord displays resident memory and heap usage. `MemoryHigh` is not set. The hard limit lives in the service
-unit, not `.env`; refresh installed units when updating existing installations.
-See [ADVANCED.md](ADVANCED.md#ram--jvm-configuration) for the full
-model, the OOM caveat and the [migration plan](ADVANCED.md#existing-installation-migration-to-the-20-gib-budget).
+See [RAM / JVM Configuration](ADVANCED.md#ram--jvm-configuration) for
+measurement sources, the shared memory budget, startup checks and OOM limits.
+Existing installations must follow the
+[migration plan](ADVANCED.md#existing-installation-migration-to-the-20-gib-budget)
+to update their installed units.
 
 ### Discord (Optional)
 
@@ -263,15 +281,15 @@ Full guide: [DISCORD_BOT.md](DISCORD_BOT.md).
 
 **Script**: `data/scripts/backup/fullBackup.sh`
 **Schedule**: Daily at 4:30 AM (during maintenance)
-**Method**: A single self-contained ZIP of the valuable, non-reconstructible data
+**Method**: A self-contained archive; see [publication and encryption settings](#external-synchronization).
 **Retention**: `OFFSITE_BACKUP_COUNT` most recent (by count, default 7)
 
-**Contents** (one `YYYY-MM-DD_HH-MM.zip`):
+**Contents**:
 - `config/` — sudoers (`etc/sudoers.d/<user>`), SSH keys, systemd `--user` units, `setupTemplates`, all `data/scripts/` (excludes `.venv/`, `__pycache__/`), and the root `.env` (logs live outside `data/scripts/` and are not backed up)
 - `zomboid/` — the latest game snapshot (`Saves`/`db`/`Server`/`Lua` = world, players, server config, server-side mod data such as Aegis roles and moderation)
 - **Excluded** (re-downloadable/rebuildable): SteamCMD install + Workshop mods (`data/pzserver`), the local backups themselves, logs, Discord venv
 
-**Location**: `~/pzmanager/data/fullBackups/YYYY-MM-DD_HH-MM.zip`
+**Location**: `SYNC_BACKUPS_DIR` (timestamped archives).
 **Off-site**: mirrored by a root Syncthing send-only folder → PC fixe → Google Drive (the ZIP is the transport format; Syncthing has no hardlink awareness, so the hardlinked game snapshot is flattened into the archive).
 
 ### Manual Backup
@@ -281,14 +299,13 @@ Full guide: [DISCORD_BOT.md](DISCORD_BOT.md).
 pzm backup create
 
 # Complete backup
-sudo ./data/scripts/backup/fullBackup.sh
+pzm backup full
 ```
 
 ### Restore from Backup
 
-```bash
-sudo ./data/scripts/install/configurationInitiale.sh restore ~/pzmanager/data/fullBackups/2026-01-10_04-30.zip
-```
+For full-backup ZIPs and privileged restoration, follow
+[complete restoration](TROUBLESHOOTING.md#complete-restoration-system--data).
 
 ### Adjust Retention
 
@@ -356,7 +373,7 @@ export DISCORD_WEBHOOK=""
 ### Zomboid Logs
 
 **Location**: `logs/zomboid/`
-**Format**: `zomboid_YYYY-MM-DD_HHhMMmSS.log`
+**Format**: `zomboid_YYYY-MM-DD_HHhMMmSS_<InvocationID>_<unique>.log`
 **Source**: journald (via captureLogs.sh)
 **Retention**: `LOG_RETENTION_DAYS` (default: 30 days)
 
@@ -374,7 +391,7 @@ export DISCORD_WEBHOOK=""
 pzm server status
 
 # Real-time logs
-sudo journalctl -u zomboid.service -f
+journalctl --user -u zomboid.service -f
 
 # Maintenance logs
 ls -lt logs/maintenance/

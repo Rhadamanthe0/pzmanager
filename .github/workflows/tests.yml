@@ -32,14 +32,36 @@ jobs:
         run: |
           sudo git config --global --add safe.directory "$GITHUB_WORKSPACE"
           sudo python3 tests/run-isolated.py --results "$RUNNER_TEMP/pz-test-results"
+      - name: Verify SSH socket authority on disposable hosted VM
+        if: ${{ runner.environment == 'github-hosted' }}
+        env:
+          SSH_AUTHORITY_HOSTED_TEST: ${{ runner.environment }}
+        run: |
+          for scenario in normal term kill command-failure; do
+            sudo env SSH_AUTHORITY_HOSTED_TEST="$SSH_AUTHORITY_HOSTED_TEST" GITHUB_ACTIONS=true \
+              python3 tests/ssh_socket_supervisor.py run \
+                --registry "/run/pz-ssh-authority-ci-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json" \
+                --results "$RUNNER_TEMP/pz-ssh-socket-results/$scenario" --scenario "$scenario"
+          done
+      - name: Retry cleanup of the private SSH fixture
+        if: ${{ always() && runner.environment == 'github-hosted' }}
+        env:
+          SSH_AUTHORITY_HOSTED_TEST: ${{ runner.environment }}
+        run: |
+          sudo env SSH_AUTHORITY_HOSTED_TEST="$SSH_AUTHORITY_HOSTED_TEST" GITHUB_ACTIONS=true \
+            python3 tests/ssh_socket_supervisor.py cleanup \
+              --registry "/run/pz-ssh-authority-ci-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
       - name: Publish test summary
         if: always()
         env:
           RESULTS: ${{ runner.temp }}/pz-test-results
+          SSH_RESULTS: ${{ runner.temp }}/pz-ssh-socket-results
         run: |
-          if sudo test -d "$RESULTS"; then
-            sudo chown -R "$(id -u):$(id -g)" "$RESULTS"
-          fi
+          for results in "$RESULTS" "$SSH_RESULTS"; do
+            if sudo test -d "$results"; then
+              sudo chown -R "$(id -u):$(id -g)" "$results"
+            fi
+          done
           python3 - <<'PY'
           import json, os
           from pathlib import Path
@@ -55,6 +77,8 @@ jobs:
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: isolated-test-results
-          path: ${{ runner.temp }}/pz-test-results
+          path: |
+            ${{ runner.temp }}/pz-test-results
+            ${{ runner.temp }}/pz-ssh-socket-results
           if-no-files-found: warn
           retention-days: 14

@@ -51,10 +51,12 @@ export PATH="$BIN:$PATH"
 cat > "$BIN/apt-cache" <<'MOCKEOF'
 #!/usr/bin/env bash
 pkg="${2:-}"
+label=Candidate
+if [[ "${APT_CACHE_FRENCH:-0}" == 1 && ( "${LC_ALL:-}" != C || "${LANGUAGE:-}" != C ) ]]; then label=Candidat; fi
 if [[ " ${APT_CACHE_AVAILABLE:-} " == *" ${pkg} "* ]]; then
-    printf '%s:\n  Installed: (none)\n  Candidate: 9.9.9-1\n' "$pkg"
+    printf '%s:\n  Installed: (none)\n  %s: 9.9.9-1\n' "$pkg" "$label"
 else
-    printf '%s:\n  Installed: (none)\n  Candidate: (none)\n' "$pkg"
+    printf '%s:\n  Installed: (none)\n  %s: (none)\n' "$pkg" "$label"
 fi
 MOCKEOF
 chmod +x "$BIN/apt-cache"
@@ -158,6 +160,19 @@ grep -q 'repli' <<<"$LOG2" \
     && ko "repli annonce a tort alors que 25 dispo" \
     || ok "aucun repli annonce (25 vraiment dispo)"
 
+# APT localisé : vrai résolveur, seul apt-cache est doublé, aucun Java lancé.
+(
+    export LANGUAGE=fr LC_ALL=C.UTF-8 APT_CACHE_FRENCH=1 JAVA_VERSION=25
+    resolve_java_package > "$S/resolve-fr.log" 2>&1 &&
+    [[ "$JAVA_VERSION/$JAVA_PACKAGE" == 25/openjdk-25-jre-headless ]] &&
+    [[ "$LANGUAGE/$LC_ALL" == fr/C.UTF-8 ]]
+) && ok 'candidat JRE25 sous langue FR : sélection et locale parent conservées' \
+  || ko 'candidat JRE25 rejeté sous langue FR'
+(
+    export LANGUAGE=fr LC_ALL=C.UTF-8 APT_CACHE_FRENCH=1 APT_CACHE_AVAILABLE=""
+    apt_package_available openjdk-25-jre-headless
+) && ko 'candidat JRE absent accepté sous langue FR' || ok 'candidat JRE absent refusé sous langue FR'
+
 # --- (3) mismatch java -version -> die ------------------------------------------
 echo "== (3) mismatch =="
 make_java "$S/jvm17/bin/java" "17.0.13"
@@ -225,6 +240,39 @@ parse_env_declarative "$TMP_ENV" \
     || ko "whitelist C15 : valeur hostile acceptee (${PZ_JDK_SOURCE:-?})"
 rm -f "$TMP_ENV"
 export PZ_JDK_SOURCE="debian"
+
+# Consommateur maintenance après reload : .env garde25, APT ne propose que17.
+consumer="$S/consumer"; mkdir "$consumer"
+printf 'export JAVA_VERSION=25\nexport JAVA_PACKAGE=openjdk-25-jre-headless\nexport JAVA_PATH=/usr/lib/jvm/java-25-openjdk-amd64\n' > "$consumer/.env"
+awk '/^update_system\(\) \{/,/^\}/' "$ROOT/data/scripts/admin/performFullMaintenance.sh" > "$S/update_system.sh"
+set +e
+APT_CACHE_AVAILABLE=openjdk-17-jre-headless bash -eu -c '
+    source "$1/data/scripts/lib/common.sh"
+    source "$1/data/scripts/lib/jdk_matrix.sh"
+    source_env "$2"
+    resolve_java_package
+    [[ "$JAVA_VERSION" == 17 ]]
+    source_env "$2"
+    [[ "$JAVA_VERSION" == 25 ]]
+    SCRIPT_DIR="$1/data/scripts/admin"
+    source "$3"
+    apt_log="$4"
+    sudo() {
+        printf "apt %s effective=%s/%s\n" "$*" "$JAVA_VERSION" "$JAVA_PACKAGE" >> "$apt_log"
+        [[ "$*" != /usr/bin/apt-get\ install* ]] || return 73
+    }
+    report_effective() { printf "effective=%s/%s\n" "$JAVA_VERSION" "$JAVA_PACKAGE"; }
+    trap report_effective EXIT
+    update_system
+' _ "$ROOT" "$consumer" "$S/update_system.sh" "$S/maintenance-apt.log" > "$S/maintenance.log" 2>&1
+RC=$?
+set -e
+if [[ "$RC" == 73 ]] && grep -q 'apt /usr/bin/apt-get install .*openjdk-17-jre-headless effective=17/openjdk-17-jre-headless' "$S/maintenance-apt.log" &&
+   grep -q 'effective=17/openjdk-17-jre-headless' "$S/maintenance.log" && grep -qx 'export JAVA_VERSION=25' "$consumer/.env"; then
+    ok 'resolve17 → reload préférence25 → maintenance installe17 sans changer .env'
+else
+    ko 'sélection effective perdue après reload/maintenance'; cat "$S/maintenance.log"
+fi
 
 # --- bash -n ----------------------------------------------------------------------
 for f in "$JDK_LIB" "$CONF_INIT" "$COMMON" "$ENV_PARSE" "$0"; do

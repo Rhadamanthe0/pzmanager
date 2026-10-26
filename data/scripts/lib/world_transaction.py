@@ -135,6 +135,7 @@ def digest(path):
 
 def tree_digest(root):
     root=Path(root)
+    if root.is_symlink(): raise ValueError('Transaction tree root symlink refused')
     if not root.exists(): return None
     fd,_=open_root(root);os.close(fd)
     entries=[]
@@ -248,16 +249,44 @@ def finish(world,token,state):
 
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('action',choices=['init','check','begin','finish'])
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('action',choices=['init','check','begin','finish','sync'])
     p.add_argument('--world',required=True);p.add_argument('--kind');p.add_argument('--recovery');p.add_argument('--after-tree')
-    p.add_argument('--directory',action='append');p.add_argument('--token');p.add_argument('--state',choices=sorted(TERMINAL));a=p.parse_args()
+    p.add_argument('--directory',action='append');p.add_argument('--directory-only',action='store_true')
+    p.add_argument('--file',action='append');p.add_argument('--delete-file',action='append')
+    p.add_argument('--token');p.add_argument('--state',choices=sorted(TERMINAL));a=p.parse_args()
     try:
         if a.action=='init':
             _,fd=directory(a.world,True);os.close(fd)
         elif a.action=='check':check_clean(a.world,legacy=True)
+        elif a.action=='sync':
+            # Internal backup boundary: recursive contents before publication,
+            # directory entries only after rename, without rescanning old backups.
+            root=Path(os.path.abspath(a.world));fd,_=open_root(root);os.close(fd)
+            entries=None
+            if a.file:
+                if a.directory_only:raise ValueError('Conflicting sync selection')
+                entries=[]
+                for name in a.file:
+                    path=Path(name)
+                    if path.is_absolute() or '..' in path.parts or not path.parts:raise ValueError('Invalid sync file')
+                    parent,_=open_root((root/path).parent);os.close(parent)
+                    if not (root/path).is_file() or (root/path).is_symlink():raise ValueError('Invalid sync file')
+                    entries.append({'path':str(path)})
+            sync_world(root,[] if a.directory_only else entries)
         elif a.action=='begin':
-            if not all((a.kind,a.recovery,a.after_tree)):raise ValueError('Missing transaction plan')
-            print(begin(a.world,a.kind,a.recovery,after_tree=a.after_tree,trees=a.directory))
+            if not all((a.kind,a.recovery)) or bool(a.after_tree)==bool(a.delete_file):raise ValueError('Missing or conflicting transaction plan')
+            files=None
+            if a.delete_file:
+                if a.directory:raise ValueError('Conflicting transaction selection')
+                root=Path(os.path.abspath(a.world));files=[]
+                for name in a.delete_file:
+                    path=Path(name)
+                    if path.is_absolute() or '..' in path.parts or not path.parts:raise ValueError('Invalid transaction path')
+                    parent,_=open_root((root/path).parent);os.close(parent)
+                    before=digest(root/path)
+                    if before is None:raise ValueError('Transaction deletion target missing')
+                    files.append(dict(path=str(path),before=before,after=None))
+            print(begin(a.world,a.kind,a.recovery,files=files,after_tree=a.after_tree,trees=a.directory))
         else:finish(a.world,a.token,a.state)
         return 0
     except (OSError,ValueError,TypeError,KeyError,ConfigurationError) as e:

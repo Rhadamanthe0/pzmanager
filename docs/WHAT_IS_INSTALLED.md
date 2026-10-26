@@ -58,7 +58,7 @@ OS repositories. `install_zomboid_dependencies` calls `resolve_java_package()`
 `apt-cache policy` and installs the first one that has a candidate, logging
 any downgrade. Order is always <requested> → 21 → 17 (deduplicated).
 
-| OS | `openjdk-25-jre-headless` probe | JDK actually installed |
+| OS | `openjdk-25-jre-headless` probe | Runtime selected |
 |---|---|---|
 | Debian 12 (bookworm) | no candidate in the default archive (bookworm carries 17) | 21 when backports/Adoptium expose it, else 17 |
 | Ubuntu 22.04 and newer | installed when the archive offers a candidate | 25 when available, else 21, else 17 |
@@ -66,8 +66,10 @@ any downgrade. Order is always <requested> → 21 → 17 (deduplicated).
 
 After `apt-get install`, `verify_java_version()` parses the major out of
 `<JAVA_PATH>/bin/java -version` (falling back to `java` on `PATH`) and aborts
-the install on mismatch, so the binary the `zomboid.service` JVM ends up on is
-the one that was proven. Overrides in `.env`: `JAVA_VERSION` (17–25) and
+the install on mismatch. This checks the OS package runtime, not necessarily the
+server JVM: the game launches `PZ_INSTALL_DIR/jre64/bin/java`, bundled or linked
+by `linkJvm.sh`. Offline Writing cleanup chooses a separate compatible JDK; see
+[Writing requirements](WRITING_TEXT_ONLY.md). Overrides in `.env`: `JAVA_VERSION` (17–25) and
 `PZ_JDK_SOURCE` (`debian`|`temurin`); the sudoers template already permits the
 three `apt-get install … openjdk-{25,21,17}-jre-headless` lines the fallback
 can pick. Temurin is pinned to `temurin-25-jre` only (no wildcard: a wildcard
@@ -90,28 +92,9 @@ would allow apt option injection as root).
 
 **File**: `/etc/sudoers.d/<PZ_USER>` (generated from template with actual username and paths)
 
-**Allowed commands** (NOPASSWD):
-
-**APT (package management)** - specific commands only:
-```
-/usr/bin/apt-get update -qq
-/usr/bin/apt-get upgrade -y -qq
-/usr/bin/apt-get install -y -qq openjdk-25-jre-headless
-/usr/bin/apt-get install -y -qq openjdk-21-jre-headless
-/usr/bin/apt-get install -y -qq openjdk-17-jre-headless
-/usr/bin/apt-get autoremove -y -qq
-/usr/bin/apt-get autoclean -qq
-```
-
-**Backups** - read-only access:
-```
-/bin/cat /etc/sudoers.d/pzuser
-```
-
-**System**:
-```
-/sbin/reboot
-```
+The [sudoers template](../data/setupTemplates/pzuser-sudoers) defines the exact
+NOPASSWD commands for package maintenance, read-only backup of this file and
+reboot. Installation substitutes the configured username and paths.
 
 ---
 
@@ -133,8 +116,9 @@ would allow apt option injection as root).
 | 16261/UDP | Game | Main Project Zomboid port |
 | 16262/UDP | Game | Secondary Project Zomboid port |
 
-Only those are opened. 8766/27015 are B41 leftovers that B42 never binds, and the
-Prometheus metrics port (`PZ_PROMETHEUS_PORT`, default 9110) is explicitly
+Game-port configuration and optional TCP RCON are described in
+[network ports](SERVER_CONFIG.md#network-ports). The Prometheus metrics port
+(`PZ_PROMETHEUS_PORT`, default 9110) is explicitly
 **denied** from outside — it binds `0.0.0.0` and exposes player coordinates, so it
 must stay reachable on loopback only and must never be forwarded on the router.
 
@@ -148,15 +132,8 @@ must stay reachable on loopback only and must never be forwarded on the router.
 
 **Installed by**: `configurationInitiale.sh zomboid`
 
-**Version**: Build 42 (branch `unstable`)
-
-**Installation method**:
-```bash
-/usr/games/steamcmd +force_install_dir /home/pzuser/pzmanager/data/pzserver \
-    +login anonymous \
-    +app_update 380870 -beta unstable validate \
-    +quit
-```
+**Version**: Build 42. SteamCMD installs the branch selected by
+[`STEAM_BETA_BRANCH`](CONFIGURATION.md#steamcmd).
 
 **Location**: `/home/pzuser/pzmanager/data/pzserver/`
 
@@ -166,61 +143,10 @@ must stay reachable on loopback only and must never be forwarded on the router.
 
 **File**: `/home/pzuser/pzmanager/data/pzserver/ProjectZomboid64.json`
 
-**Automatically applied parameters**:
-
-```json
-{
-  "vmArgs": [
-    "-Djava.awt.headless=true",
-    "-Djava.library.path=linux64/:natives/",
-    "-Djava.security.egd=file:/dev/urandom",
-    "-XX:-OmitStackTraceInFastThrow",
-    "-Xmx7g",
-    "-XX:+UseZGC",
-    "-XX:+AlwaysPreTouch",
-    "-XX:ZCollectionInterval=60",
-    "-XX:+UseStringDeduplication",
-    "-XX:+UseCompactObjectHeaders",
-    "-Djava.net.preferIPv4Stack=true",
-    "-XX:+HeapDumpOnOutOfMemoryError",
-    "-XX:HeapDumpPath=.../logs/zomboid",
-    "-Xlog:gc*:file=.../logs/zomboid/gc.log:...:filecount=5,filesize=20M"
-  ]
-}
-```
-
-**Optimizations**:
-- **No `-Xms`**: removed — with `AlwaysPreTouch` the resident cost is the
-  pre-touched `-Xmx`, and ZGC give-back never fires on this ever-growing
-  workload. The heap starts at the ergonomic default and grows on demand.
-- **Heap ceiling**: `-Xmx` = **`PZ_XMX_GB` GB if set in `.env`, else half of
-  physical RAM** (computed at install; e.g. 7g on a 14 GiB machine). Real
-  guardrail: clean Java OOM before the heap starves PZ's native memory + the OS.
-- **Generational ZGC** (`-XX:+UseZGC`, generational by default on JDK 25) with
-  `AlwaysPreTouch` and a 60s periodic major cycle — sub-millisecond GC pauses.
-  (`ZCollectionInterval` forces a *major* collection at that interval; 60s keeps
-  the cheap young collections frequent while making the majors rare, instead of
-  the old 5s that ran a near-continuous, near-useless major pass.)
-- **String deduplication** (`-XX:+UseStringDeduplication`): the heap is full of
-  map cells with repeated sprite/tile strings; dedup trims the String live set.
-- **Compact object headers** (`-XX:+UseCompactObjectHeaders`, JEP 519, product in
-  JDK 25): shrinks every object header from ~12 to 8 bytes. The heap is millions
-  of tiny map-cell objects, so this cuts ~10-20% of the live set — less resident
-  RAM and a later OOM, plus slightly shorter GC pauses (fewer bytes to scan).
-- **IPv4 stack** (`-Djava.net.preferIPv4Stack=true`): RakNet/UdpEngine stability.
-- **Diagnostics**: heap dump on OOM + rotating GC log to `logs/zomboid/`.
-- **Headless**: No GUI / **Steam**: integration enabled.
-
-**Modify RAM**: set `PZ_XMX_GB` in `.env` (or edit `Xmx` in
-`data/scripts/internal/configureJvm.sh`), run the script, and restart. The script
-applies the tuning at install time and re-applies it after every SteamCMD update
-(which restores the vanilla JSON) — a manual edit of `ProjectZomboid64.json`
-would not survive the nightly maintenance. There is no `pzm config ram` command.
-The monitor requests a restart at 18 GiB RSS. The heap ceiling is 16 GiB
-within the shared pz.slice20 GiB cap, leaving common headroom for native memory, bot and background PZ tasks.
-A blocking, read-only startup check rejects a stale JSON with Xmx20 and an
-incompatible effective parent memory limit. See
-[ADVANCED.md](ADVANCED.md#ram--jvm-configuration).
+`configureJvm.sh` writes the JVM settings at installation and after each
+SteamCMD update. For heap sizing through `PZ_XMX_GB`, applying changes, JVM
+options and the shared memory budget, see
+[RAM / JVM Configuration](ADVANCED.md#ram--jvm-configuration).
 
 ### Server Data
 
@@ -251,11 +177,8 @@ The `servertest*` filenames are derived from the world name `PZ_SERVER_NAME`
 
 ### Admin User
 
-An `admin` user is automatically created during installation with a random 24-character password. This password is displayed once during installation - **save it immediately**.
-
-- Username: `admin`
-- Role: 7 (admin)
-- Excluded from `pzm whitelist purge` (never deleted)
+The installer prepares the first-start secret; see
+[Administrator credentials](SERVER_CONFIG.md#administrator-credentials).
 
 ### Access model (SteamID whitelist)
 
@@ -270,7 +193,8 @@ server console (`addsteamid`), and the player self-registers. See
 Access levels are set with `pzm rcon setaccesslevel <name> <level>`, where
 `<level>` is one of `admin`, `moderator`, `gm`, `observer`, `priority`, `user`
 (plus any custom level, e.g. `Animateur`) — lowercase and case-sensitive. The
-built-in `admin` account is created at install and excluded from the purge.
+built-in `admin` account is excluded from the purge; see
+[purge rules](USAGE.md#whitelist).
 
 ---
 
@@ -282,100 +206,33 @@ built-in `admin` account is created at install and excluded from the purge.
 
 **Type**: User service (systemd user)
 
-**Template file**: `~/pzmanager/data/setupTemplates/zomboid.service`
-**Installed file**: `~/.config/systemd/user/zomboid.service`
+The [service template](../data/setupTemplates/zomboid.service) is the source of
+truth; installation writes `~/.config/systemd/user/zomboid.service`.
 
-**Configuration**:
-```ini
-[Unit]
-Description=Project Zomboid Server
-After=network.target zomboid.socket
-Requires=zomboid.socket
-Wants=zomboid_logger.service
-
-[Service]
-Type=simple
-PrivateTmp=true
-WorkingDirectory=%h/pzmanager/data/pzserver/
-# Drains any stray "quit" left in the control FIFO (avoids a socket-activation flap)
-ExecStartPre=/bin/sh -c "dd if=%h/pzmanager/data/pzserver/zomboid.control iflag=nonblock of=/dev/null 2>/dev/null; exit 0"
-# Reads the one-shot admin password from ~/pzmanager/.admin_password and deletes it
-ExecStart=/bin/sh -c "... exec .../start-server.sh -cachedir=%h/pzmanager/Zomboid $ADMIN_ARGS <> .../zomboid.control"
-ExecStartPost=-/bin/sh -c "%h/pzmanager/data/scripts/internal/notifyServerReady.sh &"
-ExecStop=/bin/sh -c "echo 'quit' > %h/pzmanager/data/pzserver/zomboid.control"
-KillSignal=SIGCONT
-TimeoutStartSec=900           # allows the pre-start purge safety snapshot to finish
-TimeoutStopSec=120            # a large modded B42 save can take >30s to shut down cleanly
-MemorySwapMax=0              # swap forbidden to the process (prevents micro-freezes/desync)
-
-[Install]
-WantedBy=default.target
-```
-
-**Features**:
-- Automatic startup at boot
-- Pre-start purge and its safety snapshot have up to 15 minutes to complete
-- Uses systemd socket for control pipe
-- Admin password passed once via `.admin_password` (read then deleted by ExecStart)
-- Discord notification at startup (via notifyServerReady.sh)
-- Dedicated logger (zomboid_logger.service)
-- Clean shutdown via 'quit' command (up to 120s)
-- `MemoryAccounting=yes`, `MemoryMax=20G`, `OOMPolicy=kill`, `MemorySwapMax=0`;
-  preventive restart at 18 GiB; no `MemoryHigh` throttling threshold
-
-**Commands**:
-```bash
-systemctl --user status zomboid.service
-systemctl --user start zomboid.service
-systemctl --user stop zomboid.service
-systemctl --user restart zomboid.service
-```
+The service uses the control FIFO and a dedicated logger. Blocking pre-start
+checks enforce the memory budget, closed admission and offline Writing cleanup;
+the inactivity purge is non-blocking. Initial access follows the
+[admin credential handoff](SERVER_CONFIG.md#administrator-credentials).
+Shutdown uses the guarded stop helper to save cleanly.
+Systemd hardening limits writable paths; `pz.slice` shares the PZ memory budget
+and swap is forbidden. Use `pzm server` for lifecycle operations so its locking
+and readiness checks apply.
 
 ### zomboid.socket Socket
 
 **Type**: Systemd socket for control pipe
 
-**Template file**: `~/pzmanager/data/setupTemplates/zomboid.socket`
+**Template**: [zomboid.socket](../data/setupTemplates/zomboid.socket)
 **Installed file**: `~/.config/systemd/user/zomboid.socket`
 
-**Configuration**:
-```ini
-[Unit]
-Description=Project Zomboid Server Control Socket
-PartOf=zomboid.service
-Before=zomboid.service
-
-[Socket]
-ListenFIFO=%h/pzmanager/data/pzserver/zomboid.control
-FileDescriptorName=control
-SocketMode=0660
-SocketUser=%u
-ExecStartPre=/bin/rm -f %h/pzmanager/data/pzserver/zomboid.control
-RemoveOnStop=true
-```
-
-**Function**: Manages the FIFO (named pipe) used to send commands to the server via RCON.
+**Function**: Provides the local control FIFO used to send commands to the server.
 
 ### zomboid_logger.service Service
 
 **Type**: Log capture service
 
-**Template file**: `~/pzmanager/data/setupTemplates/zomboid_logger.service`
+**Template**: [zomboid_logger.service](../data/setupTemplates/zomboid_logger.service)
 **Installed file**: `~/.config/systemd/user/zomboid_logger.service`
-
-**Configuration**:
-```ini
-[Unit]
-Description=Logger for Project Zomboid
-PartOf=zomboid.service
-After=zomboid.service
-
-[Service]
-Type=simple
-ExecStart=%h/pzmanager/data/scripts/internal/captureLogs.sh
-Restart=always
-RestartSec=5
-```
 
 **Function**: Captures server logs from journald and saves them to timestamped files.
 
@@ -406,11 +263,13 @@ RestartSec=5
 
 **Function**:
 - Checks Workshop mod updates via RCON `checkModsNeedUpdate`
-- Checks for server updates by comparing installed build ID with latest available on SteamCMD (branch `unstable`)
-- Triggers `performFullMaintenance.sh` (5m delay) if mod or server updates found
+- Compares the installed build ID with SteamCMD for the configured branch
+- Restarts the service for mod updates; build updates run maintenance with
+  `--no-reboot`. See [update orchestration](ARCHITECTURE.md#automation).
 - Sends Discord notifications
 
-**Lock**: Partage `/tmp/pzmanager-maintenance-<user>.lock` avec `pz.sh` et `performFullMaintenance.sh`. Skip silencieux si lock détenu.
+**Locks**: WORLD precedes the shared private maintenance lock; contention skips
+the pass for a later timer retry. See [orchestration](ARCHITECTURE.md#automation).
 
 **Logs**: `logs/mod_checks/mod_checks_YYYY-MM-DD.log` (7-day retention)
 
@@ -446,8 +305,9 @@ it never overlaps its own execution or a restart warning).
   is the only reclaim. Quiet server = no needless restart. See
   [ADVANCED.md](ADVANCED.md#memory-driven-restart-why-the-server-restarts-on-its-own).
 
-**Service**: `pz-heapcheck.service` (oneshot, `TimeoutStartSec=1500` to cover the
-warning countdown).
+**Service**: `pz-heapcheck.service` (oneshot, `TimeoutStartSec=7200`): a two-hour
+overall limit for warnings up to 30 minutes, stop, backup and activation. The
+direct backup shares this deadline; it has no separate 2400-second timeout.
 
 #### pz-maintenance.timer - Daily maintenance (4:30 AM)
 
@@ -455,12 +315,11 @@ warning countdown).
 
 **Steps**:
 1. Server shutdown with warnings (30min default)
-2. Off-site sync (`fullBackup.sh` → Syncthing; local retention is handled hourly by the GFS prune, not here)
-3. System update (`apt upgrade`)
-4. Java update
-5. PZ server update (SteamCMD)
-6. External complete backup
-7. Machine reboot (if `REBOOT_ON_MAINTENANCE=true`) or service restart
+2. System update (`apt upgrade`)
+3. Java update
+4. PZ server update (SteamCMD)
+5. External complete backup (`fullBackup.sh` → Syncthing)
+6. Machine reboot (if `REBOOT_ON_MAINTENANCE=true`) or service restart
 
 **Logs**: `/home/pzuser/pzmanager/logs/maintenance/`
 
@@ -468,7 +327,9 @@ warning countdown).
 
 **Schedule**: Daily at 00:00
 
-**Function**: Assigns creation date (yesterday) to whitelist accounts without one. Enables `pzm whitelist purge` to identify truly inactive accounts vs newly added ones.
+**Function**: Records newly seen accounts in the external age ledger used by
+[the access purge](USAGE.md#automatic-access-purge); existing dates remain
+unchanged. See [ledger ownership and initialization](ARCHITECTURE.md#automation).
 
 **View timers**: `systemctl --user list-timers`
 
@@ -633,36 +494,8 @@ Every variable is documented — with its default and its trade-offs — in
 
 **File**: `/home/pzuser/pzmanager/Zomboid/Server/servertest.ini`
 
-**Default parameters (first installation)**:
-
-```ini
-# General
-ServerName=servertest
-PublicName=My PZ Server
-Password=                    # Empty = public server
-AdminPassword=changeme       # ⚠️ MUST CHANGE!
-MaxPlayers=32
-
-# Gameplay
-PauseEmpty=true              # Pause if no players
-Open=false                   # SteamID whitelist (required by pzmanager's access model)
-Public=true                  # Visible in server list
-PublicPort=16261
-PublicDescription=
-
-# Save
-SaveWorldEveryMinutes=20
-BackupsCount=5
-BackupsOnStart=true
-BackupsOnVersionChange=true
-
-# Security
-AllowCoop=true
-SteamAuthenticationRequired=true
-ResetID=0
-```
-
-**Complete documentation**: [docs/SERVER_CONFIG.md](SERVER_CONFIG.md)
+Game options and credentials are documented in [SERVER_CONFIG](SERVER_CONFIG.md);
+the world name and manager paths are configured in [CONFIGURATION](CONFIGURATION.md#world-name).
 
 ---
 
@@ -673,7 +506,6 @@ ResetID=0
 **Global system**:
 - `/etc/sudoers.d/pzuser` (sudo permissions)
 - `/var/lib/systemd/linger/pzuser` (systemd lingering)
-- `/etc/apt/sources.list.d/steam.list` (SteamCMD repository)
 
 **pzuser user**:
 - `~/.config/systemd/user/zomboid.service` (server)
@@ -700,32 +532,9 @@ ResetID=0
 
 ## Uninstallation
 
-To completely remove pzmanager:
-
-```bash
-# As root
-
-# 1. Stop and disable services
-sudo -u pzuser systemctl --user stop zomboid.service pz-backup.timer pz-modcheck.timer pz-heapcheck.timer pz-maintenance.timer pz-creation-date-init.timer pz-discord-bot.service
-sudo -u pzuser systemctl --user disable zomboid.service pz-backup.timer pz-modcheck.timer pz-heapcheck.timer pz-maintenance.timer pz-creation-date-init.timer pz-discord-bot.service
-loginctl disable-linger pzuser
-
-# 2. Remove files
-rm -rf /home/pzuser/pzmanager
-
-# 3. Remove user
-userdel -r pzuser
-
-# 4. Remove system configuration
-rm /etc/sudoers.d/pzuser
-rm /var/lib/systemd/linger/pzuser
-
-# 5. (Optional) Remove packages
-apt remove --purge steamcmd openjdk-25-jre-headless
-apt autoremove
-```
-
-**Note**: UFW firewall rules remain active (manually remove if desired)
+Follow the [canonical uninstall procedure](QUICKSTART.md#uninstallation), which
+stops timers, bot, services and socket activation before file removal. Account
+and data removal remain explicit choices.
 
 ---
 

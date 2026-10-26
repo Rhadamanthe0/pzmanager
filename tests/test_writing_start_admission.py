@@ -1,5 +1,6 @@
 """WORLD start admission: disposable state, mocked bus and real Linux flock/SCM_RIGHTS."""
 import fcntl
+from contextlib import closing
 import importlib.util
 import json
 import os
@@ -14,6 +15,7 @@ import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
+from startup_bus_fixture import write_busctl
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / 'data/scripts/internal/writing_start_admission.py'
@@ -35,10 +37,12 @@ class StartAdmission(unittest.TestCase):
                         'd=json.load(open(os.environ["WRITING_TEST_STATE"]))\n'
                         'for k,v in d.items(): print(k+"="+str(v))\n')
         mock.chmod(0o700)
+        write_busctl(self.bin,HELPER.with_name('startServer.sh'))
         self.env = dict(os.environ, PATH=str(self.bin)+os.pathsep+os.environ['PATH'],
                         WRITING_TEST_STATE=str(self.state))
         self.processes = []
         self.original_marker = None
+        self.helper=HELPER
         self.set_state('inactive', 'dead', 0, 0)
 
     def tearDown(self):
@@ -60,7 +64,7 @@ class StartAdmission(unittest.TestCase):
                                              MainPID=main, ControlPID=control)))
 
     def invoke(self, *args):
-        return subprocess.run([sys.executable, str(HELPER), *map(str,args)],
+        return subprocess.run([sys.executable, str(self.helper), *map(str,args)],
                               env=self.env, capture_output=True, text=True, timeout=8)
 
     def wait_file(self, path, process=None):
@@ -78,6 +82,15 @@ class StartAdmission(unittest.TestCase):
             return False
 
     def prepare_owner(self):
+        if not self.env.get('PZ_SOURCE_DIR'):
+            world=self.root/'world';world.mkdir(exist_ok=True)
+            self.env['PZ_SOURCE_DIR']=str(world)
+        resolved=subprocess.run(['bash','-c',
+            'set -euo pipefail; source "$1"; apply_env_defaults; env -0','fixture',
+            str(self.helper.parent.parent/'lib/common.sh')],env=self.env,
+            capture_output=True,check=True)
+        values=dict(item.split(b'=',1) for item in resolved.stdout.split(b'\0') if b'=' in item)
+        for key in admission.LAUNCH_KEYS:self.env[key]=values[key.encode()].decode()
         ready=self.root/'owner-ready'; release=self.root/'owner-release'
         script='''set -euo pipefail
 exec 201>"$1"
@@ -85,16 +98,94 @@ chmod 600 "$1"
 flock -n 201
 "$2" "$3" prepare --lock-path "$1" --pid "$$" --fd 201 --unit probe.service > "$4"
 touch "$5"
-while [[ ! -f "$6" ]]; do sleep .02; done
+# Seul le worker admis doit conserver WORLD après la mort du propriétaire.
+while [[ ! -f "$6" ]]; do sleep .02 201>&-; done
 "$2" "$3" clear --lock-path "$1" --token "$(cat "$4")"
 '''
         with open(self.root/'owner.stderr','w') as error_stream:
             process=subprocess.Popen(['/bin/bash','-c',script,'bash',str(self.lock),sys.executable,
-                 str(HELPER),str(self.root/'token'),str(ready),str(release)],env=self.env,
+                 str(self.helper),str(self.root/'token'),str(ready),str(release)],env=self.env,
                  stdout=subprocess.DEVNULL,stderr=error_stream)
         self.processes.append(process);self.wait_file(ready,process)
         self.original_marker=json.loads((self.private/admission.MARKER).read_text())
         return process,release
+
+    def closure_fixture(self):
+        # Real shell entrypoints, admission and clean world; only bus is simulated.
+        self.private.rename(self.root/'pzmanager');self.private=self.root/'pzmanager'
+        self.lock=self.private/'world.lock'
+        self.env['XDG_RUNTIME_DIR']=str(self.root)
+        repo=self.root/'repository';shutil.copytree(ROOT/'data/scripts',repo/'data/scripts')
+        self.helper=repo/'data/scripts/internal/writing_start_admission.py'
+        write_busctl(self.bin,repo/'data/scripts/internal/startServer.sh')
+        world=self.root/'world';(world/'Server').mkdir(parents=True)
+        ini=world/'Server/servertest.ini';ini.write_text('Open=true\nMods=\n')
+        import shlex,sqlite3
+        install=self.root/'pzserver';install.mkdir()
+        (world/'db').mkdir();database=world/'db/servertest.db'
+        with closing(sqlite3.connect(database)) as db:
+            db.executescript("CREATE TABLE whitelist(id INTEGER PRIMARY KEY,username TEXT,steamid TEXT,lastConnection TEXT); CREATE TABLE allowedsteamid(steamid TEXT); INSERT INTO whitelist VALUES(1,'old',NULL,'2000-01-01');")
+        values=dict(PZ_INSTALL_DIR=str(install),PZ_DB_PATH=str(database),PZ_SOURCE_DIR=str(world),PZ_HOME=str(self.root),PZ_SERVICE_NAME='probe.service',PZ_INI_PATH=str(ini))
+        (repo/'.env').write_text('\n'.join(k+'='+shlex.quote(v) for k,v in values.items())+'\n')
+        self.env.update(values)
+        return repo,world,ini
+    def test_closure_and_writing_share_one_real_startup_broker(self):
+        repo,world,ini=self.closure_fixture()
+        owner,release=self.prepare_owner()
+        self.set_state('activating','start-pre',0,os.getpid())
+        for name in ('prepareWorldStart.sh',):
+            result=subprocess.run(['bash',str(repo/'data/scripts/internal'/name)],env=self.env,capture_output=True,text=True,timeout=12)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            self.assertTrue(self.busy(),'worker released parent WORLD')
+            self.assertIn('ProjectWriting restart cleanup policy: disabled',result.stdout)
+            self.assertIn('Purge terminée : 1 compte(s)',result.stdout)
+        self.assertIn('Open=false',ini.read_text())
+        release.touch();owner.wait(timeout=5)
+        self.assertFalse(self.busy())
+    def test_closure_pending_preserves_tree_and_recovery(self):
+        repo,world,ini=self.closure_fixture()
+        staged=self.root/'staged';shutil.copytree(world,staged)
+        helper=repo/'data/scripts/lib/world_transaction.py'
+        def transaction(*args):
+            return subprocess.run([sys.executable,str(helper),*args,'--world',str(world)],env=self.env,capture_output=True,text=True,timeout=8)
+        result=transaction('begin','--kind','fixture','--recovery',str(self.root/'recovery'),'--after-tree',str(staged))
+        self.assertEqual(result.returncode,0,result.stderr)
+        before=ini.read_bytes()
+        owner,release=self.prepare_owner();self.set_state('activating','start-pre',0,os.getpid())
+        closed=subprocess.run(['bash',str(repo/'data/scripts/internal/enforceClosedServer.sh')],env=self.env,capture_output=True,text=True,timeout=8)
+        self.assertNotEqual(closed.returncode,0,closed.stdout+closed.stderr)
+        self.assertIn('unfinished',closed.stderr)
+        self.assertEqual(ini.read_bytes(),before);self.assertTrue(self.busy())
+        reverted=transaction('finish','--token',result.stdout.strip(),'--state','reverted')
+        self.assertEqual(reverted.returncode,0,reverted.stderr)
+        release.touch();owner.wait(timeout=5)
+    def test_closure_autonomous_and_forged_worker(self):
+        repo,world,ini=self.closure_fixture()
+        script=repo/'data/scripts/internal/enforceClosedServer.sh'
+        for name in ('enforceClosedServer.sh','configureWritingTextOnly.sh','prepareWorldStart.sh'):
+            forged=subprocess.run(['bash',str(repo/'data/scripts/internal'/name),'--admitted-worker'],env=self.env,capture_output=True,text=True,timeout=8)
+            self.assertNotEqual(forged.returncode,0,forged.stdout+forged.stderr)
+            self.assertEqual(ini.read_text(),'Open=true\nMods=\n')
+        result=subprocess.run(['bash',str(script)],env=self.env,capture_output=True,text=True,timeout=8)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('Open=false',ini.read_text());self.assertFalse(self.busy())
+
+    def test_startup_writing_failure_blocks_purge_after_closure(self):
+        repo,world,ini=self.closure_fixture();(self.root/'pzserver').rmdir()
+        result=subprocess.run(['bash',str(repo/'data/scripts/internal/prepareWorldStart.sh')],env=self.env,capture_output=True,text=True,timeout=8)
+        self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('Open=false',ini.read_text())
+        self.assertNotIn('Purge terminée',result.stdout)
+    def test_startup_purge_failure_remains_nonblocking(self):
+        repo,world,ini=self.closure_fixture()
+        import sqlite3
+        with closing(sqlite3.connect(world/'db/servertest.db')) as db:
+            db.execute("CREATE TRIGGER refuse BEFORE DELETE ON whitelist BEGIN SELECT RAISE(ABORT,'fixture refusal'); END");db.commit()
+        result=subprocess.run(['bash',str(repo/'data/scripts/internal/prepareWorldStart.sh')],env=self.env,capture_output=True,text=True,timeout=8)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('Open=false',ini.read_text())
+        self.assertIn('ProjectWriting restart cleanup policy: disabled',result.stdout)
+        self.assertIn('purge des accès non effectuée',result.stdout)
 
     def test_inactive_offline_command_runs_with_real_world_fd(self):
         done=self.root/'done'
@@ -202,6 +293,28 @@ while [[ ! -f "$6" ]]; do sleep .02; done
         self.assertIn('world operation',result.stderr)
         release.touch();self.assertEqual(owner.wait(timeout=5),0,(self.root/'owner.stderr').read_text())
         self.assertFalse(self.busy())
+
+    def test_owner_polling_sleep_does_not_keep_world_fd_alive(self):
+        owner,release=self.prepare_owner()
+        deadline=time.monotonic()+3
+        while time.monotonic()<deadline:
+            children=Path(f'/proc/{owner.pid}/task/{owner.pid}/children').read_text().split()
+            for child in children:
+                process=Path('/proc')/child
+                try:
+                    before=(process/'stat').read_text().rsplit(')',1)[1].split()
+                    if (process/'comm').read_text().strip()!='sleep':continue
+                    inherited=(process/'fd/201').exists()
+                    after=(process/'stat').read_text().rsplit(')',1)[1].split()
+                except OSError:continue
+                # Both observations must cover the same live child. A vanished
+                # /proc entry is not evidence that a living sleep closed WORLD.
+                if before[19]!=after[19] or after[0] in ('Z','X'):continue
+                release.touch();self.assertEqual(owner.wait(timeout=5),0)
+                self.assertFalse(inherited,f'polling sleep pid={child} inherited WORLD fd201 from owner pid={owner.pid}')
+                return
+            time.sleep(.001)
+        self.fail('No stable live polling sleep observed within 3 seconds')
 
     def test_scm_rights_handoff_survives_owner_sigkill_until_worker_exit(self):
         owner,_=self.prepare_owner()
@@ -354,6 +467,68 @@ os.execv(sys.executable,sys.argv[3:])
         finally:os.close(directory_fd)
         self.assertEqual(outside.read_bytes(),original)
         marker.chmod(0o600);release.touch();self.assertEqual(owner.wait(timeout=5),0,(self.root/'owner.stderr').read_text())
+
+    def test_quiet_metadata_is_optional_and_strictly_boolean(self):
+        owner,release=self.prepare_owner();marker=self.private/admission.MARKER
+        directory_fd=os.open(self.private,os.O_RDONLY|os.O_DIRECTORY)
+        try:
+            for value in (None,0,1,'false',[],{}):
+                marker.write_text(json.dumps(dict(self.original_marker,quiet_ready=value)))
+                with self.subTest(value=value),self.assertRaises(admission.ConfigurationError):
+                    admission.read_marker(directory_fd)
+            legacy=dict(self.original_marker);legacy.pop('quiet_ready',None)
+            marker.write_text(json.dumps(legacy))
+            self.assertNotIn('quiet_ready',admission.read_marker(directory_fd))
+        finally:
+            marker.write_text(json.dumps(self.original_marker));os.close(directory_fd)
+        release.touch();self.assertEqual(owner.wait(timeout=5),0,(self.root/'owner.stderr').read_text())
+
+
+    def test_launch_profiles_reject_native_identity_changes_and_nul(self):
+        profile=dict(PZ_SOURCE_DIR='/tmp/world',PZ_SERVER_NAME='selected',PZ_INSTALL_DIR='/tmp/game',PZ_CONTROL_PIPE='/tmp/game/control',PZ_MANAGER_DIR='/tmp/manager')
+        for field,value in [('PZ_SERVER_NAME',' selected'),('PZ_SERVER_NAME','selected\t'),('PZ_SOURCE_DIR','/tmp/world\n'),('PZ_SOURCE_DIR','/tmp/-cachedir=one/-cachedir=two')]:
+            bad=dict(profile,**{field:value})
+            with self.subTest(field=field,value=value):
+                with self.assertRaisesRegex(ValueError,field+'.*native'):admission.validate_launch_profile(bad)
+                with patch.dict(os.environ,bad),self.assertRaisesRegex(ValueError,field+'.*native'):admission.launch_profile()
+        for field in admission.LAUNCH_KEYS:
+            with self.subTest(nul=field),self.assertRaises(admission.ConfigurationError):
+                admission.validate_launch_profile(dict(profile,**{field:'bad\0value'}))
+        for edge in ('\u00a0','\u0085','\u2003','\x7f'):
+            valid=dict(profile,PZ_SOURCE_DIR='/tmp/world'+edge,PZ_SERVER_NAME=edge+'selected'+edge)
+            self.assertEqual(admission.validate_launch_profile(valid),valid)
+        valid=dict(profile,PZ_SERVER_NAME='selected-cachedir=ok')
+        self.assertEqual(admission.validate_launch_profile(valid),valid)
+
+    def test_autonomous_and_relay_run_refuse_invalid_identity_before_worker(self):
+        for startup in (False,True):
+            for field,value in [('PZ_SERVER_NAME','servertest '),('PZ_SOURCE_DIR','world '),('PZ_SOURCE_DIR','-cachedir=world')]:
+                with self.subTest(startup=startup,field=field,value=value):
+                    case=StartAdmission();case.setUp()
+                    owner=release=None;marker=None;original=None
+                    try:
+                        repo,world,ini=case.closure_fixture()
+                        if startup:
+                            owner,release=case.prepare_owner();case.set_state('activating','start-pre',0,os.getpid())
+                            marker=case.private/admission.MARKER;original=marker.read_bytes()
+                        bad=value if field=='PZ_SERVER_NAME' else str(case.root/value)
+                        case.env[field]=bad
+                        if startup:
+                            # Same invalid raw identity in the received/local profile.
+                            data=json.loads(original);data['launch'][field]=bad;marker.write_text(json.dumps(data))
+                        before={str(path):path.read_bytes() for path in world.rglob('*') if path.is_file()}
+                        done=case.root/'forbidden-worker'
+                        result=case.invoke('run','--lock-path',case.lock,'--unit','probe.service','--',sys.executable,'-c','from pathlib import Path; Path('+repr(str(done))+').touch()')
+                        self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                        self.assertIn(field,result.stderr);self.assertIn('native',result.stderr)
+                        self.assertFalse(done.exists())
+                        self.assertEqual({str(path):path.read_bytes() for path in world.rglob('*') if path.is_file()},before)
+                        if startup:self.assertTrue(case.busy())
+                        else:self.assertFalse(case.lock.exists())
+                    finally:
+                        if marker is not None:marker.write_bytes(original)
+                        if release is not None:release.touch();owner.wait(timeout=5)
+                        case.tearDown()
 
 
 if __name__ == '__main__': unittest.main()

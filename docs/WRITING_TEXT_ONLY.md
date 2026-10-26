@@ -13,8 +13,11 @@ désactivé et les cartes utilisent l'interface du jeu. Réactiver l'outil de de
 est une décision distincte : nettoyer seulement au redémarrage ne protège pas
 d'une croissance mémoire pendant une longue session.
 
-`configureWritingTextOnly.sh`, appelé par `ExecStartPre`, retire l'ancien bloc
-Lua des SandboxVars et les anciens fichiers du garde sous `media/lua/server/`.
+Une admission WORLD authentifiée unique couvre `Open=false`, le nettoyage Writing
+puis la purge des accès inactifs, dans cet ordre, via `prepareWorldStart.sh`. Les
+deux premières étapes bloquent le démarrage en cas d'échec ; la purge reste non
+bloquante. Dans cette chaîne `ExecStartPre`, `configureWritingTextOnly.sh` retire
+l'ancien bloc Lua des SandboxVars et les anciens fichiers du garde sous `media/lua/server/`.
 Le fichier `PZManagerWritingTextOnly.lua` conservé avec les scripts est inerte.
 Aucun fichier Workshop ou client n'est modifié ; le checksum des clients reste
 inchangé. Le nettoyage est exécuté par `cleanWritingDrawings.py` sur les fichiers
@@ -89,7 +92,7 @@ dossiers absents du backup) ; les empreintes du journal portent sur chaque dossi
 sélectionné, y compris Lua quand il est présent.
 
 Le nettoyage exige un verrou WORLD et une preuve que la JVM est arrêtée.
-`activating` n'est accepté que par le propre processus `ExecStartPre` de l'unité,
+`activating` n'est accepté que dans la chaîne `ExecStartPre` authentifiée de l'unité,
 avec `MainPID=0` et `SubState=start-pre`. Les opérations manuelles exigent un état
 `inactive`. Un refus du bus systemd refuse également le nettoyage.
 Lorsque `pzm server start/restart` tient déjà WORLD, un broker privé transmet le
@@ -108,12 +111,19 @@ rétablies et les dessins précédemment supprimés ne sont pas restaurés.
 
 ## Vérification
 
-Exécuter dans une copie Linux jetable du dépôt :
+Depuis la racine d’un clone Git Linux jetable, exécuter les suites avec le runner isolé :
 
 ```sh
-python3 tests/test_writing_text_only.py
-python3 tests/test_writing_start_admission.py
-python3 tests/test_writing_restart_cleanup.py
+writing_results="$(mktemp -d /var/tmp/pz-writing-results.XXXXXXXX)"
+python3 tests/run-isolated.py --results "$writing_results" \
+    --only test_writing_text_only.py \
+    --only test_writing_start_admission.py \
+    --only test_writing_restart_cleanup.py
+```
+
+La sonde native suivante est facultative et se lance séparément dans une copie Linux jetable, avec un JDK compatible et des copies du JAR et de `stdlib.lua` :
+
+```sh
 tests/writing_text_only/run.sh --jar /chemin/copie/projectzomboid.jar \
     --stdlib /chemin/copie/stdlib.lua --jdk-bin /chemin/jdk/bin
 ```

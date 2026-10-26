@@ -13,13 +13,8 @@ RuntimeDirectory=pzmanager
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
 WorkingDirectory=%h/pzmanager/data/pzserver/
-# C17 (split-users) : en mode split, la JVM tourne sous un compte dédié
-# (User=__PZ_GAME_USER__, sans accès aux secrets du manager) via l'unité
-# système correspondante. Cette unité --user tourne déjà sous l'UID du manager :
-# aucune directive User= active ici (interdite dans les unités --user, elle
-# casserait le démarrage mono-user). Durcissement ci-dessous valable en mono
-# comme en split. ProtectHome=yes proscrit : il casserait le cachedir.
-# User=__PZ_GAME_USER__ (unité système split uniquement, voir ci-dessus)
+# Le jeu et la gestion partagent l'UID du manager ; le mode multi-UID est refusé.
+# ProtectHome=yes empêcherait l'accès au cachedir.
 NoNewPrivileges=true
 PrivateDevices=true
 RestrictSUIDSGID=true
@@ -29,41 +24,21 @@ ProtectSystem=strict
 ReadWritePaths=%h/pzmanager/data/pzserver %h/pzmanager/Zomboid %h/pzmanager/logs %h/pzmanager/data/dataBackups %t/pzmanager
 # Persistent intent survives a rename of Zomboid; installer creates it privately.
 ReadWritePaths=-%h/pzmanager/.Zomboid.pzm-transactions
-# Purge tout octet résiduel (ex: "quit" bufferisé d'un stop précédent) resté dans
-# le FIFO de contrôle. Sinon la socket-activation relance le service qui relit ce
-# "quit" et remeurt à f:0 en boucle (flap). Lecture non-bloquante (iflag=nonblock):
-# vide instantanément si des octets traînent, retourne aussitôt si le FIFO est vide.
-ExecStartPre=/bin/sh -c "dd if=%h/pzmanager/data/pzserver/zomboid.control iflag=nonblock of=/dev/null 2>/dev/null; exit 0"
+# Consume the bootstrap secret by truncating its leaf; the manager root stays RO.
+ReadWritePaths=-%h/pzmanager/.admin_password
 # Lecture seule, bloquante : vérifier le JSON effectivement lancé et la limite
-# du cgroup courant AVANT purge/lancement, sans charger les secrets du manager.
+# du cgroup courant AVANT purge/lancement, avec la configuration du lanceur.
 # Une installation restée à Xmx20/MemoryMax20 doit migrer son override .env puis
 # réappliquer configureJvm.sh hors service ; le démarrage ne corrige rien seul.
-ExecStartPre=/usr/bin/python3 %h/pzmanager/data/scripts/lib/jvm_memory_budget.py check %h/pzmanager/data/pzserver/ProjectZomboid64.json
-# Admission verrouillée : Open=false est LA barrière B42 (cf. allowedsteamid).
-# BLOQUANT (sans "-") : un serveur qui ne peut pas être fermé ne démarre pas.
-# Couvre tous les démarrages (boot, pzm, socket-activation) ; la whitelist et
-# les comptes ne sont jamais touchés (constat de sécurité, 10/2026).
-ExecStartPre=%h/pzmanager/data/scripts/internal/enforceClosedServer.sh
-# (Ré)applique le lien jre64 -> GraalVM si PZ_GRAALVM_HOME est défini (.env), sinon
-# garde le jre64 bundlé. SteamCMD "validate" restaure le vrai jre64 à chaque
-# maintenance : on rétablit donc le lien à chaque démarrage. "-" non bloquant.
+ExecStartPre=%h/pzmanager/data/scripts/internal/startServer.sh --check
+# (Ré)applique le lien jre64 -> GraalVM si configuré ; étape hors monde.
 ExecStartPre=-%h/pzmanager/data/scripts/internal/linkJvm.sh --auto
-# ProjectWriting actif : nettoyer les dessins sauvegardés avant JVM startup.
-# Les textes et notes sont conservés ; aucune purge Lua pendant la session.
-ExecStartPre=%h/pzmanager/data/scripts/internal/configureWritingTextOnly.sh
-# Purge des accès inactifs juste AVANT le lancement de la JVM. C'est le seul
-# instant où le monde est garanti fermé quel que soit le chemin de démarrage
-# (boot après maintenance, pzm server start/restart, socket-activation) : la
-# purge écrit dans <monde>.db, que le jeu tient ouverte dès qu'il tourne.
-# Le "-" rend l'étape non bloquante : une purge en échec ne doit JAMAIS empêcher
-# le serveur de démarrer. Pas de --force : en ExecStartPre l'unité est
-# "activating", donc le garde-fou serveur-arrêté de la purge passe de lui-même.
-ExecStartPre=-%h/pzmanager/data/scripts/admin/purgeInactivePlayers.sh
-# -servername est passé explicitement depuis PZ_SERVER_NAME (.env) : sans lui PZ
-# retombe sur son défaut "servertest", et le nom du monde pourrait diverger des
-# chemins (db/<nom>.db, Server/<nom>.ini) que lisent les scripts. Le :- garantit
-# un nom non vide même si .env est absent ou la variable non définie.
-ExecStart=/bin/sh -c "ENV_FILE='%h/pzmanager/.env'; if [ -r \"$ENV_FILE\" ]; then . \"$ENV_FILE\"; fi; ADMIN_ARGS=''; PW_FILE='%h/pzmanager/.admin_password'; if [ -f \"$PW_FILE\" ]; then ADMIN_ARGS=\"-adminpassword $(cat $PW_FILE)\"; rm -f \"$PW_FILE\"; fi; exec %h/pzmanager/data/pzserver/start-server.sh -cachedir=%h/pzmanager/Zomboid -servername \"${PZ_SERVER_NAME:-servertest}\" $ADMIN_ARGS <> %h/pzmanager/data/pzserver/zomboid.control"
+# Un seul transfert WORLD authentifié pour fermeture, Writing puis purge.
+# Open=false et Writing sont bloquants ; la purge garde son échec toléré.
+# Chaque worker revérifie le FD, l'état start-pre et le journal avant écriture.
+ExecStartPre=%h/pzmanager/data/scripts/internal/prepareWorldStart.sh
+# Le lanceur partage common.sh avec les workers et purge la FIFO configurée.
+ExecStart=%h/pzmanager/data/scripts/internal/startServer.sh
 ExecStartPost=-/bin/sh -c "%h/pzmanager/data/scripts/internal/notifyServerReady.sh &"
 ExecStop=%h/pzmanager/data/scripts/internal/stopServer.sh
 KillSignal=SIGCONT

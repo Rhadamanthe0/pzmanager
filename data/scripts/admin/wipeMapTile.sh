@@ -82,8 +82,17 @@ case "${#COORDS[@]}" in
     *) echo "Erreur: coordonnees attendues : <x> <y>  ou  <x1> <y1> <x2> <y2>" >&2; usage 1 ;;
 esac
 
-for v in "$X1" "$Y1" "$X2" "$Y2"; do
+# Project Zomboid coordinates are non-negative Java int values. Normalize
+# decimal text before Bash arithmetic (leading zero would otherwise mean octal).
+for coordinate in X1 Y1 X2 Y2; do
+    v="${!coordinate}"
     [[ "$v" =~ ^[0-9]+$ ]] || die "Coordonnee invalide (entier positif attendu): $v"
+    v="${v#"${v%%[!0]*}"}"
+    v="${v:-0}"
+    if (( ${#v} > 10 )) || { (( ${#v} == 10 )) && (( 10#$v > 2147483647 )); }; then
+        die "Coordonnee hors limites Java int (0..2147483647): ${!coordinate}"
+    fi
+    printf -v "$coordinate" '%s' "$v"
 done
 
 # Ordonne le rectangle
@@ -103,6 +112,7 @@ fi
 # puis arrêt PROUVÉ (inactive seule ; failed/unknown/error -> refus fail-closed).
 # Le snapshot --snapshot-only enfant participe au verrou (pas de deadlock).
 acquire_world_lock --required || exit 1
+python3 "${SCRIPT_DIR}/../lib/world_transaction.py" check --world "$PZ_SOURCE_DIR" || exit 1
 if declare -F assert_server_stopped_proven >/dev/null 2>&1; then
     assert_server_stopped_proven "Wipe de zone carte"
 else
@@ -176,13 +186,23 @@ fi
 # --snapshot-only => pas de save in-game (serveur arrêté) ni de prune GFS.
 echo
 log "Snapshot de sécurité (normal) avant wipe..."
-"${SCRIPT_DIR}/../backup/dataBackup.sh" --snapshot-only \
+"${SCRIPT_DIR}/../backup/dataBackup.sh" --snapshot-only --required --consistent \
     || die "Snapshot de sécurité échoué — wipe annulé (rien supprimé)."
 
-# Un seul rm pour tout le lot : un wipe de 2x2 cellules atteint ~4 000 fichiers,
-# soit autant de processus lancés là où un seul suffit. Le compteur séparé était
-# de toute façon toujours égal à ${#targets[@]} (rm -f n'échoue pas ici).
+# Persist the deletion plan before the first unlink. An interrupted/partial rm
+# leaves admission closed until the snapshot recovery has been verified.
+recovery="$(readlink -f -- "$BACKUP_LATEST_LINK")"
+[[ -d "$recovery" ]] || die "Snapshot de récupération introuvable : wipe annulé."
+plan=()
+for target in "${targets[@]}"; do
+    plan+=(--delete-file "Saves/Multiplayer/${SAVE_NAME}/${target}")
+done
+transaction="$(python3 "${SCRIPT_DIR}/../lib/world_transaction.py" begin \
+    --world "$PZ_SOURCE_DIR" --kind map-wipe --recovery "$recovery" "${plan[@]}")"
+log "Récupération en cas d'interruption : ${recovery} (transaction ${transaction})."
 rm -f -- "${targets[@]/#/${SAVE_DIR}/}"
+python3 "${SCRIPT_DIR}/../lib/world_transaction.py" finish \
+    --world "$PZ_SOURCE_DIR" --token "$transaction" --state complete
 
 log "Supprime: ${#targets[@]} fichier(s). Filet = dernier snapshot normal (pzm backup list)."
 echo "Terminez par: pzm server start  (la zone se regenerera au prochain passage d'un joueur)."

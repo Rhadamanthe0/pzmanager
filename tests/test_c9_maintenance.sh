@@ -22,9 +22,9 @@
 # Preuves réelles : vraies fonctions EXTRAITES du script (awk, aucun duplicata
 # de logique), vrai git, vraie lib common.sh (log/die). Mocks seulement aux
 # frontières inaccessibles : systemd/JVM/réseau (fonctions redéfinies), pz.sh
-# et steamcmd (scripts factices via SCRIPT_DIR/STEAMCMD_PATH). Limite : le
-# parcours complet (main) n'est pas rejoué (effets prod : apt, reboot) —
-# l'ordre est prouvé statiquement (0)+(3) et chaque phase unitairement.
+# et steamcmd (scripts factices via SCRIPT_DIR/STEAMCMD_PATH). La chaîne main,
+# le trap EXIT et les échecs du reboot/start finaux sont exercés séparément par
+# test_maintenance_recovery.py, avec mocks des frontières système et jeu.
 set -euo pipefail
 
 ROOT="${PZ_TEST_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -62,13 +62,16 @@ EVAL_FILE="${SANDBOX}/extracted.sh"
     extract_func maint_arm_recovery
     extract_func maint_disarm_recovery
     extract_func maint_detect_interrupted
+    extract_func maint_recovery_allowed
+    extract_func maint_restart_recovery
     extract_func validate_final_start
     extract_func download_workshop_mods
     extract_func update_self
+    extract_func update_game_server
     extract_func restart_server_on_failure
 } > "$EVAL_FILE"
 for fn in maint_set_state maint_arm_recovery maint_disarm_recovery \
-         maint_detect_interrupted validate_final_start download_workshop_mods \
+         maint_detect_interrupted maint_recovery_allowed maint_restart_recovery validate_final_start download_workshop_mods \
          update_self restart_server_on_failure; do
     grep -q "^${fn}() {" "$EVAL_FILE" || { ko "extraction de ${fn} impossible"; exit 1; }
 done
@@ -115,7 +118,7 @@ done
 grep -q 'trap restart_server_on_failure EXIT' "$TARGET" \
     && ok "trap EXIT armé" \
     || ko "trap EXIT absent"
-grep -q '"FAILED" > "${MAINT_STATE_FILE}"' "$TARGET" \
+grep -q 'maint_set_state "FAILED"' "$TARGET" \
     && ok "filet EXIT écrit FAILED" \
     || ko "filet EXIT sans écriture FAILED"
 grep -q 'maintenance.state' "$TARGET" && grep -q '.maintenance.state' "$TARGET" \
@@ -128,7 +131,7 @@ grep -q 'PZ_MAINT_STATE_FILE' "$TARGET" \
 ARM_LINE=$(grep -n 'maint_arm_recovery' "$TARGET" | tail -1 | cut -d: -f1)
 STOP_LINE=$(grep -n '^    stop_server$' "$TARGET" | head -1 | cut -d: -f1)
 STOPPED_LINE=$(grep -n 'maint_set_state "STOPPED"' "$TARGET" | head -1 | cut -d: -f1)
-VALID_LINE=$(grep -n 'if validate_final_start' "$TARGET" | head -1 | cut -d: -f1)
+VALID_LINE=$(grep -n 'if validate_final_start' "$TARGET" | tail -1 | cut -d: -f1)
 FINAL_START_LINE=$(grep -n 'pz.sh" start --reason "\$MAINTENANCE_REASON"' "$TARGET" | head -1 | cut -d: -f1)
 if [[ -n "$ARM_LINE" && -n "$STOP_LINE" ]] && (( ARM_LINE < STOP_LINE )); then
     ok "reprise armée AVANT stop (l.${ARM_LINE} < l.${STOP_LINE})"
@@ -194,6 +197,56 @@ fi
     && ok "steamcmd jamais appelé (rien à pré-télécharger)" \
     || ko "steamcmd appelé à tort"
 
+# --- (1b) validate ne doit jamais traverser un jre64 symbolique -----------------
+echo "== (1b) protection JVM externe pendant validate =="
+mkdir -p "${SANDBOX}/scripts/internal" "${SANDBOX}/scripts/lib" "${SANDBOX}/game" "${SANDBOX}/external-jvm"
+cp "${ROOT}/data/scripts/internal/linkJvm.sh" "${SANDBOX}/scripts/internal/linkJvm.sh"
+# Vrai script JVM ; seules configuration et journalisation sont aux frontières.
+printf 'source_env() { :; }\nlog() { echo "$*"; }\ndie() { echo "$*" >&2; exit 1; }\n' > "${SANDBOX}/scripts/lib/common.sh"
+printf '#!/bin/sh\nexit 0\n' > "${SANDBOX}/scripts/internal/configureJvm.sh"
+chmod +x "${SANDBOX}/scripts/internal/"*.sh
+export PZ_INSTALL_DIR="${SANDBOX}/game"
+export STEAM_APP_ID=380870
+printf 'external-intact\n' > "${SANDBOX}/external-jvm/proof"
+ln -s "${SANDBOX}/external-jvm" "${PZ_INSTALL_DIR}/jre64"
+steam_beta_branch() { echo public; }
+steamcmd_runscript() {
+    echo validate >> "$PZ_MOCK_STEAM_LOG"
+    echo corrupted > "${PZ_INSTALL_DIR}/jre64/proof"
+}
+if ( update_game_server ) > "${SANDBOX}/stock-missing.log" 2>&1; then
+    ko "stock absent : validate autorisé à travers le lien JVM"
+else
+    ok "stock absent : maintenance refusée avant validate"
+fi
+[[ ! -s "$PZ_MOCK_STEAM_LOG" ]] &&
+    ok "stock absent : SteamCMD jamais appelé" || ko "stock absent : SteamCMD appelé"
+[[ "$(cat "${SANDBOX}/external-jvm/proof")" == external-intact ]] &&
+    ok "stock absent : JVM externe intacte" || ko "stock absent : JVM externe corrompue"
+# Stock prépositionné comme lien : aucune restauration à travers une seconde JVM.
+ln -s "${SANDBOX}/external-jvm" "${PZ_INSTALL_DIR}/jre64.stock"
+: > "$PZ_MOCK_STEAM_LOG"
+if ( update_game_server ) > "${SANDBOX}/stock-symlink.log" 2>&1; then
+    ko "stock symbolique : validate autorisé"
+else
+    ok "stock symbolique : maintenance refusée"
+fi
+[[ ! -s "$PZ_MOCK_STEAM_LOG" ]] &&
+    ok "stock symbolique : SteamCMD jamais appelé" || ko "stock symbolique : SteamCMD appelé"
+rm -f "${PZ_INSTALL_DIR}/jre64.stock"
+mkdir "${PZ_INSTALL_DIR}/jre64.stock"
+: > "$PZ_MOCK_STEAM_LOG"
+if ( update_game_server ) > "${SANDBOX}/stock-ok.log" 2>&1 &&
+   [[ ! -L "${PZ_INSTALL_DIR}/jre64" ]] && [[ -d "${PZ_INSTALL_DIR}/jre64" ]]; then
+    ok "vrai stock restauré avant validate"
+else
+    ko "vrai stock : maintenance refusée ou lien toujours présent"
+fi
+[[ -s "$PZ_MOCK_STEAM_LOG" ]] &&
+    ok "vrai stock : validate exécuté" || ko "vrai stock : validate absent"
+unset -f steam_beta_branch steamcmd_runscript
+export PZ_INSTALL_DIR="$SANDBOX"
+
 # --- (2) git pull dirty -> refus sans écraser --------------------------------------
 echo "== (2) git dirty =="
 GREPO="${SANDBOX}/pzmanager-repo"
@@ -225,6 +278,19 @@ fi
 grep -qi 'PZ_MAINT_SELF_UPDATE=0' "${SANDBOX}/out2b.log" && ok "opt-out journalisé" || ko "opt-out non journalisé"
 unset PZ_MAINT_SELF_UPDATE
 export PZ_MANAGER_DIR="$SANDBOX"
+
+# Reprise : vraie garde d'état/journal, frontières service/JVM/ready simulées.
+rm -rf -- "${SANDBOX}/scripts/lib"
+ln -s "$LIB_DIR" "${SANDBOX}/scripts/lib"
+export PZ_SOURCE_DIR="${SANDBOX}/Zomboid" PZ_HOME="$SANDBOX"
+cat > "${MOCKBIN}/systemctl" <<'MOCKEOF'
+#!/usr/bin/env bash
+printf '%s\n' LoadState=loaded ActiveState=active SubState=running MainPID=1234 ControlPID=0 InvocationID=0123456789abcdef0123456789abcdef
+MOCKEOF
+chmod +x "${MOCKBIN}/systemctl"
+export PATH="${MOCKBIN}:$PATH"
+pgrep() { return 0; }
+wait_for_server_ready() { return 0; }
 
 # --- (3) reprise armée avant stop (phase suivante en échec) -------------------------
 echo "== (3) reprise =="
