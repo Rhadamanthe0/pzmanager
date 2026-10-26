@@ -111,12 +111,19 @@ rétablies et les dessins précédemment supprimés ne sont pas restaurés.
 
 ## Vérification
 
-Exécuter dans une copie Linux jetable du dépôt :
+Depuis la racine d’un clone Git Linux jetable, exécuter les suites avec le runner isolé :
 
 ```sh
-python3 tests/test_writing_text_only.py
-python3 tests/test_writing_start_admission.py
-python3 tests/test_writing_restart_cleanup.py
+writing_results="$(mktemp -d /var/tmp/pz-writing-results.XXXXXXXX)"
+python3 tests/run-isolated.py --results "$writing_results" \
+    --only test_writing_text_only.py \
+    --only test_writing_start_admission.py \
+    --only test_writing_restart_cleanup.py
+```
+
+La sonde native suivante est facultative et se lance séparément dans une copie Linux jetable, avec un JDK compatible et des copies du JAR et de `stdlib.lua` :
+
+```sh
 tests/writing_text_only/run.sh --jar /chemin/copie/projectzomboid.jar \
     --stdlib /chemin/copie/stdlib.lua --jdk-bin /chemin/jdk/bin
 ```

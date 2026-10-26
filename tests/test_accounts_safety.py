@@ -889,43 +889,159 @@ python3 "$2" clear --lock-path "$1" --token "$(cat "$3")"
                     self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
                     self.assertIn('locked',result.stderr);self.assertEqual(self.preview_image(),before);writer.rollback()
 
-    def test_account_preview_two_wal_guards_block_writers_and_checkpoints(self):
+    def _wal_guard_probe(self,late_open):
         connections=[]
         try:
             for path,table in [(self.db,'whitelist'),(self.players,'networkPlayers')]:
                 d=sqlite3.connect(path,timeout=0);connections.append(d);d.execute('PRAGMA journal_mode=WAL')
                 d.execute('UPDATE '+table+" SET username='old' WHERE username='old'");d.commit()
-            before=self.preview_image()
-            # Called at first private SQLite open, after both source guards exist,
-            # and again at final common revalidation, before either guard releases.
-            code='''
-original=a.sqlite3.connect
-check=a._check_preview_sources
-calls=[]
-def assert_guards():
- for path in (db,players):
-  for sql in ('BEGIN IMMEDIATE','PRAGMA wal_checkpoint(TRUNCATE)'):
-   script="import sqlite3,sys;d=sqlite3.connect(sys.argv[1],timeout=0);print(d.execute(sys.argv[2]).fetchall())"
-   r=subprocess.run(['python3','-c',script,str(path),sql],capture_output=True,text=True,timeout=5)
-   assert (r.returncode!=0 and 'locked' in r.stderr) if sql.startswith('BEGIN') else (r.returncode==0 and r.stdout.startswith('[(1,')),(path,sql,r.stdout,r.stderr)
- calls.append(True)
-def connect(*args,**kwargs):
- assert_guards()
- return original(*args,**kwargs)
-def checked(sources):
- if calls:assert_guards()
- return check(sources)
-a.sqlite3.connect=connect;a._check_preview_sources=checked
-a.rename_plan(db,players,'old','new')
-assert len(calls)>=3,calls
-'''
-            result=self.preview_helper(code);self.assertEqual(result.returncode,0,result.stdout+result.stderr);self.assertEqual(self.preview_image(),before)
-            for path in (self.db,self.players):
-                with closing(sqlite3.connect(path,timeout=0)) as writer:
-                    writer.execute('BEGIN IMMEDIATE');result=self.preview_helper("a.rename_plan(db,players,'old','new')")
-                    self.assertNotEqual(result.returncode,0);self.assertIn('locked',result.stderr);writer.rollback()
+            code=r'''
+import contextlib,io,select
+late_open=LATE_OPEN
+image_script="""import hashlib,json,sys
+from pathlib import Path
+result={}
+for db in sys.argv[1:]:
+ for suffix in ('','-journal','-wal','-shm'):
+  p=Path(db+suffix)
+  if not p.exists():result[str(p)]=None;continue
+  s=p.stat()
+  result[str(p)]=[hashlib.sha256(p.read_bytes()).hexdigest(),[s.st_dev,s.st_ino,s.st_mode,s.st_uid,s.st_gid,s.st_nlink,s.st_size,s.st_mtime_ns,s.st_ctime_ns]]
+print(json.dumps(result))
+"""
+actor_script="""import json,sqlite3,sys
+with sqlite3.connect(sys.argv[1],timeout=0) as db:
+ db.execute('SELECT COUNT(*) FROM sqlite_master').fetchall()
+ print(json.dumps({'ready':True,'transaction':db.in_transaction}),flush=True)
+ for line in sys.stdin:
+  op=line.strip()
+  if op=='quit':break
+  try:
+   if op=='begin':
+    db.execute('BEGIN IMMEDIATE');db.rollback();result={'op':op,'status':'ok'}
+   elif op=='checkpoint':result={'op':op,'rows':db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchall()}
+   else:raise AssertionError('unknown operation: '+op)
+  except sqlite3.Error as error:
+   result={'op':op,'status':'error','code':error.sqlite_errorcode,'error':str(error)}
+  result['transaction']=db.in_transaction
+  print(json.dumps(result),flush=True)
+"""
+def image():
+ result=subprocess.run([sys.executable,'-c',image_script,str(db),str(players)],capture_output=True,text=True,timeout=5,check=True)
+ return json.loads(result.stdout)
+def receive(process):
+ assert select.select([process.stdout],[],[],5)[0],('actor timeout',process.poll())
+ line=process.stdout.readline()
+ assert line,('actor exited',process.poll())
+ return json.loads(line)
+def start(path):
+ process=subprocess.Popen([sys.executable,'-c',actor_script,str(path)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+ actors.append(process)
+ assert receive(process)=={'ready':True,'transaction':False}
+ return process
+def request(process,op):
+ assert process.poll() is None,('actor died',process.returncode)
+ process.stdin.write(op+'\n');process.stdin.flush()
+ answer=receive(process)
+ assert answer['op']==op and answer['transaction'] is False,answer
+ return answer
+def verify(answer,op,blocked):
+ if op=='begin':
+  if blocked:assert answer.get('status')=='error' and answer['code'] & 255 in (sqlite3.SQLITE_BUSY,sqlite3.SQLITE_LOCKED),answer
+  else:assert answer.get('status')=='ok',answer
+ else:
+  rows=answer.get('rows')
+  assert isinstance(rows,list) and len(rows)==1 and len(rows[0])==3 and all(type(n) is int for n in rows[0]),answer
+  assert rows[0][0]==(1 if blocked else 0),answer
+actors=[];events=[];opens=0;final_seen=False
+original=a.sqlite3.connect;check=a._check_preview_sources
+output=io.StringIO();outcome=None
+try:
+ persistent=[] if late_open else [start(path) for path in (db,players)]
+ # Opening/initializing persistent SQLite clients (including root fchown) is
+ # complete before BOTH this baseline and the product's source inventory.
+ baseline=image()
+ def probe(phase,blocked=True):
+  answers=[]
+  for index,path in enumerate((db,players)):
+   for op in ('begin','checkpoint'):
+    before=image() if late_open else None
+    process=start(path) if late_open else persistent[index]
+    answer=request(process,op);verify(answer,op,blocked);answers.append(answer)
+    if late_open:
+     after=image()
+     for name,old in before.items():
+      new=after[name]
+      assert (old is None and new is None) or (old is not None and new is not None and old[0]==new[0] and old[1][:-1]==new[1][:-1]),(name,old,new)
+  assert len(answers)==4,answers
+  events.append(phase)
+ def connect(*args,**kwargs):
+  global opens
+  private=original(*args,**kwargs);opens+=1
+  try:
+   if not late_open or opens==1:probe('private-'+str(opens))
+   return private
+  except BaseException:
+   private.close();raise
+ def checked(sources):
+  global final_seen
+  # The production call after two successful private opens is the common
+  # final validation; earlier copy validations occur with opens == 0 or 1.
+  if not late_open and opens==2:
+   assert not final_seen
+   probe('final');final_seen=True
+  return check(sources)
+ a.sqlite3.connect=connect;a._check_preview_sources=checked
+ with contextlib.redirect_stdout(output):
+  try:a.rename_plan(db,players,'old','new')
+  except ValueError as error:
+   assert type(error) is ValueError,type(error)
+   outcome=str(error)
+ after=image()
+ if late_open:
+  changed={name for name in baseline if baseline[name]!=after[name]}
+  for name,old in baseline.items():
+   new=after[name]
+   assert (old is None and new is None) or (old is not None and new is not None and old[0]==new[0] and old[1][:-1]==new[1][:-1]),(name,old,new)
+  assert events==['private-1'],events
+  if changed:
+   assert outcome is not None and outcome.startswith('SQLite source changed during preview: '),outcome
+   assert outcome.removeprefix('SQLite source changed during preview: ') in changed,(outcome,changed)
+   assert output.getvalue()=='',output.getvalue()
+  else:assert outcome is None and output.getvalue()=='1 1\n',(outcome,output.getvalue())
+ else:
+  assert outcome is None and output.getvalue()=='1 1\n',(outcome,output.getvalue())
+  assert opens==2 and final_seen and events==['private-1','private-2','final'],(opens,final_seen,events)
+  assert after==baseline,(baseline,after)
+  probe('released',blocked=False)
+ print(json.dumps({'late_open':late_open,'events':events,'private_opens':opens,'outcome':outcome or '1 1','metadata_changed':sorted(changed) if late_open else []}),flush=True)
+finally:
+ a.sqlite3.connect=original;a._check_preview_sources=check
+ for process in actors:
+  if process.poll() is None:process.terminate()
+  try:process.communicate(timeout=5)
+  except subprocess.TimeoutExpired:process.kill();process.communicate(timeout=5)
+'''.replace('LATE_OPEN',repr(late_open))
+            result=self.preview_helper(code)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            observation=json.loads(result.stdout)
+            self.assertEqual(observation['late_open'],late_open)
+            print('WAL_GUARD_OBSERVATION='+json.dumps(observation),flush=True)
+            if not late_open:
+                for path in (self.db,self.players):
+                    with closing(sqlite3.connect(path,timeout=0)) as writer:
+                        writer.execute('BEGIN IMMEDIATE')
+                        refused=self.preview_helper("a.rename_plan(db,players,'old','new')")
+                        self.assertNotEqual(refused.returncode,0,refused.stdout+refused.stderr)
+                        self.assertIn('locked',refused.stderr);writer.rollback()
         finally:
             for d in connections:d.close()
+
+    def test_account_preview_two_wal_guards_block_writers_and_checkpoints(self):
+        self._wal_guard_probe(late_open=False)
+
+    def test_account_preview_late_wal_clients_revalidate_metadata(self):
+        self._wal_guard_probe(late_open=True)
 
     def test_account_preview_active_checkpoint_refused(self):
         with closing(sqlite3.connect(self.db,timeout=0)) as writer,closing(sqlite3.connect(self.db,timeout=0)) as reader:
