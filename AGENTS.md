@@ -18,6 +18,10 @@ Ne pas supprimer un verrou vivant ni accepter un chemin remplaçable par
 un autre utilisateur. Vérifier `tests/test_sec_serverctl.sh`, C1, C5 et la
 suite des répertoires privés dans une copie Linux jetable.
 
-Après fusion : fetch prune, pull fast-forward sur main propre, suppression
-locale par `git branch -d` seulement. Signaler les refus et les branches ou
-modifications non intégrées avant de les reprendre sans autorisation.
+Après fusion : fetch prune, puis pull fast-forward sur main propre.
+Supprimer les branches locales par `git branch -d` ; `git branch -D` est autorisé
+si leur fusion est vérifiée (y compris squash/rebase), si leur PR est fermée
+sans fusion ou si le directeur a explicitement confirmé leur abandon.
+Vérifier la pointe locale et la PR avant suppression : tout commit ajouté
+après la PR et toute modification locale de worktree doivent être préservés
+ou explicitement abandonnés. Conserver et signaler les cas non établis.
