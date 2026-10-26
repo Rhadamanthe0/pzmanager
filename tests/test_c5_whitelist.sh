@@ -68,8 +68,8 @@ fi
 if [[ -f "$REPO_ENV" ]]; then
     cp -p "$REPO_ENV" "$ENV_BACKUP"
 fi
-printf '# stub test C5 (restauré en fin de test)\n' > "$REPO_ENV"
 ENV_STUBBED=true
+printf '# stub test C5 (restauré en fin de test)\n' > "$REPO_ENV"
 export PZ_SERVICE_NAME="zomboid.service"
 
 # --- Mock systemctl (état inactive prouvé) ------------------------------------

@@ -315,12 +315,11 @@ direct backup shares this deadline; it has no separate 2400-second timeout.
 
 **Steps**:
 1. Server shutdown with warnings (30min default)
-2. Off-site sync (`fullBackup.sh` → Syncthing; local retention is handled hourly by the GFS prune, not here)
-3. System update (`apt upgrade`)
-4. Java update
-5. PZ server update (SteamCMD)
-6. External complete backup
-7. Machine reboot (if `REBOOT_ON_MAINTENANCE=true`) or service restart
+2. System update (`apt upgrade`)
+3. Java update
+4. PZ server update (SteamCMD)
+5. External complete backup (`fullBackup.sh` → Syncthing)
+6. Machine reboot (if `REBOOT_ON_MAINTENANCE=true`) or service restart
 
 **Logs**: `/home/pzuser/pzmanager/logs/maintenance/`
 

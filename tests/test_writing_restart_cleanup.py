@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import os
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 import struct
@@ -345,7 +346,7 @@ class OfflineCleanup(unittest.TestCase):
 
     def test_unavailable_optional_cache_parent_falls_back_to_full_scan(self):
         self.path.write_bytes(chunk(nested(False)))
-        with sqlite3.connect(self.world/'players.db') as db:
+        with closing(sqlite3.connect(self.world/'players.db')) as db, db:
             db.execute('UPDATE networkPlayers SET data=?',(nested(False),))
         before = self.sources()
         parent = self.root/'unavailable-cache-parent'

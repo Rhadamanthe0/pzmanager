@@ -1,6 +1,7 @@
 """Real cleanup/files/processes; compiler and proprietary PZ loader simulated."""
 import json
 import os
+from contextlib import closing
 from pathlib import Path
 import sys
 import pwd
@@ -69,7 +70,7 @@ class CompilerDependency(unittest.TestCase):
     def test_clean_world_needs_no_compiler_or_runtime(self):
         self.storage.path.write_bytes(fixture.chunk(fixture.nested(False)))
         import sqlite3
-        with sqlite3.connect(self.storage.world / 'players.db') as db:
+        with closing(sqlite3.connect(self.storage.world / 'players.db')) as db, db:
             db.execute('UPDATE networkPlayers SET data=?', (fixture.nested(False),))
         before = self.storage.sources()
         self.assertEqual(self.apply(fixture.cleaner.JavaValidator(
