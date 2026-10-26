@@ -367,3 +367,96 @@ fi
 grep -q 'env_parse.sh.*No such file' /tmp/missing-parser.log
 mv /tmp/trusted-env-parse /usr/local/libexec/pzmanager/data/scripts/lib/env_parse.sh
 echo 'OK parser manquant refusé sans chargement de copie plate.'
+
+# main doit conserver le home NSS et les surcharges root ; aucune frontière
+# paquets/pare-feu/sudoers réelle dans cette matrice de permissions natives.
+(
+    cp /etc/passwd /tmp/nss-passwd-original
+    trap 'cp /tmp/nss-passwd-original /etc/passwd; rm -f /tmp/nss-passwd-original /tmp/nss-main-case.sh' EXIT
+    sed -i '/^pzfixture:/d' /etc/passwd
+    printf 'pzauditnss:x:65533:65533::/srv/pzauditnss:/bin/bash\n' >> /etc/passwd
+    cat > /tmp/nss-main-case.sh <<'NSSCASE'
+#!/bin/bash
+set -euo pipefail
+kind="$1"; home="$2"; helper="$3"
+unset PZ_GAME_HOME PZ_MANAGER_HOME PZ_GAME_USER PZ_MANAGER_USER
+case "$kind" in
+    explicit_equal) export PZ_GAME_HOME="$home" PZ_MANAGER_HOME="$home" ;;
+    explicit_distinct) export PZ_GAME_HOME=/srv/game-override PZ_MANAGER_HOME=/srv/override ;;
+    empty) export PZ_GAME_HOME='' PZ_MANAGER_HOME='' ;;
+esac
+if [[ "$kind" == default ]]; then
+    source "$helper/setupSystem.sh" pzauditnss "$home/pzmanager/.env"
+else
+    source "$helper/setupSystem.sh" --manager-root "$home/pzmanager"
+fi
+create_user() { echo BOUNDARY-create; id -u "$PZ_USER" >/dev/null; }
+install_packages() { echo BOUNDARY-packages; }
+configure_firewall() { echo BOUNDARY-firewall; }
+install_sudoers() { echo BOUNDARY-sudoers; }
+main
+printf 'RESOLVED home=%s game_home=%s manager_home=%s\n' "$PZ_HOME" "$PZ_GAME_HOME" "$PZ_MANAGER_HOME"
+NSSCASE
+    chmod 0755 /tmp/nss-main-case.sh
+    for kind in default unset empty explicit_equal explicit_distinct file_homes split; do
+        home=/srv/pzauditnss
+        [[ "$kind" != default ]] || home=/home/pzauditnss
+        sed -i "s|^pzauditnss:.*|pzauditnss:x:65533:65533::$home:/bin/bash|" /etc/passwd
+        for target in /srv/pzauditnss /home/pzauditnss /srv/override; do
+            mkdir -p "$target/.ssh" "$target/pzmanager"
+            printf 'fixture-not-a-key\n' > "$target/.ssh/id_fixture"
+            printf '# shell fixture\n' > "$target/.bashrc"
+            printf 'PZ_USER=pzauditnss\n' > "$target/pzmanager/.env"
+            chown -R 65533:65533 "$target"
+            chmod 0755 "$target" "$target/.ssh" "$target/pzmanager"
+            chmod 0644 "$target/.ssh/id_fixture" "$target/.bashrc" "$target/pzmanager/.env"
+        done
+        chmod 0755 /srv /home
+        if [[ "$kind" == file_homes ]]; then
+            printf 'PZ_GAME_HOME=/srv/override\nPZ_MANAGER_HOME=/srv/override\n' >> "$home/pzmanager/.env"
+        elif [[ "$kind" == split ]]; then
+            printf 'PZ_GAME_USER=pzother\nPZ_MANAGER_USER=pzauditnss\n' >> "$home/pzmanager/.env"
+        fi
+        before="$(stat -c '%u:%g:%a:%s' "$home" "$home/.ssh" "$home/.ssh/id_fixture" "$home/pzmanager/.env"; sha256sum "$home/pzmanager/.env" "$home/.ssh/id_fixture")"
+        rc=0
+        PATH="/test-bin:$PATH" bash /tmp/nss-main-case.sh "$kind" "$home" "$helper" > /tmp/nss-case.log 2>&1 || rc=$?
+        printf 'NSS_CASE=%s EXIT=%s\n' "$kind" "$rc"
+        cat /tmp/nss-case.log
+        for target in /srv/pzauditnss /home/pzauditnss /srv/override; do
+            stat -c 'MODE %n %u:%a' "$target" "$target/.ssh" "$target/.ssh/id_fixture" "$target/pzmanager/.env"
+        done
+        if [[ "$kind" == split ]]; then
+            [[ "$rc" != 0 ]]
+            grep -q 'split multi-UID' /tmp/nss-case.log
+            if grep -q BOUNDARY- /tmp/nss-case.log; then exit 1; fi
+            [[ "$(stat -c '%u:%g:%a:%s' "$home" "$home/.ssh" "$home/.ssh/id_fixture" "$home/pzmanager/.env"; sha256sum "$home/pzmanager/.env" "$home/.ssh/id_fixture")" == "$before" ]]
+            continue
+        fi
+        [[ "$rc" == 0 ]]
+        target="$home"; game_home="$home"
+        if [[ "$kind" == explicit_distinct ]]; then
+            target=/srv/override; game_home=/srv/game-override
+        fi
+        grep -qF "RESOLVED home=$home game_home=$game_home manager_home=$target" /tmp/nss-case.log
+        [[ "$(stat -c '%u:%a' "$target")" == 65533:750 ]]
+        [[ "$(stat -c '%u:%a' "$target/.ssh")" == 65533:700 ]]
+        [[ "$(stat -c '%u:%a' "$target/.ssh/id_fixture")" == 65533:600 ]]
+        [[ "$(stat -c '%u:%a' "$home/pzmanager/.env")" == 65533:600 ]]
+        [[ "$(stat -c %u "$home/.bashrc")" == 65533 ]]
+        for neighbor in /srv/pzauditnss /home/pzauditnss /srv/override; do
+            [[ "$neighbor" != "$target" ]] || continue
+            [[ "$(stat -c '%u:%a' "$neighbor")" == 65533:755 ]]
+            [[ "$(stat -c '%u:%a' "$neighbor/.ssh")" == 65533:755 ]]
+            [[ "$(stat -c '%u:%a' "$neighbor/.ssh/id_fixture")" == 65533:644 ]]
+        done
+    done
+    # Le refus de provenance reste antérieur au chargement ou à main.
+    chmod o+w "$helper/setupSystem.sh"
+    rc=0
+    PATH="/test-bin:$PATH" bash /tmp/nss-main-case.sh unset "$home" "$helper" > /tmp/nss-untrusted.log 2>&1 || rc=$?
+    chmod o-w "$helper/setupSystem.sh"
+    [[ "$rc" != 0 ]]
+    grep -q 'Helpers root modifiables par un tiers' /tmp/nss-untrusted.log
+    if grep -q BOUNDARY- /tmp/nss-untrusted.log; then exit 1; fi
+)
+echo 'OK main : home NSS, défaut standard/vide, surcharges root, homes .env ignorés, split et helper non fiable refusés.'

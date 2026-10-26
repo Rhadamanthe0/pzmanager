@@ -37,7 +37,7 @@ class ReadyNotificationTests(unittest.TestCase):
         for name in ("writing_start_admission.py", "configureWritingTextOnly.py"):
             shutil.copy2(ROOT / "data/scripts/internal" / name, self.internal / name)
         shutil.copy2(ROOT / "data/scripts/lib/shared_memory_budget.py", self.lib / "shared_memory_budget.py")
-        for name in ('console_command.py', 'service_process.py'):
+        for name in ('console_command.py', 'service_process.py', 'native_identity.py'):
             shutil.copy2(ROOT / 'data/scripts/lib' / name, self.lib / name)
         self.script.chmod(0o755)
         self.discord.chmod(0o755)

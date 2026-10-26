@@ -23,7 +23,7 @@ class WritingBudgetEntrypoints(unittest.TestCase):
         self.lib = self.project / "data/scripts/lib"
         self.internal.mkdir(parents=True)
         self.lib.mkdir()
-        for name in ('terrain_tiles.py','world_transaction.py'):
+        for name in ('terrain_tiles.py','world_transaction.py','native_identity.py'):
             shutil.copyfile(ROOT / 'data/scripts/lib' / name, self.lib / name)
         for name in ["cleanWritingDrawings.py", "writing_start_admission.py", "configureWritingTextOnly.py"]:
             shutil.copyfile(ROOT / "data/scripts/internal" / name, self.internal / name)
