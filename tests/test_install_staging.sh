@@ -164,7 +164,7 @@ PATH="/test-bin:$PATH" bash "$helper/configurationInitiale.sh" --manager-root "$
 PATH="/test-bin:$PATH" /test-bin/sudo -u pzfixture python3 "$manager_home/pzmanager/data/scripts/lib/world_transaction.py" check --world "$manager_home/pzmanager/Zomboid"
 grep -q metadata-ready-before-world "$MOCK_DIR/calls.log"
 ! grep -qE 'systemctl --user (start|restart) zomboid' "$MOCK_DIR/calls.log"
-echo 'OK restauration bootstrap native fichiers/SQLite/flock/journal sous UID manager, sans lancement serveur/socket.' 
+echo 'OK restauration bootstrap native fichiers/SQLite/flock/journal sous UID manager, sans lancement serveur/socket.'
 
 python3 - <<'ARCHIVE'
 import zipfile
