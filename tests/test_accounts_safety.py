@@ -818,5 +818,353 @@ python3 "$2" clear --lock-path "$1" --token "$(cat "$3")"
         self.assertNotEqual(p.returncode,0,p.stdout+p.stderr)
         self.assertEqual(self.rows(self.db,'whitelist'),before)
 
+    def test_account_previews_hot_journal_preserve_sources(self):
+        import hashlib
+        for args,characters in [(('remove-account','old','--dry-run'),False),(('rename-account','old','new','--dry-run'),False),(('rename-account','old','new','--dry-run'),True)]:
+            with self.subTest(args=args,characters=characters):
+                case=Accounts();case.setUp()
+                try:
+                    path=case.players if characters else case.db
+                    statement="UPDATE networkPlayers SET username=? WHERE id=1" if characters else "UPDATE whitelist SET password=? WHERE id=2"
+                    code="import sqlite3,sys,os;d=sqlite3.connect(sys.argv[1]);d.execute('PRAGMA cache_size=1');d.execute('BEGIN IMMEDIATE');d.execute(sys.argv[2],('X'*200000,));os._exit(99)"
+                    crashed=subprocess.run(['python3','-c',code,str(path),statement],env=case.env,capture_output=True,text=True,timeout=10)
+                    self.assertEqual(crashed.returncode,99,crashed.stderr)
+                    def image():
+                        return {str(db)+suffix:hashlib.sha256(p.read_bytes()).hexdigest() if p.exists() else None for db in (case.db,case.players) for suffix in ('','-journal','-wal','-shm') for p in [Path(str(db)+suffix)]}
+                    before=image();result=case.whitelist_cli(*args)
+                    self.assertEqual(image(),before,'preview mutated SQLite source: '+result.stdout+result.stderr)
+                    self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                    self.assertIn('recovery',result.stderr)
+                    self.assertNotIn("Rien n'a été modifié",result.stdout)
+                finally:case.tearDown()
+
+    def test_account_previews_clean_cli(self):
+        for args in [('remove-account','old','--dry-run'),('rename-account','old','new','--dry-run')]:
+            before={p:p.read_bytes() for p in self.world.rglob('*') if p.is_file()}
+            result=self.whitelist_cli(*args)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            self.assertIn("Rien n'a été modifié",result.stdout)
+            self.assertEqual({p:p.read_bytes() for p in self.world.rglob('*') if p.is_file()},before)
+
+    def preview_helper(self,code):
+        prefix="import sys,os,sqlite3,subprocess,json;from pathlib import Path;sys.path.insert(0,sys.argv[1]);import account_safety as a;db=Path(sys.argv[2]);players=Path(sys.argv[3]);"
+        return subprocess.run(['python3','-c',prefix+code,str(self.repo/'data/scripts/lib'),str(self.db),str(self.players)],
+            env=dict(self.env,PZ_SOURCE_DIR=str(self.world),TMPDIR=str(self.world)),capture_output=True,text=True,timeout=20)
+
+    def preview_image(self):
+        # Never open/close source in the SQLite lock holder: POSIX locks are per process.
+        code="import sys,hashlib,json;from pathlib import Path;print(json.dumps({str(p):(hashlib.sha256(p.read_bytes()).hexdigest(),p.stat().st_size,p.stat().st_mtime_ns,p.stat().st_ctime_ns) if p.exists() else None for db in sys.argv[1:] for suffix in ('','-journal','-wal','-shm') for p in [Path(db+suffix)]}))"
+        return subprocess.check_output(['python3','-c',code,str(self.db),str(self.players)],env=self.env,text=True,timeout=10)
+
+    def test_account_previews_wal_commits_and_residual_tail(self):
+        for missing_shm in (False,True):
+            case=Accounts();case.setUp();connections=[]
+            try:
+                for path,table in [(case.db,'whitelist'),(case.players,'networkPlayers')]:
+                    if missing_shm:
+                        code="import sqlite3,sys,os;d=sqlite3.connect(sys.argv[1]);d.execute('PRAGMA journal_mode=WAL');d.execute('UPDATE '+sys.argv[2]+\" SET username='wal-old' WHERE username='old'\");d.commit();os._exit(99)"
+                        result=subprocess.run(['python3','-c',code,str(path),table],env=case.env,capture_output=True,text=True,timeout=10)
+                        self.assertEqual(result.returncode,99,result.stderr);Path(str(path)+'-shm').unlink(missing_ok=True)
+                    else:
+                        d=sqlite3.connect(path,timeout=0);connections.append(d);d.execute('PRAGMA journal_mode=WAL')
+                        d.execute('UPDATE '+table+" SET username='wal-old' WHERE username='old'");d.commit()
+                    with Path(str(path)+'-wal').open('ab') as tail:tail.write(b'residual-tail')
+                before=case.preview_image()
+                for args in [('remove-account','wal-old','--dry-run'),('rename-account','wal-old','new','--dry-run')]:
+                    result=case.whitelist_cli(*args)
+                    self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                    self.assertIn('wal-old',result.stdout)
+                    if args[0]=='rename-account':self.assertIn('1 personnage(s)',result.stdout)
+                    self.assertEqual(case.preview_image(),before)
+            finally:
+                for d in connections:d.close()
+                case.tearDown()
+
+    def test_account_preview_existing_locks_refused(self):
+        for path in (self.db,self.players):
+            for begin in ('BEGIN EXCLUSIVE','BEGIN IMMEDIATE'):
+                with closing(sqlite3.connect(path,timeout=0)) as writer:
+                    writer.execute(begin);before=self.preview_image()
+                    result=self.whitelist_cli('rename-account','old','new','--dry-run')
+                    self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                    self.assertIn('locked',result.stderr);self.assertEqual(self.preview_image(),before);writer.rollback()
+
+    def test_account_preview_two_wal_guards_block_writers_and_checkpoints(self):
+        connections=[]
+        try:
+            for path,table in [(self.db,'whitelist'),(self.players,'networkPlayers')]:
+                d=sqlite3.connect(path,timeout=0);connections.append(d);d.execute('PRAGMA journal_mode=WAL')
+                d.execute('UPDATE '+table+" SET username='old' WHERE username='old'");d.commit()
+            before=self.preview_image()
+            # Called at first private SQLite open, after both source guards exist,
+            # and again at final common revalidation, before either guard releases.
+            code='''
+original=a.sqlite3.connect
+check=a._check_preview_sources
+calls=[]
+def assert_guards():
+ for path in (db,players):
+  for sql in ('BEGIN IMMEDIATE','PRAGMA wal_checkpoint(TRUNCATE)'):
+   script="import sqlite3,sys;d=sqlite3.connect(sys.argv[1],timeout=0);print(d.execute(sys.argv[2]).fetchall())"
+   r=subprocess.run(['python3','-c',script,str(path),sql],capture_output=True,text=True,timeout=5)
+   assert (r.returncode!=0 and 'locked' in r.stderr) if sql.startswith('BEGIN') else (r.returncode==0 and r.stdout.startswith('[(1,')),(path,sql,r.stdout,r.stderr)
+ calls.append(True)
+def connect(*args,**kwargs):
+ assert_guards()
+ return original(*args,**kwargs)
+def checked(sources):
+ if calls:assert_guards()
+ return check(sources)
+a.sqlite3.connect=connect;a._check_preview_sources=checked
+a.rename_plan(db,players,'old','new')
+assert len(calls)>=3,calls
+'''
+            result=self.preview_helper(code);self.assertEqual(result.returncode,0,result.stdout+result.stderr);self.assertEqual(self.preview_image(),before)
+            for path in (self.db,self.players):
+                with closing(sqlite3.connect(path,timeout=0)) as writer:
+                    writer.execute('BEGIN IMMEDIATE');result=self.preview_helper("a.rename_plan(db,players,'old','new')")
+                    self.assertNotEqual(result.returncode,0);self.assertIn('locked',result.stderr);writer.rollback()
+        finally:
+            for d in connections:d.close()
+
+    def test_account_preview_active_checkpoint_refused(self):
+        with closing(sqlite3.connect(self.db,timeout=0)) as writer,closing(sqlite3.connect(self.db,timeout=0)) as reader:
+            writer.execute('PRAGMA journal_mode=WAL');writer.execute("UPDATE whitelist SET password='first' WHERE id=2");writer.commit()
+            reader.execute('BEGIN');reader.execute('SELECT * FROM whitelist').fetchall()
+            writer.execute("UPDATE whitelist SET password='second' WHERE id=2");writer.commit()
+            code="import sqlite3,sys;d=sqlite3.connect(sys.argv[1],timeout=10);print('ready',flush=True);print(d.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchall())"
+            checkpoint=subprocess.Popen(['python3','-c',code,str(self.db)],env=self.env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+            try:
+                self.assertEqual(checkpoint.stdout.readline().strip(),'ready')
+                probe="import os,fcntl,sys;fd=os.open(sys.argv[1]+'-shm',os.O_RDONLY);fcntl.lockf(fd,fcntl.LOCK_SH|fcntl.LOCK_NB)"
+                for attempt in range(30):
+                    observed=subprocess.run(['python3','-c',probe,str(self.db)],env=self.env,capture_output=True,text=True,timeout=10)
+                    if observed.returncode and 'BlockingIOError' in observed.stderr:break
+                else:self.fail('active checkpoint lock not observed')
+                before=self.preview_image();result=self.whitelist_cli('rename-account','old','new','--dry-run')
+                self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                self.assertIn('locked',result.stderr);self.assertEqual(self.preview_image(),before)
+            finally:checkpoint.terminate();checkpoint.communicate(timeout=10);reader.rollback()
+
+    def test_account_preview_existing_sidecar_changes_refused(self):
+        for suffix in ('-wal','-shm'):
+            for change in ('remove','replace'):
+                case=Accounts();case.setUp()
+                try:
+                    sidecar=Path(str(case.db)+suffix);sidecar.write_bytes(b'initial')
+                    hook="side=Path(str(db)+"+repr(suffix)+");side.unlink()"+('' if change=='remove' else ";side.write_bytes(b'replaced')")
+                    code="original=a.os.pread\nchanged=False\ndef read(fd,size,offset):\n global changed\n if not changed:\n  changed=True\n  "+hook+"\n return original(fd,size,offset)\na.os.pread=read\na.remove(db,['old'],True)"
+                    result=case.preview_helper(code);self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                    self.assertIn('changed',result.stderr);self.assertNotIn('plan',result.stdout)
+                finally:case.tearDown()
+
+    def test_account_preview_changes_and_aliases_refused(self):
+        hooks=["Path(str(db)+'-shm').write_bytes(b'new')", "db.write_bytes(db.read_bytes())", "(db.parent.rename(str(db.parent)+'.old'),Path(db.parent).mkdir(),__import__('shutil').copyfile(Path(str(db.parent)+'.old')/db.name,db))"]
+        for hook in hooks:
+            case=Accounts();case.setUp()
+            try:
+                code='''
+original=a.os.pread
+changed=False
+def read(fd,size,offset):
+ global changed
+ if not changed:
+  changed=True
+  HOOK
+ return original(fd,size,offset)
+a.os.pread=read
+a.remove(db,['old'],True)
+'''.replace('HOOK',hook)
+                result=case.preview_helper(code);self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                self.assertIn('changed',result.stderr);self.assertNotIn('plan',result.stdout)
+            finally:case.tearDown()
+        result=self.preview_helper("a.rename_plan(db,db,'old','new')")
+        self.assertNotEqual(result.returncode,0);self.assertIn('Aliased',result.stderr)
+        Path(str(self.db)+'-wal').symlink_to(self.players)
+        result=self.whitelist_cli('remove-account','old','--dry-run');self.assertNotEqual(result.returncode,0)
+        Path(str(self.db)+'-wal').unlink()
+        os.link(self.players,Path(str(self.db)+'-wal'))
+        result=self.whitelist_cli('remove-account','old','--dry-run');self.assertNotEqual(result.returncode,0)
+        Path(str(self.db)+'-wal').unlink()
+        self.db.chmod(0o666)
+        result=self.whitelist_cli('remove-account','old','--dry-run');self.assertNotEqual(result.returncode,0)
+
+    def test_account_preview_private_temp_short_writes_and_cleanup(self):
+        before=self.preview_image()
+        code='''
+original=a.os.write
+created=[]
+connect=a.sqlite3.connect
+root=Path(os.environ['PZ_SOURCE_DIR']).resolve()
+def opened(path,*args,**kwargs):
+ p=Path(path);assert not p.resolve().is_relative_to(root),p
+ assert p.parent.stat().st_mode & 0o777==0o700
+ assert p.stat().st_mode & 0o777==0o600
+ created.append(p.parent)
+ return connect(path,*args,**kwargs)
+def short(fd,data):return original(fd,data[:7])
+a.os.write=short;a.sqlite3.connect=opened
+fds=len(list(Path('/proc/self/fd').iterdir()))
+a.remove(db,['old'],True)
+assert created and all(not p.exists() for p in created)
+assert len(list(Path('/proc/self/fd').iterdir()))==fds
+'''
+        result=self.preview_helper(code);self.assertEqual(result.returncode,0,result.stdout+result.stderr);self.assertEqual(self.preview_image(),before)
+        for target,failure in [("a.os.write","OSError(28,'No space left on device')"),("a.os.write","KeyboardInterrupt()"),("a.sqlite3.connect","sqlite3.OperationalError('fixture read failed')")]:
+            code='''
+created=[]
+original=a.tempfile.TemporaryDirectory
+class Temporary(original):
+ def __enter__(self):
+  path=super().__enter__();created.append(Path(path));return path
+a.tempfile.TemporaryDirectory=Temporary
+def fail(*args,**kwargs):raise FAILURE
+TARGET=fail
+fds=len(list(Path('/proc/self/fd').iterdir()))
+try:a.remove(db,['old'],True)
+except (OSError,KeyboardInterrupt,sqlite3.Error):pass
+else:raise AssertionError('expected failure')
+assert created and all(not p.exists() for p in created)
+assert len(list(Path('/proc/self/fd').iterdir()))==fds
+'''.replace('FAILURE',failure).replace('TARGET',target)
+            result=self.preview_helper(code);self.assertEqual(result.returncode,0,result.stdout+result.stderr);self.assertEqual(self.preview_image(),before)
+
+    def test_account_previews_persist_cold_and_active_fallback(self):
+        with closing(sqlite3.connect(self.db)) as d:
+            d.execute('PRAGMA journal_mode=PERSIST');d.execute("UPDATE whitelist SET password='persist' WHERE id=2");d.commit()
+        self.assertGreater(Path(str(self.db)+'-journal').stat().st_size,0)
+        for active in (False,True):
+            if active:self.set_state('active','running',999999,0)
+            for command in ('remove-account','rename-account'):
+                args=[command,'old']+(['new'] if command=='rename-account' else [])+([] if active else ['--dry-run'])
+                before=self.preview_image();result=self.whitelist_cli(*args)
+                self.assertEqual(result.returncode==0,not active,result.stdout+result.stderr)
+                self.assertIn('plan',result.stdout);self.assertEqual(self.preview_image(),before)
+
+    def test_account_readers_hot_and_clean_sources_unchanged(self):
+        for hot in (False,True):
+            for surface in ('auto-active','auto-inactive','list','manual-purge'):
+                with self.subTest(hot=hot,surface=surface):
+                    case=Accounts();case.setUp()
+                    try:
+                        ledger=case.base/'ledger.csv';ledger.write_text('# historical\nadmin;;1998-01-01\nold;;1998-01-01\nkept;;1998-01-01\n');csv=ledger.read_bytes()
+                        if surface!='auto-inactive':case.set_state('active','running',999999,0)
+                        if hot:
+                            code="import sqlite3,sys,os;d=sqlite3.connect(sys.argv[1]);d.execute('PRAGMA cache_size=1');d.execute('BEGIN IMMEDIATE');d.execute(\"UPDATE whitelist SET password=? WHERE id=2\",('X'*200000,));os._exit(99)"
+                            crashed=subprocess.run(['python3','-c',code,str(case.db)],env=case.env,capture_output=True,text=True,timeout=10)
+                            self.assertEqual(crashed.returncode,99,crashed.stderr)
+                        before=case.preview_image()
+                        if surface.startswith('auto'):
+                            args=['--dry-run','--days','30']+(['--force'] if surface=='auto-active' else [])
+                            result=case.invoke('purgeInactivePlayers.sh',*args)
+                        else:result=case.whitelist_cli(*(['list'] if surface=='list' else ['purge','30j']))
+                        self.assertEqual(case.preview_image(),before,'reader mutated SQLite source: '+result.stdout+result.stderr)
+                        self.assertEqual(ledger.read_bytes(),csv)
+                        self.assertEqual(result.returncode==0,not hot,result.stdout+result.stderr)
+                        if hot:
+                            self.assertIn('recovery',result.stderr)
+                            self.assertNotIn('Aucune modification effectuée',result.stdout)
+                    finally:case.tearDown()
+
+    def test_account_reader_ledger_wal_source_unchanged(self):
+        for surface in ('ledger','manual-purge'):
+            with self.subTest(surface=surface):
+                case=Accounts();case.setUp()
+                try:
+                    ledger=case.base/'ledger.csv';ledger.write_text('# historical\nadmin;;1998-01-01\nwal-visible;;1998-01-01\nkept;;1998-01-01\n');csv=ledger.read_bytes()
+                    code="import sqlite3,sys,os;d=sqlite3.connect(sys.argv[1]);d.execute('PRAGMA journal_mode=WAL');d.execute(\"UPDATE whitelist SET username='wal-visible' WHERE id=2\");d.commit();os._exit(99)"
+                    crashed=subprocess.run(['python3','-c',code,str(case.db)],env=case.env,capture_output=True,text=True,timeout=10)
+                    self.assertEqual(crashed.returncode,99,crashed.stderr);Path(str(case.db)+'-shm').unlink(missing_ok=True)
+                    before=case.preview_image()
+                    result=case.invoke('creationDateInit.sh') if surface=='ledger' else case.whitelist_cli('purge','30j')
+                    self.assertEqual(case.preview_image(),before,'ledger/prelude mutated SQLite source: '+result.stdout+result.stderr)
+                    self.assertEqual(result.returncode,0,result.stdout+result.stderr);self.assertEqual(ledger.read_bytes(),csv)
+                    if surface=='manual-purge':self.assertIn('wal-visible',result.stdout)
+                finally:case.tearDown()
+
+    def read_sql_helper(self,sql,*options):
+        return subprocess.run(['python3',str(self.repo/'data/scripts/lib/account_safety.py'),'read-sql','--db',str(self.db),'--sql',sql,'--',*options],
+            env=dict(self.env,PZ_SOURCE_DIR=str(self.world),TMPDIR=str(self.world)),capture_output=True,timeout=20)
+
+    def test_account_reader_cli_format_and_errors_exact(self):
+        with closing(sqlite3.connect(self.db)) as db:
+            db.execute('UPDATE whitelist SET displayName=? WHERE id=2',("世界 | O'Name",));db.commit()
+        before=self.preview_image()
+        with tempfile.TemporaryDirectory(dir=self.base) as tmp:
+            reference=Path(tmp)/'reference.db';shutil.copyfile(self.db,reference)
+            for options,sql in [(('-header','-column'),'SELECT id,username,displayName FROM whitelist ORDER BY id'),
+                    ((),'SELECT username,steamid FROM whitelist ORDER BY id'),
+                    (('-separator','\x1f'),"SELECT username,COALESCE(steamid,'') FROM whitelist ORDER BY id"),
+                    (('-header','-column'),'SELECT username FROM whitelist WHERE 0'),
+                    ((),'SELECT * FROM missing_table'),
+                    ((),'SELECT username FROM whitelist; SELECT * FROM missing_table')]:
+                with self.subTest(options=options,sql=sql):
+                    expected=subprocess.run(['sqlite3',*options,str(reference),sql],env=self.env,capture_output=True,timeout=10)
+                    observed=self.read_sql_helper(sql,*options)
+                    self.assertEqual((observed.stdout,observed.stderr,observed.returncode),(expected.stdout,expected.stderr,expected.returncode))
+        self.assertEqual(self.preview_image(),before)
+
+    def test_account_reader_cli_guard_and_final_validation(self):
+        actual=shutil.which('sqlite3');self.assertIsNotNone(actual)
+        trace=self.base/'private-cli-path';self.env['ACCOUNT_CLI_TRACE']=str(trace)
+        self.env['ACCOUNT_CLI_SOURCE']=str(self.db);self.env['ACCOUNT_CLI_REAL']=actual
+        self.executable(self.bin/'sqlite3','''#!/usr/bin/env python3
+import os,sys,subprocess
+from pathlib import Path
+source=Path(os.environ['ACCOUNT_CLI_SOURCE']);private=Path(sys.argv[-2])
+assert private.resolve()!=source.resolve()
+assert not private.resolve().is_relative_to(source.parent.parent.resolve())
+Path(os.environ['ACCOUNT_CLI_TRACE']).write_text(str(private.parent))
+code="import sqlite3,sys;d=sqlite3.connect(sys.argv[1],timeout=0);d.execute('BEGIN IMMEDIATE')"
+writer=subprocess.run(['python3','-c',code,str(source)],capture_output=True,text=True)
+assert writer.returncode!=0 and 'locked' in writer.stderr,writer.stderr
+result=subprocess.run([os.environ['ACCOUNT_CLI_REAL'],*sys.argv[1:]],capture_output=True)
+if os.environ.get('ACCOUNT_CLI_CHANGE')=='1':Path(str(source)+'-shm').write_bytes(b'concurrent')
+sys.stdout.buffer.write(result.stdout);sys.stderr.buffer.write(result.stderr)
+sys.stderr.write('fixture CLI diagnostic\\n')
+sys.exit(result.returncode)
+''')
+        before=self.preview_image();result=self.read_sql_helper('SELECT username FROM whitelist')
+        self.assertEqual(result.returncode,0,result.stderr);self.assertIn(b'old',result.stdout)
+        self.assertEqual(result.stderr,b'fixture CLI diagnostic\n');self.assertEqual(self.preview_image(),before)
+        self.assertFalse(Path(trace.read_text()).exists())
+        self.env['ACCOUNT_CLI_CHANGE']='1'
+        result=self.read_sql_helper('SELECT username FROM whitelist')
+        self.assertNotEqual(result.returncode,0);self.assertEqual(result.stdout,b'')
+        self.assertIn(b'fixture CLI diagnostic',result.stderr);self.assertIn(b'changed',result.stderr)
+        self.assertFalse(Path(trace.read_text()).exists())
+
+    def test_account_reader_cli_signal_status(self):
+        self.executable(self.bin/'sqlite3',"#!/usr/bin/env python3\nimport os,signal,sys\nsys.stderr.write('fixture interrupted\\n');sys.stderr.flush();os.kill(os.getpid(),signal.SIGTERM)\n")
+        before=self.preview_image();result=self.read_sql_helper('SELECT 1')
+        self.assertEqual(result.returncode,143);self.assertEqual(result.stdout,b'')
+        self.assertEqual(result.stderr,b'fixture interrupted\n');self.assertEqual(self.preview_image(),before)
+
+    def test_account_readers_wal_commits_and_cold_persist(self):
+        for mode in ('wal-shm','wal-no-shm','persist'):
+            for surface in ('auto-active','auto-inactive','list','manual-purge'):
+                with self.subTest(mode=mode,surface=surface):
+                    case=Accounts();case.setUp();keeper=None
+                    try:
+                        ledger=case.base/'ledger.csv';ledger.write_text('# historical\nadmin;;1998-01-01\nwal-visible;;1998-01-01\nkept;;1998-01-01\n');csv=ledger.read_bytes()
+                        if surface!='auto-inactive':case.set_state('active','running',999999,0)
+                        if mode=='wal-no-shm':
+                            code="import sqlite3,sys,os;d=sqlite3.connect(sys.argv[1]);d.execute('PRAGMA journal_mode=WAL');d.execute(\"UPDATE whitelist SET username='wal-visible' WHERE id=2\");d.commit();os._exit(99)"
+                            crashed=subprocess.run(['python3','-c',code,str(case.db)],env=case.env,capture_output=True,text=True,timeout=10)
+                            self.assertEqual(crashed.returncode,99,crashed.stderr);Path(str(case.db)+'-shm').unlink(missing_ok=True)
+                        else:
+                            keeper=sqlite3.connect(case.db,timeout=0);keeper.execute('PRAGMA journal_mode='+('PERSIST' if mode=='persist' else 'WAL'))
+                            keeper.execute("UPDATE whitelist SET username='wal-visible' WHERE id=2");keeper.commit()
+                            if mode=='persist':keeper.close();keeper=None
+                        before=case.preview_image()
+                        if surface.startswith('auto'):
+                            result=case.invoke('purgeInactivePlayers.sh','--dry-run','--days','30',*(['--force'] if surface=='auto-active' else []))
+                        else:result=case.whitelist_cli(*(['list'] if surface=='list' else ['purge','30j']))
+                        self.assertEqual(result.returncode,0,result.stdout+result.stderr);self.assertIn('wal-visible',result.stdout)
+                        self.assertEqual(case.preview_image(),before);self.assertEqual(ledger.read_bytes(),csv)
+                    finally:
+                        if keeper:keeper.close()
+                        case.tearDown()
+
 if __name__=='__main__':
     os.umask(0o077);unittest.main()

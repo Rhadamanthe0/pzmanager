@@ -81,7 +81,11 @@ sql_or_die() {
     if [[ "${1:-}" == "--sep" ]]; then sep="${2:-|}"; sql="${3:-}"; else sql="${1:-}"; fi
     [[ -n "${__var:-}" && -n "${sql:-}" ]] || die "sql_or_die : usage interne invalide (erreur de code)"
     out=""; rc=0
-    out="$(sqlite3 -separator "$sep" "$DB_PATH" "$sql")" || rc=$?
+    if [[ "$DRY_RUN" == true ]]; then
+        out="$(python3 "$ACCOUNT_HELPER" read-sql --db "$DB_PATH" --sql "$sql" -- -separator "$sep")" || rc=$?
+    else
+        out="$(sqlite3 -separator "$sep" "$DB_PATH" "$sql")" || rc=$?
+    fi
     if (( rc != 0 )); then
         die "Lecture SQLite impossible (sqlite exit=${rc}) — purge annulée, aucune suppression (fail-closed)."
     fi

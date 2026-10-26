@@ -867,13 +867,28 @@ fi
 
 fresh_backup_case age-missing
 export AGE_RECIPIENT="age1ql5ksft0rjx2vtest"
-# Mocks presents mais 'age' absent (ni mock ni systeme) -> doit mourir.
-export PATH="${BASE_PATH}"
-command -v age >/dev/null 2>&1 && { ko "age-missing : 'age' resolu dans BASE_PATH, cas non isole"; }
+# PATH privé conservant les commandes et doubles, sans age même installé sur l'hôte.
+missing_age_path="${SANDBOX}/without-age"
+mkdir -p "$missing_age_path"
+IFS=: read -ra base_path_dirs <<< "$BASE_PATH"
+for directory in "${base_path_dirs[@]}"; do
+    [[ "$directory" == /* ]] || directory="$PWD/$directory"
+    for executable in "$directory"/*; do
+        name="${executable##*/}"
+        [[ "$name" != age && -f "$executable" && -x "$executable" \
+            && ! -e "$missing_age_path/$name" ]] || continue
+        ln -s "$executable" "$missing_age_path/$name"
+    done
+done
+saved_path="$PATH"
+export PATH="$missing_age_path"
+command -v age >/dev/null 2>&1 && { ko "age-missing : 'age' resolu dans le PATH prive, cas non isole"; }
 if run_backup; then
     ko "age absent : succes a tort (backup clair hors-site silencieux)"
+elif grep -q "binaire 'age' absent" "${SANDBOX}/out.log"; then
+    ok "age absent + RECIPIENT : die (binaire absent)"
 else
-    ok "age absent + RECIPIENT : die"
+    ko "age absent : refus sans diagnostic d'absence"; show_out
 fi
 (( $(count_ext "$BK_SYNC" '*.age') == 0 )) \
     && ok "age absent : aucun .age" \
@@ -884,6 +899,7 @@ fi
 (( $(find "$BK_SYNC" -maxdepth 1 -name '*.partial*' 2>/dev/null | wc -l | tr -d ' ') == 0 )) \
     && ok "age absent : pas de .partial residuel" \
     || ko "age absent : .partial residuel"
+export PATH="$saved_path"
 
 fresh_backup_case age-empty
 unset AGE_RECIPIENT AGE_RECIPIENTS

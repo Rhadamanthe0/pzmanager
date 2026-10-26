@@ -440,9 +440,8 @@ wl_assert_stopped_or_die() {
 # ou un schéma absent en décision). Usage: wl_sql_or_die VAR DB "SELECT ..." [options SQLite]
 wl_sql_or_die() {
     local __var="$1" __db="$2" __sql="$3" __out __rc=0
-    python3 "${SCRIPT_DIR}/../lib/account_safety.py" validate-db --db "$__db" || exit 1
     shift 3
-    __out="$(sqlite3 "$@" "$__db" "$__sql")" || __rc=$?
+    __out="$(python3 "${SCRIPT_DIR}/../lib/account_safety.py" read-sql --db "$__db" --sql "$__sql" -- "$@")" || __rc=$?
     if (( __rc != 0 )); then
         die "Lecture SQLite impossible (sqlite exit=${__rc}) — opération annulée, rien n'a été modifié (fail-closed)."
     fi
@@ -480,8 +479,10 @@ remove_accounts() {
     [[ "$dry_run" == true ]] || wl_assert_stopped_or_die "Nettoyage whitelist"
     local -a options=()
     [[ "$dry_run" != true ]] || options+=(--dry-run)
-    python3 "${SCRIPT_DIR}/../lib/account_safety.py" remove --db "$DB_PATH" "${options[@]}" -- "${targets[@]}" \
-        || die "Suppression annulée : transaction ROLLBACK, aucune modification partielle."
+    if ! python3 "${SCRIPT_DIR}/../lib/account_safety.py" remove --db "$DB_PATH" "${options[@]}" -- "${targets[@]}"; then
+        [[ "$dry_run" != true ]] || die "Aperçu de suppression annulé avant mutation."
+        die "Suppression annulée : transaction ROLLBACK, aucune modification partielle."
+    fi
     [[ "$refused" == false ]] || die_server_active "Nettoyage whitelist"
 
 }
@@ -512,34 +513,21 @@ rename_account() {
         dry_run=true; refused=true
     fi
 
-    local esc_old esc_new
-    esc_old="$(sql_escape "$old")"; esc_new="$(sql_escape "$new")"
+    local esc_new
+    esc_new="$(sql_escape "$new")"
 
-    # C5 : prévalidation TOTALE avant toute écriture (fail-closed : toute
-    # lecture en erreur MEURT au lieu de se lire comme 0). Schéma OK = tables
-    # et colonne username lisibles dans les deux bases.
-    local exists clash _schema
-    wl_sql_or_die _schema "$DB_PATH" "SELECT username FROM whitelist LIMIT 0;"
-    wl_sql_or_die exists "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE username='${esc_old}'"
-    [[ "$exists" =~ ^[0-9]+$ ]] || die "Lecture SQLite inattendue — renommage annulé, rien n'a été modifié (fail-closed)."
-    [[ "$exists" -ge 1 ]] || die "Aucun compte '${old}' dans la whitelist."
-    wl_sql_or_die clash "$DB_PATH" "SELECT COUNT(*) FROM whitelist WHERE username='${esc_new}'"
-    [[ "$clash" =~ ^[0-9]+$ ]] || die "Lecture SQLite inattendue — renommage annulé, rien n'a été modifié (fail-closed)."
-    [[ "$clash" -eq 0 ]] || die "Un compte '${new}' existe déjà : renommage refusé (collision)."
-
-    local PLAYERS_DB="" char_count=0 new_in_players=0 _pschema=""
+    # Select and validate both sources before the helper takes POSIX locks.
+    local PLAYERS_DB="" exists char_count plan
     PLAYERS_DB="$(python3 "${SCRIPT_DIR}/../lib/account_safety.py" select-players \
         --world "${PZ_SOURCE_DIR}" --server "${PZ_SERVER_NAME}")" \
         || die "Sélection du monde ambiguë ou illisible — renommage annulé avant mutation."
-    if [[ -n "$PLAYERS_DB" && -f "$PLAYERS_DB" ]]; then
-        wl_sql_or_die _pschema "$PLAYERS_DB" "SELECT username FROM networkPlayers LIMIT 0;"
-        wl_sql_or_die char_count "$PLAYERS_DB" "SELECT COUNT(*) FROM networkPlayers WHERE username='${esc_old}'"
-        [[ "$char_count" =~ ^[0-9]+$ ]] || die "Lecture SQLite inattendue — renommage annulé, rien n'a été modifié (fail-closed)."
-        wl_sql_or_die new_in_players "$PLAYERS_DB" "SELECT COUNT(*) FROM networkPlayers WHERE username='${esc_new}'"
-        [[ "$new_in_players" =~ ^[0-9]+$ ]] || die "Lecture SQLite inattendue — renommage annulé, rien n'a été modifié (fail-closed)."
-        [[ "$new_in_players" -eq 0 ]] || die "Un personnage '${new}' existe déjà dans players.db : renommage refusé (collision)."
-    fi
-    unset _schema _pschema
+    local -a plan_options=()
+    [[ -z "$PLAYERS_DB" ]] || plan_options+=(--players "$PLAYERS_DB")
+    plan="$(python3 "${SCRIPT_DIR}/../lib/account_safety.py" rename-plan --db "$DB_PATH" "${plan_options[@]}" -- "$old" "$new")" \
+        || die "Lecture SQLite impossible — renommage annulé avant mutation."
+    read -r exists char_count <<< "$plan"
+    [[ "$exists" =~ ^[0-9]+$ && "$char_count" =~ ^[0-9]+$ ]] \
+        || die "Lecture SQLite inattendue — renommage annulé avant mutation."
 
     echo "=== rename-account : plan ('${old}' -> '${new}') ==="
     echo "  whitelist : ${exists} compte(s) seraient renommés (mot de passe conservé)"

@@ -396,15 +396,27 @@ do_status() {
     echo "=== Project Zomboid Server Status ==="
     echo ""
 
-    if server_is_active; then
-        echo "Status: RUNNING"
-        echo "Active since: $(systemctl --user show "${PZ_SERVICE_NAME}" -p ActiveEnterTimestamp --value)"
-        [[ -p "${PZ_CONTROL_PIPE}" ]] && echo "Control pipe: Available" || echo "Control pipe: Not available"
-    else
-        echo "Status: STOPPED"
-        local result; result="$(systemctl --user show "${PZ_SERVICE_NAME}" -p Result --value)"
-        [[ "$result" != "success" ]] && echo "Last exit: $result"
-    fi
+    local state; state="$(server_state)"
+    case "$state" in
+        active)
+            echo "Status: RUNNING"
+            echo "Active since: $(systemctl --user show "${PZ_SERVICE_NAME}" -p ActiveEnterTimestamp --value)"
+            [[ -p "${PZ_CONTROL_PIPE}" ]] && echo "Control pipe: Available" || echo "Control pipe: Not available"
+            ;;
+        inactive|failed)
+            [[ "$state" == inactive ]] && echo "Status: STOPPED" || echo "Status: FAILED"
+            local result; result="$(systemctl --user show "${PZ_SERVICE_NAME}" -p Result --value)"
+            [[ "$result" != "success" ]] && echo "Last exit: $result"
+            ;;
+        activating) echo "Status: ACTIVATING" ;;
+        deactivating) echo "Status: DEACTIVATING" ;;
+        error)
+            echo "Status: UNKNOWN"
+            echo "ERREUR: état systemd de ${PZ_SERVICE_NAME} indisponible (systemctl --user)." >&2
+            return 1
+            ;;
+        *) echo "Status: UNKNOWN" ;;
+    esac
 
     [[ -L "${BACKUP_LATEST_LINK}" ]] && echo "Last backup: $(stat -c %y "${BACKUP_LATEST_LINK}" | cut -d. -f1)"
 
