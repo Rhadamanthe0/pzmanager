@@ -48,16 +48,19 @@ ko() { FAIL=$(( FAIL + 1 )); echo "[FAIL] $*" >&2; }
 
 REPO_ENV="${ROOT}/.env"
 ENV_BACKUP="${SANDBOX}/env.orig"
+ENV_STUBBED=false
 USE_SHIM=0
 
 cleanup() {
     # `local rc=$?` + `exit` : sans cela, le statut du dernier `rm` du trap
     # EXIT écraserait le statut réel du test (un ÉCHEC sortirait en 0).
     local rc=$?
-    if [[ -f "$ENV_BACKUP" ]]; then
-        cp -p "$ENV_BACKUP" "$REPO_ENV"
-    else
-        rm -f "$REPO_ENV"
+    if [[ "$ENV_STUBBED" == true ]]; then
+        if [[ -f "$ENV_BACKUP" ]]; then
+            cp -p "$ENV_BACKUP" "$REPO_ENV"
+        else
+            rm -f "$REPO_ENV"
+        fi
     fi
     rm -rf "$SANDBOX"
     exit "$rc"
@@ -92,6 +95,7 @@ fi
 if [[ -f "$REPO_ENV" ]]; then
     cp -p "$REPO_ENV" "$ENV_BACKUP"
 fi
+ENV_STUBBED=true
 printf '# stub test C3 (restauré en fin de test)\n' > "$REPO_ENV"
 
 # --- Mock systemctl (état serveur piloté) -------------------------------------

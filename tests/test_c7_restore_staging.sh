@@ -43,13 +43,16 @@ ko() { FAIL=$(( FAIL + 1 )); echo "[FAIL] $*" >&2; }
 
 REPO_ENV="${ROOT}/.env"
 ENV_BACKUP="${SANDBOX}/env.orig"
+ENV_STUBBED=false
 
 cleanup() {
     local rc=$?
-    if [[ -f "$ENV_BACKUP" ]]; then
-        cp -p "$ENV_BACKUP" "$REPO_ENV"
-    else
-        rm -f "$REPO_ENV"
+    if [[ "$ENV_STUBBED" == true ]]; then
+        if [[ -f "$ENV_BACKUP" ]]; then
+            cp -p "$ENV_BACKUP" "$REPO_ENV"
+        else
+            rm -f "$REPO_ENV"
+        fi
     fi
     rm -rf "$SANDBOX"
     exit "$rc"
@@ -84,6 +87,7 @@ fi
 if [[ -f "$REPO_ENV" ]]; then
     cp -p "$REPO_ENV" "$ENV_BACKUP"
 fi
+ENV_STUBBED=true
 printf '# stub test C7 (restauré en fin de test)\n' > "$REPO_ENV"
 
 # --- Mocks -------------------------------------------------------------------
