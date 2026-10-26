@@ -18,6 +18,7 @@ import uuid
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"lib"))
 from configureWritingTextOnly import ConfigurationError, open_root, atomic_file
+from native_identity import validate_native_identity
 
 MARKER = 'writing-start.json'
 SOCKET = 'writing-start.sock'
@@ -29,6 +30,7 @@ def validate_launch_profile(profile):
             any(not isinstance(value, str) or not value or '\0' in value or
                 len(value.encode('utf-8')) > 4096 for value in profile.values())):
         raise ConfigurationError('Malformed start admission configuration')
+    validate_native_identity(profile['PZ_SOURCE_DIR'], profile['PZ_SERVER_NAME'])
     return profile
 
 
@@ -320,6 +322,7 @@ def broker(args):
 
 
 def run(args):
+    validate_native_identity(os.environ.get('PZ_SOURCE_DIR', ''), os.environ.get('PZ_SERVER_NAME', ''))
     if os.environ.get('PZ_SOURCE_DIR'):
         from world_transaction import check_clean
         check_clean(os.environ['PZ_SOURCE_DIR'],legacy=True)
@@ -398,6 +401,7 @@ def run(args):
 
 def validate_worker_admission(unit=None):
     """Re-prove stop/start-pre and the actual inherited WORLD FD before mutation."""
+    validate_native_identity(os.environ.get('PZ_SOURCE_DIR', ''), os.environ.get('PZ_SERVER_NAME', ''))
     raw_fd = os.environ.get('PZ_WORLD_LOCK_FD', '')
     lock_path = os.environ.get('PZ_WORLD_LOCK_FILE', '')
     unit = unit or os.environ.get('PZ_SERVICE_NAME', '')

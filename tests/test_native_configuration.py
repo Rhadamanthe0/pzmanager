@@ -225,6 +225,100 @@ else:sys.exit(89)
         self.assertTrue(list((self.home/'.local/state/pzmanager').glob('shared-budget-*/manifest.json')))
 
 
+    def identity_targets(self,field,value):
+        self.values[field]=value;self.write_env()
+        trim=''.join(map(chr,range(33)))
+        source=self.values['PZ_SOURCE_DIR'];name=self.values['PZ_SERVER_NAME']
+        targets={(Path(source),name),(Path(source.replace('-cachedir=','').strip(trim)),name.strip(trim))}
+        for world,server in targets:
+            ini=world/'Server'/(server+'.ini');ini.parent.mkdir(parents=True,exist_ok=True)
+            ini.write_text('Open=true\nMods=\n')
+            database=world/'db'/(server+'.db');database.parent.mkdir(exist_ok=True)
+            if database!=self.db:shutil.copy2(self.db,database)
+            Path(str(database)+'-journal').write_bytes(b'')
+            (world/'Server'/(server+'_SandboxVars.lua')).write_text('SandboxVars = {}\n')
+            save=world/'Saves/Multiplayer'/server;save.mkdir(parents=True,exist_ok=True)
+            (save/'sentinel').write_bytes(b'saved character')
+            recovery=world/'recovery';recovery.mkdir(exist_ok=True);(recovery/'sentinel').write_bytes(b'recovery retained')
+        return {world for world,_ in targets}
+
+    def identity_image(self,targets):
+        result={}
+        for world in targets:
+            for path in [world,*world.rglob('*')]:
+                info=path.lstat()
+                result[str(path)]=(info.st_mode,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns,info.st_nlink,
+                    path.read_bytes() if path.is_file() else None)
+        return result
+
+    def test_native_identity_refuses_three_transformed_targets_before_work(self):
+        for variant in ('name-trim','source-trim','source-token'):
+            for action in ('check','start','prepare'):
+                with self.subTest(variant=variant,action=action):
+                    case=NativeConfiguration();case.setUp()
+                    try:
+                        field='PZ_SERVER_NAME' if variant=='name-trim' else 'PZ_SOURCE_DIR'
+                        value=case.name+' ' if variant=='name-trim' else str(case.world)+' ' if variant=='source-trim' else str(case.base/'-cachedir=world')
+                        targets=case.identity_targets(field,value);before=case.identity_image(targets)
+                        secret=case.repo/'.admin_password';secret.write_bytes(b'private-password\n');secret.chmod(0o600)
+                        secret_before=(secret.read_bytes(),secret.stat().st_mtime_ns,secret.stat().st_ctime_ns)
+                        fifo=os.open(case.pipe,os.O_RDWR|os.O_NONBLOCK)
+                        try:
+                            os.write(fifo,b'prior-command\n')
+                            result=case.prepare() if action=='prepare' else case.invoke(action)
+                            after=case.identity_image(targets)
+                            self.assertFalse([path for path in set(before)|set(after) if before.get(path)!=after.get(path)],'world changed before native identity refusal')
+                            self.assertEqual((secret.read_bytes(),secret.stat().st_mtime_ns,secret.stat().st_ctime_ns),secret_before)
+                            self.assertEqual(os.read(fifo,4096),b'prior-command\n')
+                            self.assertFalse(case.capture.exists(),'vendor fixture called')
+                            self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                            self.assertIn(field,result.stderr);self.assertIn('native',result.stderr)
+                            self.assertFalse(case.bus.exists(),'identity rejection depended on a bus call')
+                        finally:os.close(fifo)
+                    finally:case.doCleanups()
+
+    def test_java_trim_matrix_strict_and_stop_preserve_raw_values(self):
+        cases=[('/tmp/control-world','selected ',False),('/tmp/control-world ','selected',False),
+               ('/tmp/-cachedir=control-world','selected',False),('/tmp/control-world','selected',True),
+               ("/tmp/équipe d'été","monde d'été 世界",True),('/tmp/world\u00a0','\u00a0selected\u00a0',True),
+               ('/tmp/world\u2003','\u2003selected\u2003',True),('/tmp/world','selected-cachedir=ok',True)]
+        for edge in ('\x01','\t','\n','\r','\x1f',' '):
+            cases.extend([('/tmp/world',edge+'selected',False),('/tmp/world','selected'+edge,False),('/tmp/world'+edge,'selected',False)])
+        self.assertEqual(len(cases),26)
+        # Also preserve Unicode NEL and DEL, which Java trim does not remove,
+        # and reject every other non-NUL <= U+0020 edge or repeated cache token.
+        extras=[('/tmp/world'+edge,edge+'selected'+edge,True) for edge in ('\u0085','\x7f')]
+        extras += [('/tmp/-cachedir=one/-cachedir=two-cachedir=','selected',False)]
+        extras += [('/tmp/world'+chr(n),'selected'+chr(n),False) for n in range(1,33)]
+        for source,name,valid in cases+extras:
+            for stopping in (False,True):
+                with self.subTest(source=source,name=name,stopping=stopping):
+                    env=dict(self.env,PZ_SOURCE_DIR=source,PZ_SERVER_NAME=name)
+                    command='set -euo pipefail; source "$1"; apply_env_defaults "$2"; printf "%s\\0" "$PZ_SOURCE_DIR" "$PZ_SERVER_NAME" "$PZ_INI_PATH" "$PZ_DB_PATH"'
+                    result=subprocess.run(['bash','-c',command,'fixture',str(self.repo/'data/scripts/lib/common.sh'),str(stopping).lower()],env=env,capture_output=True,timeout=5)
+                    self.assertEqual(result.returncode==0,valid or stopping,result.stderr)
+                    if valid or stopping:
+                        self.assertEqual(result.stdout.decode().split('\0')[:-1],[source,name,source+'/Server/'+name+'.ini',source+'/db/'+name+'.db'])
+                    else:self.assertIn(b'native',result.stderr)
+
+    def test_inherited_identity_is_checked_and_file_setting_keeps_precedence(self):
+        for field,value in [('PZ_SERVER_NAME','selected '),('PZ_SOURCE_DIR',str(self.world)+' '),('PZ_SOURCE_DIR',str(self.base/'-cachedir=world'))]:
+            with self.subTest(field=field,value=value):
+                case=NativeConfiguration();case.setUp()
+                try:
+                    targets=case.identity_targets(field,value);before=case.identity_image(targets)
+                    case.values.pop(field);case.write_env();case.env[field]=value
+                    result=case.invoke('check')
+                    self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                    self.assertIn(field,result.stderr);self.assertIn('native',result.stderr)
+                    self.assertEqual(case.identity_image(targets),before);self.assertFalse(case.capture.exists())
+                    # Explicit valid .env configuration still overrides inheritance.
+                    case.values[field]=self.values[field];case.write_env()
+                    result=case.invoke('check');self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                finally:case.doCleanups()
+
+
+
 if __name__=='__main__':
     os.umask(0o077)
     unittest.main()

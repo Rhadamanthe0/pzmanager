@@ -111,6 +111,9 @@ apply_env_defaults() {
             return 1
         fi
     done
+    if [[ "$stopping" != true ]]; then
+        python3 "${PZ_MANAGER_ROOT}/data/scripts/lib/native_identity.py" "$PZ_SOURCE_DIR" "$PZ_SERVER_NAME" || return 1
+    fi
     # Le jeu dérive ces deux fichiers de cachedir/servername : aucun réglage
     # indépendant ne doit faire écrire les outils dans un autre fichier.
     local expected_db="${PZ_SOURCE_DIR}/db/${PZ_SERVER_NAME}.db"

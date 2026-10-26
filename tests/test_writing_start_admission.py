@@ -484,4 +484,51 @@ os.execv(sys.executable,sys.argv[3:])
         release.touch();self.assertEqual(owner.wait(timeout=5),0,(self.root/'owner.stderr').read_text())
 
 
+    def test_launch_profiles_reject_native_identity_changes_and_nul(self):
+        profile=dict(PZ_SOURCE_DIR='/tmp/world',PZ_SERVER_NAME='selected',PZ_INSTALL_DIR='/tmp/game',PZ_CONTROL_PIPE='/tmp/game/control',PZ_MANAGER_DIR='/tmp/manager')
+        for field,value in [('PZ_SERVER_NAME',' selected'),('PZ_SERVER_NAME','selected\t'),('PZ_SOURCE_DIR','/tmp/world\n'),('PZ_SOURCE_DIR','/tmp/-cachedir=one/-cachedir=two')]:
+            bad=dict(profile,**{field:value})
+            with self.subTest(field=field,value=value):
+                with self.assertRaisesRegex(ValueError,field+'.*native'):admission.validate_launch_profile(bad)
+                with patch.dict(os.environ,bad),self.assertRaisesRegex(ValueError,field+'.*native'):admission.launch_profile()
+        for field in admission.LAUNCH_KEYS:
+            with self.subTest(nul=field),self.assertRaises(admission.ConfigurationError):
+                admission.validate_launch_profile(dict(profile,**{field:'bad\0value'}))
+        for edge in ('\u00a0','\u0085','\u2003','\x7f'):
+            valid=dict(profile,PZ_SOURCE_DIR='/tmp/world'+edge,PZ_SERVER_NAME=edge+'selected'+edge)
+            self.assertEqual(admission.validate_launch_profile(valid),valid)
+        valid=dict(profile,PZ_SERVER_NAME='selected-cachedir=ok')
+        self.assertEqual(admission.validate_launch_profile(valid),valid)
+
+    def test_autonomous_and_relay_run_refuse_invalid_identity_before_worker(self):
+        for startup in (False,True):
+            for field,value in [('PZ_SERVER_NAME','servertest '),('PZ_SOURCE_DIR','world '),('PZ_SOURCE_DIR','-cachedir=world')]:
+                with self.subTest(startup=startup,field=field,value=value):
+                    case=StartAdmission();case.setUp()
+                    owner=release=None;marker=None;original=None
+                    try:
+                        repo,world,ini=case.closure_fixture()
+                        if startup:
+                            owner,release=case.prepare_owner();case.set_state('activating','start-pre',0,os.getpid())
+                            marker=case.private/admission.MARKER;original=marker.read_bytes()
+                        bad=value if field=='PZ_SERVER_NAME' else str(case.root/value)
+                        case.env[field]=bad
+                        if startup:
+                            # Same invalid raw identity in the received/local profile.
+                            data=json.loads(original);data['launch'][field]=bad;marker.write_text(json.dumps(data))
+                        before={str(path):path.read_bytes() for path in world.rglob('*') if path.is_file()}
+                        done=case.root/'forbidden-worker'
+                        result=case.invoke('run','--lock-path',case.lock,'--unit','probe.service','--',sys.executable,'-c','from pathlib import Path; Path('+repr(str(done))+').touch()')
+                        self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                        self.assertIn(field,result.stderr);self.assertIn('native',result.stderr)
+                        self.assertFalse(done.exists())
+                        self.assertEqual({str(path):path.read_bytes() for path in world.rglob('*') if path.is_file()},before)
+                        if startup:self.assertTrue(case.busy())
+                        else:self.assertFalse(case.lock.exists())
+                    finally:
+                        if marker is not None:marker.write_bytes(original)
+                        if release is not None:release.touch();owner.wait(timeout=5)
+                        case.tearDown()
+
+
 if __name__ == '__main__': unittest.main()

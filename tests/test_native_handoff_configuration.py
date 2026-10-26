@@ -2,6 +2,7 @@
 from contextlib import closing
 import json
 import os
+from pathlib import Path
 import shutil
 import sqlite3
 import subprocess
@@ -77,6 +78,21 @@ sys.exit(89)
             if path.is_file():self.assertEqual(path.read_bytes(),before[(str(case.other),str(path.relative_to(case.other)))])
         self.assertEqual(json.loads(case.capture.read_text())['argv'],
                          ['-cachedir='+str(case.world),'-servername',case.name])
+
+
+    def test_same_invalid_cli_and_service_identity_is_refused(self):
+        for variant in ('name','source-space','source-token'):
+            with self.subTest(variant=variant):
+                case=self.fixture()
+                field='PZ_SERVER_NAME' if variant=='name' else 'PZ_SOURCE_DIR'
+                value=case.name+' ' if variant=='name' else str(case.world)+' ' if variant=='source-space' else str(case.base/'-cachedir=world')
+                targets=case.identity_targets(field,value)|{case.other};before=case.identity_image(targets)
+                case.env[field]=value
+                result=self.start(case)
+                self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                self.assertIn(field,result.stderr);self.assertIn('native',result.stderr)
+                self.assertEqual(case.identity_image(targets),before);self.assertFalse(case.capture.exists())
+                self.assertEqual(json.loads(Path(case.env['HANDOFF_STATE']).read_text())['ActiveState'],'inactive')
 
 
 if __name__=='__main__':unittest.main()

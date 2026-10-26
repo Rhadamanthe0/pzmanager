@@ -148,4 +148,41 @@ class ClosedPaths(unittest.TestCase):
         self.assertNotIn('ProjectWriting restart cleanup policy:',result.stdout)
 
 
+    def test_direct_python_workers_reject_identity_with_legitimate_admission(self):
+        import fcntl,sys
+        import test_native_configuration as native
+        for variant in ('name','source-space','source-token'):
+            with self.subTest(variant=variant):
+                case=native.NativeConfiguration();case.setUp()
+                try:
+                    private=case.runtime/'pzmanager';private.mkdir(mode=0o700)
+                    lock=private/'world.lock';lock.touch(mode=0o600)
+                    with lock.open('rb') as held:
+                        fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                        env=dict(case.env,**case.values,PZ_WORLD_LOCK_FD=str(held.fileno()),PZ_WORLD_LOCK_DEPTH='1',PZ_WORLD_LOCK_FILE=str(lock),PZ_SERVICE_NAME='zomboid.service')
+                        helper=case.repo/'data/scripts/internal/writing_start_admission.py'
+                        control="import sys;sys.path.insert(0,sys.argv[1]);from writing_start_admission import validate_worker_admission;validate_worker_admission()"
+                        result=subprocess.run([sys.executable,'-c',control,str(helper.parent)],env=env,pass_fds=(held.fileno(),),capture_output=True,text=True,timeout=8)
+                        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                        field='PZ_SERVER_NAME' if variant=='name' else 'PZ_SOURCE_DIR'
+                        value=case.name+' ' if variant=='name' else str(case.world)+' ' if variant=='source-space' else str(case.base/'-cachedir=world')
+                        targets=case.identity_targets(field,value);before=case.identity_image(targets)
+                        env.update(case.values,PZ_INI_PATH=case.values['PZ_SOURCE_DIR']+'/Server/'+case.values['PZ_SERVER_NAME']+'.ini',PZ_DB_PATH=case.values['PZ_SOURCE_DIR']+'/db/'+case.values['PZ_SERVER_NAME']+'.db')
+                        sandbox=case.values['PZ_SOURCE_DIR']+'/Server/'+case.values['PZ_SERVER_NAME']+'_SandboxVars.lua'
+                        backups=case.base/'new-writing-recovery';case.bus.unlink()
+                        commands=[[sys.executable,str(helper.with_name('enforceClosedServer.py'))],
+                            [sys.executable,str(helper.with_name('configureWritingTextOnly.py')),'--install-dir',str(case.game),'--sandbox-file',sandbox,'--ini-file',env['PZ_INI_PATH'],'--cleanup-world',env['PZ_SOURCE_DIR'],'--cleanup-backups',str(backups),'--mode','0'],
+                            [sys.executable,str(case.repo/'data/scripts/lib/account_safety.py'),'verify-worker']]
+                        for command in commands:
+                            result=subprocess.run(command,env=env,pass_fds=(held.fileno(),),capture_output=True,text=True,timeout=8)
+                            self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                            self.assertIn(field,result.stderr);self.assertIn('native',result.stderr)
+                            self.assertEqual(case.identity_image(targets),before)
+                            self.assertFalse(backups.exists());self.assertFalse(case.bus.exists())
+                            self.assertFalse(case.capture.exists())
+                        with lock.open('rb') as contender:
+                            with self.assertRaises(BlockingIOError):fcntl.flock(contender,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                finally:case.doCleanups()
+
+
 if __name__=='__main__':unittest.main()

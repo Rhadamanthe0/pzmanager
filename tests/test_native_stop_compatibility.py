@@ -166,6 +166,32 @@ while True:
                 finally:case.doCleanups()
 
 
+    def test_transformed_identity_still_allows_cli_stop_and_execstop_quit(self):
+        for direct in (False,True):
+            for variant in ('name','source-space','source-token'):
+                with self.subTest(direct=direct,variant=variant):
+                    case=StopCompatibility();case.setUp()
+                    try:
+                        field='PZ_SERVER_NAME' if variant=='name' else 'PZ_SOURCE_DIR'
+                        value=case.case.name+' ' if variant=='name' else str(case.case.world)+' ' if variant=='source-space' else str(case.case.base/'-cachedir=world')
+                        case.case.write_env({field:value});case.start_reader();before=case.case.db.read_bytes()
+                        if direct:
+                            state=json.loads(case.state.read_text());state.update(ActiveState='deactivating',SubState='stop');case.state.write_text(json.dumps(state))
+                            result=subprocess.run(['bash',str(case.case.repo/'data/scripts/internal/stopServer.sh')],env=case.case.env,cwd=case.case.game,capture_output=True,text=True,timeout=12)
+                            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                        else:
+                            result=case.invoke('stop','now','--silent')
+                            self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                            self.assertIn(field,result.stderr);self.assertIn('native',result.stderr)
+                        case.game.wait(timeout=3);self.assertEqual(case.game.returncode,0)
+                        self.assertEqual(json.loads(case.state.read_text())['ActiveState'],'inactive')
+                        self.assertEqual(json.loads(case.commands.read_text().splitlines()[-1]),'quit')
+                        events=[json.loads(line) for line in case.events.read_text().splitlines()]
+                        self.assertFalse(any(word in event for event in events for word in ('kill','start','restart')))
+                        self.assertEqual(case.case.db.read_bytes(),before);self.assertFalse(case.case.capture.exists())
+                    finally:case.doCleanups()
+
+
 if __name__=='__main__':
     os.umask(0o077)
     unittest.main()
