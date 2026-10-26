@@ -60,9 +60,11 @@ if os.environ.get('FIXTURE_GENERATOR')=='hang':time.sleep(90);sys.exit()
 (cachedir/'Server').mkdir(exist_ok=True)
 config=cachedir/'Server/servertest.ini'
 if not config.exists():config.write_text('new-config')
-db=sqlite3.connect(cachedir/'db/servertest.db')
+pending=cachedir/'db/servertest.db.pending'
+db=sqlite3.connect(pending)
 db.executescript("CREATE TABLE whitelist(world TEXT,username TEXT UNIQUE,password TEXT,steamid TEXT,role TEXT,displayName TEXT,lastConnection TEXT); CREATE TABLE allowedsteamid(steamid TEXT UNIQUE); INSERT INTO whitelist VALUES('world','admin','new-secret','123','admin','Admin','now');")
 db.commit();db.close()
+pending.replace(cachedir/'db/servertest.db')
 time.sleep(90)
 ''')
         values = dict(PZ_USER=os.environ.get('USER','pzuser42'),PZ_HOME=str(self.home),PZ_SOURCE_DIR=str(self.live),PZ_INSTALL_DIR=str(self.install),BACKUP_DIR=str(self.backups),PZ_GAME_USER=os.environ.get('USER','pzuser42'),PZ_MANAGER_USER=os.environ.get('USER','pzuser42'))

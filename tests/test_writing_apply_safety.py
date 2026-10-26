@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Binary-envelope and commit-boundary regressions; NOT native PZ fixtures."""
+import contextlib
+import errno
+import io
 import json
 import os
 from pathlib import Path
@@ -301,6 +304,79 @@ class CleanWorldCompilerFree(unittest.TestCase):
                 result=writing.cleanup(root/'absent',root/'recovery',validator=writing.JavaValidator('missing.jar','missing.java'))
             self.assertEqual(result['files'],0)
             self.assertEqual(list(root.iterdir()),[])
+
+
+class WritingTraversal(unittest.TestCase):
+    def check_scan_refusal(self, dictionary_present, dry_run, denied, inject_error=False):
+        with tempfile.TemporaryDirectory(prefix='pz-writing-walk-') as tmp:
+            root = Path(tmp); world = root/'world'; world.mkdir(mode=0o700)
+            hidden = world/'map/1'; hidden.mkdir(parents=True)
+            chunk = hidden/'0.bin'; chunk.write_bytes(floor_bag()[0])
+            if dictionary_present:
+                (world/'WorldDictionaryReadable.lua').write_text(
+                    'registryID = 1, fulltype = "Base.Notebook"')
+                # prepare() stages this dirty DB before it enumerates chunks.
+                with contextlib.closing(sqlite3.connect(world/'players.db')) as db:
+                    for table_name in ('networkPlayers', 'localPlayers'):
+                        db.execute(f'CREATE TABLE {table_name}(id, worldversion, data)')
+                    db.execute('INSERT INTO networkPlayers VALUES(1,249,?)',
+                               (item(1, 111, b'BOOK:' + document()),))
+                    db.commit()
+            paths = [p for p in world.rglob('*') if p.is_file()]
+            def snapshot():
+                return {str(p.relative_to(world)): (p.read_bytes(), p.stat().st_mode,
+                        p.stat().st_mtime_ns, p.stat().st_ctime_ns) for p in paths}
+            before = snapshot()
+            real_scandir = os.scandir
+            def scandir(path):
+                if not isinstance(path, int) and Path(path) == hidden:
+                    raise OSError(errno.EIO, 'injected directory I/O failure', str(path))
+                return real_scandir(path)
+            hidden.chmod(0o311)
+            try:
+                if not inject_error:
+                    with self.assertRaises(PermissionError):
+                        list(os.scandir(hidden))
+                self.assertEqual(chunk.read_bytes(), before['map/1/0.bin'][0])
+                scan = patch.object(writing.os, 'scandir', side_effect=scandir) if inject_error else contextlib.nullcontext()
+                with scan, patch.object(writing, 'recover') as recover, \
+                        patch.object(writing, 'clean_blob', wraps=writing.clean_blob) as transform:
+                    validator = unittest.mock.Mock(spec=[])
+                    with self.assertRaises(OSError) as error:
+                        writing.cleanup(world, root/'backups', dry_run, validator)
+                    self.assertEqual(error.exception.errno, denied)
+                    validator.assert_not_called(); recover.assert_not_called()
+                    if dictionary_present:
+                        self.assertGreater(transform.call_count, 0)
+                if dry_run:
+                    scan = patch.object(writing.os, 'scandir', side_effect=scandir) if inject_error else contextlib.nullcontext()
+                    with scan, contextlib.redirect_stderr(io.StringIO()):
+                        self.assertEqual(writing.main(['--world-dir', str(world),
+                            '--backup-dir', str(root/'backups'), '--dry-run']), 1)
+                self.assertEqual(snapshot(), before)
+                self.assertFalse((root/'backups').exists())
+            finally:
+                hidden.chmod(0o700)
+
+    @unittest.skipIf(os.geteuid() == 0, 'root bypasses DAC; EIO regression remains active')
+    def test_unlistable_directory_refuses_before_mutation(self):
+        for dictionary_present in (False, True):
+            for dry_run in (False, True):
+                with self.subTest(dictionary=dictionary_present, dry_run=dry_run):
+                    self.check_scan_refusal(dictionary_present, dry_run, errno.EACCES)
+
+    def test_directory_io_error_refuses_before_mutation(self):
+        for dictionary_present in (False, True):
+            for dry_run in (False, True):
+                with self.subTest(dictionary=dictionary_present, dry_run=dry_run):
+                    self.check_scan_refusal(dictionary_present, dry_run, errno.EIO, True)
+
+    def test_binary_dictionary_without_readable_dictionary_is_saved_data(self):
+        with tempfile.TemporaryDirectory(prefix='pz-writing-dictionary-') as tmp:
+            world = Path(tmp)/'world'; world.mkdir(mode=0o700)
+            (world/'WorldDictionary.bin').write_bytes(b'saved dictionary')
+            with self.assertRaisesRegex(writing.CleanupError, 'Saved world data exists'):
+                writing.cleanup(world, Path(tmp)/'backups')
 
 
 if __name__ == '__main__':
