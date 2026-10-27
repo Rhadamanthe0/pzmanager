@@ -1102,8 +1102,6 @@ a.remove(db,['old'],True)
         os.link(self.players,Path(str(self.db)+'-wal'))
         result=self.whitelist_cli('remove-account','old','--dry-run');self.assertNotEqual(result.returncode,0)
         Path(str(self.db)+'-wal').unlink()
-        self.db.chmod(0o666)
-        result=self.whitelist_cli('remove-account','old','--dry-run');self.assertNotEqual(result.returncode,0)
 
     def test_account_preview_private_temp_short_writes_and_cleanup(self):
         before=self.preview_image()
@@ -1323,6 +1321,50 @@ sys.exit(result.returncode)
         self.assertEqual(self.db.stat().st_mode & 0o022,0)
         self.assertEqual([r[1] for r in self.rows(self.db,'whitelist')],['admin','kept'])
 
+    def test_offline_resetpassword_accepts_and_normalizes_game_mode(self):
+        # Same game-rewritten 0777: the offline reset holds WORLD with the
+        # server proven stopped, so it accepts and tightens like remove/rename.
+        self.db.chmod(0o777)
+        p=self.invoke('manageWhitelist.sh','resetpassword','old')
+        self.assertEqual(p.returncode,0,p.stdout+p.stderr)
+        self.assertEqual(self.db.stat().st_mode & 0o022,0)
+        self.assertEqual(self.rows(self.db,'whitelist')[1][2],'')
+
+    def test_game_rewritten_database_mode_accepted_under_private_ancestor(self):
+        # The game rewrites servertest.db as 0777 on every JVM start (incident
+        # 2026-10-27). While it runs, another account cannot reach the file
+        # because open_root found a private ancestor (the fixture base is 0700):
+        # `list` must read it without normalizing the game's mode.
+        self.db.chmod(0o777)
+        listed=self.whitelist_cli('list')
+        self.assertEqual(listed.returncode,0,listed.stdout+listed.stderr)
+        self.assertIn('Total: 3 compte(s)',listed.stdout)
+        self.assertEqual(self.db.stat().st_mode & 0o777,0o777)
+        os.link(self.db,self.world/'db/linked.db')
+        linked=self.whitelist_cli('list')
+        self.assertNotEqual(linked.returncode,0,linked.stdout+linked.stderr)
+        self.assertIn('one link',linked.stderr)
+        os.unlink(self.world/'db/linked.db')
+        alias=self.world/'db/alias.db';alias.symlink_to(self.db)
+        linked=subprocess.run(['python3',str(self.repo/'data/scripts/lib/account_safety.py'),'validate-db','--db',str(alias)],
+            env=self.env,capture_output=True,text=True,timeout=20)
+        self.assertNotEqual(linked.returncode,0,linked.stdout+linked.stderr)
+        self.assertEqual(self.db.stat().st_mode & 0o777,0o777)
+
+    def test_game_rewritten_database_mode_refused_without_private_ancestor(self):
+        # Sticky shared /tmp plus 0755 directories: no private ancestor, so a
+        # 0777 database stays reachable by another account and must be refused
+        # by both validation and the read preview.
+        shared=Path(tempfile.mkdtemp(prefix='accounts-shared-',dir='/tmp'));self.addCleanup(shutil.rmtree,shared,True)
+        shared.chmod(0o755);world=shared/'world';world.mkdir();world.chmod(0o755)
+        db=world/'servertest.db';shutil.copyfile(self.db,db);db.chmod(0o777)
+        helper=str(self.repo/'data/scripts/lib/account_safety.py')
+        for arguments in (('validate-db','--db',str(db)),('read-sql','--db',str(db),'--sql','SELECT COUNT(*) FROM whitelist')):
+            refused=subprocess.run(['python3',helper,*arguments],env=self.env,capture_output=True,text=True,timeout=20)
+            self.assertNotEqual(refused.returncode,0,refused.stdout+refused.stderr)
+            self.assertIn('SQLite files must be trusted',refused.stderr)
+        self.assertEqual(db.stat().st_mode & 0o777,0o777)
+
     def test_offline_rename_normalizes_players_database_rewritten_by_game(self):
         self.db.chmod(0o777);self.players.chmod(0o777)
         p=self.invoke('manageWhitelist.sh','rename-account','old','new')
@@ -1331,12 +1373,16 @@ sys.exit(result.returncode)
         self.assertEqual(self.players.stat().st_mode & 0o022,0)
         self.assertEqual(self.rows(self.players,'networkPlayers')[0][1],'new')
 
-    def test_rename_preview_keeps_strict_database_modes(self):
+    def test_rename_preview_accepts_game_modes_without_normalizing(self):
+        # The game's 0777 is accepted under the private ancestor, but an
+        # aperçu must never tighten modes nor mutate the accounts.
         self.db.chmod(0o600);self.players.chmod(0o777)
         p=self.invoke('manageWhitelist.sh','rename-account','old','new','--dry-run')
-        self.assertNotEqual(p.returncode,0,p.stdout+p.stderr)
-        self.assertIn('SQLite files must be trusted',p.stderr)
+        self.assertEqual(p.returncode,0,p.stdout+p.stderr)
+        self.assertIn('seraient renommés',p.stdout)
+        self.assertEqual(self.db.stat().st_mode & 0o777,0o600)
         self.assertEqual(self.players.stat().st_mode & 0o777,0o777)
+        self.assertEqual([r[1] for r in self.rows(self.db,'whitelist')],['admin','old','kept'])
 
 if __name__=='__main__':
     os.umask(0o077);unittest.main()

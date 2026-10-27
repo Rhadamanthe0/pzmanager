@@ -20,6 +20,21 @@ from world_transaction import check_clean
 from configureWritingTextOnly import ConfigurationError, open_root, trusted_owner
 
 
+def trusted_sqlite_file(info,private):
+    """Trust an SQLite inode unless another account could alter it.
+
+    27/10/2026 : the game rewrites its SQLite files as 0777 on every JVM start,
+    while the server must keep `whitelist list` working. Group and other write
+    are harmless when open_root established a private ancestor: no other
+    account can reach the file. Everything else (non-regular, several links,
+    symlink, foreign owner, or these write bits without a private ancestor)
+    stays refused.
+    """
+    return (stat.S_ISREG(info.st_mode) and info.st_nlink==1
+            and trusted_owner(info.st_uid)
+            and not (info.st_mode & 0o022 and not private))
+
+
 def validate_database(path,missing_ok=False,normalize=False):
     """Validate physical SQLite files, including journals, before SQLite opens them.
 
@@ -59,9 +74,7 @@ def validate_database(path,missing_ok=False,normalize=False):
                     # Split multi-UID is refused, so group write is not needed.
                     os.fchmod(fd,stat.S_IMODE(info.st_mode) & ~0o022)
                     info=os.fstat(fd)
-                if (not stat.S_ISREG(info.st_mode) or info.st_nlink!=1
-                        or not trusted_owner(info.st_uid) or info.st_mode & 0o002
-                        or info.st_mode & 0o020 and not private):
+                if not trusted_sqlite_file(info,private):
                     raise ConfigurationError('SQLite files must be trusted regular files with one link: '+str(path)+suffix)
                 if not suffix:present=True
             finally:os.close(fd)
@@ -119,9 +132,7 @@ def preview_databases(paths):
                     if not suffix:raise
                     before[suffix]=None;continue
                 cleanup.callback(os.close,fd);files[suffix]=fd;info=os.fstat(fd)
-                if (not stat.S_ISREG(info.st_mode) or info.st_nlink!=1
-                        or not trusted_owner(info.st_uid) or info.st_mode & 0o002
-                        or info.st_mode & 0o020 and not private):
+                if not trusted_sqlite_file(info,private):
                     raise ConfigurationError('SQLite files must be trusted regular files with one link: '+str(path)+suffix)
                 identity=(info.st_dev,info.st_ino)
                 if identity in identities:raise ValueError('Aliased SQLite preview sources refused')

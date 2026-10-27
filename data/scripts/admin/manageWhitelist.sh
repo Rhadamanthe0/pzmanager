@@ -318,6 +318,8 @@ reset_password() {
     # Arrêt PROUVÉ juste avant écriture (TOCTOU) : inactive seule,
     # failed/activating/error -> refus fail-closed (cf. remove/rename).
     wl_assert_stopped_or_die "Reset mot de passe"
+    # Même normalisation que remove/rename : WORLD tenu et arrêt prouvé.
+    check_database --normalize
 
     # Vider le mot de passe : le joueur en choisira un nouveau à la prochaine connexion.
     sqlite3 "$DB_PATH" "UPDATE whitelist SET password = '' WHERE username = '${esc_u}';" || \
