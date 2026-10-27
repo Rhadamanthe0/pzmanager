@@ -191,7 +191,12 @@ if _same_file "$LIVE_DB" "$BK_DB"; then
 fi
 # Validate every live ancestor and SQLite alias before even a schema read.
 # Backup roots may be `latest` links and snapshot files may share hardlinks.
-python3 "${SCRIPT_DIR}/../lib/account_safety.py" validate-db --db "$LIVE_DB" \
+# Hors service (WORLD tenu, arrêt prouvé ci-dessus), la destination peut avoir
+# été remise en 0777 par le jeu : normaliser, sinon l'aperçu et l'écriture
+# refuseraient la base que le jeu vient de créer.
+live_flags=()
+[[ "$DRY_RUN" == true ]] || live_flags+=(--normalize)
+python3 "${SCRIPT_DIR}/../lib/account_safety.py" validate-db --db "$LIVE_DB" "${live_flags[@]}" \
     || die "Destination SQLite non sûre : restauration refusée avant toute ouverture."
 # Preview/schema queries must not recover a destination journal or create SHM.
 for suffix in -wal -shm -journal; do

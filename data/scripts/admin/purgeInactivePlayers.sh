@@ -62,8 +62,13 @@ if [[ -n "$DAYS_OVERRIDE" ]]; then
 fi
 
 require_sqlite
-python3 "$ACCOUNT_HELPER" validate-db --db "$DB_PATH" --missing-ok || exit 1
-[[ -f "$DB_PATH" ]] || { log "Base introuvable: $DB_PATH (purge ignorée)"; exit 0; }
+# Aperçu hors verrou : validation stricte, aucune normalisation. L'écriture
+# passe par l'admission puis verify-worker, qui normalise les droits remis par
+# le jeu (0777) et revalide la base avant toute lecture de plan.
+if [[ "$DRY_RUN" == true ]]; then
+    python3 "$ACCOUNT_HELPER" validate-db --db "$DB_PATH" --missing-ok || exit 1
+    [[ -f "$DB_PATH" ]] || { log "Base introuvable: $DB_PATH (purge ignorée)"; exit 0; }
+fi
 
 # C4 (fail-closed) : toute lecture qui décide d'une suppression passe par ici.
 # Une erreur SQLite (table absente, base verrouillée, disque...) MEURT au lieu
@@ -102,6 +107,9 @@ if [[ "$DRY_RUN" != true && "$ADMITTED_WORKER" != true ]]; then
 fi
 if [[ "$ADMITTED_WORKER" == true ]]; then
     python3 "$ACCOUNT_HELPER" verify-worker || exit 1
+    # Validation et normalisation faites sous WORLD ; une base absente reste
+    # une purge ignorée, jamais une base vide créée par sqlite3.
+    [[ -f "$DB_PATH" ]] || { log "Base introuvable: $DB_PATH (purge ignorée)"; exit 0; }
 elif [[ "$FORCE" != true ]]; then
     require_server_stopped "Aperçu purge (utiliser --force --dry-run si actif)"
 fi

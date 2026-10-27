@@ -172,4 +172,13 @@ sql_escape() { printf '%s' "$1" | sed "s/'/''/g"; }
             self.assertEqual(db.execute("SELECT data,splitUsername FROM networkPlayers WHERE username='selected'").fetchone(),(b'\x01\x02\x03','preserve-split-player'))
             self.assertEqual(db.execute("SELECT data FROM networkPlayers WHERE username='outside'").fetchone()[0],b'opaque-outside')
 
+    def test_live_players_database_mode_rewritten_by_game_is_normalized(self):
+        # The game rewrites players.db as 0777 on every JVM start; an offline
+        # restore holds WORLD and must normalize before opening the live DB.
+        self.database(self.source);self.database(self.live)
+        self.live.chmod(0o777)
+        result=self.run_restore()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual(self.live.stat().st_mode & 0o022,0)
+
 if __name__=='__main__': unittest.main()

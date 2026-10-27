@@ -20,11 +20,16 @@ from world_transaction import check_clean
 from configureWritingTextOnly import ConfigurationError, open_root, trusted_owner
 
 
-def validate_database(path,missing_ok=False):
+def validate_database(path,missing_ok=False,normalize=False):
     """Validate physical SQLite files, including journals, before SQLite opens them.
 
     Safe ancestors prevent replacement by another UID; WORLD serializes our
     writers. SQLite canonicalizes filenames, so a /proc/fd URI is not a pin.
+    Callers pass normalize=True only while they hold WORLD with the server
+    proven stopped (admitted restart worker, offline account/restore commands):
+    Project Zomboid rewrites its own SQLite files as 0777 on every JVM start
+    (incident 2026-10-27), so those paths would otherwise refuse the world the
+    game just created.
     """
     path=Path(os.path.abspath(path))
     if not path.name:raise ConfigurationError('SQLite path must name a regular file')
@@ -46,6 +51,14 @@ def validate_database(path,missing_ok=False):
                 continue
             try:
                 info=os.fstat(fd)
+                if (normalize and stat.S_ISREG(info.st_mode) and info.st_nlink==1
+                        and trusted_owner(info.st_uid) and info.st_mode & 0o022):
+                    # 27/10/2026 : the game rewrites its SQLite files as 0777 on
+                    # every JVM start. Tighten the pinned descriptor only, never
+                    # the path; links and foreign owners never reach this point.
+                    # Split multi-UID is refused, so group write is not needed.
+                    os.fchmod(fd,stat.S_IMODE(info.st_mode) & ~0o022)
+                    info=os.fstat(fd)
                 if (not stat.S_ISREG(info.st_mode) or info.st_nlink!=1
                         or not trusted_owner(info.st_uid) or info.st_mode & 0o002
                         or info.st_mode & 0o020 and not private):
@@ -204,7 +217,7 @@ def ledger_rows(db_path,now):
     for record in records:print(record)
 
 
-def select_players(world,server):
+def select_players(world,server,normalize=False):
     saves=Path(world)/'Saves/Multiplayer'
     try:parent,_=open_root(saves)
     except FileNotFoundError:return None
@@ -216,7 +229,7 @@ def select_players(world,server):
             if stat.S_ISLNK(info.st_mode):raise ConfigurationError('Linked character directory refused: '+str(entry))
             if not stat.S_ISDIR(info.st_mode):continue
             candidate=entry/'players.db'
-            if validate_database(candidate,missing_ok=True):candidates.append(candidate)
+            if validate_database(candidate,missing_ok=True,normalize=normalize):candidates.append(candidate)
     finally:os.close(parent)
     matching=[path for path in candidates if path.parent.name==server]
     if matching:return matching[0]
@@ -228,7 +241,7 @@ def select_players(world,server):
 def verify_worker():
     validate_worker_admission()
     check_clean(os.environ['PZ_SOURCE_DIR'],legacy=True)
-    if os.environ.get('PZ_DB_PATH'):validate_database(os.environ['PZ_DB_PATH'],missing_ok=True)
+    if os.environ.get('PZ_DB_PATH'):validate_database(os.environ['PZ_DB_PATH'],missing_ok=True,normalize=True)
 
 
 def valid_id(value):
@@ -334,8 +347,8 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     sub=parser.add_subparsers(dest='action',required=True)
     sub.add_parser('verify-worker')
-    p=sub.add_parser('validate-db');p.add_argument('--db',required=True);p.add_argument('--missing-ok',action='store_true')
-    p=sub.add_parser('select-players');p.add_argument('--world',required=True);p.add_argument('--server',required=True)
+    p=sub.add_parser('validate-db');p.add_argument('--db',required=True);p.add_argument('--missing-ok',action='store_true');p.add_argument('--normalize',action='store_true')
+    p=sub.add_parser('select-players');p.add_argument('--world',required=True);p.add_argument('--server',required=True);p.add_argument('--normalize',action='store_true')
     p=sub.add_parser('read-sql');p.add_argument('--db',required=True);p.add_argument('--sql',required=True);p.add_argument('options',nargs=argparse.REMAINDER)
     p=sub.add_parser('ledger-rows');p.add_argument('--db',required=True);p.add_argument('--now',required=True)
     p=sub.add_parser('backup');p.add_argument('--db',required=True)
@@ -345,10 +358,10 @@ def main():
     a=parser.parse_args()
     try:
         if a.action=='select-players':
-            selected=select_players(a.world,a.server)
+            selected=select_players(a.world,a.server,a.normalize)
             if selected is not None:print(selected)
         elif a.action=='verify-worker':verify_worker()
-        elif a.action=='validate-db':validate_database(a.db,a.missing_ok)
+        elif a.action=='validate-db':validate_database(a.db,a.missing_ok,a.normalize)
         elif a.action=='read-sql':return read_sql(a.db,a.sql,a.options[1:] if a.options[:1]==['--'] else a.options)
         elif a.action=='ledger-rows':ledger_rows(a.db,a.now)
         elif a.action=='backup':backup(a.db)
