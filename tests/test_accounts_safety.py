@@ -1282,5 +1282,61 @@ sys.exit(result.returncode)
                         if keeper:keeper.close()
                         case.tearDown()
 
+    def verify_worker(self,db=None):
+        private=self.runtime/('pzmanager-'+str(len(list(self.runtime.iterdir()))));private.mkdir(mode=0o700)
+        lock=private/'world.lock';lock.touch(mode=0o600)
+        held=lock.open('rb');self.addCleanup(held.close)
+        fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        env=dict(self.env,PZ_DB_PATH=str(db or self.db),PZ_SOURCE_DIR=str(self.world),
+                 PZ_SERVER_NAME="accounts'外",PZ_WORLD_LOCK_FD=str(held.fileno()),
+                 PZ_WORLD_LOCK_DEPTH='1',PZ_WORLD_LOCK_FILE=str(lock),PZ_SERVICE_NAME='zomboid.service')
+        return subprocess.run(['python3',str(self.repo/'data/scripts/lib/account_safety.py'),'verify-worker'],
+            env=env,pass_fds=(held.fileno(),),capture_output=True,text=True,timeout=20)
+
+    def test_worker_normalizes_world_database_mode_rewritten_by_game(self):
+        # The game rewrites servertest.db as 0777 on every JVM start (incident
+        # 2026-10-27); the admitted restart worker must restore a trusted mode.
+        self.db.chmod(0o777)
+        before=self.db.read_bytes()
+        result=self.verify_worker()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual(self.db.stat().st_mode & 0o022,0)
+        self.assertEqual(self.db.read_bytes(),before)
+
+    def test_worker_still_refuses_linked_or_symlinked_database(self):
+        self.db.chmod(0o777)
+        os.link(self.db,self.world/'db/linked.db')
+        result=self.verify_worker()
+        self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('one link',result.stderr)
+        self.assertEqual(self.db.stat().st_mode & 0o777,0o777)
+        os.unlink(self.world/'db/linked.db')
+        alias=self.world/'db/alias.db';alias.symlink_to(self.db)
+        result=self.verify_worker(alias)
+        self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual(self.db.stat().st_mode & 0o777,0o777)
+
+    def test_admitted_manual_purge_normalizes_game_rewritten_database(self):
+        self.db.chmod(0o777)
+        p=self.invoke('purgeInactivePlayers.sh')
+        self.assertEqual(p.returncode,0,p.stdout+p.stderr)
+        self.assertEqual(self.db.stat().st_mode & 0o022,0)
+        self.assertEqual([r[1] for r in self.rows(self.db,'whitelist')],['admin','kept'])
+
+    def test_offline_rename_normalizes_players_database_rewritten_by_game(self):
+        self.db.chmod(0o777);self.players.chmod(0o777)
+        p=self.invoke('manageWhitelist.sh','rename-account','old','new')
+        self.assertEqual(p.returncode,0,p.stdout+p.stderr)
+        self.assertEqual(self.db.stat().st_mode & 0o022,0)
+        self.assertEqual(self.players.stat().st_mode & 0o022,0)
+        self.assertEqual(self.rows(self.players,'networkPlayers')[0][1],'new')
+
+    def test_rename_preview_keeps_strict_database_modes(self):
+        self.db.chmod(0o600);self.players.chmod(0o777)
+        p=self.invoke('manageWhitelist.sh','rename-account','old','new','--dry-run')
+        self.assertNotEqual(p.returncode,0,p.stdout+p.stderr)
+        self.assertIn('SQLite files must be trusted',p.stderr)
+        self.assertEqual(self.players.stat().st_mode & 0o777,0o777)
+
 if __name__=='__main__':
     os.umask(0o077);unittest.main()

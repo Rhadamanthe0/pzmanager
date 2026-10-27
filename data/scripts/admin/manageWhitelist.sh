@@ -65,7 +65,9 @@ readonly SEND_COMMAND="${SCRIPT_DIR}/../internal/sendCommand.sh"
 readonly ACTION="${1:-}"
 
 check_database() {
-    python3 "${SCRIPT_DIR}/../lib/account_safety.py" validate-db --db "$DB_PATH" || exit 1
+    local -a extra=()
+    [[ "${1:-}" == --normalize ]] && extra+=(--normalize)
+    python3 "${SCRIPT_DIR}/../lib/account_safety.py" validate-db --db "$DB_PATH" "${extra[@]}" || exit 1
     [[ -f "$DB_PATH" ]] || die "Base de données introuvable: $DB_PATH"
 }
 
@@ -363,6 +365,13 @@ purge_whitelist() {
     # Lecture seule (sans --delete) : aucun verrou.
     if [[ "$do_delete" == "--delete" ]]; then
         wl_acquire_write_locks_or_die
+        # Écriture hors service : l'arrêt est prouvé AVANT de normaliser les
+        # droits que le jeu remet en 0777, donc avant la première lecture du
+        # plan. Le contrôle est rejoué avant la suppression effective.
+        wl_assert_stopped_or_die "Purge whitelist"
+        check_database --normalize
+    else
+        check_database
     fi
 
     # Comptes inactifs (prédicat partagé avec la purge auto — cf. common.sh).
@@ -476,7 +485,12 @@ remove_accounts() {
         dry_run=true; refused=true
     fi
 
-    [[ "$dry_run" == true ]] || wl_assert_stopped_or_die "Nettoyage whitelist"
+    if [[ "$dry_run" == true ]]; then
+        check_database
+    else
+        wl_assert_stopped_or_die "Nettoyage whitelist"
+        check_database --normalize
+    fi
     local -a options=()
     [[ "$dry_run" != true ]] || options+=(--dry-run)
     if ! python3 "${SCRIPT_DIR}/../lib/account_safety.py" remove --db "$DB_PATH" "${options[@]}" -- "${targets[@]}"; then
@@ -512,14 +526,23 @@ rename_account() {
     if [[ "$dry_run" != true ]] && server_is_active; then
         dry_run=true; refused=true
     fi
+    # Hors service, WORLD tenu : normaliser la whitelist et le players.db que
+    # le jeu a remis en 0777 avant le plan (lecture) et la mutation.
+    if [[ "$dry_run" == true ]]; then
+        check_database
+    else
+        wl_assert_stopped_or_die "Renommage de compte"
+        check_database --normalize
+    fi
 
     local esc_new
     esc_new="$(sql_escape "$new")"
 
     # Select and validate both sources before the helper takes POSIX locks.
     local PLAYERS_DB="" exists char_count plan
-    PLAYERS_DB="$(python3 "${SCRIPT_DIR}/../lib/account_safety.py" select-players \
-        --world "${PZ_SOURCE_DIR}" --server "${PZ_SERVER_NAME}")" \
+    local -a select_options=(--world "${PZ_SOURCE_DIR}" --server "${PZ_SERVER_NAME}")
+    [[ "$dry_run" == true ]] || select_options+=(--normalize)
+    PLAYERS_DB="$(python3 "${SCRIPT_DIR}/../lib/account_safety.py" select-players "${select_options[@]}")" \
         || die "Sélection du monde ambiguë ou illisible — renommage annulé avant mutation."
     local -a plan_options=()
     [[ -z "$PLAYERS_DB" ]] || plan_options+=(--players "$PLAYERS_DB")
@@ -631,7 +654,11 @@ main() {
     esac
 
     require_sqlite
-    check_database
+    # Les commandes d'écriture hors service valident leur base elles-mêmes,
+    # après WORLD et arrêt prouvé, pour normaliser les droits du jeu (0777).
+    case "$ACTION" in
+        list|add|remove|resetpassword) check_database ;;
+    esac
 
     case "$ACTION" in
         list)
