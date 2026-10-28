@@ -162,14 +162,23 @@ pzm rcon additem "Marc Riviere" "Base.556Box" 1
 
 The bot:
 
-1. Runs each line **in order** (same lock as the slash commands — they never
-   interleave), stopping at the first failing line — later lines are **not
-   executed** (marked ⏭ in the recap). If another pzm command is
-   already running, the batch is **queued** (FIFO) and starts when its turn
-   comes — the status message shows "en file d'attente…" until then.
-2. **Deletes your source message** to keep the channel clean.
+1. Reserves its place in a single **in-memory FIFO queue shared by slash
+   commands and pasted messages** as soon as the request is received, before
+   any Discord acknowledgement. A slow acknowledgement therefore cannot let a
+   later command run first: the command starts when its turn comes. A batch is
+   one turn, so a later command never interleaves with its lines. Each line
+   runs **in order**, stopping at the first failing line — later lines are
+   **not executed** (marked ⏭ in the recap).
+2. **Deletes your source message** only once the command result is available.
+   If the bot cannot acknowledge the request (missing permission, transient
+   HTTP error), it deletes nothing and runs nothing.
 3. Posts **one recap** — `✅ Lot pzm : 3/3 OK`, or the per-line ✅/❌ with the
    output of any failing line (as a `pzm-output.txt` attachment if it is long).
+
+The queue is in memory only: restarting the bot loses pending requests. On a
+timeout or cancellation, the bot sends SIGTERM then SIGKILL to the command's
+whole process group and waits until it has exited before starting the next
+queued command; a timeout still returns exit code 124 with the partial output.
 
 If the pasted message holds a **single** `pzm …` line, it is treated like a
 normal command instead of a batch: the source message is still deleted, but the
