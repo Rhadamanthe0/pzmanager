@@ -133,6 +133,54 @@ KNOWN_CMDS = {"server", "backup", "whitelist", "admin", "install", "map", "mods"
 # Un seul pzm à la fois (un `server stop 2m` tient le process plusieurs minutes).
 run_lock = asyncio.Lock()
 
+# File d'attente FIFO en mémoire. Chaque demande réserve sa place en inscrivant
+# sa future de fin AVANT le premier await réseau (accusé Discord, defer) : le
+# verrou seul ne classe que les coroutines déjà en attente, pas l'ordre
+# d'arrivée des handlers. Aucune persistance : redémarrer le bot vide la file.
+_queue_tail: Optional[asyncio.Future] = None
+
+
+def _admit() -> tuple[Optional[asyncio.Future], asyncio.Future]:
+    """Inscrit synchroniquement une demande et retourne (fin du prédécesseur,
+    fin de cette demande). Aucun await : l'ordre retenu est celui des appels,
+    même si l'accusé Discord d'une demande plus ancienne est plus lent."""
+    global _queue_tail
+    loop = asyncio.get_running_loop()
+    previous = _queue_tail
+    if previous is not None and (previous.done() or previous.get_loop() is not loop):
+        # Fin déjà acquittée, ou future d'une autre boucle (tests) : rien à
+        # attendre. Le verrou commun reste le garde-fou d'exécution.
+        previous = None
+    completion = loop.create_future()
+    _queue_tail = completion
+    return previous, completion
+
+
+def _release_ticket(previous, completion) -> None:
+    """Libère une place sans jamais dépasser un prédécesseur encore actif.
+
+    Un ticket abandonné (accusé refusé, annulation avant son tour) ne doit pas
+    achever sa sortie avant la fin de son prédécesseur : sinon la demande
+    suivante pourrait démarrer avant celle qui était déjà admise."""
+    if completion.done():
+        return
+    if previous is None or previous.done():
+        completion.set_result(None)
+        return
+    previous.add_done_callback(
+        lambda _future: completion.done() or completion.set_result(None))
+
+
+async def _wait_turn(previous) -> None:
+    """Attend la fin du prédécesseur sans pouvoir l'annuler (shield)."""
+    if previous is not None:
+        await asyncio.shield(previous)
+
+
+def _queue_busy(previous) -> bool:
+    """True si la demande devra attendre (verrou tenu ou prédécesseur actif)."""
+    return run_lock.locked() or (previous is not None and not previous.done())
+
 
 # --- Helpers -----------------------------------------------------------------
 
@@ -213,7 +261,13 @@ _TERM_GRACE = 5.0
 
 async def _kill_tree(proc, communication):
     """Arrête le groupe de `proc`, y compris ses descendants encore actifs
-    après la sortie du parent (lancé avec start_new_session=True)."""
+    après la sortie du parent (lancé avec start_new_session=True).
+
+    Cette coroutine reste dans la tâche propriétaire : aucun nettoyage détaché
+    ne peut être annulé avant son premier pas. Les annulations sont propagées
+    seulement après KILL et récolte, même pendant l'arrêt global de la boucle.
+    """
+    cancelled = False
     pgid = proc.pid  # start_new_session=True : PGID stable même si le parent sort
     try:
         os.killpg(pgid, signal.SIGTERM)
@@ -225,13 +279,31 @@ async def _kill_tree(proc, communication):
         await asyncio.wait_for(asyncio.shield(communication), timeout=_TERM_GRACE)
     except asyncio.TimeoutError:
         pass
-    # Toujours sonder le groupe : la sortie du parent ne prouve pas qu'un
-    # descendant s'est arrêté (il peut même avoir fermé stdout).
-    try:
-        os.killpg(pgid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
-        pass
-    return await communication
+    except asyncio.CancelledError:
+        cancelled = True
+    finally:
+        # La sortie du parent ne prouve pas qu'un descendant s'est arrêté.
+        # KILL doit aussi être envoyé si la grâce est interrompue.
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    while True:
+        if communication.cancelled():
+            # asyncio.run annule aussi les lecteurs de communicate au shutdown.
+            # Après KILL, reprendre le drainage pour fermer les pipes et récolter
+            # le processus. Les octets déjà lus sont perdus : l'annulation sera
+            # propagée, jamais convertie en sortie partielle prétendument complète.
+            cancelled = True
+            communication = asyncio.create_task(proc.communicate())
+        try:
+            result = await asyncio.shield(communication)
+            break
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
 
 
 async def run_pzm(args: list[str]) -> tuple[int, str]:
@@ -239,7 +311,9 @@ async def run_pzm(args: list[str]) -> tuple[int, str]:
 
     La commande tourne dans sa propre session (groupe) : sur timeout ou
     annulation, SIGTERM puis SIGKILL sont envoyés au GROUPE entier pour ne
-    laisser aucun descendant."""
+    laisser aucun descendant. Le nettoyage est attendu jusqu'à son terme avant
+    de propager une annulation, afin de ne pas libérer le verrou partagé alors
+    que le processus précédent tourne encore."""
     proc = await asyncio.create_subprocess_exec(
         PZM, *args,
         stdin=asyncio.subprocess.DEVNULL,
@@ -273,22 +347,32 @@ async def execute(interaction: discord.Interaction, args: list[str]):
         log.info("REFUSÉ user=%s channel=%s cmd=%r (%s)",
                  interaction.user, interaction.channel_id, args, err)
         return
-    await interaction.response.defer()  # « réfléchit… » : tient pendant l'attente en file
+    # Réserver la place AVANT le premier await réseau : le defer (accusé) peut
+    # être plus lent que celui d'une demande arrivée après nous.
+    previous, ticket = _admit()
     label = pzm_label(args)
-    if run_lock.locked():
-        log.info("QUEUE user=%s cmd=%r (une commande est déjà en cours)",
-                 interaction.user, args)
-    log.info("EXEC user=%s channel=%s cmd=%r", interaction.user, interaction.channel_id, args)
-    async with run_lock:  # lock FIFO : attend son tour au lieu de refuser
-        code, output = await run_pzm(args)
-    log.info("DONE cmd=%r exit=%s", args, code)
-
-    header = _result_header(label, code)
     try:
-        await deliver(interaction.followup.send, header, output)
-    except discord.HTTPException:
-        # Token d'interaction expiré (commande > 15 min) -> repli sur le salon
-        await deliver(interaction.channel.send, header, output)
+        await interaction.response.defer()  # « réfléchit… » : tient pendant l'attente en file
+        if _queue_busy(previous):
+            log.info("QUEUE user=%s cmd=%r (une commande est déjà en cours)",
+                     interaction.user, args)
+        log.info("EXEC user=%s channel=%s cmd=%r", interaction.user, interaction.channel_id, args)
+        await _wait_turn(previous)
+        async with run_lock:  # lock FIFO : attend son tour au lieu de refuser
+            code, output = await run_pzm(args)
+        # La place est rendue avant l'envoi du résultat : le suivant peut
+        # exécuter pendant que Discord affiche cette réponse.
+        _release_ticket(previous, ticket)
+        log.info("DONE cmd=%r exit=%s", args, code)
+
+        header = _result_header(label, code)
+        try:
+            await deliver(interaction.followup.send, header, output)
+        except discord.HTTPException:
+            # Token d'interaction expiré (commande > 15 min) -> repli sur le salon
+            await deliver(interaction.channel.send, header, output)
+    finally:
+        _release_ticket(previous, ticket)
 
 
 # --- Batch : plusieurs commandes collées dans le salon -----------------------
@@ -364,23 +448,34 @@ async def reject_batch(message: discord.Message, bad: list[tuple[int, str]]):
 
 
 async def _dispatch_pasted(message: discord.Message, label: str, work):
-    """Scaffold commun aux messages collés : supprime la source, affiche un statut
-    (file d'attente FIFO puis « en cours »), sérialise `work(channel, author)` sur
-    run_lock, puis poste le `(header, output)` qu'il renvoie — hors du verrou, pour
-    ne pas bloquer la commande suivante pendant l'envoi Discord. Retire le statut
-    à la fin, quoi qu'il arrive."""
+    """Scaffold commun aux messages collés : réserve l'ordre d'arrivée, affiche
+    un statut (file d'attente FIFO puis « en cours »), sérialise `work(channel,
+    author)` sur run_lock, puis poste le `(header, output)` qu'il renvoie — hors
+    du verrou, pour ne pas bloquer la commande suivante pendant l'envoi Discord.
+    La source n'est supprimée qu'une fois le résultat disponible ; un accusé
+    refusé la conserve et n'exécute rien. Retire le statut à la fin, quoi qu'il
+    arrive."""
     channel = message.channel
     author = message.author
-    note = await _delete_source(message)
-
-    # Si un pzm tourne déjà, on met en file d'attente (lock FIFO) au lieu de refuser :
-    # le statut l'indique puis bascule sur « en cours… » quand c'est son tour.
-    running = _bounded_content(f"▶️ {label} en cours… (demandé par {author.mention}){note}")
-    queued = run_lock.locked()
-    status = await channel.send(
-        _bounded_content(f"⏳ {label} en file d'attente… (demandé par {author.mention}){note}")
-        if queued else running)
+    previous, ticket = _admit()
+    status = None
     try:
+        # Si un pzm tourne déjà ou qu'une demande antérieure attend, on met en
+        # file d'attente au lieu de refuser : le statut l'indique puis bascule
+        # sur « en cours… » quand c'est son tour.
+        queued = _queue_busy(previous)
+        running = _bounded_content(f"▶️ {label} en cours… (demandé par {author.mention})")
+        try:
+            status = await channel.send(
+                _bounded_content(f"⏳ {label} en file d'attente… (demandé par {author.mention})")
+                if queued else running)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            # Accusé impossible : aucune admission effective, aucune exécution ;
+            # la source reste intacte et la place est rendue sans bloquer la suite.
+            log.warning("Accusé refusé user=%s channel=%s cmd=%r (%s) — source conservée",
+                        author, channel.id, label, exc)
+            return
+        await _wait_turn(previous)
         async with run_lock:
             if queued:
                 try:
@@ -388,12 +483,20 @@ async def _dispatch_pasted(message: discord.Message, label: str, work):
                 except discord.HTTPException:
                     pass
             header, output = await work(channel, author)
+            # Résultat disponible : supprimer seulement maintenant la source,
+            # pour qu'un refus d'accusé ou une annulation avant démarrage ne la
+            # perde pas. La note de permission reste visible dans le résultat.
+            note = await _delete_source(message)
+            header += note
+        _release_ticket(previous, ticket)
         await deliver(channel.send, header, output)
     finally:
-        try:
-            await status.delete()
-        except discord.HTTPException:
-            pass
+        _release_ticket(previous, ticket)
+        if status is not None:
+            try:
+                await status.delete()
+            except discord.HTTPException:
+                pass
 
 
 async def run_single(message: discord.Message, argv: list[str]):
@@ -683,9 +786,19 @@ async def pzm_help(interaction: discord.Interaction):
     if err:
         await interaction.response.send_message(err, ephemeral=True)
         return
-    await interaction.response.defer(ephemeral=True)
-    _, output = await run_pzm(["help"])
-    await deliver(functools.partial(interaction.followup.send, ephemeral=True), "📖 `pzm help`", output)
+    # Même file que execute/run_single/run_batch : l'aide ne double pas une
+    # commande déjà admise, même si son accusé est plus rapide.
+    previous, ticket = _admit()
+    try:
+        await interaction.response.defer(ephemeral=True)
+        await _wait_turn(previous)
+        async with run_lock:
+            _, output = await run_pzm(["help"])
+        _release_ticket(previous, ticket)
+        await deliver(functools.partial(interaction.followup.send, ephemeral=True),
+                      "📖 `pzm help`", output)
+    finally:
+        _release_ticket(previous, ticket)
 
 
 tree.add_command(pzm_group)
