@@ -1,0 +1,206 @@
+name: Nettoyage des branches de PR fusionnees
+
+'on':
+  schedule:
+    - cron: '31 6 * * *'
+      timezone: Europe/Paris
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Verifier les candidates sans supprimer de branche"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: prune-merged-pr-branches
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    name: Supprimer uniquement les branches de PR fusionnees verifiees
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+    steps:
+      - name: Checkout du depot (pour suppression Git atomique)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4, SHA epingle
+        with:
+          persist-credentials: true
+          fetch-depth: 1
+      - name: Controler les PR et supprimer sous lease Git
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import html
+          import json
+          import os
+          import subprocess
+          import sys
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from collections import defaultdict
+
+          repository = os.environ["REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          dry_run = os.environ.get("DRY_RUN", "false").lower() == "true"
+          root = f"https://api.github.com/repos/{repository}"
+          headers = {"Accept": "application/vnd.github+json",
+                     "Authorization": f"Bearer {token}",
+                     "User-Agent": "safe-pr-branch-pruner"}
+          rows = []
+          failed = False
+
+          def api(url, allow_missing=False):
+              request = urllib.request.Request(url, headers=headers)
+              try:
+                  with urllib.request.urlopen(request, timeout=25) as response:
+                      return json.load(response)
+              except urllib.error.HTTPError as exc:
+                  if allow_missing and exc.code == 404:
+                      return None
+                  raise
+
+          def pages(url, limit=50):
+              all_items = []
+              for number in range(1, limit + 1):
+                  joiner = "&" if "?" in url else "?"
+                  chunk = api(f"{url}{joiner}per_page=100&page={number}")
+                  if not isinstance(chunk, list):
+                      raise RuntimeError("Reponse GitHub inattendue : pagination")
+                  all_items.extend(chunk)
+                  if len(chunk) < 100:
+                      return all_items
+              raise RuntimeError("Historique trop long : aucune suppression autorisee")
+
+          def record(branch, action, detail):
+              print(f"{action}: {branch} -- {detail}")
+              rows.append((branch, action, detail))
+
+          def open_pr_elsewhere(branch):
+              # Cherche aussi les PR ouvertes dont la cible est un autre depot.
+              # La recherche est volontairement conservative : un homonyme bloque.
+              query = urllib.parse.urlencode({"q": f'is:pr is:open head:"{branch}"',
+                                               "per_page": "1"})
+              found = api(f"https://api.github.com/search/issues?{query}")
+              if found.get("incomplete_results"):
+                  return True
+              return found.get("total_count", 0) != 0
+
+          meta = api(root)
+          if meta.get("archived"):
+              print("Depot archive : lecture seule, aucune suppression")
+              sys.exit(0)
+          default = meta["default_branch"]
+          repo_id = meta["id"]
+          branches = pages(f"{root}/branches")
+          prs = pages(f"{root}/pulls?state=all")
+          by_head = defaultdict(list)
+          used_as_base = set()
+          for pr in prs:
+              base = (pr.get("base") or {}).get("ref")
+              if pr.get("state") == "open" and base:
+                  used_as_base.add(base)
+              head = pr.get("head") or {}
+              if (head.get("repo") or {}).get("id") == repo_id and head.get("ref"):
+                  by_head[head["ref"]].append(pr)
+
+          candidates = []
+          for branch in branches:
+              name = branch["name"]
+              sha = (branch.get("commit") or {}).get("sha")
+              related = by_head.get(name, [])
+              if name == default or branch.get("protected") or not sha:
+                  continue
+              if name in used_as_base:
+                  record(name, "CONSERVER", "branche cible d'une PR ouverte")
+                  continue
+              if any(pr.get("state") == "open" for pr in related):
+                  record(name, "CONSERVER", "PR ouverte sur cette branche")
+                  continue
+              # Une PR fermee sans fusion rend la situation ambigue : avis humain.
+              if any(not pr.get("merged_at") for pr in related):
+                  record(name, "AVIS", "PR fermee sans fusion, pas de suppression automatique")
+                  continue
+              # Uniquement une PR vraiment fusionnee vers la branche par defaut
+              # dont le commit de tete correspond encore a la branche actuelle.
+              merged = [pr for pr in related
+                        if pr.get("merged_at") and pr.get("state") == "closed"
+                        and (pr.get("base") or {}).get("ref") == default
+                        and (pr.get("head") or {}).get("sha") == sha]
+              if not merged:
+                  if related:
+                      record(name, "AVIS", "ancienne PR mais fusion ou tete non concordante")
+                  continue
+              candidates.append((name, sha, merged[-1]["number"]))
+
+          # Toutes les recherches globales doivent reussir AVANT toute suppression.
+          safe = []
+          for name, sha, pr_number in candidates:
+              if open_pr_elsewhere(name):
+                  record(name, "CONSERVER", "PR ouverte detectee dans une recherche globale")
+              else:
+                  safe.append((name, sha, pr_number))
+
+          for name, sha, number in safe:
+              escaped = urllib.parse.quote(name, safe="")
+              pr = api(f"{root}/pulls/{number}")
+              head = pr.get("head") or {}
+              if (pr.get("state") != "closed" or not pr.get("merged_at")
+                      or head.get("sha") != sha or head.get("ref") != name
+                      or (head.get("repo") or {}).get("id") != repo_id
+                      or (pr.get("base") or {}).get("ref") != default):
+                  record(name, "CONSERVER", "la PR a change depuis l'inventaire")
+                  continue
+              current_meta = api(root)
+              current = api(f"{root}/branches/{escaped}", allow_missing=True)
+              if (current_meta.get("archived") or current_meta.get("default_branch") != default
+                      or not current or current.get("protected")
+                      or (current.get("commit") or {}).get("sha") != sha):
+                  record(name, "CONSERVER", "branche, protection ou depot modifies")
+                  continue
+              # Recontrole immediat : une PR peut etre ouverte pendant l'audit.
+              live_open = pages(f"{root}/pulls?state=open")
+              if any((pr.get("base") or {}).get("ref") == name or
+                     ((pr.get("head") or {}).get("ref") == name and
+                      (((pr.get("head") or {}).get("repo") or {}).get("id") == repo_id))
+                     for pr in live_open) or open_pr_elsewhere(name):
+                  record(name, "CONSERVER", "nouvelle PR ouverte avant suppression")
+                  continue
+              if dry_run:
+                  record(name, "SIMULATION", f"PR #{number} fusionnee, aucune suppression")
+                  continue
+              ref = f"refs/heads/{name}"
+              # Suppression CAS : le serveur refuse si un push concurrent change la tete.
+              result = subprocess.run(
+                  ["git", "push", "--porcelain", f"--force-with-lease={ref}:{sha}",
+                   "origin", f":{ref}"], text=True, capture_output=True, check=False)
+              remaining = api(f"{root}/branches/{escaped}", allow_missing=True)
+              if result.returncode == 0 and remaining is None:
+                  record(name, "SUPPRIMEE", f"PR #{number}, suppression verifiee")
+              else:
+                  failed = True
+                  reason = (result.stderr or result.stdout).strip()[-500:]
+                  record(name, "ECHEC", f"suppression refusee ou non confirmee : {reason}")
+
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a", encoding="utf-8") as output:
+                  output.write("## Nettoyage des branches de PR fusionnees\n\n")
+                  output.write(f"Mode : {'simulation' if dry_run else 'automatique'}\n\n")
+                  if not rows:
+                      output.write("Aucune branche a supprimer ou a signaler.\n")
+                  for name, status, detail in rows:
+                      label = html.escape(name).replace("|", "&#124;")
+                      output.write(f"- **{status}** `{label}` : {html.escape(detail)}\n")
+          if failed:
+              sys.exit(1)
+          PY
