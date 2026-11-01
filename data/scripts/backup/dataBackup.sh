@@ -355,10 +355,19 @@ consistency="$(python3 "${SCRIPT_DIR}/../lib/snapshot_consistency.py" write --un
 echo "BACKUP_CONSISTENCY $consistency"
 [[ "$consistency" == stopped ]] || echo "Sauvegarde à chaud : cohérence applicative non garantie."
 
-# Un snapshot complet n'est pas encore durable : forcer les contenus et les
-# répertoires avant de l'annoncer aux opérations destructrices.
-python3 "${SCRIPT_DIR}/../lib/world_transaction.py" sync --world "$STAGING_PATH" \
+# Sous Linux, sync -f attend l'écriture des données et métadonnées du système
+# de fichiers contenant ce staging créé par rsync. Une seule barrière évite
+# plus d'un million de fsync séquentiels, même pour les hardlinks inchangés.
+# Toute erreur interdit la publication ; les renommages restent fsyncés après.
+echo "BACKUP_SYNC_STARTED ${STAGING_PATH}"
+sync_started=$SECONDS
+# Conserver la validation des propriétaires et ancêtres avant publication,
+# sans reparcourir le contenu du staging.
+python3 "${SCRIPT_DIR}/../lib/world_transaction.py" sync --directory-only --world "$STAGING_PATH" \
+    || die "Répertoire de staging non vérifié : rien n'est publié."
+sync -f -- "$STAGING_PATH" \
     || die "Synchronisation durable du staging impossible : rien n'est publié."
+echo "BACKUP_SYNC_COMPLETED $(( SECONDS - sync_started ))s"
 
 # Publication atomique : le final n'apparaît que complet. Si la destination
 # existe déjà (collision de timestamp), mv échoue et on refuse (fail-closed).

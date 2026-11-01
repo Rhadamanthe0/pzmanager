@@ -49,3 +49,5 @@ data/whitelistLedger.csv
 
 # Private durable maintenance journal beside the default world root
 /.Zomboid.pzm-transactions/
+# Local transaction-ledger locks and state; never publish live runtime files.
+/data/pzmanager/

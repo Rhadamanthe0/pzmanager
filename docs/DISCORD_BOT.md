@@ -120,6 +120,23 @@ Guild-scoped, so they appear almost instantly:
 - Flags (`ban`, `delete`, `dry_run`, `appliquer`, `keep_config`, `keep_whitelist`) are `True`/`False`
   options.
 
+`server start`, `stop`, and `restart` acknowledge the request immediately, then
+show whether it is waiting or being carried out. A restart requested during a
+backup waits until that operation releases the world. Consecutive restart
+requests share one restart and its result; the first request's delay and reason
+apply. Any intervening command or batch starts a separate group. Commands and
+batches keep their execution order.
+
+Individual server actions can wait up to 30 minutes by default
+(`PZ_SERVER_QUEUE_TIMEOUT`), including time behind other bot commands. Execution
+remains subject to the command timeout (40 minutes by default, including any
+remaining wait). A batch has a separate bot wait limit of 40 minutes; each item
+then has its own wait and execution limits.
+They are not resumed automatically after the bot stops or restarts. If one
+request is interrupted, a shared restart continues for the other requests; if
+no request remains, the command is interrupted. A final result is still delivered
+to the channel when the slash interaction has expired.
+
 The slash commands expose only the options listed above. For other CLI options
 (such as `backup restore-character --dry-run`, `map wipe --save`,
 `mods check`, or `admin maintenance --no-reboot`), paste a `pzm …` line.
@@ -151,7 +168,7 @@ including rollback and compatibility checks.
 
 ## Batch: run several commands at once
 
-Slash commands are one-at-a-time. To run **many** commands, just **paste a plain
+Commands run one at a time. To run **many** commands, just **paste a plain
 message** (no slash) in the allowed channel, one `pzm …` per line:
 
 ```

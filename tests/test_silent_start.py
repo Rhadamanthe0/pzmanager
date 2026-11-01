@@ -37,6 +37,18 @@ class SilentStart(unittest.TestCase):
 import json,os,subprocess,sys,signal
 from pathlib import Path
 path=Path(os.environ['SILENT_TEST_STATE']);state=json.loads(path.read_text());args=sys.argv[1:]
+def kill_caller():
+ # Le CLI peut être la file Python, avec un shell worker entre lui et nous.
+ # Tuer le véritable appelant conserve la couverture SIGKILL de subprocess,
+ # sans la remplacer par un simple code 137 renvoyé par le worker.
+ caller=os.getppid()
+ status=dict(line.split(':',1) for line in Path(f'/proc/{caller}/status').read_text().splitlines() if ':' in line)
+ parent=int(status['PPid'])
+ queue=Path(os.environ['SILENT_TEST_REPO'])/'data/scripts/lib/server_action_queue.py'
+ arguments=Path(f'/proc/{parent}/cmdline').read_bytes().split(bytes([0]))
+ if any(Path(os.fsdecode(arg)).resolve()==queue for arg in arguments if arg.endswith(b'/server_action_queue.py')):
+  caller=parent
+ os.kill(caller,signal.SIGKILL)
 if 'is-active' in args:sys.exit(0 if state['ActiveState']=='active' else 3)
 if 'stop' in args:
  state.update(ActiveState='inactive',MainPID='0',ControlPID='0',SubState='dead');path.write_text(json.dumps(state));sys.exit(0)
@@ -44,7 +56,7 @@ if 'start' in args:
  if state['ActiveState']=='active':sys.exit(0)
  mode=os.environ.get('SILENT_TEST_MODE','normal')
  if mode=='fail-before':sys.exit(7)
- if mode=='kill-before':os.kill(os.getppid(),signal.SIGKILL);sys.exit(7)
+ if mode=='kill-before':kill_caller();sys.exit(7)
  iid=os.environ.get('SILENT_TEST_NEXT','b'*32)
  state.update(ActiveState='activating',MainPID='0',ControlPID=str(os.getpid()),SubState='start-pre',InvocationID=iid);path.write_text(json.dumps(state))
  root=Path(os.environ['SILENT_TEST_REPO']);helper=root/'data/scripts/internal/writing_start_admission.py'
@@ -54,7 +66,7 @@ if 'start' in args:
  if result.returncode:sys.exit(result.returncode)
  if mode=='fail-after':
   state.update(ActiveState='failed',MainPID='0',ControlPID='0',SubState='failed');path.write_text(json.dumps(state));sys.exit(7)
- if mode=='kill-after':os.kill(os.getppid(),signal.SIGKILL)
+ if mode=='kill-after':kill_caller()
  state.update(ActiveState='active',MainPID='1234',ControlPID='0',SubState='running');path.write_text(json.dumps(state))
  if mode!='kill-after':subprocess.run(['bash',str(root/'data/scripts/internal/notifyServerReady.sh')],env=env)
  sys.exit(0)
