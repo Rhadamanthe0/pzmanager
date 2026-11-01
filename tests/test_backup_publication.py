@@ -100,6 +100,16 @@ if args and args[0].endswith('/world_transaction.py') and 'sync' in args:
  os.fsync=fsync;sys.argv=args;sys.path.insert(0,str(pathlib.Path(args[0]).parent));runpy.run_path(args[0],run_name='__main__')
 else:os.execv('/usr/bin/python3',['/usr/bin/python3',*args])
 ''')
+        self.command('sync', '''import json,os,pathlib,subprocess,sys
+args=sys.argv[1:]
+if len(args)!=3 or args[:2]!=['-f','--']:raise SystemExit('filesystem sync arguments required')
+events=pathlib.Path(os.environ['FIXTURE_EVENTS'])
+before=[json.loads(line) for line in events.read_text().splitlines()] if events.exists() else []
+number=1+sum(entry['action'].startswith('sync-') for entry in before)
+with events.open('a') as stream:stream.write(json.dumps({'action':'sync-filesystem','path':args[-1]})+'\\n')
+if os.environ.get('FIXTURE_SYNC_FAIL')==str(number):raise SystemExit('injected filesystem sync storage error')
+subprocess.run(['/usr/bin/sync',*args],check=True)
+''')
         self.command('mv', '''import json,os,pathlib,sys
 args=sys.argv[1:]
 with pathlib.Path(os.environ['FIXTURE_EVENTS']).open('a') as stream:stream.write(json.dumps({'action':'rename','source':args[-2],'destination':args[-1]})+'\\n')
@@ -147,14 +157,29 @@ while not (root/'release').exists():time.sleep(.02)
             if proc.poll() is None:os.killpg(proc.pid,signal.SIGKILL);proc.communicate()
 
     def test_staging_sync_failure_prevents_publication(self):
-        result=self.run_data('1')
+        for failure in ('1','2'):
+            with self.subTest(failure=failure):
+                self.events.unlink(missing_ok=True)
+                result=self.run_data(failure)
+                self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                self.assertEqual(self.latest.resolve(),self.backups/'previous')
+                self.assertEqual(list(self.backups.glob('backup_*')),[])
+                self.assertEqual((self.backups/'previous/Saves/world').read_text(),'previous')
+                if failure=='2':
+                    self.assertIn('injected filesystem sync storage error',result.stderr)
+                    self.assertNotIn('BACKUP_SYNC_COMPLETED',result.stdout)
+
+    def test_untrusted_staging_ancestor_is_refused_before_publication(self):
+        self.backups.chmod(0o777)
+        result=self.run_data()
         self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('Répertoire de staging non vérifié',result.stderr)
         self.assertEqual(self.latest.resolve(),self.backups/'previous')
-        self.assertEqual(list(self.backups.glob('backup_*')),[])
-        self.assertEqual((self.backups/'previous/Saves/world').read_text(),'previous')
+        self.assertFalse(any(entry['action']=='rename' for entry in
+                             map(json.loads,self.events.read_text().splitlines())))
 
     def test_parent_sync_failure_is_reported_before_success(self):
-        for failure in ('2','3'):
+        for failure in ('3','4'):
             with self.subTest(failure=failure):
                 # Separate timestamps and remove only this fixture's published final.
                 for path in self.backups.glob('backup_*'):shutil.rmtree(path)
@@ -164,18 +189,24 @@ while not (root/'release').exists():time.sleep(.02)
                 self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
                 self.assertNotIn('Snapshot ponctuel créé',result.stdout)
                 self.assertEqual((self.backups/'previous/Saves/world').read_text(),'previous')
-                if failure=='2':self.assertEqual(self.latest.resolve(),self.backups/'previous')
+                if failure=='3':self.assertEqual(self.latest.resolve(),self.backups/'previous')
 
-    def test_fsync_files_and_directories_precede_publish_and_latest_success(self):
+    def test_filesystem_sync_and_directory_fsync_precede_publication(self):
         result=self.run_data();self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('BACKUP_SYNC_STARTED',result.stdout)
+        self.assertIn('BACKUP_SYNC_COMPLETED',result.stdout)
         events=[json.loads(line) for line in self.events.read_text().splitlines()]
         actions=[entry['action'] for entry in events]
-        self.assertEqual([action for action in actions if action!='fsync'],['sync-tree','rename','sync-directory','rename','sync-directory'])
+        self.assertEqual([action for action in actions if action!='fsync'],['sync-directory','sync-filesystem','rename','sync-directory','rename','sync-directory'])
         first_rename=actions.index('rename')
-        synced={entry['path'] for entry in events[:first_rename] if entry['action']=='fsync'}
         staging=Path(events[0]['path'])
-        for suffix in ('Saves/world','Saves','.pzm-snapshot.json',''):
-            self.assertIn(str(staging/suffix),synced)
+        self.assertTrue(str(staging).endswith('.tmp'))
+        synced={entry['path'] for entry in events[:first_rename] if entry['action']=='fsync'}
+        self.assertEqual(synced,{str(staging),str(self.backups)},'no per-file fsync before the filesystem barrier')
+        for index,action in enumerate(actions):
+            if action!='sync-directory':continue
+            self.assertEqual(events[index+1]['action'],'fsync')
+            self.assertEqual(events[index+1]['path'],events[index]['path'])
         self.assertEqual((self.latest/'Saves/world').read_text(),'new-world')
 
     def observe_full(self,stage,terminate=False,fail=False):

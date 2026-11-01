@@ -38,11 +38,25 @@ pzm server stop now --reason "Emergency" --silent   # --silent = no Discord post
 pzm rcon servermsg "Message to players"
 ```
 
-### Never double-issue a stop or restart
+### Waiting for a server action
 
-A second `stop`/`restart` launched while one is already running is **refused** —
-an `flock` (`acquire_serverctl_lock_or_die` in `pz.sh`) holds for the whole
-operation, warnings included. Two reasons this matters:
+`start`, `stop` and `restart` requests wait their turn when a backup or another
+world operation is running. The command reports that it is waiting, then starts
+automatically when the current operation finishes. The existing safety checks
+still run before any action.
+
+Overlapping restart requests share one restart and its result. The first
+request's delay and reason apply. An intervening `stop` or `start`, or a different
+server configuration, keeps the requests separate. Pending server requests run
+in arrival order; automatic maintenance remains coordinated by the world lock.
+
+Waiting before execution is limited to 30 minutes (`PZ_SERVER_QUEUE_TIMEOUT`, in
+seconds). Keep the command open: cancelling it or restarting the bot cancels its
+pending request; it will not be replayed later. Cancelling only a follower leaves
+the shared restart requested by the others. Once an action has started,
+interruption can leave partial effects; inspect its result before retrying.
+
+Serial execution matters for two reasons:
 
 - A `quit` sent while B42 is still **loading the map** crashes the boot
   (`NullPointerException zombie.iso.IsoMetaGrid.save`, grid = null) and leaves the

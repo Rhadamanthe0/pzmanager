@@ -269,7 +269,8 @@ class C10BotTests(unittest.TestCase):
         bot._dispatch_pasted, real = fake_dispatch, bot._dispatch_pasted
         self.addCleanup(setattr, bot, "_dispatch_pasted", real)
         asyncio.run(bot.run_batch(
-            object(), [["ok1"], ["fail"], ["witness", str(witness)]]))
+            SimpleNamespace(channel=SimpleNamespace(id=1), author=SimpleNamespace(mention='@test')),
+            [["ok1"], ["fail"], ["witness", str(witness)]]))
 
         self.assertFalse(witness.exists(), "3e commande exécutée malgré l'échec")
         header, output = captured["header"], captured["output"]

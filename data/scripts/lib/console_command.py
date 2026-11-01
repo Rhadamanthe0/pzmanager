@@ -109,18 +109,31 @@ def execute(unit, pipe, command, write_timeout=10, output_timeout=8, no_output=F
     received = False
     while time.monotonic() < deadline:
         left = deadline - time.monotonic()
-        result = subprocess.run(["journalctl", "--user", "--since", f"@{stamp:.6f}",
-                                 "--no-pager", "-o", "cat",
-                                 f"_SYSTEMD_INVOCATION_ID={before[0]}", "+",
-                                 f"INVOCATION_ID={before[0]}"], capture_output=True,
-                                text=True, check=True, timeout=min(2, left))
+        if left <= 0:
+            break
+        try:
+            result = subprocess.run(["journalctl", "--user", "--since", f"@{stamp:.6f}",
+                                     "--no-pager", "-o", "cat",
+                                     f"_SYSTEMD_INVOCATION_ID={before[0]}", "+",
+                                     f"INVOCATION_ID={before[0]}"], capture_output=True,
+                                    text=True, check=True, timeout=min(2, left))
+        except subprocess.TimeoutExpired:
+            # L'expiration du budget de collecte est un résultat indéterminé,
+            # pas une panne du transport. Ne jamais exploiter la sortie partielle.
+            if time.monotonic() < deadline:
+                raise
+            break
         output = response(result.stdout, command)
         received = received or command_received(result.stdout, command)
-        if before != identity(unit, timeout=min(2, max(0.001, deadline - time.monotonic()))):
+        # La preuve d'identité garde son propre délai borné, même lorsque la
+        # collecte a consommé ses dernières millisecondes.
+        if before != identity(unit):
             raise ValueError("Invocation PZ changée pendant la commande")
         if output:
             return output
         time.sleep(min(0.2, max(0, deadline - time.monotonic())))
+    if before != identity(unit):
+        raise ValueError("Invocation PZ changée pendant la commande")
     if command == "checkModsNeedUpdate" and received:
         return f"Commande reçue: {command} (aucun statut final capturé dans le délai borné)"
     return f"Commande envoyée: {command} (aucune sortie capturée dans le délai borné)"

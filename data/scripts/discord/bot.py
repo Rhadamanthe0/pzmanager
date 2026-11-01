@@ -28,6 +28,7 @@ seul `pzm` peut être invoqué.
 
 import asyncio
 import csv
+import contextlib
 import functools
 import glob
 import io
@@ -130,8 +131,10 @@ tree = app_commands.CommandTree(bot)
 KNOWN_CMDS = {"server", "backup", "whitelist", "admin", "install", "map", "mods",
               "rcon", "discord", "help", "--help", "-h"}
 
-# Un seul pzm à la fois (un `server stop 2m` tient le process plusieurs minutes).
+# Les lots et commandes gardent leur ordre ; les redémarrages consécutifs
+# partagent leur travail dès la soumission, avant d'attendre ce verrou.
 run_lock = asyncio.Lock()
+_restart_group = None
 
 # File d'attente FIFO en mémoire. Chaque demande réserve sa place en inscrivant
 # sa future de fin AVANT le premier await réseau (accusé Discord, defer) : le
@@ -306,14 +309,53 @@ async def _kill_tree(proc, communication):
     return result
 
 
-async def run_pzm(args: list[str]) -> tuple[int, str]:
+async def _collect_output(proc, updates):
+    """Un lecteur unique ; les envois Discord ne bloquent jamais le pipe."""
+    output = bytearray()
+    line = bytearray()
+    oversized = False
+    while chunk := await proc.stdout.read(65536):
+        output.extend(chunk)
+        for part in chunk.splitlines(keepends=True):
+            if not oversized:
+                line.extend(part)
+                oversized = len(line) > 4096
+            if part.endswith((b'\n', b'\r')):
+                if not oversized:
+                    text = line.decode('utf-8', errors='replace').strip()
+                    if text.startswith(('⏳ ', '▶️ ', 'ℹ️ ')):
+                        if updates.full():
+                            updates.get_nowait()
+                        updates.put_nowait(text)
+                line.clear()
+                oversized = False
+    await proc.wait()
+    return bytes(output), None
+
+
+async def _progress_updates(updates, progress):
+    while True:
+        text = await updates.get()
+        await _safe_progress(progress, text)
+
+
+async def _safe_progress(progress, text):
+    try:
+        await asyncio.wait_for(progress(text), timeout=5)
+    except Exception:
+        log.warning('Statut intermédiaire indisponible', exc_info=True)
+
+
+async def run_pzm(args: list[str], progress=None, *, queue_timeout=None) -> tuple[int, str]:
     """Exécute `pzm <args>` sans shell. Retourne (code_retour, sortie_combinée).
 
     La commande tourne dans sa propre session (groupe) : sur timeout ou
     annulation, SIGTERM puis SIGKILL sont envoyés au GROUPE entier pour ne
-    laisser aucun descendant. Le nettoyage est attendu jusqu'à son terme avant
-    de propager une annulation, afin de ne pas libérer le verrou partagé alors
-    que le processus précédent tourne encore."""
+    laisser aucun descendant. Le nettoyage se termine avant de rendre la place
+    à la commande suivante, même en cas d’annulations répétées."""
+    environment = None
+    if queue_timeout is not None:
+        environment = dict(os.environ, PZ_SERVER_QUEUE_REMAINING=str(queue_timeout))
     proc = await asyncio.create_subprocess_exec(
         PZM, *args,
         stdin=asyncio.subprocess.DEVNULL,
@@ -321,10 +363,14 @@ async def run_pzm(args: list[str]) -> tuple[int, str]:
         stderr=asyncio.subprocess.STDOUT,
         cwd=PZ_MANAGER_DIR or None,
         start_new_session=True,
+        env=environment,
     )
     # Une seule lecture du pipe, protégée de l'annulation de wait_for : une
     # seconde communicate() perdrait les octets déjà consommés avant le délai.
-    communication = asyncio.create_task(proc.communicate())
+    updates = asyncio.Queue(maxsize=1)
+    communication = asyncio.create_task(
+        proc.communicate() if progress is None else _collect_output(proc, updates))
+    reporter = asyncio.create_task(_progress_updates(updates, progress)) if progress else None
     try:
         stdout, _ = await asyncio.wait_for(asyncio.shield(communication), timeout=CMD_TIMEOUT)
     except asyncio.TimeoutError:
@@ -335,44 +381,167 @@ async def run_pzm(args: list[str]) -> tuple[int, str]:
     except asyncio.CancelledError:
         await _kill_tree(proc, communication)
         raise
+    finally:
+        if reporter:
+            reporter.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await reporter
     return proc.returncode, stdout.decode("utf-8", errors="replace")
 
 
+def _lifecycle(args):
+    return len(args) > 1 and args[0] == 'server' and args[1] in {'start', 'stop', 'restart'}
+
+
+def _admit_command(args, operation=None):
+    """Une autre commande coupe le regroupement, même si elle attend son tour."""
+    global _restart_group
+    lifecycle = _lifecycle(args)
+    # Une demande invalide doit atteindre sa validation CLI, jamais obtenir
+    # le succès d'une autre demande dont elle aurait partagé le redémarrage.
+    restarting = lifecycle and args[1] == 'restart' and args[-1] != '--reason'
+    shared = restarting and _restart_group is not None and not _restart_group['task'].done()
+    if shared:
+        job = _restart_group
+    else:
+        _restart_group = None
+        budget = (os.environ.get('PZ_SERVER_QUEUE_TIMEOUT', '1800') if lifecycle
+                  else CMD_TIMEOUT if operation is not None else float('inf'))
+        try:
+            budget = int(budget) if lifecycle else float(budget)
+            if budget <= 0 or lifecycle and budget > 86400:
+                raise ValueError
+        except ValueError:
+            budget = 0
+        previous, ticket = _admit()
+        job = {'args': list(args), 'waiters': {}, 'latest': None,
+               'ready': asyncio.Event(), 'deadline': time.monotonic() + budget}
+
+        async def broadcast(text):
+            job['latest'] = text
+            callbacks = [callback for callback in job['waiters'].values() if callback]
+            if callbacks:
+                await asyncio.gather(*(callback(text) for callback in callbacks), return_exceptions=True)
+
+        async def acquire_turn():
+            await _wait_turn(previous)
+            await job['ready'].wait()
+            await run_lock.acquire()
+
+        async def work():
+            remaining = job['deadline'] - time.monotonic()
+            if remaining <= 0:
+                return 124, "Délai d'attente écoulé ou invalide : demande annulée avant exécution."
+            try:
+                await asyncio.wait_for(acquire_turn(), timeout=remaining)
+            except asyncio.TimeoutError:
+                return 124, "Délai d'attente écoulé : demande annulée avant exécution."
+            try:
+                await _safe_progress(broadcast, '▶️ Demande transmise au gestionnaire du serveur.')
+                if operation is not None:
+                    return await operation(broadcast)
+                if _lifecycle(job['args']):
+                    remaining = job['deadline'] - time.monotonic()
+                    if remaining <= 0:
+                        return 124, "Délai d'attente écoulé : demande annulée avant exécution."
+                    return await run_pzm(job['args'], progress=broadcast,
+                                         queue_timeout=max(1, int(remaining)))
+                return await run_pzm(job['args'])
+            finally:
+                run_lock.release()
+
+        job['task'] = asyncio.create_task(work())
+        # Même une tâche annulée avant son premier pas libère sa place, sans
+        # permettre aux suivantes de dépasser son prédécesseur.
+        job['task'].add_done_callback(lambda _: _release_ticket(previous, ticket))
+        if restarting:
+            _restart_group = job
+    waiter = object()
+    job['waiters'][waiter] = None
+    return job, waiter, shared
+
+
+async def _release_request(job, waiter):
+    global _restart_group
+    job['waiters'].pop(waiter, None)
+    if not job['waiters'] and not job['task'].done():
+        job['task'].cancel()
+        # Les annulations du handler ne doivent pas annuler le nettoyage du
+        # groupe une seconde fois ni rendre la place avant sa récolte.
+        while not job['task'].done():
+            try:
+                await asyncio.shield(job['task'])
+            except asyncio.CancelledError:
+                pass
+        with contextlib.suppress(asyncio.CancelledError):
+            job['task'].result()
+    if not job['waiters'] and _restart_group is job:
+        _restart_group = None
+
+
+async def _command_result(admission, progress=None):
+    job, waiter, shared = admission
+    job['waiters'][waiter] = progress
+    job['ready'].set()
+    if progress and shared:
+        await _safe_progress(progress, 'ℹ️ Demande regroupée avec le redémarrage déjà demandé ; '
+                             'le premier délai et le premier motif sont conservés.')
+    if progress and job['latest']:
+        await _safe_progress(progress, job['latest'])
+    code, output = await asyncio.shield(job['task'])
+    if shared:
+        output = ('ℹ️ Un seul redémarrage pour ces demandes. Délai et motif de la première demande :\n'
+                  + pzm_label(job['args']) + '\n' + output)
+    return code, output
+
+
 async def execute(interaction: discord.Interaction, args: list[str]):
-    """Contrôle salon+rôle, sérialise, exécute `pzm args` et renvoie le résultat
-    dans un unique message. Point de passage commun de toutes les sous-commandes."""
+    """Contrôle salon+rôle, admet la demande et livre sa progression et son résultat."""
     err = authz_error(interaction)
     if err:
         await interaction.response.send_message(err, ephemeral=True)
         log.info("REFUSÉ user=%s channel=%s cmd=%r (%s)",
                  interaction.user, interaction.channel_id, args, err)
         return
-    # Réserver la place AVANT le premier await réseau : le defer (accusé) peut
-    # être plus lent que celui d'une demande arrivée après nous.
-    previous, ticket = _admit()
+    admission = _admit_command(args)
     label = pzm_label(args)
-    try:
-        await interaction.response.defer()  # « réfléchit… » : tient pendant l'attente en file
-        if _queue_busy(previous):
-            log.info("QUEUE user=%s cmd=%r (une commande est déjà en cours)",
-                     interaction.user, args)
-        log.info("EXEC user=%s channel=%s cmd=%r", interaction.user, interaction.channel_id, args)
-        await _wait_turn(previous)
-        async with run_lock:  # lock FIFO : attend son tour au lieu de refuser
-            code, output = await run_pzm(args)
-        # La place est rendue avant l'envoi du résultat : le suivant peut
-        # exécuter pendant que Discord affiche cette réponse.
-        _release_ticket(previous, ticket)
-        log.info("DONE cmd=%r exit=%s", args, code)
+    status = None
 
+    async def progress(text):
+        nonlocal status
+        content = _bounded_content(f'`{label}`\n{text}')
+        try:
+            if status is None:
+                try:
+                    status = await interaction.followup.send(content, wait=True)
+                except discord.HTTPException:
+                    status = await interaction.channel.send(content)
+            else:
+                try:
+                    await status.edit(content=content)
+                except discord.HTTPException:
+                    status = await interaction.channel.send(content)
+        except discord.HTTPException:
+            log.warning('Statut Discord indisponible pour %s', label)
+
+    try:
+        await interaction.response.defer()
+        if _lifecycle(args):
+            await _safe_progress(progress, '⏳ Demande prise en compte ; attente de son tour si une opération est en cours.')
+        log.info("EXEC user=%s channel=%s cmd=%r", interaction.user, interaction.channel_id, args)
+        code, output = await _command_result(admission, progress if _lifecycle(args) else None)
+        log.info("DONE cmd=%r exit=%s", args, code)
         header = _result_header(label, code)
         try:
             await deliver(interaction.followup.send, header, output)
         except discord.HTTPException:
-            # Token d'interaction expiré (commande > 15 min) -> repli sur le salon
+            # Token expiré après quinze minutes : le résultat reste dans le salon.
             await deliver(interaction.channel.send, header, output)
     finally:
-        _release_ticket(previous, ticket)
+        await _release_request(*admission[:2])
+        if status is not None:
+            with contextlib.suppress(discord.HTTPException):
+                await status.delete()
 
 
 # --- Batch : plusieurs commandes collées dans le salon -----------------------
@@ -448,69 +617,48 @@ async def reject_batch(message: discord.Message, bad: list[tuple[int, str]]):
 
 
 async def _dispatch_pasted(message: discord.Message, label: str, work):
-    """Scaffold commun aux messages collés : réserve l'ordre d'arrivée, affiche
-    un statut (file d'attente FIFO puis « en cours »), sérialise `work(channel,
-    author)` sur run_lock, puis poste le `(header, output)` qu'il renvoie — hors
-    du verrou, pour ne pas bloquer la commande suivante pendant l'envoi Discord.
-    La source n'est supprimée qu'une fois le résultat disponible ; un accusé
-    refusé la conserve et n'exécute rien. Retire le statut à la fin, quoi qu'il
-    arrive."""
+    """Accuse avant exécution et conserve la source jusqu'au résultat."""
     channel = message.channel
     author = message.author
-    previous, ticket = _admit()
     status = None
+
+    async def progress(text):
+        content = _bounded_content(f'{label}\n{text}')
+        await status.edit(content=content)
+
     try:
-        # Si un pzm tourne déjà ou qu'une demande antérieure attend, on met en
-        # file d'attente au lieu de refuser : le statut l'indique puis bascule
-        # sur « en cours… » quand c'est son tour.
-        queued = _queue_busy(previous)
-        running = _bounded_content(f"▶️ {label} en cours… (demandé par {author.mention})")
         try:
-            status = await channel.send(
-                _bounded_content(f"⏳ {label} en file d'attente… (demandé par {author.mention})")
-                if queued else running)
+            status = await channel.send(_bounded_content(
+                f'⏳ Demande prise en compte ; attente de son tour si nécessaire (demandé par {author.mention})'))
         except (discord.Forbidden, discord.HTTPException) as exc:
-            # Accusé impossible : aucune admission effective, aucune exécution ;
-            # la source reste intacte et la place est rendue sans bloquer la suite.
-            log.warning("Accusé refusé user=%s channel=%s cmd=%r (%s) — source conservée",
+            log.warning('Accusé refusé user=%s channel=%s cmd=%r (%s) — source conservée',
                         author, channel.id, label, exc)
             return
-        await _wait_turn(previous)
-        async with run_lock:
-            if queued:
-                try:
-                    await status.edit(content=running)
-                except discord.HTTPException:
-                    pass
-            header, output = await work(channel, author)
-            # Résultat disponible : supprimer seulement maintenant la source,
-            # pour qu'un refus d'accusé ou une annulation avant démarrage ne la
-            # perde pas. La note de permission reste visible dans le résultat.
-            note = await _delete_source(message)
-            header += note
-        _release_ticket(previous, ticket)
+        header, output = await work(channel, author, progress)
+        header += await _delete_source(message)
         await deliver(channel.send, header, output)
     finally:
-        _release_ticket(previous, ticket)
         if status is not None:
-            try:
+            with contextlib.suppress(discord.HTTPException):
                 await status.delete()
-            except discord.HTTPException:
-                pass
 
 
 async def run_single(message: discord.Message, argv: list[str]):
     """Un message collé ne contenant qu'UNE commande : traité comme une commande
     normale (sortie complète + logs), pas comme un lot. Supprime la source."""
     label = pzm_label(argv)
+    admission = _admit_command(argv)
 
-    async def work(channel, author):
+    async def work(channel, author, progress=None):
         log.info("EXEC user=%s channel=%s cmd=%r (message collé)", author, channel.id, argv)
-        code, output = await run_pzm(argv)
+        code, output = await _command_result(admission, progress if _lifecycle(argv) else None)
         log.info("DONE cmd=%r exit=%s", argv, code)
         return _result_header(label, code, author.mention), output
 
-    await _dispatch_pasted(message, f"`{label}`", work)
+    try:
+        await _dispatch_pasted(message, f"`{label}`", work)
+    finally:
+        await _release_request(*admission[:2])
 
 
 async def run_batch(message: discord.Message, batch: list[list[str]]):
@@ -522,12 +670,15 @@ async def run_batch(message: discord.Message, batch: list[list[str]]):
     et les commandes restantes sont marquées « non exécutée » dans le récap."""
     n = len(batch)
 
-    async def work(channel, author):
+    async def work(channel, author, progress=None):
         log.info("EXEC BATCH user=%s channel=%s n=%d", author, channel.id, n)
         results = []
         failed_at = None
         for i, argv in enumerate(batch, 1):
-            code, output = await run_pzm(argv)
+            if _lifecycle(argv) and progress is not None:
+                code, output = await run_pzm(argv, progress=progress)
+            else:
+                code, output = await run_pzm(argv)
             results.append((argv, code, output))
             log.info("BATCH item cmd=%r exit=%s", argv, code)
             if code != 0:
@@ -557,7 +708,15 @@ async def run_batch(message: discord.Message, batch: list[list[str]]):
         header += f" · {author.mention}"
         return header, "\n".join(lines)
 
-    await _dispatch_pasted(message, f"Lot de {n} commande(s)", work)
+    admission = _admit_command([], lambda progress: work(message.channel, message.author, progress))
+
+    async def result(channel, author, progress=None):
+        return await _command_result(admission, progress)
+
+    try:
+        await _dispatch_pasted(message, f"Lot de {n} commande(s)", result)
+    finally:
+        await _release_request(*admission[:2])
 
 
 # --- Commandes ---------------------------------------------------------------

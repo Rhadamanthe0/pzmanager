@@ -186,6 +186,56 @@ class Console(unittest.TestCase):
             self.assertEqual(regular.read_text(), 'preserve')
 
 
+class ConsoleDeadline(unittest.TestCase):
+    """Exercise the CLI, real FIFO and timed child processes with private doubles."""
+    def run_deadline(self, mode):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fifo = root / 'control'; os.mkfifo(fifo)
+            reader = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
+            self.addCleanup(os.close, reader)
+            systemctl = root / 'systemctl'
+            systemctl.write_text('#!' + sys.executable + '\n'
+                'import os\nfrom pathlib import Path\n'
+                'changed = Path(os.environ["FIXTURE_STATE"]).exists()\n'
+                'print("ActiveState=active\\nMainPID=10\\nInvocationID=" + '
+                '("b" if changed else "a") * 32 + '
+                '"\\nControlGroup=/user.slice/pz.slice/zomboid.service")\n')
+            journal = root / 'journalctl'
+            journal.write_text('#!' + sys.executable + '\n'
+                'import os,time\nfrom pathlib import Path\n'
+                'counter = Path(os.environ["FIXTURE_COUNTER"])\n'
+                'if counter.exists():\n'
+                '    if os.environ["FIXTURE_MODE"] == "changed": '
+                'Path(os.environ["FIXTURE_STATE"]).touch()\n'
+                '    time.sleep(2)\n'
+                'else:\n'
+                '    counter.touch()\n'
+                '    print(\'command entered via server console (System.in): '
+                '"checkModsNeedUpdate"\')\n'
+                '    print("CheckModsNeedUpdate: Checking...")\n')
+            systemctl.chmod(0o700); journal.chmod(0o700)
+            env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ['PATH'],
+                       FIXTURE_STATE=str(root / 'changed'), FIXTURE_COUNTER=str(root / 'poll'),
+                       FIXTURE_MODE=mode)
+            result = subprocess.run([sys.executable, str(ROOT / 'data/scripts/lib/console_command.py'),
+                '--unit', 'zomboid.service', '--pipe', str(fifo), '--output-timeout', '0.5',
+                'checkModsNeedUpdate'], env=env, capture_output=True, text=True, timeout=4)
+            self.assertEqual(os.read(reader, 100), b'checkModsNeedUpdate\n')
+            return result
+
+    def test_journal_deadline_preserves_receipt_without_transport_error(self):
+        result = self.run_deadline('stable')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Commande reçue: checkModsNeedUpdate', result.stdout)
+        self.assertNotIn('Mods updated', result.stdout)
+
+    def test_journal_deadline_still_rejects_changed_invocation(self):
+        result = self.run_deadline('changed')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Invocation PZ changée', result.stderr)
+
+
 class Process(unittest.TestCase):
     def test_only_current_uid_service_and_game_selected(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -13,6 +13,7 @@ case "${1:-}" in
     *) source_env ;;
 esac
 
+readonly -a ACTION_ARGS=("$@")
 readonly ACTION="${1:-}"
 SILENT_MODE=false
 REASON=""
@@ -61,6 +62,16 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Valider les arguments avant d'attendre ou de partager une demande. Les appels
+# internes participent au WORLD hérité et en prouvent toujours la détention.
+case "$ACTION" in
+    start|stop|restart)
+        if [[ "${PZ_WORLD_LOCK_DEPTH:-0}" == 0 && -z "${PZ_WORLD_LOCK_FD:-}" ]]; then
+            exec python3 "${SCRIPT_DIR}/../lib/server_action_queue.py" -- "$0" "${ACTION_ARGS[@]}"
+        fi
+        ;;
+esac
 
 send_discord() {
     [[ "$SILENT_MODE" == true ]] && return 0
