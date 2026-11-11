@@ -8,13 +8,18 @@ import zombie.inventory.types.*;
  * Error (not Exception) prevents the game's tolerant catch from hiding loss. */
 public final class NativeItemTrace {
     private static ByteBuffer root;
+    private static int envelopeVersion;
     private static final ArrayDeque<JSONObject> stack=new ArrayDeque<>();
     private static final List<JSONObject> records=new ArrayList<>();
     public static final class Refusal extends Error {
         Refusal(String message) { super(message); }
     }
-    public static void begin(ByteBuffer input) {
+    /** Verified save formats; anything else, including 250, is refused. */
+    public static boolean supports(int version) { return (version==249 || version==251) && version<=zombie.iso.IsoWorld.getWorldVersion(); }
+    public static void begin(ByteBuffer input,int version) {
         if(root!=null) throw new Refusal("Nested storage validation");
+        if(!supports(version)) throw new Refusal("Unsupported storage version "+version);
+        envelopeVersion=version;
         root=input; stack.clear();records.clear();
     }
     public static JSONArray finish() {
@@ -24,7 +29,7 @@ public final class NativeItemTrace {
     }
     public static void enter(ByteBuffer input,int version) {
         if(root==null) return;
-        if(input!=root || version!=249 || input.remaining()<11) throw new Refusal("Unsupported inventory buffer/version");
+        if(input!=root || version!=envelopeVersion || input.remaining()<11) throw new Refusal("Unsupported inventory buffer/version");
         int start=input.position(),length=input.getInt(start);
         long end=(long)start+4+length;
         if(length<7 || end>input.limit() || end>Integer.MAX_VALUE) throw new Refusal("Invalid inventory boundary");

@@ -62,7 +62,7 @@ public final class ValidateWritingRecords {
  private record Bounds(int start,int end,int baseEnd){}
  private static Bounds bounds(byte[] bytes,int version)throws Exception{
   ByteBuffer b=ByteBuffer.wrap(bytes);b.position(7);b.getInt();int flags=Byte.toUnsignedInt(b.get());
-  if((flags&1)!=0)b.getInt(); // Current uses; flag 2 has no payload in world version 249.
+  if((flags&1)!=0)b.getInt(); // Current uses; flag 2 has no payload in world versions 249/251.
   if((flags&4)!=0)b.get();
   if((flags&8)!=0)new zombie.core.skinnedmodel.visual.ItemVisual().load(b,version);
   if((flags&16)!=0)b.position(b.position()+4);
@@ -128,7 +128,7 @@ public final class ValidateWritingRecords {
   int books=0,bags=0;
   for(int i=0;i<records.length();i++){
    JSONObject r=records.getJSONObject(i);int version=r.getInt("worldVersion"),offset=r.optInt("bodyOffset",7);String kind=r.getString("class");
-   check(version==249,"Unsupported world version "+version);
+   check((version==249||version==251) && version<=zombie.iso.IsoWorld.getWorldVersion(),"Unsupported world version "+version);
    byte[] a=Files.readAllBytes(Path.of(r.getString("before"))),b=Files.readAllBytes(Path.of(r.getString("after")));
    check(Arrays.equals(Arrays.copyOfRange(a,4,7),Arrays.copyOfRange(b,4,7)),"Registry ID or save subtype changed");
    InventoryItem before=load(a,version,offset,kind),after=load(b,version,offset,kind);

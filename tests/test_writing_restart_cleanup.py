@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import os
+from collections import Counter
 from contextlib import closing
 from pathlib import Path
 import sqlite3
@@ -46,7 +47,7 @@ def nested(dirty=True):
     bag=struct.pack('>i',len(body)+3)+struct.pack('>hB',2,255)+body
     return struct.pack('>i',1)+bag+b'world-tail-sentinel'
 
-def chunk(body):return b'\0'+struct.pack('>iiq',249,len(body)+17,zlib.crc32(body))+body
+def chunk(body,version=249):return b'\0'+struct.pack('>iiq',version,len(body)+17,zlib.crc32(body))+body
 
 def synthetic_envelopes(blob):
     # Test-only protocol for the declared synthetic bag/book fixture.
@@ -106,6 +107,95 @@ class OfflineCleanup(unittest.TestCase):
         self.assertEqual(cleaner.clean_blob(new,REGISTRY,chunk=True),(new,[]))
         map_record=struct.pack('>i',1)+item(rid=3,doc={'v':1,'ink':{1:{'p':{1:5}}},'sym':{1:'map annotation'}})
         self.assertEqual(cleaner.clean_blob(map_record,REGISTRY),(map_record,[]))
+
+    def test_251_chunk_and_player_clean_to_exact_bytes(self):
+        blob=chunk(nested(),251)
+        cleaned,detail=cleaner.clean_blob(blob,REGISTRY,251,chunk=True)
+        self.assertEqual(cleaned,chunk(nested(False),251))
+        self.assertEqual(struct.unpack_from('>i',cleaned,1)[0],251)
+        self.assertEqual(cleaned[17:],chunk(nested(False),251)[17:])
+        self.assertEqual(len(detail),1)
+        with self.assertRaisesRegex(cleaner.CleanupError,'version'):
+            cleaner.clean_blob(blob,REGISTRY,249,chunk=True)
+        with self.assertRaisesRegex(cleaner.CleanupError,'version'):
+            cleaner.clean_blob(chunk(nested(),250),REGISTRY,250,chunk=True)
+
+    def test_clean_older_or_unknown_blob_without_drawings_is_untouched(self):
+        for version in (244,250):
+            with self.subTest(version=version):
+                blob=chunk(nested(False),version)
+                self.assertEqual(cleaner.clean_blob(blob,REGISTRY,version,chunk=True),(blob,[]))
+
+    def test_mixed_249_251_plan_records_each_real_version(self):
+        second=self.world/'map/1/3.bin';second.write_bytes(chunk(nested(),251))
+        db=sqlite3.connect(self.world/'players.db')
+        db.execute('UPDATE localPlayers SET worldversion=251,data=? WHERE id=2',(nested(),))
+        db.commit();db.close()
+        before=self.sources();seen=[]
+        def validate(stage,files,rows):
+            manifest,_=cleaner.validation_manifest(stage,files,rows,stage/'synthetic-mixed-validation')
+            records=json.loads(manifest.read_text())['records']
+            seen.append(Counter(record['worldVersion'] for record in records))
+        summary=cleaner.cleanup(self.world,self.backups,validator=validate)
+        self.assertEqual(seen,[{249:4,251:4}, {249:4,251:4}])
+        self.assertEqual(self.path.read_bytes(),chunk(nested(False)))
+        self.assertEqual(second.read_bytes(),chunk(nested(False),251))
+        db=sqlite3.connect(self.world/'players.db')
+        self.assertEqual(db.execute('SELECT data FROM networkPlayers WHERE id=1').fetchone()[0],nested(False))
+        self.assertEqual(db.execute('SELECT data FROM localPlayers WHERE id=2').fetchone()[0],nested(False))
+        db.close()
+        manifest=json.loads((Path(summary['backup'])/'manifest.json').read_text())
+        self.assertEqual(manifest['schema'],2)
+        self.assertNotIn('version',manifest)
+        versions={entry['path']:entry['version'] for entry in manifest['files'] if entry['path'] != 'players.db'}
+        self.assertEqual(versions['map/1/2.bin'],249)
+        self.assertEqual(versions['map/1/3.bin'],251)
+        for name in (self.path,second,self.world/'players.db'):
+            self.assertEqual((Path(summary['backup'])/'original'/name.relative_to(self.world)).read_bytes(),
+                             before[str(name.relative_to(self.world))])
+        self.assertEqual(cleaner.cleanup(self.world,self.backups,validator=validate)['files'],0)
+
+    def test_dirty_250_is_refused_before_mutation(self):
+        bad=self.world/'map/1/3.bin';bad.write_bytes(chunk(nested(),250))
+        before=self.sources()
+        with self.assertRaises(cleaner.CleanupError):
+            cleaner.cleanup(self.world,self.backups,validator=self.validator)
+        self.assertEqual(self.sources(),before)
+        self.assertFalse(self.backups.exists())
+
+    def test_old_character_without_drawings_is_left_intact(self):
+        self.path.unlink()
+        db=sqlite3.connect(self.world/'players.db')
+        db.execute('UPDATE networkPlayers SET worldversion=244,data=?',(b'no writing data',))
+        db.commit();db.close()
+        before=self.sources()
+        self.assertEqual(cleaner.cleanup(self.world,self.backups)['files'],0)
+        self.assertEqual(self.sources(),before)
+        self.assertFalse(self.backups.exists())
+
+    def test_previous_schema_one_recovery_keeps_strict_global_249(self):
+        summary=cleaner.cleanup(self.world,self.backups,validator=self.validator)
+        stage=Path(summary['backup']);manifest=json.loads((stage/'manifest.json').read_text())
+        manifest['schema']=1;manifest['state']='prepared';manifest['version']=249
+        for entry in manifest['files']:entry.pop('version',None)
+        (stage/'manifest.json').write_text(json.dumps(manifest))
+        self.path.write_bytes((stage/'original'/self.path.relative_to(self.world)).read_bytes())
+        cleaner.recover(self.world,stage,self.validator)
+        self.assertEqual(self.path.read_bytes(),chunk(nested(False)))
+        self.assertEqual(json.loads((stage/'manifest.json').read_text())['state'],'complete')
+
+    def test_previous_schema_one_rejects_other_global_version_before_write(self):
+        summary=cleaner.cleanup(self.world,self.backups,validator=self.validator)
+        stage=Path(summary['backup']);manifest=json.loads((stage/'manifest.json').read_text())
+        manifest['schema']=1;manifest['state']='prepared';manifest['version']=250
+        for entry in manifest['files']:entry.pop('version',None)
+        (stage/'manifest.json').write_text(json.dumps(manifest))
+        self.path.write_bytes((stage/'original'/self.path.relative_to(self.world)).read_bytes())
+        before=self.sources()
+        with self.assertRaises(cleaner.CleanupError):
+            cleaner.recover(self.world,stage,self.validator)
+        self.assertEqual(self.sources(),before)
+        self.assertNotEqual(json.loads((stage/'manifest.json').read_text())['state'],'complete')
 
     def test_floor_bag_without_inventory_count_updates_ancestor_length(self):
         # A world-floor bag is not preceded by a compressed-inventory count.
@@ -276,6 +366,7 @@ class OfflineCleanup(unittest.TestCase):
         self.assertEqual(cleaner.cleanup(self.world,self.backups,scan_cache=cache)['files'],0)
         self.assertEqual(cache.stat().st_mode & 0o777,0o600)
         data=json.loads(cache.read_text());self.assertIn(str(self.path.relative_to(self.world)),data['files'])
+        self.assertEqual((data['schema'],data['version']),(2,249))
         actual=cleaner.read_file;reads=[]
         def tracked(path):reads.append(path);return actual(path)
         with patch.object(cleaner,'read_file',side_effect=tracked):

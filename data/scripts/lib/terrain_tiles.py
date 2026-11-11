@@ -8,6 +8,7 @@ import shutil
 import stat
 import struct
 import subprocess
+import zipfile
 import zlib
 
 MAX_TERRAIN_BYTES = 64 * 1024 * 1024
@@ -71,13 +72,18 @@ def mod_script_catalogs(install):
     return catalogs
 
 
+SUPPORTED_VERSIONS = (249, 251)  # Verified save formats; 250 and others are refused.
+
+
 def checked_columns(data, index):
     """Reject stale or inconsistent native indexes before any binary surgery."""
     if len(data) < 17 or len(data) > MAX_TERRAIN_BYTES or data[0] != 0:
         raise ValueError('En-tête de terrain incompatible.')
     version, length, crc = struct.unpack_from('>iiq', data, 1)
-    if version != 249 or length != len(data) or crc != zlib.crc32(data[17:]):
+    if version not in SUPPORTED_VERSIONS or length != len(data) or crc != zlib.crc32(data[17:]):
         raise ValueError('Terrain invalide : version, longueur ou checksum.')
+    if index.get('version') != version:
+        raise ValueError('Version de terrain incohérente avec l’index natif.')
     if index['sha256'] != hashlib.sha256(data).hexdigest():
         raise ValueError('Terrain modifié après indexation.')
     lo, hi, offset = index['min_level'], index['max_level'], index['level_offset']
@@ -109,6 +115,8 @@ def merge_columns(source, current, source_index, current_index, selected):
         raise ValueError('Sélection de tuiles invalide.')
     old = checked_columns(current, current_index)
     saved = checked_columns(source, source_index)
+    if source_index['version'] != current_index['version']:
+        raise ValueError('Versions de terrain incompatibles pour la restauration de colonnes.')
     prefix_end = current_index['columns'][0][0]
     suffix_start = current_index['columns'][-1][1]
     result = bytearray(current[:prefix_end])
@@ -124,6 +132,33 @@ def merge_columns(source, current, source_index, current_index, selected):
         raise ValueError('Terrain restauré trop volumineux (64 Mio maximum).')
     struct.pack_into('>iq', result, 5, len(result), zlib.crc32(result[17:]))
     return bytes(result)
+
+
+def instrumentation_agent(classes, path):
+    """Package the audited agent; the game JAR and its signatures are untouched."""
+    agent = Path(path)
+    if not (Path(classes) / 'InstrumentItemReads.class').is_file():
+        raise ValueError('Native item agent class missing after compilation')
+    with zipfile.ZipFile(agent, 'w', zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr('META-INF/MANIFEST.MF',
+                         'Manifest-Version: 1.0\nPremain-Class: InstrumentItemReads\n'
+                         'Can-Retransform-Classes: true\n\n')
+        for member in sorted(Path(classes).glob('InstrumentItemReads*.class')):
+            archive.write(member, member.name)
+    return agent
+
+
+def item_trace_options(release, agent, game_jar):
+    options = []
+    if release < 24:
+        options.extend([
+            '--add-exports=java.base/jdk.internal.org.objectweb.asm=ALL-UNNAMED',
+            '--add-exports=java.base/jdk.internal.org.objectweb.asm.tree=ALL-UNNAMED',
+        ])
+    # Java splits the agent argument at its first '='. The validation JVM
+    # runs in the agent directory, whose absolute path may contain '='.
+    options.append(f'-javaagent:{agent.name}=jar={game_jar}')
+    return options
 
 
 class NativeIndexer:
@@ -160,12 +195,10 @@ class NativeIndexer:
         self.classpath = str(classes) + os.pathsep + str(self.jar)
         self.run([self.javac, '--release', match[1].decode(), '-cp', str(self.jar), '-d', str(classes),
                   *[str(Path(__file__).with_name(name)) for name in ('IndexTerrainColumns.java', 'NativeItemTrace.java', 'InstrumentItemReads.java')]], 'compile')
+        self.java_options = []
         if trace_items:
-            exports=[] if int(match[1])>=24 else [
-                '--add-exports=java.base/jdk.internal.org.objectweb.asm=ALL-UNNAMED',
-                '--add-exports=java.base/jdk.internal.org.objectweb.asm.tree=ALL-UNNAMED']
-            self.run([str(self.java), *exports, '-cp', str(classes),
-                      'InstrumentItemReads', str(self.jar), str(classes)], 'instrument')
+            agent = instrumentation_agent(classes, self.root / 'instrumentation-agent.jar')
+            self.java_options = item_trace_options(int(match[1]), agent, self.jar)
         self.sequence = 0
 
     def run(self, command, label):
@@ -193,7 +226,7 @@ class NativeIndexer:
         request = self.root / (label + '.json')
         response = self.root / (label + '-result.json')
         request.write_text(json.dumps(dict(self.script_context, dictionary=str(self.dictionary), chunks=files, trace_items=self.trace_items)))
-        self.run([str(self.java), '-Xmx512m', '-cp', self.classpath, 'IndexTerrainColumns',
+        self.run([str(self.java), *self.java_options, '-Xmx512m', '-cp', self.classpath, 'IndexTerrainColumns',
                   str(request), str(response)], label)
         try:
             indexes = json.loads(response.read_text())['chunks']
@@ -214,10 +247,12 @@ class NativeIndexer:
         self.sequence+=1; label='storage-'+str(self.sequence)
         request=self.root/(label+'.json');response=self.root/(label+'-result.json')
         request.write_text(json.dumps(dict(self.script_context,dictionary=str(self.dictionary),storage=entries)))
-        self.run([str(self.java),'-Xmx768m','-cp',self.classpath,'IndexTerrainColumns',str(request),str(response)],label)
+        self.run([str(self.java), *self.java_options, '-Xmx768m', '-cp', self.classpath, 'IndexTerrainColumns', str(request), str(response)], label)
         results=json.loads(response.read_text())['storage']
         if len(results)!=len(entries): raise ValueError('Incomplete storage validation')
         for entry,expected,result in zip(entries,before,results):
+            if result.get('version') != entry.get('version'):
+                raise ValueError('Native storage version changed')
             if result['sha256']!=expected or hashlib.sha256(read_native_input(entry['file'])).hexdigest()!=expected:
                 raise ValueError('Storage changed during validation')
         return results
@@ -226,7 +261,7 @@ class NativeIndexer:
         request = self.root / 'dictionaries.json'
         response = self.root / 'dictionaries-result.json'
         request.write_text(json.dumps({'dictionaries': [str(Path(p).absolute()) for p in paths]}))
-        self.run([str(self.java), '-Xmx512m', '-cp', self.classpath, 'IndexTerrainColumns',
+        self.run([str(self.java), *self.java_options, '-Xmx512m', '-cp', self.classpath, 'IndexTerrainColumns',
                   str(request), str(response)], 'dictionaries')
         return json.loads(response.read_text())['dictionaries']
 

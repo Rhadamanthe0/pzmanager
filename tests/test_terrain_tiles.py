@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT / 'data/scripts/lib'))
 import terrain_tiles as tiles
 
 
-def fixture(tag, floors=(-2, 0, 3), empty=()):
+def fixture(tag, floors=(-2, 0, 3), empty=(), version=249):
     # The merger preserves opaque prefixes/suffixes; only the floor offset is known.
     payload = bytearray(b'PREFIX' + struct.pack('>iii', max(floors), min(floors), 0))
     for i in range(64):
@@ -31,7 +31,7 @@ def fixture(tag, floors=(-2, 0, 3), empty=()):
             value = f'{tag}:tile={i}:floor={z}'.encode()
             payload.extend(struct.pack('>I', len(value)) + value)
     payload.extend(b'SUFFIX:' + tag.encode())
-    return b'\0' + struct.pack('>iiq', 249, len(payload)+17, zlib.crc32(payload)) + payload
+    return b'\0' + struct.pack('>iiq', version, len(payload)+17, zlib.crc32(payload)) + payload
 
 
 def fixture_index(blob):
@@ -46,6 +46,7 @@ def fixture_index(blob):
                 size, = struct.unpack_from('>I', blob, pos); pos += size+4
         columns.append([start, pos, str(flags)])
     return dict(sha256=hashlib.sha256(blob).hexdigest(), level_offset=23,
+                version=struct.unpack_from('>i', blob, 1)[0],
                 min_level=lo, max_level=hi, columns=columns)
 
 
@@ -76,6 +77,39 @@ class TileTests(unittest.TestCase):
         self.assertEqual(tiles.checked_columns(result, fixture_index(result))[17], b'\0'*8)
         self.assertIn(b'live:tile=16:', result)
         self.assertIn(b'live:tile=18:', result)
+
+    def test_251_columns_are_indexed_and_spliced(self):
+        source, live = fixture('backup', version=251), fixture('current', version=251)
+        a, b = fixture_index(source), fixture_index(live)
+        result = tiles.merge_columns(source, live, a, b, [17])
+        c = fixture_index(result)
+        self.assertEqual(c['version'], 251)
+        expected = tiles.checked_columns(live, b)
+        expected[17] = tiles.checked_columns(source, a)[17]
+        self.assertEqual(tiles.checked_columns(result, c), expected)
+        self.assertIn(b'backup:tile=17:', result)
+        self.assertIn(b'current:tile=18:', result)
+
+    def test_mixed_versions_cannot_be_spliced(self):
+        for source_version, current_version in ((249, 251), (251, 249)):
+            with self.subTest(source=source_version, current=current_version):
+                source = fixture('backup', version=source_version)
+                live = fixture('current', version=current_version)
+                with self.assertRaisesRegex(ValueError, 'Versions'):
+                    tiles.merge_columns(source, live, fixture_index(source), fixture_index(live), [17])
+
+    def test_unknown_version_is_refused_before_surgery(self):
+        for version in (248, 250, 252):
+            with self.subTest(version=version):
+                blob = fixture('unknown', version=version)
+                with self.assertRaises(ValueError):
+                    tiles.checked_columns(blob, fixture_index(blob))
+
+    def test_version_disagreement_with_native_index_is_refused(self):
+        blob = fixture('saved', version=251)
+        index = fixture_index(blob); index['version'] = 249
+        with self.assertRaisesRegex(ValueError, 'Version'):
+            tiles.checked_columns(blob, index)
 
     def test_invalid_or_stale_index_refused(self):
         source, live = fixture('saved'), fixture('live')

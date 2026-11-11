@@ -1,14 +1,22 @@
+import java.lang.instrument.*;
 import java.nio.file.*;
 import java.lang.reflect.*;
 import java.lang.constant.*;
+import java.security.ProtectionDomain;
 import java.util.function.Predicate;
 import java.util.*;
-import java.util.jar.*;
 
-/** Instrument only a private class copy, never the installed JAR. Reflection
- * keeps --release compatibility: ClassFile API on JDK 24+, ASM on older JDKs.
- * Missing APIs or a changed loader layout fail closed. */
+/** Instrument the game's own loader class in the private validation JVM.
+ * A javaagent retransforms the class defined from the game JAR, so the JVM keeps
+ * the JAR as code source and its signers; an unsigned private copy would collide
+ * with the other signed classes of zombie.inventory. Reflection keeps --release
+ * compatibility: ClassFile API on JDK 24+, ASM on older JDKs. A missing API, an
+ * unexpected origin or a changed loader layout fails closed before any read. */
 public final class InstrumentItemReads {
+    private static final String TARGET = "zombie.inventory.InventoryItem";
+    private static final boolean MODERN = Runtime.version().feature() >= 24;
+    private static volatile String failure;
+    private static volatile int transformed;
     private static Class<?> type(String name) throws Exception {
         return Class.forName("jdk.internal.org.objectweb.asm." + name);
     }
@@ -76,16 +84,7 @@ public final class InstrumentItemReads {
         if(counts[0]!=1||counts[1]!=1||counts[2]!=2) throw new IllegalStateException("Unsupported native loader layout");
         return result;
     }
-    public static void main(String[] args) throws Exception {
-        if(args.length!=2) throw new IllegalArgumentException("JAR PRIVATE_CLASSES required");
-        byte[] bytes;
-        try(JarFile jar=new JarFile(args[0])) {
-            try(var in=jar.getInputStream(jar.getJarEntry("zombie/inventory/InventoryItem.class"))) { bytes=in.readAllBytes(); }
-        }
-        if(Runtime.version().feature()>=24) {
-            Path out=Path.of(args[1],"zombie/inventory/InventoryItem.class");Files.createDirectories(out.getParent());
-            Files.write(out,modern(bytes));return;
-        }
+    private static byte[] legacy(byte[] bytes) throws Exception {
         Object reader=type("ClassReader").getConstructor(byte[].class).newInstance((Object)bytes);
         Object cls=type("tree.ClassNode").getConstructor().newInstance();
         reader.getClass().getMethod("accept",type("ClassVisitor"),int.class).invoke(reader,cls,0);
@@ -121,7 +120,33 @@ public final class InstrumentItemReads {
         if(methods!=1 || calls!=1 || returns!=2) throw new IllegalStateException("Unsupported native loader layout");
         Object writer=type("ClassWriter").getConstructor(int.class).newInstance(1); // COMPUTE_MAXS; no new locals/branches
         cls.getClass().getMethod("accept",type("ClassVisitor")).invoke(cls,writer);
-        Path out=Path.of(args[1],"zombie/inventory/InventoryItem.class");Files.createDirectories(out.getParent());
-        Files.write(out,(byte[])writer.getClass().getMethod("toByteArray").invoke(writer));
+        return (byte[])writer.getClass().getMethod("toByteArray").invoke(writer);
+    }
+    public static void premain(String options, Instrumentation instrumentation) throws Exception {
+        if(options==null || !options.startsWith("jar="))
+            throw new IllegalArgumentException("Expected jar=<game JAR> agent option");
+        Path expected=Path.of(options.substring(4)).toAbsolutePath().normalize();
+        Class<?> target;
+        try { target=Class.forName(TARGET,false,ClassLoader.getSystemClassLoader()); }
+        catch(Throwable error) { throw new IllegalStateException("Game item loader class is unavailable",error); }
+        ProtectionDomain domain=target.getProtectionDomain();
+        Path origin=domain==null || domain.getCodeSource()==null ? null
+                : Path.of(domain.getCodeSource().getLocation().toURI());
+        if(origin==null || !origin.toAbsolutePath().normalize().equals(expected))
+            throw new IllegalStateException("Game item loader class does not come from the expected JAR");
+        ClassFileTransformer transformer=new ClassFileTransformer() {
+            @Override public byte[] transform(ClassLoader loader,String name,Class<?> redefined,
+                                              ProtectionDomain protectionDomain,byte[] bytes) {
+                if(redefined!=target) return null;
+                try { transformed++; return MODERN?modern(bytes):legacy(bytes); }
+                // A throw here may be ignored by the JVM; report it from premain instead.
+                catch(Throwable error) { failure=String.valueOf(error); return null; }
+            }
+        };
+        instrumentation.addTransformer(transformer,true);
+        try { instrumentation.retransformClasses(target); }
+        finally { instrumentation.removeTransformer(transformer); }
+        if(failure!=null) throw new IllegalStateException("Game item loader transformation failed: "+failure);
+        if(transformed!=1) throw new IllegalStateException("Game item loader transformation did not run");
     }
 }

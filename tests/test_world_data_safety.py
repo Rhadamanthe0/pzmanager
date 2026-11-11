@@ -34,7 +34,7 @@ def synthetic_terrain(tag):
 
 def synthetic_index(blob):
     return {'sha256': hashlib.sha256(blob).hexdigest(), 'min_level': 0,
-            'max_level': 0, 'level_offset': 17,
+            'max_level': 0, 'level_offset': 17, 'version': 249,
             'columns': [[29 + 10*i, 39 + 10*i, '0'] for i in range(64)]}
 
 
@@ -295,6 +295,7 @@ class NativeProtocolSafety(unittest.TestCase):
         self.path.write_bytes(self.blob)
         self.native = tiles.NativeIndexer.__new__(tiles.NativeIndexer)
         self.native.trace_items=False
+        self.native.java_options=[]
         self.native.root = self.root
         self.native.sequence = 0
         self.native.script_context = {'mods': [], 'mod_roots': []}
