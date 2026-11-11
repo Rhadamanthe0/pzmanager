@@ -48,8 +48,10 @@ non reconnus sont refusés avant toute mutation. Ce nettoyage n'est pas un
 filtrage universel des données envoyées par des clients modifiés.
 Les limites, identités et ancêtres des objets proviennent des appels du lecteur
 natif du JAR et de son dictionnaire binaire, liés aux empreintes des fichiers.
-Une copie privée de la classe de lecture est instrumentée ; le JAR installé
-n'est jamais modifié. Les fichiers entiers sont relus, y compris les blobs des
+La classe de lecture est instrumentée dans la JVM privée de validation par
+l'agent standard `java.lang.instrument` ; la classe conserve l'origine et la
+signature du JAR, et le JAR installé n'est jamais modifié. Un JAR non signé
+suit le même parcours. Les fichiers entiers sont relus, y compris les blobs des
 personnages et `reanimated.bin`. Un objet ignoré, absent ou tronqué par le lecteur
 tolérant du jeu est un refus, même si le chargement normal ne lève aucune erreur.
 La compatibilité exacte avec le JAR reste nécessaire ; une instrumentation

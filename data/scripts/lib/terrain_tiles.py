@@ -8,6 +8,7 @@ import shutil
 import stat
 import struct
 import subprocess
+import zipfile
 import zlib
 
 MAX_TERRAIN_BYTES = 64 * 1024 * 1024
@@ -126,6 +127,33 @@ def merge_columns(source, current, source_index, current_index, selected):
     return bytes(result)
 
 
+def instrumentation_agent(classes, path):
+    """Package the audited agent; the game JAR and its signatures are untouched."""
+    agent = Path(path)
+    if not (Path(classes) / 'InstrumentItemReads.class').is_file():
+        raise ValueError('Native item agent class missing after compilation')
+    with zipfile.ZipFile(agent, 'w', zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr('META-INF/MANIFEST.MF',
+                         'Manifest-Version: 1.0\nPremain-Class: InstrumentItemReads\n'
+                         'Can-Retransform-Classes: true\n\n')
+        for member in sorted(Path(classes).glob('InstrumentItemReads*.class')):
+            archive.write(member, member.name)
+    return agent
+
+
+def item_trace_options(release, agent, game_jar):
+    options = []
+    if release < 24:
+        options.extend([
+            '--add-exports=java.base/jdk.internal.org.objectweb.asm=ALL-UNNAMED',
+            '--add-exports=java.base/jdk.internal.org.objectweb.asm.tree=ALL-UNNAMED',
+        ])
+    # Java splits the agent argument at its first '='. The validation JVM
+    # runs in the agent directory, whose absolute path may contain '='.
+    options.append(f'-javaagent:{agent.name}=jar={game_jar}')
+    return options
+
+
 class NativeIndexer:
     """Compile once; native readers run only against private recovery copies."""
     def __init__(self, root, dictionary, *, java=None, javac=None, trace_items=False):
@@ -160,12 +188,10 @@ class NativeIndexer:
         self.classpath = str(classes) + os.pathsep + str(self.jar)
         self.run([self.javac, '--release', match[1].decode(), '-cp', str(self.jar), '-d', str(classes),
                   *[str(Path(__file__).with_name(name)) for name in ('IndexTerrainColumns.java', 'NativeItemTrace.java', 'InstrumentItemReads.java')]], 'compile')
+        self.java_options = []
         if trace_items:
-            exports=[] if int(match[1])>=24 else [
-                '--add-exports=java.base/jdk.internal.org.objectweb.asm=ALL-UNNAMED',
-                '--add-exports=java.base/jdk.internal.org.objectweb.asm.tree=ALL-UNNAMED']
-            self.run([str(self.java), *exports, '-cp', str(classes),
-                      'InstrumentItemReads', str(self.jar), str(classes)], 'instrument')
+            agent = instrumentation_agent(classes, self.root / 'instrumentation-agent.jar')
+            self.java_options = item_trace_options(int(match[1]), agent, self.jar)
         self.sequence = 0
 
     def run(self, command, label):
@@ -193,7 +219,7 @@ class NativeIndexer:
         request = self.root / (label + '.json')
         response = self.root / (label + '-result.json')
         request.write_text(json.dumps(dict(self.script_context, dictionary=str(self.dictionary), chunks=files, trace_items=self.trace_items)))
-        self.run([str(self.java), '-Xmx512m', '-cp', self.classpath, 'IndexTerrainColumns',
+        self.run([str(self.java), *self.java_options, '-Xmx512m', '-cp', self.classpath, 'IndexTerrainColumns',
                   str(request), str(response)], label)
         try:
             indexes = json.loads(response.read_text())['chunks']
@@ -214,7 +240,7 @@ class NativeIndexer:
         self.sequence+=1; label='storage-'+str(self.sequence)
         request=self.root/(label+'.json');response=self.root/(label+'-result.json')
         request.write_text(json.dumps(dict(self.script_context,dictionary=str(self.dictionary),storage=entries)))
-        self.run([str(self.java),'-Xmx768m','-cp',self.classpath,'IndexTerrainColumns',str(request),str(response)],label)
+        self.run([str(self.java), *self.java_options, '-Xmx768m', '-cp', self.classpath, 'IndexTerrainColumns', str(request), str(response)], label)
         results=json.loads(response.read_text())['storage']
         if len(results)!=len(entries): raise ValueError('Incomplete storage validation')
         for entry,expected,result in zip(entries,before,results):
@@ -226,7 +252,7 @@ class NativeIndexer:
         request = self.root / 'dictionaries.json'
         response = self.root / 'dictionaries-result.json'
         request.write_text(json.dumps({'dictionaries': [str(Path(p).absolute()) for p in paths]}))
-        self.run([str(self.java), '-Xmx512m', '-cp', self.classpath, 'IndexTerrainColumns',
+        self.run([str(self.java), *self.java_options, '-Xmx512m', '-cp', self.classpath, 'IndexTerrainColumns',
                   str(request), str(response)], 'dictionaries')
         return json.loads(response.read_text())['dictionaries']
 

@@ -295,6 +295,7 @@ class NativeProtocolSafety(unittest.TestCase):
         self.path.write_bytes(self.blob)
         self.native = tiles.NativeIndexer.__new__(tiles.NativeIndexer)
         self.native.trace_items=False
+        self.native.java_options=[]
         self.native.root = self.root
         self.native.sequence = 0
         self.native.script_context = {'mods': [], 'mod_roots': []}
