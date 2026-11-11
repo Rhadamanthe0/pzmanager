@@ -72,13 +72,18 @@ def mod_script_catalogs(install):
     return catalogs
 
 
+SUPPORTED_VERSIONS = (249, 251)  # Verified save formats; 250 and others are refused.
+
+
 def checked_columns(data, index):
     """Reject stale or inconsistent native indexes before any binary surgery."""
     if len(data) < 17 or len(data) > MAX_TERRAIN_BYTES or data[0] != 0:
         raise ValueError('En-tête de terrain incompatible.')
     version, length, crc = struct.unpack_from('>iiq', data, 1)
-    if version != 249 or length != len(data) or crc != zlib.crc32(data[17:]):
+    if version not in SUPPORTED_VERSIONS or length != len(data) or crc != zlib.crc32(data[17:]):
         raise ValueError('Terrain invalide : version, longueur ou checksum.')
+    if index.get('version') != version:
+        raise ValueError('Version de terrain incohérente avec l’index natif.')
     if index['sha256'] != hashlib.sha256(data).hexdigest():
         raise ValueError('Terrain modifié après indexation.')
     lo, hi, offset = index['min_level'], index['max_level'], index['level_offset']
@@ -110,6 +115,8 @@ def merge_columns(source, current, source_index, current_index, selected):
         raise ValueError('Sélection de tuiles invalide.')
     old = checked_columns(current, current_index)
     saved = checked_columns(source, source_index)
+    if source_index['version'] != current_index['version']:
+        raise ValueError('Versions de terrain incompatibles pour la restauration de colonnes.')
     prefix_end = current_index['columns'][0][0]
     suffix_start = current_index['columns'][-1][1]
     result = bytearray(current[:prefix_end])
@@ -244,6 +251,8 @@ class NativeIndexer:
         results=json.loads(response.read_text())['storage']
         if len(results)!=len(entries): raise ValueError('Incomplete storage validation')
         for entry,expected,result in zip(entries,before,results):
+            if result.get('version') != entry.get('version'):
+                raise ValueError('Native storage version changed')
             if result['sha256']!=expected or hashlib.sha256(read_native_input(entry['file'])).hexdigest()!=expected:
                 raise ValueError('Storage changed during validation')
         return results

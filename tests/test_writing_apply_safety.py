@@ -45,14 +45,14 @@ def item(rid, ident, payload):
     return struct.pack('>i', len(body)) + body
 
 
-def floor_bag(rid=2, dirty=True, depth=1):
+def floor_bag(rid=2, dirty=True, depth=1, version=249):
     inner = item(1, 111, b'BOOK:' + document(dirty))
     for i in range(depth):
         inner = item(rid if i == depth-1 else 2, 200+i,
                      b'BAG:' + struct.pack('>i', 1) + inner + b':BAG-END')
     following = item(9, 999, b'FOLLOWING-OBJECT-UNCHANGED')
     body = b'\0'*16 + inner + following + b'WORLD-TAIL'
-    return b'\0' + struct.pack('>iiq', 249, len(body)+17, zlib.crc32(body)) + body, following
+    return b'\0' + struct.pack('>iiq', version, len(body)+17, zlib.crc32(body)) + body, following
 
 
 def registry(extra=None):
@@ -284,6 +284,46 @@ class WritingApplyBoundary(unittest.TestCase):
         # Explicitly invoked here on this disposable fixture only; not on a real world.
         self.recover()
         self.assertEqual((self.world/'map/1/0.bin').read_bytes(),self.cleaned)
+
+
+class WritingManifestVersions(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='pz-writing-manifest-version-')
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.world = self.root / 'world'; self.world.mkdir(mode=0o700)
+        self.stage = self.root / 'cleanup'; self.stage.mkdir(mode=0o700)
+        self.rel = Path('map/0/0.bin')
+        (self.world / self.rel).parent.mkdir(parents=True, mode=0o700)
+        self.original, _ = floor_bag(version=251)
+        self.cleaned, _ = floor_bag(version=251, dirty=False)
+        (self.world / self.rel).write_bytes(self.original)
+        self.entry = writing.stage_change(self.stage, self.world, self.rel, self.original, self.cleaned)
+        self.manifest = dict(schema=2, world=str(self.world), state='prepared',
+                             files=[self.entry], players=[])
+        writing.write_manifest(self.stage, self.manifest)
+        self.before = files(self.world)
+
+    def recover(self):
+        def read_only_protocol_double(stage, entries, players):
+            pass
+        return writing.recover(self.world, self.stage, read_only_protocol_double)
+
+    def test_new_manifest_records_251_per_file_and_recovers(self):
+        manifest = json.loads(writing.manifest_path(self.stage).read_text())
+        self.assertEqual(manifest['schema'], 2)
+        self.assertNotIn('version', manifest)
+        self.assertEqual(manifest['files'][0]['version'], 251)
+        self.assertEqual(self.recover(), 1)
+        self.assertEqual((self.world / self.rel).read_bytes(), self.cleaned)
+
+    def test_unknown_per_file_version_is_refused_before_write(self):
+        self.entry['version'] = 250
+        writing.write_manifest(self.stage, self.manifest)
+        with self.assertRaisesRegex(writing.CleanupError, 'version'):
+            self.recover()
+        self.assertEqual(files(self.world), self.before)
+        self.assertEqual(json.loads(writing.manifest_path(self.stage).read_text())['state'], 'prepared')
 
 
 class CleanWorldCompilerFree(unittest.TestCase):

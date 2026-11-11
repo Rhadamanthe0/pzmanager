@@ -2,9 +2,10 @@
 """Remove book drawings offline, preserving serialized text and item framing.
 
 Caller must prove the JVM is stopped (or run in ExecStartPre before the JVM).
-Supported storage version: 249. Changes are prepared and backed up before any
-world mutation. Pending transactions refuse startup. Explicit recovery requires
-every target to match its recorded original or cleaned hash and native validation.
+Supported storage versions: 249 and 251, each proven by the installed game JAR.
+Changes are prepared and backed up before any world mutation. Pending
+transactions refuse startup. Explicit recovery requires every target to match its
+recorded original or cleaned hash and native validation.
 """
 import argparse
 from collections import deque
@@ -26,8 +27,10 @@ import zlib
 from dataclasses import dataclass
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"lib"))
 
-VERSION = 249
+VERSIONS = (249, 251)  # Save formats actually read by the installed PZ 42.22 JAR.
 CACHE_SCHEMA = 2
+# Existing cache entries prove the absence of the Writing marker in unchanged bytes.
+CACHE_VERSION = 249
 # Sur ext4/tmpfs, deux écritures dans la même tick du noyau peuvent garder
 # mtime/ctime identiques. Attendre 2 s avant toute preuve d'absence mise en cache
 # (500 ticks sur l'hôte à 4 ms), et invalider les anciennes preuves schema=1.
@@ -504,14 +507,14 @@ def drawing_documents(blob):
     return documents
 
 
-def clean_blob(blob, registry, version=VERSION, chunk=False, native_records=None):
+def clean_blob(blob, registry, version=249, chunk=False, native_records=None):
     documents = drawing_documents(blob)
     if not documents: return blob, []
-    if version != VERSION: raise CleanupError("Unsupported storage version; expected 249")
+    storage_version(version)
     if chunk:
         if len(blob) < 17 or blob[0] != 0: raise CleanupError("Unsupported chunk header")
         stored_version, length, crc = struct.unpack_from(">iiq", blob, 1)
-        if stored_version != VERSION or length != len(blob) or crc != zlib.crc32(blob[17:]):
+        if stored_version != version or length != len(blob) or crc != zlib.crc32(blob[17:]):
             raise CleanupError("Chunk version, length or checksum mismatch")
     records = {}
     if native_records is None:
@@ -703,7 +706,7 @@ def load_scan_cache(path, world):
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             return {}
         data = json.loads(read_file(path))
-        if not isinstance(data, dict) or data.get('schema') != CACHE_SCHEMA or data.get('world') != str(world) or data.get('version') != VERSION:
+        if not isinstance(data, dict) or data.get('schema') != CACHE_SCHEMA or data.get('world') != str(world) or data.get('version') != CACHE_VERSION:
             return {}
         files = data['files']
         if not isinstance(files, dict) or any(not isinstance(v, list) or len(v) != 5
@@ -771,16 +774,33 @@ def file_digest(path):
         for chunk in iter(lambda:stream.read(1024*1024),b""): sha.update(chunk)
         return sha.hexdigest()
 
+def storage_version(value):
+    """The version comes from the stored header or row, never a global default."""
+    if type(value) is not int or value not in VERSIONS:
+        raise CleanupError("Unsupported storage version: "+str(value))
+    return value
+
+
+def blob_version(blob, chunk=False):
+    if chunk:
+        if len(blob) < 17 or blob[0] != 0: raise CleanupError("Unsupported chunk header")
+        return storage_version(struct.unpack_from(">i", blob, 1)[0])
+    if len(blob) < 8: raise CleanupError("Truncated reanimated storage")
+    return storage_version(struct.unpack_from(">i", blob)[0])
+
+
 def stage_change(stage,world,rel,original,new,items=None):
+    version=blob_version(original,chunk=rel.parts[0]=="map")
     for folder,data in (("original",original),("new",new)):
         target=stage/folder/rel;target.parent.mkdir(parents=True,exist_ok=True,mode=0o700);atomic_file(target,data)
-    return {"path":str(rel),"original_sha256":digest(original),"new_sha256":digest(new),"mode":stat.S_IMODE((world/rel).stat().st_mode),"items":items or []}
+    return {"path":str(rel),"version":version,"original_sha256":digest(original),"new_sha256":digest(new),"mode":stat.S_IMODE((world/rel).stat().st_mode),"items":items or []}
 
 def prepare(world,stage,scripts_dir=None,cached=None,scanned=None,envelope_reader=None):
     registry=None if envelope_reader else dictionary(world/"WorldDictionaryReadable.lua",scripts_dir)
     files=[];rows=[]
-    def transform(blob,version=VERSION,chunk=False,path=None):
-        if envelope_reader is not None and drawing_documents(blob):
+    def transform(blob,version,chunk=False,path=None):
+        storage_version(version)
+        if envelope_reader is not None:
             records=envelope_reader(stage,blob,'chunk' if chunk else ('player' if path is None else 'reanimated'),version,path)
             return clean_blob(blob,None,version,chunk,native_records=records)
         return clean_blob(blob,registry,version,chunk)
@@ -791,6 +811,7 @@ def prepare(world,stage,scripts_dir=None,cached=None,scanned=None,envelope_reade
             if reader.execute("PRAGMA quick_check").fetchone()[0]!="ok":raise CleanupError("SQLite integrity check failed")
             for table in ("networkPlayers","localPlayers"):
                 for ident,version,blob in reader.execute(f"SELECT id,worldversion,data FROM {table}"):
+                    if not drawing_documents(blob):continue
                     new,detail=transform(blob,version)
                     if not detail:continue
                     if writer is None:
@@ -809,12 +830,16 @@ def prepare(world,stage,scripts_dir=None,cached=None,scanned=None,envelope_reade
             if file_digest(db)!=original_hash or file_digest(stage/"original/players.db")!=original_hash:raise CleanupError("Player database changed during planning")
             files.append({"path":"players.db","original_sha256":original_hash,"new_sha256":file_digest(stage/"new/players.db"),"mode":stat.S_IMODE(db.stat().st_mode),"items":[]})
     for rel,original in drawing_files(world,cached,scanned):
-        if original is None:continue
-        known=rel.parts[0]=="map" or rel==Path("reanimated.bin")
-        new,detail=transform(original,VERSION,chunk=rel.parts[0]=="map",path=rel)
-        if detail:
-            if not known:raise CleanupError("Unsupported dirty world file: "+str(rel))
-            files.append(stage_change(stage,world,rel,original,new,detail))
+        if original is None or not drawing_documents(original):continue
+        if rel.parts[0]=="map":
+            version=blob_version(original,chunk=True)
+            new,detail=transform(original,version,chunk=True,path=rel)
+        elif rel==Path("reanimated.bin"):
+            version=blob_version(original)
+            new,detail=transform(original,version,path=rel)
+        else:
+            raise CleanupError("Unsupported dirty world file: "+str(rel))
+        if detail:files.append(stage_change(stage,world,rel,original,new,detail))
     return files,rows
 
 
@@ -865,9 +890,21 @@ def write_manifest(stage, manifest):
 
 def recover(world, stage, validator=None):
     manifest = json.loads(read_file(manifest_path(stage)))
-    if manifest.get("schema") != 1 or manifest.get("world") != str(world) or manifest.get("version") != VERSION:
-        raise CleanupError("Pending cleanup belongs to another world or format")
+    schema = manifest.get("schema")
+    if schema not in (1, 2) or manifest.get("world") != str(world):
+        raise CleanupError("Pending cleanup belongs to another world or manifest schema")
+    if schema == 1:
+        if manifest.get("version") != 249 or any(row.get("version") != 249 for row in manifest["players"]):
+            raise CleanupError("Unsupported legacy cleanup manifest version")
     entries = manifest["files"]
+    for entry in entries:
+        if entry["path"] == "players.db":
+            continue  # Player versions belong to individual rows.
+        if schema == 1:
+            if entry.get("version", 249) != 249:
+                raise CleanupError("Inconsistent legacy cleanup file version")
+            entry["version"] = 249
+        storage_version(entry.get("version"))
     from world_transaction import begin, pending_for, finish
     world_root=world.parents[2] if world.parent.name=='Multiplayer' else world
     prefix=world.relative_to(world_root)
@@ -918,7 +955,7 @@ def cleanup(world_dir, backup_dir, dry_run=False, validator=None, scripts_dir=No
         ancestor=world_path.parent
         while not ancestor.exists() and not ancestor.is_symlink():ancestor=ancestor.parent
         safe_root(ancestor)
-        return {"files":0,"players":0,"version":VERSION,"dry_run":dry_run}
+        return {"files":0,"players":0,"version":249,"dry_run":dry_run}
     world = safe_root(world_path); backups = Path(os.path.abspath(backup_dir))
     if not (world/"WorldDictionaryReadable.lua").exists():
         saved=any(world_files(world,include_dictionary=True))
@@ -933,7 +970,7 @@ def cleanup(world_dir, backup_dir, dry_run=False, validator=None, scripts_dir=No
                     if table in tables and reader.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone():saved=True
             finally:reader.close()
         if saved:raise CleanupError("Saved world data exists without its readable item dictionary")
-        return {"files":0,"players":0,"version":VERSION,"dry_run":dry_run}
+        return {"files":0,"players":0,"version":249,"dry_run":dry_run}
     if backups == world or world in backups.parents: raise CleanupError("Backup directory must be outside the world")
     cache_path = None
     if scan_cache is not None and not dry_run:
@@ -957,7 +994,7 @@ def cleanup(world_dir, backup_dir, dry_run=False, validator=None, scripts_dir=No
             return
         try:
             atomic_file(cache_path, json.dumps({'schema': CACHE_SCHEMA, 'world': str(world),
-                'version': VERSION, 'files': scanned}, separators=(',', ':')).encode())
+                'version': CACHE_VERSION, 'files': scanned}, separators=(',', ':')).encode())
         except OSError:
             # An optimization cannot prevent an otherwise successful startup.
             print('ProjectWriting scan cache unavailable; next scan will reread files', file=sys.stderr)
@@ -973,7 +1010,11 @@ def cleanup(world_dir, backup_dir, dry_run=False, validator=None, scripts_dir=No
     # until all formats, SQLite data and chunk checksums have been validated.
     with tempfile.TemporaryDirectory(prefix="pz-writing-plan-") as temporary:
         files, rows = prepare(world, Path(temporary),scripts_dir,cached,scanned,getattr(validator,"native_envelopes",None))
-        summary = {"files":len(files),"players":len(rows),"version":VERSION,"dry_run":dry_run}
+        versions = {entry["version"] for entry in files if entry["path"] != "players.db"}
+        versions.update(row["version"] for row in rows)
+        # A mixed-format operation has no single storage version.
+        version = next(iter(versions), 249) if len(versions) <= 1 else None
+        summary = {"files":len(files),"players":len(rows),"version":version,"dry_run":dry_run}
         if dry_run or not files:
             save_cache()
             return summary
@@ -987,12 +1028,22 @@ def cleanup(world_dir, backup_dir, dry_run=False, validator=None, scripts_dir=No
             for folder in ("original","new"):
                 target=stage/folder/rel;target.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
                 atomic_copy(target,Path(temporary)/folder/rel,expected_sha256=entry[folder+"_sha256"])
-        manifest = {"schema":1,"world":str(world),"version":VERSION,"created_at":time.time(),"state":"prepared","files":entries,"players":rows}
+        manifest = {"schema":2,"world":str(world),"created_at":time.time(),"state":"prepared","files":entries,"players":rows}
         write_manifest(stage,manifest)
         recover(world,stage,validator)
         summary["backup"] = str(stage)
         save_cache()
         return summary
+
+
+def player_image(db, row):
+    table = row["table"]
+    if table not in ("networkPlayers", "localPlayers"):
+        raise CleanupError("Invalid validation player table")
+    saved = db.execute(f"SELECT worldversion, data FROM {table} WHERE id=?", (row["id"],)).fetchone()
+    if saved is None or storage_version(saved[0]) != storage_version(row["version"]):
+        raise CleanupError("Player version in recovery image differs from the manifest")
+    return saved[1]
 
 
 def validation_manifest(stage,files,rows,fixtures):
@@ -1014,16 +1065,18 @@ def validation_manifest(stage,files,rows,fixtures):
     for entry in files:
         if entry["path"]=="players.db":continue
         rel=Path(entry["path"])
-        add(read_file(stage/"original"/rel),read_file(stage/"new"/rel),entry["items"],VERSION)
+        before=read_file(stage/"original"/rel);after=read_file(stage/"new"/rel)
+        chunk=rel.parts[0]=="map"
+        version=blob_version(before,chunk)
+        if blob_version(after,chunk)!=version or version!=entry["version"]:
+            raise CleanupError("Cleanup version changed between original, new image and manifest")
+        add(before,after,entry["items"],version)
     if rows:
         before=sqlite3.connect((stage/"original/players.db").resolve().as_uri()+"?mode=ro&immutable=1",uri=True)
         after=sqlite3.connect((stage/"new/players.db").resolve().as_uri()+"?mode=ro&immutable=1",uri=True)
         try:
             for row in rows:
-                table=row["table"]
-                if table not in ("networkPlayers","localPlayers"):raise CleanupError("Invalid validation player table")
-                sql=f"SELECT data FROM {table} WHERE id=?"
-                add(before.execute(sql,(row["id"],)).fetchone()[0],after.execute(sql,(row["id"],)).fetchone()[0],row["items"],row["version"])
+                add(player_image(before,row),player_image(after,row),row["items"],row["version"])
         finally:before.close();after.close()
     manifest=fixtures/"records.json"
     atomic_file(manifest,json.dumps({"records":records}).encode())
@@ -1049,9 +1102,11 @@ class JavaValidator:
             self._native=NativeIndexer(root/'reader',dictionary,java=self.java,javac=self.javac,trace_items=True)
         file=root/('input-'+str(self._native.sequence)+'.bin');atomic_file(file,blob)
         if kind=='chunk':
-            result=self._native.index([{'file':str(file),'x':int(path.parts[1]),'y':int(path.stem)}])[0]
+            result=self._native.index([{'file':str(file),'x':int(path.parts[1]),'y':int(path.stem),
+                                        'version':version}])[0]
         else:result=self._native.storage([{'file':str(file),'kind':kind,'version':version}])[0]
         if result['sha256']!=digest(blob):raise CleanupError('Native storage bytes changed')
+        if result.get('version')!=version:raise CleanupError('Native storage version changed')
         return result['items']
 
     def validate_terrain(self,stage,files,root):
@@ -1062,16 +1117,23 @@ class JavaValidator:
         dictionary=root/"WorldDictionary.bin"
         atomic_file(dictionary,read_file(self.world/"WorldDictionary.bin"))
         inputs=[]
+        versions=[]
         for entry in chunks:
             rel=Path(entry["path"])
             if len(rel.parts)!=3 or rel.suffix!=".bin":raise CleanupError("Unsupported terrain path")
             x,y=int(rel.parts[1]),int(rel.stem)
+            version=storage_version(entry["version"])
             for side in ("original","new"):
-                inputs.append({"file":str((stage/side/rel).absolute()),"x":x,"y":y})
+                if blob_version(read_file(stage/side/rel),chunk=True)!=version:
+                    raise CleanupError("Terrain version changed in recovery images")
+                inputs.append({"file":str((stage/side/rel).absolute()),"x":x,"y":y,"version":version})
+                versions.append(version)
         try:
             native=NativeIndexer(root/"terrain",dictionary,java=self.java,javac=self.javac,trace_items=True)
             results=native.index(inputs)
             for i in range(0,len(results),2):
+                if results[i].get('version')!=versions[i] or results[i+1].get('version')!=versions[i+1]:
+                    raise CleanupError('Native terrain version changed')
                 if self.item_identity(results[i]['items'])!=self.item_identity(results[i+1]['items']):
                     raise CleanupError('Complete terrain item identity/ancestry changed')
         except (ValueError,OSError,subprocess.SubprocessError) as error:
@@ -1085,26 +1147,34 @@ class JavaValidator:
 
     def validate_storage(self,stage,files,rows,root):
         from terrain_tiles import NativeIndexer
-        inputs=[]
+        inputs=[];versions=[]
         for entry in files:
             if entry['path']=='reanimated.bin':
+                version=storage_version(entry['version'])
                 for side in ('original','new'):
-                    inputs.append(dict(file=str((stage/side/entry['path']).absolute()),kind='reanimated',version=VERSION))
+                    path=stage/side/entry['path']
+                    if blob_version(read_file(path))!=version:
+                        raise CleanupError('Reanimated version changed in recovery images')
+                    inputs.append(dict(file=str(path.absolute()),kind='reanimated',version=version))
+                    versions.append(version)
         for n,row in enumerate(rows):
             for side in ('original','new'):
                 db=sqlite3.connect((stage/side/'players.db').resolve().as_uri()+'?mode=ro&immutable=1',uri=True)
                 try:
-                    if row['table'] not in ('networkPlayers','localPlayers'):raise CleanupError('Invalid player storage table')
-                    data=db.execute('SELECT data FROM '+row['table']+' WHERE id=?',(row['id'],)).fetchone()[0]
+                    data=player_image(db,row)
                 finally:db.close()
                 path=root/('player-'+str(n)+'-'+side+'.bin');atomic_file(path,data)
-                inputs.append(dict(file=str(path),kind='player',version=row['version']))
+                version=storage_version(row['version'])
+                inputs.append(dict(file=str(path),kind='player',version=version))
+                versions.append(version)
         if not inputs:return
         if self.world is None:raise CleanupError('Whole storage validation requires a dictionary')
         dictionary=root/'storage-dictionary.bin';atomic_file(dictionary,read_file(self.world/'WorldDictionary.bin'))
         native=NativeIndexer(root/'storage-reader',dictionary,java=self.java,javac=self.javac,trace_items=True)
         results=native.storage(inputs)
         for n in range(0,len(results),2):
+            if results[n].get('version')!=versions[n] or results[n+1].get('version')!=versions[n+1]:
+                raise CleanupError('Native storage version changed')
             if self.item_identity(results[n]['items'])!=self.item_identity(results[n+1]['items']):
                 raise CleanupError('Complete storage item identity/ancestry changed')
 

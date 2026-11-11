@@ -42,10 +42,15 @@ dépendance absente produit un diagnostic explicite et bloque le démarrage avan
 toute mutation du monde ; l'échec du nettoyage n'est jamais ignoré. La politique
 native peut déjà avoir été appliquée aux fichiers de configuration.
 Un format ambigu, une sauvegarde incohérente ou une erreur bloque le démarrage.
-Le format pris en charge est celui des sauvegardes 249 de PZ 42.21. Les objets
-éditables ProjectWriting connus sont pris en charge ; les types ou enveloppes
-non reconnus sont refusés avant toute mutation. Ce nettoyage n'est pas un
-filtrage universel des données envoyées par des clients modifiés.
+Le nettoyeur prend en charge les formats 249 et 251, vérifiés avec PZ 42.22.2.
+Pour chaque fragment de terrain, fichier `reanimated.bin` ou personnage SQLite,
+le lecteur utilise la version enregistrée dans le fichier ou la ligne du personnage.
+Si un dessin nécessite une modification, un format inconnu, un type inconnu ou une
+enveloppe non reconnue bloque le nettoyage avant la première écriture. Les données
+sans dessin d’une version antérieure restent intactes.
+Les nouvelles copies de récupération enregistrent la version des fichiers modifiés.
+Les copies historiques de format 249 restent utilisables pour une reprise.
+Ce nettoyage porte sur les objets éditables ProjectWriting connus.
 Les limites, identités et ancêtres des objets proviennent des appels du lecteur
 natif du JAR et de son dictionnaire binaire, liés aux empreintes des fichiers.
 La classe de lecture est instrumentée dans la JVM privée de validation par

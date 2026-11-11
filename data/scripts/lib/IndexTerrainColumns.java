@@ -12,7 +12,7 @@ import zombie.iso.*;
 import zombie.iso.worldgen.utils.SquareCoord;
 import zombie.network.GameServer;
 
-/** Read-only indexing of copied B42/249 terrain with the actual game readers.
+/** Read-only indexing of copied B42 terrain with the actual game readers.
  * Never saves a game object. Python splices the original column byte ranges.
  */
 public final class IndexTerrainColumns {
@@ -155,7 +155,9 @@ public final class IndexTerrainColumns {
         require(Files.size(path) <= 64L * 1024 * 1024, "Terrain file exceeds 64 MiB");
         byte[] bytes = Files.readAllBytes(path);
         ByteBuffer b = ByteBuffer.wrap(bytes);
-        require(b.remaining() >= 17 && b.get() == 0 && b.getInt() == 249, "Expected non-debug B42/249 terrain");
+        require(b.remaining() >= 17 && b.get() == 0, "Expected non-debug terrain");
+        int version = b.getInt();
+        require(NativeItemTrace.supports(version), "Unsupported terrain version " + version);
         require(b.getInt() == bytes.length, "Terrain length mismatch");
         long checksum = b.getLong();
         CRC32 crc = new CRC32();
@@ -167,13 +169,13 @@ public final class IndexTerrainColumns {
         Method load = IsoChunk.class.getDeclaredMethod("LoadFromDiskOrBufferInternal", ByteBuffer.class);
         load.setAccessible(true);
         ByteBuffer full = ByteBuffer.wrap(bytes);
-        if(trace) NativeItemTrace.begin(full);
+        if(trace) NativeItemTrace.begin(full,version);
         try { load.invoke(whole, full); }
         catch (Exception error) { throw new IllegalArgumentException("Terrain " + path + " at byte " + full.position() + "/" + bytes.length, error); }
         require(full.position() == bytes.length, "Unparsed terrain bytes");
         JSONArray items=trace?NativeItemTrace.finish():new JSONArray();
 
-        // Version-249 prefix, followed by 64 X-major/Y-minor columns. Each
+        // Version 249/251 prefix, followed by 64 X-major/Y-minor columns. Each
         // column has a 64-bit floor-presence mask and native square records.
         b.get(); // blendingDoneFull
         int blending = Byte.toUnsignedInt(b.get());
@@ -189,7 +191,7 @@ public final class IndexTerrainColumns {
         require(min >= -32 && max <= 31 && min <= max, "Unsupported floor range");
         int blood = b.getInt();
         require(blood >= 0 && blood <= 1000, "Invalid blood record count");
-        for (int i = 0; i < blood; i++) new IsoFloorBloodSplat().load(b, 249);
+        for (int i = 0; i < blood; i++) new IsoFloorBloodSplat().load(b, version);
         IsoChunk current = chunk(cx, cy);
         current.setMinMaxLevel(min, max);
         long allowed = 0;
@@ -206,12 +208,13 @@ public final class IndexTerrainColumns {
                             cx * 8 + x, cy * 8 + y, z);
                     square.chunk = current;
                     current.setSquare(x, y, z, square);
-                    square.load(b, 249, false);
+                    square.load(b, version, false);
                 }
                 columns.put(new JSONArray().put(start).put(b.position()).put(Long.toUnsignedString(flags)));
             }
         }
         return new JSONObject().put("sha256", HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)))
+                .put("version", version)
                 .put("level_offset", levelOffset).put("min_level", min).put("max_level", max)
                 .put("columns", columns).put("items",items);
     }
@@ -220,7 +223,8 @@ public final class IndexTerrainColumns {
         Path path=Path.of(entry.getString("file"));
         require(Files.size(path)<=64L*1024*1024,"Storage exceeds 64 MiB");
         byte[] bytes=Files.readAllBytes(path);ByteBuffer input=ByteBuffer.wrap(bytes);
-        require(entry.getInt("version")==249,"Unsupported storage version");
+        int version=entry.getInt("version");
+        require(NativeItemTrace.supports(version),"Unsupported storage version "+version);
         IsoWorld.instance.currentCell=new IsoCell(1,1);
         // Native characters query ServerMap while being constructed. A private,
         // empty meta grid supplies the same absent-square result as unloaded
@@ -250,7 +254,7 @@ public final class IndexTerrainColumns {
         zombie.entity.GameEntityManager.Reset();
         Field engine=zombie.entity.GameEntityManager.class.getDeclaredField("engine");
         engine.setAccessible(true);engine.set(null,new zombie.entity.Engine());
-        NativeItemTrace.begin(input);
+        NativeItemTrace.begin(input,version);
         if(entry.getString("kind").equals("player")) {
             // A neutral constructor visual avoids random character creation
             // (Lua's common hair palette is not loaded by this offline reader).
@@ -264,15 +268,16 @@ public final class IndexTerrainColumns {
             visual.setSkinColor(zombie.core.ImmutableColor.white);
             visual.setHairModel("Bald");visual.setBeardModel("");visual.setSkinTextureName("offline-constructor");
             var player=new zombie.characters.IsoPlayer(IsoWorld.instance.currentCell,descriptor,0,0,0);
-            try { player.load(input,249,false); }
+            try { player.load(input,version,false); }
             catch(Exception error) { throw new IllegalArgumentException("Player at byte " + input.position() + "/" + bytes.length,error); }
         } else if(entry.getString("kind").equals("reanimated")) {
-            require(input.remaining()>=8 && input.getInt(0)==249 && input.getInt(4)>=0 && input.getInt(4)<=100000,"Invalid reanimated header");
+            require(input.remaining()>=8 && input.getInt(0)==version && input.getInt(4)>=0 && input.getInt(4)<=100000,"Invalid reanimated header");
             Method load=zombie.ReanimatedPlayers.class.getDeclaredMethod("loadReanimatedPlayers",ByteBuffer.class);
             load.setAccessible(true);load.invoke(zombie.ReanimatedPlayers.instance,input);
         } else throw new IllegalArgumentException("Unsupported storage kind");
         require(!input.hasRemaining(),"Unparsed storage bytes");
         return new JSONObject().put("sha256",HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)))
+            .put("version",version)
             .put("items",NativeItemTrace.finish());
     }
 
@@ -298,7 +303,10 @@ public final class IndexTerrainColumns {
         JSONArray chunks = request.getJSONArray("chunks"), results = new JSONArray();
         for (int i = 0; i < chunks.length(); i++) {
             JSONObject entry = chunks.getJSONObject(i);
-            results.put(index(Path.of(entry.getString("file")), entry.getInt("x"), entry.getInt("y"),request.optBoolean("trace_items")));
+            JSONObject result = index(Path.of(entry.getString("file")), entry.getInt("x"), entry.getInt("y"),request.optBoolean("trace_items"));
+            if (entry.has("version") && entry.getInt("version") != result.getInt("version"))
+                throw new IllegalArgumentException("Terrain version changed: " + entry.getString("file"));
+            results.put(result);
         }
         Files.writeString(Path.of(args[1]), new JSONObject().put("chunks", results).toString());
     }
